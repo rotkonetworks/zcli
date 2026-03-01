@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>zcli — zcash wallet for agents</title>
+<title>zcli - zcash wallet for agents</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{
@@ -57,10 +57,10 @@ footer{margin-top:2em;padding-top:0.5em;border-top:1px solid #222;color:#444;fon
 
 <div class="section">
 <h1>zcli</h1>
-<pre class="dim">zcash wallet CLI — ssh keys as wallet seed</pre>
+<pre class="dim">zcash wallet CLI - ssh keys as wallet seed</pre>
 <p>
 deterministic zcash wallet derived from ed25519 ssh keys.
-<span class="gold">built for agents</span> — any process with ssh access already has
+<span class="gold">built for agents</span> - any process with ssh access already has
 a wallet. no key ceremony, no mnemonic management, no interactive setup.
 same key, same wallet, same addresses, every time.
 </p>
@@ -70,7 +70,7 @@ same key, same wallet, same addresses, every time.
 <h2>why agents</h2>
 <p>
 agents authenticate with ssh keys. zcli derives a zcash spending key from the
-same ed25519 seed — one key for both identity and money. no new secrets to
+same ed25519 seed - one key for both identity and money. no new secrets to
 provision, no seed phrases to store, no interactive prompts. a headless process
 can sync, check balance, and send transactions with a single binary and the key
 it already has.
@@ -116,29 +116,36 @@ set <code>ZCLI_IDENTITY</code>, <code>ZCLI_ENDPOINT</code> as env vars for headl
 <p>
 the wallet. derives orchard spending keys and transparent keys from an ssh
 ed25519 seed via <code>BLAKE2b-512("ZcliWalletSeed" || ed25519_seed)</code>.
-syncs by trial-decrypting compact blocks locally — the server never learns
-which addresses belong to you. builds and proves orchard transactions with
-halo2 locally.
+verifies <a href="https://crates.io/crates/ligerito">ligerito</a> header proofs
+from zidecar before trusting any blocks. not fully trustless yet: proofs
+verify header chain consistency but there's no consensus checkpoint, so a
+malicious rpc operator could serve a valid proof over the wrong fork.
+trial-decrypts compact blocks locally. the server never learns which
+addresses belong to you. builds and proves orchard transactions with halo2
+locally.
 </p>
 <h3><a href="https://github.com/rotkonetworks/zeratul/tree/master/crates/bin/zidecar">zidecar</a></h3>
 <p>
-the backend. serves compact blocks with lightwalletd header proofs over
-gRPC-web. zcli trusts nothing from the server except what's provable against
-the zcash chain. default endpoint: <code>zcash.rotko.net</code>.
+the backend. indexes the zcash chain into
+<a href="https://github.com/thrumdev/nomt">nomt</a> and generates
+<a href="https://crates.io/crates/ligerito">ligerito</a> proofs over the header
+chain (gigaproof + tip). serves compact blocks and proofs over gRPC-web.
+default endpoint: <code>zcash.rotko.net</code>.
 </p>
 <h3><a href="https://github.com/rotkonetworks/zeratul/tree/master/crates/zync-core">zync</a></h3>
 <p>
-the scanner library. shared trial-decryption logic for compact block scanning.
-handles orchard note decryption, nullifier tracking, and witness construction.
+shared scanner library. trial decryption, ligerito verification, nullifier
+tracking, witness construction. used by zcli and
+<a href="https://github.com/rotkonetworks/zeratul/tree/master/crates/bin/zafu">zafu</a>.
 </p>
 </div>
 
 <div class="section">
 <h2>donate</h2>
-<p>send shielded ZEC to the board wallet. include a memo — it will appear on the board.</p>
+<p>send shielded ZEC to the board wallet. include a memo - it will appear on the board.</p>
 <p class="red">warning: memos sent to this address are published publicly on the board below.</p>
 <div class="qr">
-<img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAYgAAAGIAQMAAABhjeVlAAAABlBMVEX0tygAAADsBbEVAAAAAnRSTlP//8i138cAAAAJcEhZcwAACxIAAAsSAdLdfvwAAAJLSURBVHic7ZUxcsNADAPx/08zGRMA6aTIuKCaQLFk3R2XKXZAoz69ECLEfyLQ12v1/QXu8gOWuSrENWExRYDHQvCjKsQx0ad80FLfsFXMS4iniNfS6YEgNwvxLDGxcT0w5yGeIbqM+94D9ZXa/JqJIU4IpuePP2UsxDExjrzoNNWUvJWFOCXgefZD1/SU5xAPEF1RjhbWD77fKREhHiDAcy+tkw9fFeKeoKXyklZVXozWNA1xSEAHrYj5GqF+nU+IS6Le/bUxQ4DkASGeIKaa6cKeaVqoWYhzgjmacOnheAkM8QRRzox9zbybkJWjFuKa6HeUhp1G3mRJuQpxTShFUC3WVdIrnyGOiaKhccgtGuOIY+hCXBNjzEHikqnyejkPcUYUs0SJ8JpjbZ0PFeKMUHUHB7rlb9ZKXYhTwpQ1rSO0Pr+HeIKYCecc7ZnHnRo4xC1RKpZCiuw00a4KQlwTq5zHiyJUgkPcEnL2Ku2B1uq0sfMU4pwoZmfcUZh11tIY4pxobfDLZKn9qdCfEJcECwD5JO/5tooqxDkhTZOdWv66m1KHEPdE9YamF2u8ctwcrRCnBHdKMscn3InfCHFPqJJBggo09rB6hLgnFCALXQoNYucsxCHRp7CoorXtTeUh7gld8HCzvfdxx2YhbgkoLB5sXQd38/xToxCXhHddXk1CNzuxb4hjooeZGO7g19r/IMQzRKuEI1U7VktuiIcIWvPzVQHrmwkX4pJQcNCeWMlu84VJWIhDgoYUHgjFajOhC3FMfHiFCPF/iC9vPK+fyDeZ6QAAAABJRU5ErkJggg==" alt="donation QR code — scan with zashi">
+<img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAYgAAAGIAQMAAABhjeVlAAAABlBMVEX0tygAAADsBbEVAAAAAnRSTlP//8i138cAAAAJcEhZcwAACxIAAAsSAdLdfvwAAAJLSURBVHic7ZUxcsNADAPx/08zGRMA6aTIuKCaQLFk3R2XKXZAoz69ECLEfyLQ12v1/QXu8gOWuSrENWExRYDHQvCjKsQx0ad80FLfsFXMS4iniNfS6YEgNwvxLDGxcT0w5yGeIbqM+94D9ZXa/JqJIU4IpuePP2UsxDExjrzoNNWUvJWFOCXgefZD1/SU5xAPEF1RjhbWD77fKREhHiDAcy+tkw9fFeKeoKXyklZVXozWNA1xSEAHrYj5GqF+nU+IS6Le/bUxQ4DkASGeIKaa6cKeaVqoWYhzgjmacOnheAkM8QRRzox9zbybkJWjFuKa6HeUhp1G3mRJuQpxTShFUC3WVdIrnyGOiaKhccgtGuOIY+hCXBNjzEHikqnyejkPcUYUs0SJ8JpjbZ0PFeKMUHUHB7rlb9ZKXYhTwpQ1rSO0Pr+HeIKYCecc7ZnHnRo4xC1RKpZCiuw00a4KQlwTq5zHiyJUgkPcEnL2Ku2B1uq0sfMU4pwoZmfcUZh11tIY4pxobfDLZKn9qdCfEJcECwD5JO/5tooqxDkhTZOdWv66m1KHEPdE9YamF2u8ctwcrRCnBHdKMscn3InfCHFPqJJBggo09rB6hLgnFCALXQoNYucsxCHRp7CoorXtTeUh7gld8HCzvfdxx2YhbgkoLB5sXQd38/xToxCXhHddXk1CNzuxb4hjooeZGO7g19r/IMQzRKuEI1U7VktuiIcIWvPzVQHrmwkX4pJQcNCeWMlu84VJWIhDgoYUHgjFajOhC3FMfHiFCPF/iC9vPK+fyDeZ6QAAAABJRU5ErkJggg==" alt="donation QR code -scan with zashi">
 </div>
 <code class="addr">u153khs43zxz6hcnlwnut77knyqmursnutmungxjxd7khruunhj77ea6tmpzxct9wzlgen66jxwc93ea053j22afkktu7hrs9rmsz003h3</code>
 <p class="dim">scan with <a href="https://electriccoin.co/zashi/">zashi</a> or paste the unified address.</p>
