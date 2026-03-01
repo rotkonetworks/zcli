@@ -82,6 +82,25 @@ pub async fn sync(
     };
     let (tip, _) = client.get_tip().await?;
 
+    // verify header chain proof before trusting any blocks
+    eprintln!("verifying header proof...");
+    match client.get_header_proof().await {
+        Ok((proof_bytes, proof_from, proof_to)) => {
+            let (giga_ok, tip_ok) = zync_core::verifier::verify_proofs(&proof_bytes)
+                .map_err(|e| Error::Other(format!("proof verification: {}", e)))?;
+            if !giga_ok || !tip_ok {
+                return Err(Error::Other(format!(
+                    "proof invalid (gigaproof={}, tip={})", giga_ok, tip_ok
+                )));
+            }
+            eprintln!("proofs valid ({}..{})", proof_from, proof_to);
+        }
+        Err(e) => {
+            eprintln!("warning: could not get header proof: {}", e);
+            eprintln!("continuing without proof verification");
+        }
+    }
+
     eprintln!("tip={} start={}", tip, start);
 
     if start >= tip {

@@ -70,6 +70,9 @@ serde_json = "1.0"
 thiserror = "1.0"
 anyhow = "1.0"
 
+# proof verification
+zync-core = { git = "https://github.com/rotkonetworks/zeratul", default-features = false }
+
 # misc
 urlencoding = "2"
 hex = "0.4"
