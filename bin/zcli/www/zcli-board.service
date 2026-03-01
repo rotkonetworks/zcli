@@ -1,0 +1,15 @@
+[Unit]
+Description=zcli board — sync + serve notes API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Restart=on-failure
+RestartSec=30
+Environment=ZCLI_IDENTITY=%h/.ssh/id_claude
+ExecStart=zcli board -i %h/.ssh/id_claude --port 3333 --interval 300 --dir %h/www.zcli.rotko.net
+WorkingDirectory=%h
+
+[Install]
+WantedBy=default.target

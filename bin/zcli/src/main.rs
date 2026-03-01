@@ -8,7 +8,11 @@ mod tx;
 mod wallet;
 mod witness;
 
+use std::sync::{Arc, Mutex};
+
 use clap::Parser;
+use tokio::io::AsyncWriteExt;
+use tokio::net::TcpListener;
 
 use cli::{Cli, Command};
 use error::Error;
@@ -42,6 +46,9 @@ async fn run(cli: &Cli) -> Result<(), Error> {
         Command::Receive => {
             cmd_receive(cli, mainnet)
         }
+        Command::Notes => {
+            cmd_notes(cli)
+        }
         Command::Balance => {
             cmd_balance(cli, mainnet).await
         }
@@ -58,6 +65,10 @@ async fn run(cli: &Cli) -> Result<(), Error> {
                 &seed, amount, recipient, memo.as_deref(),
                 &cli.endpoint, mainnet, cli.script,
             ).await
+        }
+        Command::Board { port, interval, dir } => {
+            let seed = load_seed(cli)?;
+            cmd_board(cli, &seed, mainnet, *port, *interval, dir.as_deref()).await
         }
         Command::TreeInfo { height } => {
             cmd_tree_info(cli, *height).await
@@ -234,10 +245,150 @@ fn parse_frontier_size(data: &[u8]) -> Result<u64, Error> {
     witness::frontier_tree_size(data)
 }
 
-fn load_seed(cli: &Cli) -> Result<key::WalletSeed, Error> {
-    if let Some(ref mnemonic) = cli.mnemonic {
-        key::load_mnemonic_seed(mnemonic)
+fn cmd_notes(cli: &Cli) -> Result<(), Error> {
+    let wallet = wallet::Wallet::open(&wallet::Wallet::default_path())?;
+    let notes = wallet.all_received_notes()?;
+
+    if cli.script {
+        let json: Vec<_> = notes.iter().map(|n| {
+            let spent = wallet.is_spent(&n.nullifier).unwrap_or(false);
+            let mut obj = serde_json::json!({
+                "zat": n.value,
+                "zec": format!("{:.8}", n.value as f64 / 1e8),
+                "height": n.block_height,
+                "cmx": hex::encode(&n.cmx[..8]),
+                "spent": spent,
+            });
+            if let Some(ref memo) = n.memo {
+                obj["memo"] = serde_json::Value::String(memo.clone());
+            }
+            obj
+        }).collect();
+        println!("{}", serde_json::to_string(&json)
+            .unwrap_or_else(|_| "[]".into()));
     } else {
-        key::load_ssh_seed(&cli.identity_path())
+        if notes.is_empty() {
+            println!("no received notes");
+            return Ok(());
+        }
+        println!("{:<10} {:>14} {:>18} {}", "height", "ZEC", "cmx", "memo");
+        for n in &notes {
+            let memo = n.memo.as_deref().unwrap_or("");
+            println!("{:<10} {:>14.8} {:>18} {}",
+                n.block_height,
+                n.value as f64 / 1e8,
+                hex::encode(&n.cmx[..8]),
+                memo,
+            );
+        }
+    }
+
+    Ok(())
+}
+
+fn notes_json() -> String {
+    let wallet = match wallet::Wallet::open(&wallet::Wallet::default_path()) {
+        Ok(w) => w,
+        Err(_) => return "[]".into(),
+    };
+    let notes = match wallet.all_received_notes() {
+        Ok(n) => n,
+        Err(_) => return "[]".into(),
+    };
+    let json: Vec<_> = notes.iter().map(|n| {
+        let spent = wallet.is_spent(&n.nullifier).unwrap_or(false);
+        let mut obj = serde_json::json!({
+            "zat": n.value,
+            "zec": format!("{:.8}", n.value as f64 / 1e8),
+            "height": n.block_height,
+            "cmx": hex::encode(&n.cmx[..8]),
+            "spent": spent,
+        });
+        if let Some(ref memo) = n.memo {
+            obj["memo"] = serde_json::Value::String(memo.clone());
+        }
+        obj
+    }).collect();
+    serde_json::to_string(&json).unwrap_or_else(|_| "[]".into())
+}
+
+async fn cmd_board(
+    cli: &Cli,
+    seed: &key::WalletSeed,
+    mainnet: bool,
+    port: u16,
+    interval: u64,
+    dir: Option<&str>,
+) -> Result<(), Error> {
+    let state: Arc<Mutex<String>> = Arc::new(Mutex::new(notes_json()));
+
+    // initial sync
+    eprintln!("board: initial sync...");
+    let _ = ops::sync::sync(seed, &cli.endpoint, mainnet, true, None, None).await;
+    *state.lock().unwrap() = notes_json();
+    if let Some(d) = dir {
+        let _ = std::fs::write(format!("{}/memos.json", d), state.lock().unwrap().as_bytes());
+    }
+    eprintln!("board: serving on :{}", port);
+
+    // sync loop
+    let sync_state = Arc::clone(&state);
+    let endpoint = cli.endpoint.clone();
+    let seed_bytes: [u8; 64] = *seed.as_bytes();
+    let dir_owned = dir.map(String::from);
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(interval)).await;
+            let seed = key::WalletSeed::from_bytes(seed_bytes);
+            match ops::sync::sync(&seed, &endpoint, mainnet, true, None, None).await {
+                Ok(found) => {
+                    let json = notes_json();
+                    if let Some(ref d) = dir_owned {
+                        let _ = std::fs::write(format!("{}/memos.json", d), json.as_bytes());
+                    }
+                    *sync_state.lock().unwrap() = json;
+                    eprintln!("board: synced, {} new notes", found);
+                }
+                Err(e) => eprintln!("board: sync error: {}", e),
+            }
+        }
+    });
+
+    // http server
+    let listener = TcpListener::bind(format!("0.0.0.0:{}", port)).await
+        .map_err(|e| Error::Other(format!("bind :{}: {}", port, e)))?;
+
+    loop {
+        let (mut stream, _) = listener.accept().await
+            .map_err(|e| Error::Other(format!("accept: {}", e)))?;
+        let json = state.lock().unwrap().clone();
+        let response = format!(
+            "HTTP/1.1 200 OK\r\n\
+             Content-Type: application/json\r\n\
+             Access-Control-Allow-Origin: *\r\n\
+             Cache-Control: no-cache\r\n\
+             Content-Length: {}\r\n\
+             \r\n\
+             {}",
+            json.len(),
+            json,
+        );
+        let _ = stream.write_all(response.as_bytes()).await;
+    }
+}
+
+fn load_seed(cli: &Cli) -> Result<key::WalletSeed, Error> {
+    use cli::MnemonicSource;
+    match cli.mnemonic_source() {
+        Some(MnemonicSource::Plaintext(ref phrase)) => {
+            key::load_mnemonic_seed(phrase)
+        }
+        Some(MnemonicSource::AgeFile(ref path)) => {
+            let phrase = key::decrypt_age_file(path, &cli.identity_path())?;
+            key::load_mnemonic_seed(&phrase)
+        }
+        None => {
+            key::load_ssh_seed(&cli.identity_path())
+        }
     }
 }

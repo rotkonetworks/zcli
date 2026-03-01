@@ -62,6 +62,21 @@ pub fn load_ssh_seed(path: &str) -> Result<WalletSeed, Error> {
     Ok(WalletSeed { bytes })
 }
 
+/// decrypt a .age file using an ssh identity key, return contents as string
+pub fn decrypt_age_file(age_path: &str, identity_path: &str) -> Result<String, Error> {
+    let output = std::process::Command::new("age")
+        .args(["-d", "-i", identity_path, age_path])
+        .output()
+        .map_err(|e| Error::Key(format!("age not found: {}", e)))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(Error::Key(format!("age decrypt failed: {}", stderr.trim())));
+    }
+    String::from_utf8(output.stdout)
+        .map(|s| s.trim().to_string())
+        .map_err(|e| Error::Key(format!("age output not utf8: {}", e)))
+}
+
 /// load wallet seed from bip39 mnemonic
 ///
 /// derivation: mnemonic.to_seed("") → 64-byte seed (standard bip39)
