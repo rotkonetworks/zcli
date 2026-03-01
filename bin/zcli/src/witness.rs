@@ -134,7 +134,7 @@ fn read_compact_size(data: &[u8], pos: &mut usize) -> Result<u64, Error> {
     }
 }
 
-/// compute the tree size from frontier -parse to a CommitmentTree and use .size()
+/// compute the tree size from frontier - parse to a CommitmentTree and use .size()
 pub fn frontier_tree_size(data: &[u8]) -> Result<u64, Error> {
     let tree = deserialize_tree(data)?;
     Ok(tree.size() as u64)
@@ -190,7 +190,7 @@ pub async fn build_witnesses(
         return Err(Error::Other("anchor height before orchard activation".into()));
     }
 
-    // find earliest note position -we need a checkpoint before this
+    // find earliest note position - we need a checkpoint before this
     let earliest_position = notes.iter().map(|n| n.position).min()
         .ok_or_else(|| Error::Other("no notes to build witnesses for".into()))?;
 
@@ -327,7 +327,7 @@ pub async fn build_witnesses(
     }
 
     if !script {
-        eprintln!("witnesses built -anchor: {}", hex::encode(anchor.to_bytes()));
+        eprintln!("witnesses built - anchor: {}", hex::encode(anchor.to_bytes()));
     }
 
     Ok((anchor, paths))
