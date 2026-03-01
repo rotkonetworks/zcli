@@ -301,6 +301,14 @@ impl ZidecarClient {
         }).collect())
     }
 
+    pub async fn get_header_proof(&self) -> Result<(Vec<u8>, u32, u32), Error> {
+        let resp: zidecar_proto::HeaderProof = self.call_unary(
+            "zidecar.v1.Zidecar/GetHeaderProof",
+            &zidecar_proto::ProofRequest { from_height: 0, to_height: 0 },
+        ).await?;
+        Ok((resp.ligerito_proof, resp.from_height, resp.to_height))
+    }
+
     pub async fn get_tree_state(&self, height: u32) -> Result<(String, u32), Error> {
         let state: zidecar_proto::TreeState = self.call_unary(
             "zidecar.v1.Zidecar/GetTreeState",
