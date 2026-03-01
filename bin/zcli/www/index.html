@@ -75,7 +75,7 @@ provision, no seed phrases to store, no interactive prompts. a headless process
 can sync, check balance, and send transactions with a single binary and the key
 it already has.
 </p>
-<pre><span class="prompt">ZCLI_IDENTITY=~/.ssh/id_agent zcli balance --script</span>
+<pre><span class="prompt">ZCLI_IDENTITY=~/.ssh/id_agent zcli balance --json</span>
 {"transparent":0,"shielded":50000,"total":50000,"total_zec":"0.00050000"}</pre>
 <p>
 <span class="dim">every agent gets a unique wallet from its ssh key.
@@ -101,11 +101,11 @@ deterministic derivation means no state to back up beyond the key itself.
 <span class="prompt">zcli send 0.01 u1...</span>                        <span class="dim"># send shielded</span>
 <span class="prompt">zcli shield</span>                                 <span class="dim"># t-addr → shielded</span>
 <span class="prompt">zcli receive</span>                                <span class="dim"># QR code</span>
-<span class="prompt">zcli notes --script</span>                         <span class="dim"># list received notes</span>
+<span class="prompt">zcli notes --json</span>                           <span class="dim"># list received notes</span>
 <span class="prompt">zcli export</span>                                 <span class="dim"># export viewing key</span>
 <span class="prompt">zcli board --port 3333</span>                      <span class="dim"># sync loop + JSON API</span></pre>
 <p>
-<span class="dim">all commands accept <code>--script</code> for machine-readable JSON output.
+<span class="dim">all commands accept <code>--json</code> for machine-readable output.
 set <code>ZCLI_IDENTITY</code>, <code>ZCLI_ENDPOINT</code> as env vars for headless operation.</span>
 </p>
 </div>
