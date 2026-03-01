@@ -120,13 +120,13 @@ syncs by trial-decrypting compact blocks locally — the server never learns
 which addresses belong to you. builds and proves orchard transactions with
 halo2 locally.
 </p>
-<h3>zidecar</h3>
+<h3><a href="https://github.com/rotkonetworks/zeratul/tree/master/crates/bin/zidecar">zidecar</a></h3>
 <p>
 the backend. serves compact blocks with lightwalletd header proofs over
 gRPC-web. zcli trusts nothing from the server except what's provable against
 the zcash chain. default endpoint: <code>zcash.rotko.net</code>.
 </p>
-<h3>zync</h3>
+<h3><a href="https://github.com/rotkonetworks/zeratul/tree/master/crates/zync-core">zync</a></h3>
 <p>
 the scanner library. shared trial-decryption logic for compact block scanning.
 handles orchard note decryption, nullifier tracking, and witness construction.
