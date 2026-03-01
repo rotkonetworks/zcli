@@ -138,6 +138,28 @@ shared scanner library. trial decryption, ligerito verification, nullifier
 tracking, witness construction. used by zcli and
 <a href="https://github.com/rotkonetworks/zeratul/tree/master/crates/bin/zafu">zafu</a>.
 </p>
+<h3>client-side verification</h3>
+<p>
+before scanning blocks, zcli fetches a combined proof from zidecar and
+verifies it locally. the wire format:
+</p>
+<pre>[giga_full_size: u32][giga_full][tip_full]</pre>
+<p>
+each full proof contains embedded public outputs (block hashes, heights,
+difficulty) followed by a ligerito polynomial commitment proof. the client:
+</p>
+<pre>1. splits combined blob into gigaproof + tip proof
+2. deserializes public outputs from each
+3. verifies both ligerito proofs cryptographically
+4. checks continuity: tip.start_prev_hash == giga.tip_hash
+5. rejects if any check fails</pre>
+<p>
+the gigaproof (2^26 config, ~300KB) covers the full historical chain and is
+regenerated periodically. the tip proof (2^20, ~150KB) covers the gap from
+gigaproof end to current tip, regenerated every block. continuity checking
+ensures the server can't splice unrelated proofs together - the client
+verifies the hash chain links without trusting the server.
+</p>
 </div>
 
 <div class="section">
