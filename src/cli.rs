@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "zcli", about = "zcash wallet CLI -ssh keys as wallet seed")]
+#[command(name = "zcli", about = "zcash wallet CLI - ssh keys as wallet seed")]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Command,
@@ -48,11 +48,11 @@ impl Cli {
     }
 
     /// resolve identity key path with priority:
-    /// -i flag / ZCLI_IDENTITY → ~/.config/zcli/id_zcli → ~/.ssh/id_ed25519
+    /// - i flag / ZCLI_IDENTITY → ~/.config/zcli/id_zcli → ~/.ssh/id_ed25519
     pub fn identity_path(&self) -> String {
         let explicit = Self::expand_tilde(&self.identity);
 
-        // if user explicitly set -i or ZCLI_IDENTITY, use that
+        // if user explicitly set - i or ZCLI_IDENTITY, use that
         if self.identity != "~/.ssh/id_ed25519" {
             return explicit;
         }

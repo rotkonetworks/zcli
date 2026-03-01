@@ -1,4 +1,4 @@
-// transaction building -ported from zafu-wasm without wasm_bindgen
+// transaction building - ported from zafu-wasm without wasm_bindgen
 // supports: shielding (t→z) and orchard spend (z→z, z→t)
 
 use k256::ecdsa::{signature::hazmat::PrehashSigner, SigningKey};

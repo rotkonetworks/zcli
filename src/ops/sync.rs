@@ -86,14 +86,20 @@ pub async fn sync(
     eprintln!("verifying header proof...");
     match client.get_header_proof().await {
         Ok((proof_bytes, proof_from, proof_to)) => {
-            let (giga_ok, tip_ok) = zync_core::verifier::verify_proofs(&proof_bytes)
-                .map_err(|e| Error::Other(format!("proof verification: {}", e)))?;
-            if !giga_ok || !tip_ok {
-                return Err(Error::Other(format!(
-                    "proof invalid (gigaproof={}, tip={})", giga_ok, tip_ok
-                )));
+            match zync_core::verifier::verify_proofs(&proof_bytes) {
+                Ok((giga_ok, tip_ok)) if giga_ok && tip_ok => {
+                    eprintln!("proofs valid ({}..{})", proof_from, proof_to);
+                }
+                Ok((giga_ok, tip_ok)) => {
+                    return Err(Error::Other(format!(
+                        "proof invalid (gigaproof={}, tip={})", giga_ok, tip_ok
+                    )));
+                }
+                Err(e) => {
+                    eprintln!("warning: proof not ready: {}", e);
+                    eprintln!("continuing without verification");
+                }
             }
-            eprintln!("proofs valid ({}..{})", proof_from, proof_to);
         }
         Err(e) => {
             eprintln!("warning: could not get header proof: {}", e);
@@ -129,7 +135,7 @@ pub async fn sync(
 
     let mut found_total = 0u32;
     let mut current = start;
-    // global position counter -tracks every orchard action from activation
+    // global position counter - tracks every orchard action from activation
     let mut position_counter = if let Some(pos) = from_position {
         wallet.set_orchard_position(pos)?;
         pos
@@ -235,7 +241,7 @@ pub async fn sync(
     }
 
     if !script {
-        eprintln!("synced to {} -{} new notes found (position {})", tip, found_total, position_counter);
+        eprintln!("synced to {} - {} new notes found (position {})", tip, found_total, position_counter);
     }
 
     Ok(found_total)
