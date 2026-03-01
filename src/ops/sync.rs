@@ -129,7 +129,7 @@ pub async fn sync(
 
     let mut found_total = 0u32;
     let mut current = start;
-    // global position counter — tracks every orchard action from activation
+    // global position counter -tracks every orchard action from activation
     let mut position_counter = if let Some(pos) = from_position {
         wallet.set_orchard_position(pos)?;
         pos
@@ -235,7 +235,7 @@ pub async fn sync(
     }
 
     if !script {
-        eprintln!("synced to {} — {} new notes found (position {})", tip, found_total, position_counter);
+        eprintln!("synced to {} -{} new notes found (position {})", tip, found_total, position_counter);
     }
 
     Ok(found_total)

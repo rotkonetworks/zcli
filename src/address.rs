@@ -1,4 +1,4 @@
-// from zafu-wasm — BIP32 + transparent address derivation, orchard key derivation
+// from zafu-wasm -BIP32 + transparent address derivation, orchard key derivation
 
 use orchard::keys::{FullViewingKey, Scope, SpendingKey};
 use sha2::Digest as _;

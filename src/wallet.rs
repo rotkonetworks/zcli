@@ -19,7 +19,7 @@ pub struct WalletNote {
     pub cmx: [u8; 32],
     pub block_height: u32,
     pub is_change: bool,
-    // spend data — required for orchard spend circuit
+    // spend data -required for orchard spend circuit
     // orchard address is 43 bytes (11-byte diversifier + 32-byte pk_d)
     pub recipient: Vec<u8>,
     pub rho: [u8; 32],

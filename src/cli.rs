@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "zcli", about = "zcash wallet CLI — ssh keys as wallet seed")]
+#[command(name = "zcli", about = "zcash wallet CLI -ssh keys as wallet seed")]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Command,
