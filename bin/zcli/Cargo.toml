@@ -1,6 +1,6 @@
 [package]
-name = "zcli"
-version = "0.1.0"
+name = "zecli"
+version = "0.2.0"
 edition = "2021"
 license = "MIT"
 description = "zcash wallet CLI - ssh keys as wallet seed, agent-friendly"
@@ -71,7 +71,7 @@ thiserror = "1.0"
 anyhow = "1.0"
 
 # proof verification
-zync-core = { git = "https://github.com/rotkonetworks/zeratul", default-features = false }
+zync-core = { version = "0.2", default-features = false }
 
 # misc
 urlencoding = "2"
