@@ -38,15 +38,53 @@ impl Cli {
         !self.testnet
     }
 
-    /// expand ~ in identity path
-    pub fn identity_path(&self) -> String {
-        if self.identity.starts_with("~/") {
+    fn expand_tilde(path: &str) -> String {
+        if path.starts_with("~/") {
             if let Some(home) = std::env::var_os("HOME") {
-                return format!("{}/{}", home.to_string_lossy(), &self.identity[2..]);
+                return format!("{}/{}", home.to_string_lossy(), &path[2..]);
             }
         }
-        self.identity.clone()
+        path.to_string()
     }
+
+    /// resolve identity key path with priority:
+    /// -i flag / ZCLI_IDENTITY → ~/.config/zcli/id_zcli → ~/.ssh/id_ed25519
+    pub fn identity_path(&self) -> String {
+        let explicit = Self::expand_tilde(&self.identity);
+
+        // if user explicitly set -i or ZCLI_IDENTITY, use that
+        if self.identity != "~/.ssh/id_ed25519" {
+            return explicit;
+        }
+
+        // check ~/.config/zcli/id_zcli
+        let config_key = Self::expand_tilde("~/.config/zcli/id_zcli");
+        if std::path::Path::new(&config_key).exists() {
+            return config_key;
+        }
+
+        explicit
+    }
+
+    /// resolve mnemonic with priority:
+    /// --mnemonic / ZCLI_MNEMONIC → ~/.config/zcli/mnemonic.age (decrypted via identity key)
+    pub fn mnemonic_source(&self) -> Option<MnemonicSource> {
+        if let Some(ref m) = self.mnemonic {
+            return Some(MnemonicSource::Plaintext(m.clone()));
+        }
+
+        let age_path = Self::expand_tilde("~/.config/zcli/mnemonic.age");
+        if std::path::Path::new(&age_path).exists() {
+            return Some(MnemonicSource::AgeFile(age_path));
+        }
+
+        None
+    }
+}
+
+pub enum MnemonicSource {
+    Plaintext(String),
+    AgeFile(String),
 }
 
 #[derive(Subcommand)]
@@ -101,6 +139,24 @@ pub enum Command {
 
     /// export wallet keys (requires confirmation)
     Export,
+
+    /// list all received notes
+    Notes,
+
+    /// run board: sync loop + HTTP API serving notes as JSON
+    Board {
+        /// HTTP port
+        #[arg(long, default_value_t = 3333)]
+        port: u16,
+
+        /// sync interval in seconds
+        #[arg(long, default_value_t = 300)]
+        interval: u64,
+
+        /// also write memos.json to this directory after each sync
+        #[arg(long)]
+        dir: Option<String>,
+    },
 
     /// show orchard tree info at a height (for --position)
     TreeInfo {

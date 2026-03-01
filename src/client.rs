@@ -45,6 +45,7 @@ pub struct CompactAction {
     pub ephemeral_key: [u8; 32],
     pub ciphertext: Vec<u8>,
     pub nullifier: [u8; 32],
+    pub txid: Vec<u8>,
 }
 
 #[derive(Debug, Clone)]
@@ -288,6 +289,7 @@ impl ZidecarClient {
                     ephemeral_key: ek,
                     ciphertext: a.ciphertext,
                     nullifier: nf,
+                    txid: a.txid,
                 })
             }).collect();
 
@@ -305,6 +307,14 @@ impl ZidecarClient {
             &zidecar_proto::BlockId { height, hash: vec![] },
         ).await?;
         Ok((state.orchard_tree, state.height))
+    }
+
+    pub async fn get_transaction(&self, txid: &[u8]) -> Result<Vec<u8>, Error> {
+        let resp: zidecar_proto::RawTransaction = self.call_unary(
+            "zidecar.v1.Zidecar/GetTransaction",
+            &zidecar_proto::TxFilter { hash: txid.to_vec() },
+        ).await?;
+        Ok(resp.data)
     }
 
     pub async fn send_transaction(&self, tx_data: Vec<u8>) -> Result<SendResult, Error> {

@@ -85,6 +85,7 @@ message CompactAction {
     bytes ephemeral_key = 2;    // ephemeral public key (32 bytes)
     bytes ciphertext = 3;       // compact ciphertext (52 bytes)
     bytes nullifier = 4;        // nullifier (32 bytes)
+    bytes txid = 5;             // transaction hash (32 bytes) — for memo retrieval
 }
 
 // Block identifier

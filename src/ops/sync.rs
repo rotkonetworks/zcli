@@ -1,7 +1,7 @@
 use indicatif::{ProgressBar, ProgressStyle};
 use orchard::keys::{FullViewingKey, PreparedIncomingViewingKey, Scope, SpendingKey};
 use orchard::note_encryption::OrchardDomain;
-use zcash_note_encryption::{try_compact_note_decryption, EphemeralKeyBytes, ShieldedOutput, COMPACT_NOTE_SIZE};
+use zcash_note_encryption::{try_compact_note_decryption, try_note_decryption, EphemeralKeyBytes, ShieldedOutput, COMPACT_NOTE_SIZE, ENC_CIPHERTEXT_SIZE};
 
 use crate::client::ZidecarClient;
 use crate::error::Error;
@@ -29,6 +29,24 @@ impl ShieldedOutput<OrchardDomain, COMPACT_NOTE_SIZE> for CompactShieldedOutput 
     }
     fn enc_ciphertext(&self) -> &[u8; COMPACT_NOTE_SIZE] {
         &self.ciphertext
+    }
+}
+
+struct FullShieldedOutput {
+    epk: [u8; 32],
+    cmx: [u8; 32],
+    enc_ciphertext: [u8; ENC_CIPHERTEXT_SIZE],
+}
+
+impl ShieldedOutput<OrchardDomain, ENC_CIPHERTEXT_SIZE> for FullShieldedOutput {
+    fn ephemeral_key(&self) -> EphemeralKeyBytes {
+        EphemeralKeyBytes(self.epk)
+    }
+    fn cmstar_bytes(&self) -> [u8; 32] {
+        self.cmx
+    }
+    fn enc_ciphertext(&self) -> &[u8; ENC_CIPHERTEXT_SIZE] {
+        &self.enc_ciphertext
     }
 }
 
@@ -100,6 +118,9 @@ pub async fn sync(
         wallet.orchard_position()?
     };
 
+    // collect new notes that need memo fetching: (note_nullifier, txid, cmx, epk, action_nullifier)
+    let mut needs_memo: Vec<([u8; 32], Vec<u8>, [u8; 32], [u8; 32], [u8; 32])> = Vec::new();
+
     while current <= tip {
         let end = (current + BATCH_SIZE - 1).min(tip);
         let blocks = retry_compact_blocks(&client, current, end).await?;
@@ -139,9 +160,21 @@ pub async fn sync(
                         rho: decrypted.rho,
                         rseed: decrypted.rseed,
                         position: position_counter,
+                        txid: action.txid.clone(),
+                        memo: None,
                     };
                     wallet.insert_note(&wallet_note)?;
                     found_total += 1;
+
+                    if !action.txid.is_empty() && !decrypted.is_change {
+                        needs_memo.push((
+                            decrypted.nullifier,
+                            action.txid.clone(),
+                            action.cmx,
+                            action.ephemeral_key,
+                            action.nullifier,
+                        ));
+                    }
                 }
 
                 // check if this action's nullifier spends one of our notes
@@ -162,6 +195,24 @@ pub async fn sync(
 
     if let Some(pb) = pb {
         pb.finish_and_clear();
+    }
+
+    // fetch memos for newly found notes
+    if !needs_memo.is_empty() {
+        eprintln!("fetching memos for {} notes...", needs_memo.len());
+        for (nullifier, txid, cmx, epk, action_nf) in &needs_memo {
+            match fetch_memo(&client, &fvk, &ivk_ext, txid, cmx, epk, action_nf).await {
+                Ok(Some(memo)) => {
+                    // update note in wallet with memo
+                    if let Ok(mut note) = wallet.get_note(nullifier) {
+                        note.memo = Some(memo);
+                        wallet.insert_note(&note).ok();
+                    }
+                }
+                Ok(None) => {}
+                Err(e) => eprintln!("  memo fetch failed: {}", e),
+            }
+        }
     }
 
     if !script {
@@ -235,6 +286,72 @@ async fn retry_compact_blocks(
             }
         }
     }
+}
+
+/// fetch full transaction and decrypt memo for a specific action
+async fn fetch_memo(
+    client: &ZidecarClient,
+    fvk: &FullViewingKey,
+    ivk: &PreparedIncomingViewingKey,
+    txid: &[u8],
+    cmx: &[u8; 32],
+    epk: &[u8; 32],
+    action_nf: &[u8; 32],
+) -> Result<Option<String>, Error> {
+    let raw_tx = client.get_transaction(txid).await?;
+
+    let enc_ciphertext = extract_enc_ciphertext(&raw_tx, cmx, epk)?;
+    let Some(enc) = enc_ciphertext else { return Ok(None) };
+
+    let nf = orchard::note::Nullifier::from_bytes(action_nf);
+    if nf.is_none().into() { return Ok(None); }
+    let nf = nf.unwrap();
+
+    let cmx_parsed = orchard::note::ExtractedNoteCommitment::from_bytes(cmx);
+    if cmx_parsed.is_none().into() { return Ok(None); }
+    let cmx_parsed = cmx_parsed.unwrap();
+
+    let mut compact_ct = [0u8; 52];
+    compact_ct.copy_from_slice(&enc[..52]);
+    let compact = orchard::note_encryption::CompactAction::from_parts(
+        nf, cmx_parsed, EphemeralKeyBytes(*epk), compact_ct,
+    );
+    let domain = OrchardDomain::for_compact_action(&compact);
+
+    let output = FullShieldedOutput {
+        epk: *epk,
+        cmx: *cmx,
+        enc_ciphertext: enc,
+    };
+
+    if let Some((_, _, memo)) = try_note_decryption(&domain, ivk, &output) {
+        let end = memo.iter().rposition(|&b| b != 0).map(|i| i + 1).unwrap_or(0);
+        if end > 0 {
+            let text = String::from_utf8_lossy(&memo[..end]).to_string();
+            return Ok(Some(text));
+        }
+    }
+
+    Ok(None)
+}
+
+/// extract the 580-byte enc_ciphertext for an action matching cmx+epk from raw tx bytes
+///
+/// V5 orchard action = cv(32) + nf(32) + rk(32) + cmx(32) + epk(32) + enc(580) + out(80) = 820 bytes
+/// enc_ciphertext immediately follows epk within each action.
+fn extract_enc_ciphertext(raw_tx: &[u8], cmx: &[u8; 32], epk: &[u8; 32]) -> Result<Option<[u8; ENC_CIPHERTEXT_SIZE]>, Error> {
+    for i in 0..raw_tx.len().saturating_sub(64 + ENC_CIPHERTEXT_SIZE) {
+        if &raw_tx[i..i + 32] == cmx && &raw_tx[i + 32..i + 64] == epk {
+            let start = i + 64;
+            let end = start + ENC_CIPHERTEXT_SIZE;
+            if end <= raw_tx.len() {
+                let mut enc = [0u8; ENC_CIPHERTEXT_SIZE];
+                enc.copy_from_slice(&raw_tx[start..end]);
+                return Ok(Some(enc));
+            }
+        }
+    }
+    Ok(None)
 }
 
 /// extract all fields from a decrypted note for wallet storage

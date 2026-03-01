@@ -25,6 +25,10 @@ pub struct WalletNote {
     pub rho: [u8; 32],
     pub rseed: [u8; 32],
     pub position: u64,
+    #[serde(default)]
+    pub txid: Vec<u8>,
+    #[serde(default)]
+    pub memo: Option<String>,
 }
 
 impl WalletNote {
@@ -97,6 +101,17 @@ impl Wallet {
         Ok(())
     }
 
+    /// get a note by nullifier
+    pub fn get_note(&self, nullifier: &[u8; 32]) -> Result<WalletNote, Error> {
+        let tree = self.db.open_tree(NOTES_TREE)
+            .map_err(|e| Error::Wallet(format!("open notes tree: {}", e)))?;
+        let value = tree.get(nullifier.as_ref())
+            .map_err(|e| Error::Wallet(format!("get note: {}", e)))?
+            .ok_or_else(|| Error::Wallet("note not found".into()))?;
+        serde_json::from_slice(&value)
+            .map_err(|e| Error::Wallet(format!("deserialize note: {}", e)))
+    }
+
     /// mark a nullifier as spent
     pub fn mark_spent(&self, nullifier: &[u8; 32]) -> Result<(), Error> {
         let tree = self.db.open_tree(NULLIFIERS_TREE)
@@ -154,5 +169,25 @@ impl Wallet {
         }
 
         Ok((balance, unspent))
+    }
+
+    /// all received notes (non-change), sorted by height descending
+    pub fn all_received_notes(&self) -> Result<Vec<WalletNote>, Error> {
+        let notes_tree = self.db.open_tree(NOTES_TREE)
+            .map_err(|e| Error::Wallet(format!("open notes tree: {}", e)))?;
+
+        let mut notes = Vec::new();
+        for entry in notes_tree.iter() {
+            let (_, value) = entry
+                .map_err(|e| Error::Wallet(format!("iterate notes: {}", e)))?;
+            let note: WalletNote = serde_json::from_slice(&value)
+                .map_err(|e| Error::Wallet(format!("deserialize note: {}", e)))?;
+            if !note.is_change {
+                notes.push(note);
+            }
+        }
+
+        notes.sort_by(|a, b| b.block_height.cmp(&a.block_height));
+        Ok(notes)
     }
 }
