@@ -86,14 +86,18 @@ pub async fn sync(
     eprintln!("verifying header proof...");
     match client.get_header_proof().await {
         Ok((proof_bytes, proof_from, proof_to)) => {
-            match zync_core::verifier::verify_proofs(&proof_bytes) {
-                Ok((giga_ok, tip_ok)) if giga_ok && tip_ok => {
-                    eprintln!("proofs valid ({}..{})", proof_from, proof_to);
-                }
-                Ok((giga_ok, tip_ok)) => {
-                    return Err(Error::Other(format!(
-                        "proof invalid (gigaproof={}, tip={})", giga_ok, tip_ok
-                    )));
+            match zync_core::verifier::verify_proofs_full(&proof_bytes) {
+                Ok(result) => {
+                    if !result.gigaproof_valid {
+                        return Err(Error::Other("gigaproof invalid".into()));
+                    }
+                    if !result.tip_valid {
+                        return Err(Error::Other("tip proof invalid".into()));
+                    }
+                    if !result.continuous {
+                        return Err(Error::Other("proof chain discontinuous".into()));
+                    }
+                    eprintln!("proofs valid ({}..{}) continuous=true", proof_from, proof_to);
                 }
                 Err(e) => {
                     eprintln!("warning: proof not ready: {}", e);
