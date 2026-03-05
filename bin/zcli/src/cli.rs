@@ -7,8 +7,13 @@ pub struct Cli {
     pub command: Command,
 
     /// path to ed25519 ssh private key
-    #[arg(short = 'i', long = "identity", global = true, env = "ZCLI_IDENTITY",
-          default_value = "~/.ssh/id_ed25519")]
+    #[arg(
+        short = 'i',
+        long = "identity",
+        global = true,
+        env = "ZCLI_IDENTITY",
+        default_value = "~/.ssh/id_ed25519"
+    )]
     pub identity: String,
 
     /// use bip39 mnemonic instead of ssh key
@@ -16,9 +21,22 @@ pub struct Cli {
     pub mnemonic: Option<String>,
 
     /// zidecar gRPC endpoint
-    #[arg(long, global = true, env = "ZCLI_ENDPOINT",
-          default_value = "https://zcash.rotko.net")]
+    #[arg(
+        long,
+        global = true,
+        env = "ZCLI_ENDPOINT",
+        default_value = "https://zcash.rotko.net"
+    )]
     pub endpoint: String,
+
+    /// lightwalletd endpoint for cross-verification (empty to disable)
+    #[arg(
+        long,
+        global = true,
+        env = "ZCLI_VERIFY_ENDPOINT",
+        default_value = "https://mainnet.lightwalletd.com"
+    )]
+    pub verify_endpoint: String,
 
     /// machine-readable json output, no prompts/progress/qr
     #[arg(long, visible_alias = "json", global = true, env = "ZCLI_SCRIPT")]
@@ -39,9 +57,9 @@ impl Cli {
     }
 
     fn expand_tilde(path: &str) -> String {
-        if path.starts_with("~/") {
+        if let Some(rest) = path.strip_prefix("~/") {
             if let Some(home) = std::env::var_os("HOME") {
-                return format!("{}/{}", home.to_string_lossy(), &path[2..]);
+                return format!("{}/{}", home.to_string_lossy(), rest);
             }
         }
         path.to_string()
@@ -163,5 +181,4 @@ pub enum Command {
         /// block height
         height: u32,
     },
-
 }

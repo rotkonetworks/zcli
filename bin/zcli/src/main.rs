@@ -40,39 +40,44 @@ async fn run(cli: &Cli) -> Result<(), Error> {
     let mainnet = cli.is_mainnet();
 
     match &cli.command {
-        Command::Address { orchard, transparent } => {
-            cmd_address(cli, mainnet, *orchard, *transparent)
-        }
-        Command::Receive => {
-            cmd_receive(cli, mainnet)
-        }
-        Command::Notes => {
-            cmd_notes(cli)
-        }
-        Command::Balance => {
-            cmd_balance(cli, mainnet).await
-        }
-        Command::Sync { from, position } => {
-            cmd_sync(cli, mainnet, *from, *position).await
-        }
+        Command::Address {
+            orchard,
+            transparent,
+        } => cmd_address(cli, mainnet, *orchard, *transparent),
+        Command::Receive => cmd_receive(cli, mainnet),
+        Command::Notes => cmd_notes(cli),
+        Command::Balance => cmd_balance(cli, mainnet).await,
+        Command::Sync { from, position } => cmd_sync(cli, mainnet, *from, *position).await,
         Command::Shield { fee } => {
             let seed = load_seed(cli)?;
             ops::shield::shield(&seed, &cli.endpoint, *fee, mainnet, cli.script).await
         }
-        Command::Send { amount, recipient, memo } => {
+        Command::Send {
+            amount,
+            recipient,
+            memo,
+        } => {
             let seed = load_seed(cli)?;
             ops::send::send(
-                &seed, amount, recipient, memo.as_deref(),
-                &cli.endpoint, mainnet, cli.script,
-            ).await
+                &seed,
+                amount,
+                recipient,
+                memo.as_deref(),
+                &cli.endpoint,
+                mainnet,
+                cli.script,
+            )
+            .await
         }
-        Command::Board { port, interval, dir } => {
+        Command::Board {
+            port,
+            interval,
+            dir,
+        } => {
             let seed = load_seed(cli)?;
             cmd_board(cli, &seed, mainnet, *port, *interval, dir.as_deref()).await
         }
-        Command::TreeInfo { height } => {
-            cmd_tree_info(cli, *height).await
-        }
+        Command::TreeInfo { height } => cmd_tree_info(cli, *height).await,
         Command::Export => {
             let seed = load_seed(cli)?;
             ops::export::export(&seed, mainnet, cli.script)
@@ -127,17 +132,20 @@ fn cmd_receive(cli: &Cli, mainnet: bool) -> Result<(), Error> {
     let taddr = address::transparent_address(&seed, mainnet)?;
 
     if cli.script {
-        println!("{}", serde_json::json!({
-            "orchard": uaddr,
-            "transparent": taddr,
-        }));
+        println!(
+            "{}",
+            serde_json::json!({
+                "orchard": uaddr,
+                "transparent": taddr,
+            })
+        );
         return Ok(());
     }
 
     // render unified address as terminal QR using unicode half-blocks
     use qrcode::QrCode;
-    let code = QrCode::new(uaddr.as_bytes())
-        .map_err(|e| Error::Other(format!("qr encode: {}", e)))?;
+    let code =
+        QrCode::new(uaddr.as_bytes()).map_err(|e| Error::Other(format!("qr encode: {}", e)))?;
     let width = code.width();
     let modules = code.into_colors();
 
@@ -161,9 +169,9 @@ fn cmd_receive(cli: &Cli, mainnet: bool) -> Result<(), Error> {
             let top = dark(r0, c0);
             let bot = dark(r1, c0);
             match (top, bot) {
-                (true, true) => print!("\u{2588}"),   // █
-                (true, false) => print!("\u{2580}"),  // ▀
-                (false, true) => print!("\u{2584}"),  // ▄
+                (true, true) => print!("\u{2588}"),  // █
+                (true, false) => print!("\u{2580}"), // ▀
+                (false, true) => print!("\u{2584}"), // ▄
                 (false, false) => print!(" "),
             }
         }
@@ -182,14 +190,17 @@ async fn cmd_balance(cli: &Cli, mainnet: bool) -> Result<(), Error> {
     let bal = ops::balance::get_balance(&seed, &cli.endpoint, mainnet).await?;
 
     if cli.script {
-        println!("{}", serde_json::json!({
-            "transparent": bal.transparent,
-            "shielded": bal.shielded,
-            "total": bal.total,
-            "transparent_zec": format!("{:.8}", bal.transparent as f64 / 1e8),
-            "shielded_zec": format!("{:.8}", bal.shielded as f64 / 1e8),
-            "total_zec": format!("{:.8}", bal.total as f64 / 1e8),
-        }));
+        println!(
+            "{}",
+            serde_json::json!({
+                "transparent": bal.transparent,
+                "shielded": bal.shielded,
+                "total": bal.total,
+                "transparent_zec": format!("{:.8}", bal.transparent as f64 / 1e8),
+                "shielded_zec": format!("{:.8}", bal.shielded as f64 / 1e8),
+                "total_zec": format!("{:.8}", bal.total as f64 / 1e8),
+            })
+        );
     } else {
         let t = bal.transparent as f64 / 1e8;
         let s = bal.shielded as f64 / 1e8;
@@ -202,9 +213,23 @@ async fn cmd_balance(cli: &Cli, mainnet: bool) -> Result<(), Error> {
     Ok(())
 }
 
-async fn cmd_sync(cli: &Cli, mainnet: bool, from: Option<u32>, position: Option<u64>) -> Result<(), Error> {
+async fn cmd_sync(
+    cli: &Cli,
+    mainnet: bool,
+    from: Option<u32>,
+    position: Option<u64>,
+) -> Result<(), Error> {
     let seed = load_seed(cli)?;
-    let found = ops::sync::sync(&seed, &cli.endpoint, mainnet, cli.script, from, position).await?;
+    let found = ops::sync::sync(
+        &seed,
+        &cli.endpoint,
+        &cli.verify_endpoint,
+        mainnet,
+        cli.script,
+        from,
+        position,
+    )
+    .await?;
 
     if cli.script {
         println!("{}", serde_json::json!({ "notes_found": found }));
@@ -219,19 +244,22 @@ async fn cmd_tree_info(cli: &Cli, height: u32) -> Result<(), Error> {
 
     // parse frontier to get tree size
     // lightwalletd orchard tree format: hex-encoded binary frontier
-    let tree_bytes = hex::decode(&tree_hex)
-        .map_err(|e| Error::Other(format!("invalid tree hex: {}", e)))?;
+    let tree_bytes =
+        hex::decode(&tree_hex).map_err(|e| Error::Other(format!("invalid tree hex: {}", e)))?;
     // frontier encoding: depth-first serialization of the frontier
     // the number of leaves = tree size, derivable from the frontier structure
     // quick parse: count the 01-prefixed nodes in the frontier
     let tree_size = parse_frontier_size(&tree_bytes)?;
 
     if cli.script {
-        println!("{}", serde_json::json!({
-            "height": actual_height,
-            "orchard_tree_size": tree_size,
-            "tree_hex_len": tree_hex.len(),
-        }));
+        println!(
+            "{}",
+            serde_json::json!({
+                "height": actual_height,
+                "orchard_tree_size": tree_size,
+                "tree_hex_len": tree_hex.len(),
+            })
+        );
     } else {
         eprintln!("height: {}", actual_height);
         eprintln!("orchard tree size (leaves): {}", tree_size);
@@ -250,31 +278,37 @@ fn cmd_notes(cli: &Cli) -> Result<(), Error> {
     let notes = wallet.all_received_notes()?;
 
     if cli.script {
-        let json: Vec<_> = notes.iter().map(|n| {
-            let spent = wallet.is_spent(&n.nullifier).unwrap_or(false);
-            let mut obj = serde_json::json!({
-                "zat": n.value,
-                "zec": format!("{:.8}", n.value as f64 / 1e8),
-                "height": n.block_height,
-                "cmx": hex::encode(&n.cmx[..8]),
-                "spent": spent,
-            });
-            if let Some(ref memo) = n.memo {
-                obj["memo"] = serde_json::Value::String(memo.clone());
-            }
-            obj
-        }).collect();
-        println!("{}", serde_json::to_string(&json)
-            .unwrap_or_else(|_| "[]".into()));
+        let json: Vec<_> = notes
+            .iter()
+            .map(|n| {
+                let spent = wallet.is_spent(&n.nullifier).unwrap_or(false);
+                let mut obj = serde_json::json!({
+                    "zat": n.value,
+                    "zec": format!("{:.8}", n.value as f64 / 1e8),
+                    "height": n.block_height,
+                    "cmx": hex::encode(&n.cmx[..8]),
+                    "spent": spent,
+                });
+                if let Some(ref memo) = n.memo {
+                    obj["memo"] = serde_json::Value::String(memo.clone());
+                }
+                obj
+            })
+            .collect();
+        println!(
+            "{}",
+            serde_json::to_string(&json).unwrap_or_else(|_| "[]".into())
+        );
     } else {
         if notes.is_empty() {
             println!("no received notes");
             return Ok(());
         }
-        println!("{:<10} {:>14} {:>18} {}", "height", "ZEC", "cmx", "memo");
+        println!("{:<10} {:>14} {:>18} memo", "height", "ZEC", "cmx");
         for n in &notes {
             let memo = n.memo.as_deref().unwrap_or("");
-            println!("{:<10} {:>14.8} {:>18} {}",
+            println!(
+                "{:<10} {:>14.8} {:>18} {}",
                 n.block_height,
                 n.value as f64 / 1e8,
                 hex::encode(&n.cmx[..8]),
@@ -295,20 +329,23 @@ fn notes_json() -> String {
         Ok(n) => n,
         Err(_) => return "[]".into(),
     };
-    let json: Vec<_> = notes.iter().map(|n| {
-        let spent = wallet.is_spent(&n.nullifier).unwrap_or(false);
-        let mut obj = serde_json::json!({
-            "zat": n.value,
-            "zec": format!("{:.8}", n.value as f64 / 1e8),
-            "height": n.block_height,
-            "cmx": hex::encode(&n.cmx[..8]),
-            "spent": spent,
-        });
-        if let Some(ref memo) = n.memo {
-            obj["memo"] = serde_json::Value::String(memo.clone());
-        }
-        obj
-    }).collect();
+    let json: Vec<_> = notes
+        .iter()
+        .map(|n| {
+            let spent = wallet.is_spent(&n.nullifier).unwrap_or(false);
+            let mut obj = serde_json::json!({
+                "zat": n.value,
+                "zec": format!("{:.8}", n.value as f64 / 1e8),
+                "height": n.block_height,
+                "cmx": hex::encode(&n.cmx[..8]),
+                "spent": spent,
+            });
+            if let Some(ref memo) = n.memo {
+                obj["memo"] = serde_json::Value::String(memo.clone());
+            }
+            obj
+        })
+        .collect();
     serde_json::to_string(&json).unwrap_or_else(|_| "[]".into())
 }
 
@@ -324,23 +361,46 @@ async fn cmd_board(
 
     // initial sync
     eprintln!("board: initial sync...");
-    let _ = ops::sync::sync(seed, &cli.endpoint, mainnet, true, None, None).await;
+    let _ = ops::sync::sync(
+        seed,
+        &cli.endpoint,
+        &cli.verify_endpoint,
+        mainnet,
+        true,
+        None,
+        None,
+    )
+    .await;
     *state.lock().unwrap() = notes_json();
     if let Some(d) = dir {
-        let _ = std::fs::write(format!("{}/memos.json", d), state.lock().unwrap().as_bytes());
+        let _ = std::fs::write(
+            format!("{}/memos.json", d),
+            state.lock().unwrap().as_bytes(),
+        );
     }
     eprintln!("board: serving on :{}", port);
 
     // sync loop
     let sync_state = Arc::clone(&state);
     let endpoint = cli.endpoint.clone();
+    let verify_endpoint = cli.verify_endpoint.clone();
     let seed_bytes: [u8; 64] = *seed.as_bytes();
     let dir_owned = dir.map(String::from);
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(interval)).await;
             let seed = key::WalletSeed::from_bytes(seed_bytes);
-            match ops::sync::sync(&seed, &endpoint, mainnet, true, None, None).await {
+            match ops::sync::sync(
+                &seed,
+                &endpoint,
+                &verify_endpoint,
+                mainnet,
+                true,
+                None,
+                None,
+            )
+            .await
+            {
                 Ok(found) => {
                     let json = notes_json();
                     if let Some(ref d) = dir_owned {
@@ -355,11 +415,14 @@ async fn cmd_board(
     });
 
     // http server
-    let listener = TcpListener::bind(format!("0.0.0.0:{}", port)).await
+    let listener = TcpListener::bind(format!("0.0.0.0:{}", port))
+        .await
         .map_err(|e| Error::Other(format!("bind :{}: {}", port, e)))?;
 
     loop {
-        let (mut stream, _) = listener.accept().await
+        let (mut stream, _) = listener
+            .accept()
+            .await
             .map_err(|e| Error::Other(format!("accept: {}", e)))?;
         let json = state.lock().unwrap().clone();
         let response = format!(
@@ -380,15 +443,11 @@ async fn cmd_board(
 fn load_seed(cli: &Cli) -> Result<key::WalletSeed, Error> {
     use cli::MnemonicSource;
     match cli.mnemonic_source() {
-        Some(MnemonicSource::Plaintext(ref phrase)) => {
-            key::load_mnemonic_seed(phrase)
-        }
+        Some(MnemonicSource::Plaintext(ref phrase)) => key::load_mnemonic_seed(phrase),
         Some(MnemonicSource::AgeFile(ref path)) => {
             let phrase = key::decrypt_age_file(path, &cli.identity_path())?;
             key::load_mnemonic_seed(&phrase)
         }
-        None => {
-            key::load_ssh_seed(&cli.identity_path())
-        }
+        None => key::load_ssh_seed(&cli.identity_path()),
     }
 }
