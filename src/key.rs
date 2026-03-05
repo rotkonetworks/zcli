@@ -123,13 +123,15 @@ mod tests {
         let seed1 = load_mnemonic_seed(
             "abandon abandon abandon abandon abandon abandon abandon abandon \
              abandon abandon abandon abandon abandon abandon abandon abandon \
-             abandon abandon abandon abandon abandon abandon abandon art"
-        ).unwrap();
+             abandon abandon abandon abandon abandon abandon abandon art",
+        )
+        .unwrap();
         let seed2 = load_mnemonic_seed(
             "abandon abandon abandon abandon abandon abandon abandon abandon \
              abandon abandon abandon abandon abandon abandon abandon abandon \
-             abandon abandon abandon abandon abandon abandon abandon art"
-        ).unwrap();
+             abandon abandon abandon abandon abandon abandon abandon art",
+        )
+        .unwrap();
         assert_eq!(seed1.as_bytes(), seed2.as_bytes());
     }
 

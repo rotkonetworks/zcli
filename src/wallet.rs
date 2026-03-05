@@ -1,6 +1,6 @@
 // local wallet state backed by sled
 
-use orchard::note::{Rho, RandomSeed};
+use orchard::note::{RandomSeed, Rho};
 use orchard::value::NoteValue;
 use sled::Db;
 
@@ -36,7 +36,8 @@ impl WalletNote {
     pub fn reconstruct_note(&self) -> Result<orchard::Note, Error> {
         if self.recipient.len() != 43 {
             return Err(Error::Wallet(format!(
-                "recipient bytes wrong length: {} (expected 43)", self.recipient.len()
+                "recipient bytes wrong length: {} (expected 43)",
+                self.recipient.len()
             )));
         }
         let mut addr_bytes = [0u8; 43];
@@ -71,11 +72,16 @@ impl Wallet {
     }
 
     pub fn sync_height(&self) -> Result<u32, Error> {
-        match self.db.get(SYNC_HEIGHT_KEY)
-            .map_err(|e| Error::Wallet(format!("read sync height: {}", e)))? {
+        match self
+            .db
+            .get(SYNC_HEIGHT_KEY)
+            .map_err(|e| Error::Wallet(format!("read sync height: {}", e)))?
+        {
             Some(bytes) => {
                 if bytes.len() == 4 {
-                    Ok(u32::from_le_bytes(bytes.as_ref().try_into().expect("len checked")))
+                    Ok(u32::from_le_bytes(
+                        bytes.as_ref().try_into().expect("len checked"),
+                    ))
                 } else {
                     Ok(0)
                 }
@@ -85,27 +91,33 @@ impl Wallet {
     }
 
     pub fn set_sync_height(&self, height: u32) -> Result<(), Error> {
-        self.db.insert(SYNC_HEIGHT_KEY, &height.to_le_bytes())
+        self.db
+            .insert(SYNC_HEIGHT_KEY, &height.to_le_bytes())
             .map_err(|e| Error::Wallet(format!("write sync height: {}", e)))?;
         Ok(())
     }
 
     /// store a received note, keyed by nullifier
     pub fn insert_note(&self, note: &WalletNote) -> Result<(), Error> {
-        let tree = self.db.open_tree(NOTES_TREE)
+        let tree = self
+            .db
+            .open_tree(NOTES_TREE)
             .map_err(|e| Error::Wallet(format!("open notes tree: {}", e)))?;
         let value = serde_json::to_vec(note)
             .map_err(|e| Error::Wallet(format!("serialize note: {}", e)))?;
-        tree.insert(&note.nullifier, value)
+        tree.insert(note.nullifier, value)
             .map_err(|e| Error::Wallet(format!("insert note: {}", e)))?;
         Ok(())
     }
 
     /// get a note by nullifier
     pub fn get_note(&self, nullifier: &[u8; 32]) -> Result<WalletNote, Error> {
-        let tree = self.db.open_tree(NOTES_TREE)
+        let tree = self
+            .db
+            .open_tree(NOTES_TREE)
             .map_err(|e| Error::Wallet(format!("open notes tree: {}", e)))?;
-        let value = tree.get(nullifier.as_ref())
+        let value = tree
+            .get(nullifier.as_ref())
             .map_err(|e| Error::Wallet(format!("get note: {}", e)))?
             .ok_or_else(|| Error::Wallet("note not found".into()))?;
         serde_json::from_slice(&value)
@@ -114,7 +126,9 @@ impl Wallet {
 
     /// mark a nullifier as spent
     pub fn mark_spent(&self, nullifier: &[u8; 32]) -> Result<(), Error> {
-        let tree = self.db.open_tree(NULLIFIERS_TREE)
+        let tree = self
+            .db
+            .open_tree(NULLIFIERS_TREE)
             .map_err(|e| Error::Wallet(format!("open nullifiers tree: {}", e)))?;
         tree.insert(nullifier.as_ref(), &[1u8])
             .map_err(|e| Error::Wallet(format!("mark spent: {}", e)))?;
@@ -122,19 +136,26 @@ impl Wallet {
     }
 
     pub fn is_spent(&self, nullifier: &[u8; 32]) -> Result<bool, Error> {
-        let tree = self.db.open_tree(NULLIFIERS_TREE)
+        let tree = self
+            .db
+            .open_tree(NULLIFIERS_TREE)
             .map_err(|e| Error::Wallet(format!("open nullifiers tree: {}", e)))?;
-        Ok(tree.contains_key(nullifier.as_ref())
-            .map_err(|e| Error::Wallet(format!("check spent: {}", e)))?)
+        tree.contains_key(nullifier.as_ref())
+            .map_err(|e| Error::Wallet(format!("check spent: {}", e)))
     }
 
     /// global orchard commitment position counter (increments for every action in every block)
     pub fn orchard_position(&self) -> Result<u64, Error> {
-        match self.db.get(ORCHARD_POSITION_KEY)
-            .map_err(|e| Error::Wallet(format!("read orchard position: {}", e)))? {
+        match self
+            .db
+            .get(ORCHARD_POSITION_KEY)
+            .map_err(|e| Error::Wallet(format!("read orchard position: {}", e)))?
+        {
             Some(bytes) => {
                 if bytes.len() == 8 {
-                    Ok(u64::from_le_bytes(bytes.as_ref().try_into().expect("len checked")))
+                    Ok(u64::from_le_bytes(
+                        bytes.as_ref().try_into().expect("len checked"),
+                    ))
                 } else {
                     Ok(0)
                 }
@@ -144,22 +165,24 @@ impl Wallet {
     }
 
     pub fn set_orchard_position(&self, pos: u64) -> Result<(), Error> {
-        self.db.insert(ORCHARD_POSITION_KEY, &pos.to_le_bytes())
+        self.db
+            .insert(ORCHARD_POSITION_KEY, &pos.to_le_bytes())
             .map_err(|e| Error::Wallet(format!("write orchard position: {}", e)))?;
         Ok(())
     }
 
     /// get all unspent notes and total shielded balance
     pub fn shielded_balance(&self) -> Result<(u64, Vec<WalletNote>), Error> {
-        let notes_tree = self.db.open_tree(NOTES_TREE)
+        let notes_tree = self
+            .db
+            .open_tree(NOTES_TREE)
             .map_err(|e| Error::Wallet(format!("open notes tree: {}", e)))?;
 
         let mut balance = 0u64;
         let mut unspent = Vec::new();
 
         for entry in notes_tree.iter() {
-            let (_, value) = entry
-                .map_err(|e| Error::Wallet(format!("iterate notes: {}", e)))?;
+            let (_, value) = entry.map_err(|e| Error::Wallet(format!("iterate notes: {}", e)))?;
             let note: WalletNote = serde_json::from_slice(&value)
                 .map_err(|e| Error::Wallet(format!("deserialize note: {}", e)))?;
             if !self.is_spent(&note.nullifier)? {
@@ -173,13 +196,14 @@ impl Wallet {
 
     /// all received notes (non-change), sorted by height descending
     pub fn all_received_notes(&self) -> Result<Vec<WalletNote>, Error> {
-        let notes_tree = self.db.open_tree(NOTES_TREE)
+        let notes_tree = self
+            .db
+            .open_tree(NOTES_TREE)
             .map_err(|e| Error::Wallet(format!("open notes tree: {}", e)))?;
 
         let mut notes = Vec::new();
         for entry in notes_tree.iter() {
-            let (_, value) = entry
-                .map_err(|e| Error::Wallet(format!("iterate notes: {}", e)))?;
+            let (_, value) = entry.map_err(|e| Error::Wallet(format!("iterate notes: {}", e)))?;
             let note: WalletNote = serde_json::from_slice(&value)
                 .map_err(|e| Error::Wallet(format!("deserialize note: {}", e)))?;
             if !note.is_change {

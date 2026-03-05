@@ -95,11 +95,12 @@ fn deserialize_tree(data: &[u8]) -> Result<CommitmentTree<MerkleHashOrchard, 32>
     let n_parents = parents.len();
     let has_left = left.is_some();
     let has_right = right.is_some();
-    CommitmentTree::from_parts(left, right, parents)
-        .map_err(|_| Error::Other(format!(
+    CommitmentTree::from_parts(left, right, parents).map_err(|_| {
+        Error::Other(format!(
             "invalid frontier structure (left={} right={} parents={})",
             has_left, has_right, n_parents,
-        )))
+        ))
+    })
 }
 
 fn read_compact_size(data: &[u8], pos: &mut usize) -> Result<u64, Error> {
@@ -111,25 +112,38 @@ fn read_compact_size(data: &[u8], pos: &mut usize) -> Result<u64, Error> {
     match first {
         0x00..=0xfc => Ok(first as u64),
         0xfd => {
-            if *pos + 2 > data.len() { return Err(Error::Other("compact size: truncated u16".into())); }
+            if *pos + 2 > data.len() {
+                return Err(Error::Other("compact size: truncated u16".into()));
+            }
             let v = u16::from_le_bytes([data[*pos], data[*pos + 1]]);
             *pos += 2;
             Ok(v as u64)
         }
         0xfe => {
-            if *pos + 4 > data.len() { return Err(Error::Other("compact size: truncated u32".into())); }
-            let v = u32::from_le_bytes([data[*pos], data[*pos+1], data[*pos+2], data[*pos+3]]);
+            if *pos + 4 > data.len() {
+                return Err(Error::Other("compact size: truncated u32".into()));
+            }
+            let v =
+                u32::from_le_bytes([data[*pos], data[*pos + 1], data[*pos + 2], data[*pos + 3]]);
             *pos += 4;
             Ok(v as u64)
         }
         0xff => {
-            if *pos + 8 > data.len() { return Err(Error::Other("compact size: truncated u64".into())); }
+            if *pos + 8 > data.len() {
+                return Err(Error::Other("compact size: truncated u64".into()));
+            }
             let v = u64::from_le_bytes([
-                data[*pos], data[*pos+1], data[*pos+2], data[*pos+3],
-                data[*pos+4], data[*pos+5], data[*pos+6], data[*pos+7],
+                data[*pos],
+                data[*pos + 1],
+                data[*pos + 2],
+                data[*pos + 3],
+                data[*pos + 4],
+                data[*pos + 5],
+                data[*pos + 6],
+                data[*pos + 7],
             ]);
             *pos += 8;
-            Ok(v as u64)
+            Ok(v)
         }
     }
 }
@@ -156,8 +170,8 @@ async fn find_checkpoint_height(
     while lo + 100 < hi {
         let mid = lo + (hi - lo) / 2;
         let (tree_hex, actual_height) = client.get_tree_state(mid).await?;
-        let tree_bytes = hex::decode(&tree_hex)
-            .map_err(|e| Error::Other(format!("invalid tree hex: {}", e)))?;
+        let tree_bytes =
+            hex::decode(&tree_hex).map_err(|e| Error::Other(format!("invalid tree hex: {}", e)))?;
         let size = frontier_tree_size(&tree_bytes)?;
 
         if size <= target_position {
@@ -187,11 +201,16 @@ pub async fn build_witnesses(
     let activation = if mainnet { 1_687_104 } else { 1_842_420 };
 
     if anchor_height < activation {
-        return Err(Error::Other("anchor height before orchard activation".into()));
+        return Err(Error::Other(
+            "anchor height before orchard activation".into(),
+        ));
     }
 
     // find earliest note position - we need a checkpoint before this
-    let earliest_position = notes.iter().map(|n| n.position).min()
+    let earliest_position = notes
+        .iter()
+        .map(|n| n.position)
+        .min()
         .ok_or_else(|| Error::Other("no notes to build witnesses for".into()))?;
 
     if !script {
@@ -199,27 +218,29 @@ pub async fn build_witnesses(
     }
 
     // find a checkpoint height whose tree size is just before our earliest note
-    let (checkpoint_height, checkpoint_size) = find_checkpoint_height(
-        client, earliest_position, activation, anchor_height,
-    ).await?;
+    let (checkpoint_height, checkpoint_size) =
+        find_checkpoint_height(client, earliest_position, activation, anchor_height).await?;
 
     if !script {
-        eprintln!("checkpoint: height={} size={} (target={})",
-            checkpoint_height, checkpoint_size, earliest_position);
+        eprintln!(
+            "checkpoint: height={} size={} (target={})",
+            checkpoint_height, checkpoint_size, earliest_position
+        );
     }
 
     // get tree state at checkpoint and deserialize
     let (tree_hex, _) = client.get_tree_state(checkpoint_height).await?;
-    let tree_bytes = hex::decode(&tree_hex)
-        .map_err(|e| Error::Other(format!("invalid tree hex: {}", e)))?;
+    let tree_bytes =
+        hex::decode(&tree_hex).map_err(|e| Error::Other(format!("invalid tree hex: {}", e)))?;
     let mut tree = deserialize_tree(&tree_bytes)?;
 
     // verify size matches
     let actual_size = tree.size() as u64;
-    if actual_size != checkpoint_size {
-        if !script {
-            eprintln!("warning: tree.size()={} vs computed={}", actual_size, checkpoint_size);
-        }
+    if actual_size != checkpoint_size && !script {
+        eprintln!(
+            "warning: tree.size()={} vs computed={}",
+            actual_size, checkpoint_size
+        );
     }
 
     let mut position_counter = checkpoint_size;
@@ -236,10 +257,14 @@ pub async fn build_witnesses(
     let replay_blocks = anchor_height - replay_start;
     let pb = if !script && is_terminal::is_terminal(std::io::stderr()) {
         let pb = ProgressBar::new(replay_blocks as u64);
-        pb.set_style(ProgressStyle::default_bar()
-            .template("[{elapsed}] {bar:50.green/blue} {pos:>7}/{len:7} {per_sec} building witnesses")
-            .unwrap()
-            .progress_chars("#>-"));
+        pb.set_style(
+            ProgressStyle::default_bar()
+                .template(
+                    "[{elapsed}] {bar:50.green/blue} {pos:>7}/{len:7} {per_sec} building witnesses",
+                )
+                .unwrap()
+                .progress_chars("#>-"),
+        );
         Some(pb)
     } else {
         None
@@ -249,7 +274,8 @@ pub async fn build_witnesses(
         eprintln!("replaying {} blocks for merkle witnesses...", replay_blocks);
     }
 
-    let mut witnesses: Vec<Option<IncrementalWitness<MerkleHashOrchard, 32>>> = vec![None; notes.len()];
+    let mut witnesses: Vec<Option<IncrementalWitness<MerkleHashOrchard, 32>>> =
+        vec![None; notes.len()];
     let mut current = replay_start;
 
     while current <= anchor_height {
@@ -265,7 +291,7 @@ pub async fn build_witnesses(
                     MerkleHashOrchard::empty_leaf()
                 };
 
-                tree.append(hash.clone())
+                tree.append(hash)
                     .map_err(|_| Error::Other("merkle tree full".into()))?;
 
                 // snapshot witness at our note positions
@@ -275,8 +301,11 @@ pub async fn build_witnesses(
 
                 // update existing witnesses with new leaf
                 for w in witnesses.iter_mut().flatten() {
-                    if w.witnessed_position() < incrementalmerkletree::Position::from(position_counter) {
-                        w.append(hash.clone()).map_err(|_| Error::Other("witness tree full".into()))?;
+                    if w.witnessed_position()
+                        < incrementalmerkletree::Position::from(position_counter)
+                    {
+                        w.append(hash)
+                            .map_err(|_| Error::Other("witness tree full".into()))?;
                     }
                 }
 
@@ -315,19 +344,27 @@ pub async fn build_witnesses(
 
     let mut paths = Vec::with_capacity(notes.len());
     for (i, w) in witnesses.into_iter().enumerate() {
-        let witness = w.ok_or_else(|| Error::Other(format!(
-            "note at position {} not found in tree replay (checkpoint started at {})",
-            notes[i].position, checkpoint_size,
-        )))?;
+        let witness = w.ok_or_else(|| {
+            Error::Other(format!(
+                "note at position {} not found in tree replay (checkpoint started at {})",
+                notes[i].position, checkpoint_size,
+            ))
+        })?;
 
-        let imt_path = witness.path().ok_or_else(|| Error::Other(format!(
-            "failed to compute merkle path for note at position {}", notes[i].position,
-        )))?;
+        let imt_path = witness.path().ok_or_else(|| {
+            Error::Other(format!(
+                "failed to compute merkle path for note at position {}",
+                notes[i].position,
+            ))
+        })?;
         paths.push(MerklePath::from(imt_path));
     }
 
     if !script {
-        eprintln!("witnesses built - anchor: {}", hex::encode(anchor.to_bytes()));
+        eprintln!(
+            "witnesses built - anchor: {}",
+            hex::encode(anchor.to_bytes())
+        );
     }
 
     Ok((anchor, paths))
@@ -370,7 +407,10 @@ mod tests {
         // check roots match
         let tree_root = tree.root();
         let witness_root = witness.root();
-        assert_eq!(tree_root, witness_root, "witness root should match tree root");
+        assert_eq!(
+            tree_root, witness_root,
+            "witness root should match tree root"
+        );
 
         // extract path and verify
         let path = witness.path().unwrap();
@@ -385,7 +425,10 @@ mod tests {
             };
             cur = MerkleHashOrchard::combine(Level::from(level as u8), &l, &r);
         }
-        assert_eq!(cur, tree_root, "path root should match tree root (from scratch)");
+        assert_eq!(
+            cur, tree_root,
+            "path root should match tree root (from scratch)"
+        );
     }
 
     #[test]
@@ -403,9 +446,8 @@ mod tests {
         let left = tree1.left().clone();
         let right = tree1.right().clone();
         let parents = tree1.parents().clone();
-        let mut tree2 = CommitmentTree::<MerkleHashOrchard, 32>::from_parts(
-            left, right, parents,
-        ).unwrap();
+        let mut tree2 =
+            CommitmentTree::<MerkleHashOrchard, 32>::from_parts(left, right, parents).unwrap();
         assert_eq!(tree1.root(), tree2.root());
 
         // append more, then witness
@@ -473,18 +515,31 @@ mod tests {
         }
 
         let tree2 = CommitmentTree::<MerkleHashOrchard, 32>::from_parts(
-            left.clone(), right.clone(), parents,
-        ).unwrap();
+            left.clone(),
+            right.clone(),
+            parents,
+        )
+        .unwrap();
 
         // also make tree3 with no padding
         let tree3 = CommitmentTree::<MerkleHashOrchard, 32>::from_parts(
-            left, right, tree1.parents().clone(),
-        ).unwrap();
+            left,
+            right,
+            tree1.parents().clone(),
+        )
+        .unwrap();
 
-        eprintln!("tree1 parents: {}, tree2 (padded): 31, tree3 (original): {}",
-            tree1.parents().len(), tree3.parents().len());
+        eprintln!(
+            "tree1 parents: {}, tree2 (padded): 31, tree3 (original): {}",
+            tree1.parents().len(),
+            tree3.parents().len()
+        );
         assert_eq!(tree1.root(), tree2.root(), "padded tree root should match");
-        assert_eq!(tree1.root(), tree3.root(), "original tree root should match");
+        assert_eq!(
+            tree1.root(),
+            tree3.root(),
+            "original tree root should match"
+        );
 
         // append and witness from padded tree
         let mut tree1c = tree1.clone();
@@ -527,10 +582,18 @@ mod tests {
         eprintln!("w1 root: {}", hex::encode(w1.root().to_bytes()));
         eprintln!("p1 root: {}", hex::encode(r1.to_bytes()));
         eprintln!("p2 root: {}", hex::encode(r2.to_bytes()));
-        eprintln!("w1 filled: {}, w2 filled: {}", w1.filled().len(), w2.filled().len());
+        eprintln!(
+            "w1 filled: {}, w2 filled: {}",
+            w1.filled().len(),
+            w2.filled().len()
+        );
         eprintln!("original parents: {}", original_parents_len);
 
         assert_eq!(r1, tree1c.root(), "p1 root mismatch (unpadded)");
-        assert_eq!(r2, tree2c.root(), "p2 root mismatch (PADDED - this is the real test)");
+        assert_eq!(
+            r2,
+            tree2c.root(),
+            "p2 root mismatch (PADDED - this is the real test)"
+        );
     }
 }

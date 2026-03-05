@@ -158,7 +158,7 @@ pub fn build_shielding_tx(
     recipient_addr: &orchard::Address,
     fee: u64,
     anchor_height: u32,
-    mainnet: bool,
+    _mainnet: bool,
 ) -> Result<Vec<u8>, Error> {
     // derive transparent signing key at m/44'/133'/0'/0/0
     let privkey = crate::address::derive_transparent_key(seed)?;
@@ -176,7 +176,10 @@ pub fn build_shielding_tx(
 
     let total_in: u64 = selected.iter().map(|u| u.value).sum();
     if total_in < fee {
-        return Err(Error::InsufficientFunds { have: total_in, need: fee });
+        return Err(Error::InsufficientFunds {
+            have: total_in,
+            need: fee,
+        });
     }
     let shielded_value = total_in - fee;
 
@@ -187,7 +190,13 @@ pub fn build_shielding_tx(
     };
     let mut builder = Builder::new(bundle_type, Anchor::empty_tree());
 
-    builder.add_output(None, *recipient_addr, NoteValue::from_raw(shielded_value), [0u8; 512])
+    builder
+        .add_output(
+            None,
+            *recipient_addr,
+            NoteValue::from_raw(shielded_value),
+            [0u8; 512],
+        )
         .map_err(|e| Error::Transaction(format!("add_output: {:?}", e)))?;
 
     let mut rng = OsRng;
@@ -226,8 +235,7 @@ pub fn build_shielding_tx(
         sequence_data.extend_from_slice(&0xffffffffu32.to_le_bytes());
         amounts_data.extend_from_slice(&utxo.value.to_le_bytes());
 
-        let script_bytes = hex::decode(&utxo.script)
-            .unwrap_or_else(|_| our_script.clone());
+        let script_bytes = hex::decode(&utxo.script).unwrap_or_else(|_| our_script.clone());
         scripts_data.extend_from_slice(&compact_size(script_bytes.len() as u64));
         scripts_data.extend_from_slice(&script_bytes);
     }
@@ -262,15 +270,13 @@ pub fn build_shielding_tx(
     // sign each transparent input
     let mut signed_scripts: Vec<Vec<u8>> = Vec::new();
 
-    for i in 0..n_inputs {
-        let utxo = &selected[i];
-        let txid_be = hex::decode(&utxo.txid)
-            .map_err(|e| Error::Other(format!("bad utxo txid hex: {e}")))?;
+    for utxo in selected.iter().take(n_inputs) {
+        let txid_be =
+            hex::decode(&utxo.txid).map_err(|e| Error::Other(format!("bad utxo txid hex: {e}")))?;
         let mut txid_le = txid_be.clone();
         txid_le.reverse();
 
-        let script_bytes = hex::decode(&utxo.script)
-            .unwrap_or_else(|_| our_script.clone());
+        let script_bytes = hex::decode(&utxo.script).unwrap_or_else(|_| our_script.clone());
 
         let mut txin_data = Vec::new();
         txin_data.extend_from_slice(&txid_le);
@@ -302,7 +308,8 @@ pub fn build_shielding_tx(
 
         let sighash = blake2b_256_personal(&sighash_personal, &sighash_input);
 
-        let sig: k256::ecdsa::Signature = signing_key.sign_prehash(&sighash)
+        let sig: k256::ecdsa::Signature = signing_key
+            .sign_prehash(&sighash)
             .map_err(|e| Error::Transaction(format!("ECDSA signing: {}", e)))?;
         let sig_der = sig.to_der();
 
@@ -343,7 +350,7 @@ pub fn build_shielding_tx(
     };
 
     let authorized = proven
-        .apply_signatures(&mut rng, txid_sighash, &[])
+        .apply_signatures(rng, txid_sighash, &[])
         .map_err(|e| Error::Transaction(format!("apply_signatures: {:?}", e)))?;
 
     // serialize v5 transaction
@@ -359,8 +366,8 @@ pub fn build_shielding_tx(
     // transparent inputs
     tx.extend_from_slice(&compact_size(n_inputs as u64));
     for (i, utxo) in selected.iter().enumerate() {
-        let txid_be = hex::decode(&utxo.txid)
-            .map_err(|e| Error::Other(format!("bad utxo txid hex: {e}")))?;
+        let txid_be =
+            hex::decode(&utxo.txid).map_err(|e| Error::Other(format!("bad utxo txid hex: {e}")))?;
         let mut txid_le = txid_be.clone();
         txid_le.reverse();
         tx.extend_from_slice(&txid_le);
@@ -385,11 +392,12 @@ pub fn build_shielding_tx(
 
 // -- orchard spend transaction (z→t, z→z) --
 
+#[allow(clippy::too_many_arguments)]
 pub fn build_orchard_spend_tx(
     seed: &WalletSeed,
     spends: &[(orchard::Note, orchard::tree::MerklePath)],
-    t_outputs: &[(String, u64)],                          // z→t: (t-address, amount)
-    z_outputs: &[(orchard::Address, u64, [u8; 512])],     // z→z: (addr, amount, memo)
+    t_outputs: &[(String, u64)], // z→t: (t-address, amount)
+    z_outputs: &[(orchard::Address, u64, [u8; 512])], // z→z: (addr, amount, memo)
     fee: u64,
     anchor: Anchor,
     anchor_height: u32,
@@ -407,7 +415,10 @@ pub fn build_orchard_spend_tx(
     let total_z: u64 = z_outputs.iter().map(|(_, v, _)| *v).sum();
     let total_out = total_t + total_z + fee;
     if total_in < total_out {
-        return Err(Error::InsufficientFunds { have: total_in, need: total_out });
+        return Err(Error::InsufficientFunds {
+            have: total_in,
+            need: total_out,
+        });
     }
     let change = total_in - total_out;
 
@@ -420,14 +431,16 @@ pub fn build_orchard_spend_tx(
 
     let n_spends = spends.len();
     for (note, path) in spends {
-        builder.add_spend(fvk.clone(), note.clone(), path.clone())
+        builder
+            .add_spend(fvk.clone(), *note, path.clone())
             .map_err(|e| Error::Transaction(format!("add_spend: {:?}", e)))?;
     }
 
     // z→z outputs
     for (addr, amount, memo) in z_outputs {
         let ovk = Some(fvk.to_ovk(Scope::External));
-        builder.add_output(ovk, *addr, NoteValue::from_raw(*amount), *memo)
+        builder
+            .add_output(ovk, *addr, NoteValue::from_raw(*amount), *memo)
             .map_err(|e| Error::Transaction(format!("add_output: {:?}", e)))?;
     }
 
@@ -435,7 +448,8 @@ pub fn build_orchard_spend_tx(
     if change > 0 {
         let change_addr = fvk.address_at(0u64, Scope::Internal);
         let ovk = Some(fvk.to_ovk(Scope::Internal));
-        builder.add_output(ovk, change_addr, NoteValue::from_raw(change), [0u8; 512])
+        builder
+            .add_output(ovk, change_addr, NoteValue::from_raw(change), [0u8; 512])
             .map_err(|e| Error::Transaction(format!("add_output (change): {:?}", e)))?;
     }
 
@@ -452,9 +466,10 @@ pub fn build_orchard_spend_tx(
         .map_err(|e| Error::Transaction(format!("create_proof: {:?}", e)))?;
 
     // serialize transparent outputs for z→t
-    let t_output_scripts: Vec<Vec<u8>> = t_outputs.iter().map(|(addr, _)| {
-        decode_t_address_script(addr, mainnet)
-    }).collect::<Result<_, _>>()?;
+    let t_output_scripts: Vec<Vec<u8>> = t_outputs
+        .iter()
+        .map(|(addr, _)| decode_t_address_script(addr, mainnet))
+        .collect::<Result<_, _>>()?;
 
     // ZIP-244 sighash
     let branch_id: u32 = 0x4DEC4DF0; // NU6.1
@@ -512,7 +527,7 @@ pub fn build_orchard_spend_tx(
     let signing_keys: Vec<orchard::keys::SpendAuthorizingKey> =
         (0..n_spends).map(|_| ask.clone()).collect();
     let authorized = proven
-        .apply_signatures(&mut rng, sighash, &signing_keys)
+        .apply_signatures(rng, sighash, &signing_keys)
         .map_err(|e| Error::Transaction(format!("apply_signatures: {:?}", e)))?;
 
     // serialize v5 transaction
@@ -556,7 +571,10 @@ fn decode_t_address_script(addr: &str, mainnet: bool) -> Result<Vec<u8>, Error> 
         .map_err(|_| Error::Address(format!("invalid base58 in t-address: {}", addr)))?;
     let expected = if mainnet { [0x1c, 0xb8] } else { [0x1d, 0x25] };
     if decoded.len() != 22 || decoded[..2] != expected {
-        return Err(Error::Address(format!("invalid transparent address: {}", addr)));
+        return Err(Error::Address(format!(
+            "invalid transparent address: {}",
+            addr
+        )));
     }
     let mut pkh = [0u8; 20];
     pkh.copy_from_slice(&decoded[2..]);
@@ -570,8 +588,11 @@ fn base58_decode(s: &str) -> Result<Vec<u8>, Error> {
     // decode base58 to big integer (as byte vec)
     let mut num: Vec<u8> = vec![0];
     for &c in s.as_bytes() {
-        let val = ALPHABET.iter().position(|&a| a == c)
-            .ok_or_else(|| Error::Address("invalid base58 character".into()))? as u32;
+        let val = ALPHABET
+            .iter()
+            .position(|&a| a == c)
+            .ok_or_else(|| Error::Address("invalid base58 character".into()))?
+            as u32;
         let mut carry = val;
         for byte in num.iter_mut().rev() {
             carry += (*byte as u32) * 58;
@@ -617,7 +638,8 @@ pub fn parse_orchard_address(addr_str: &str, mainnet: bool) -> Result<orchard::A
 
     match decoded {
         Some(ZkAddress::Unified(ua)) => {
-            let orchard_addr = ua.orchard()
+            let orchard_addr = ua
+                .orchard()
                 .ok_or_else(|| Error::Address("unified address has no orchard receiver".into()))?;
             let raw_bytes = orchard_addr.to_raw_address_bytes();
             Option::from(orchard::Address::from_raw_address_bytes(&raw_bytes))
