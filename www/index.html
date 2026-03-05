@@ -117,9 +117,8 @@ set <code>ZCLI_IDENTITY</code>, <code>ZCLI_ENDPOINT</code> as env vars for headl
 the wallet. derives orchard spending keys and transparent keys from an ssh
 ed25519 seed via <code>BLAKE2b-512("ZcliWalletSeed" || ed25519_seed)</code>.
 verifies <a href="https://crates.io/crates/ligerito">ligerito</a> header proofs
-from zidecar before trusting any blocks. not fully trustless yet: proofs
-verify header chain consistency but there's no consensus checkpoint, so a
-malicious rpc operator could serve a valid proof over the wrong fork.
+and <a href="https://github.com/thrumdev/nomt">nomt</a> state proofs from
+zidecar, and cross-checks the chain tip against an independent lightwalletd.
 trial-decrypts compact blocks locally. the server never learns which
 addresses belong to you. builds and proves orchard transactions with halo2
 locally.
@@ -140,25 +139,55 @@ tracking, witness construction. used by zcli and
 </p>
 <h3>client-side verification</h3>
 <p>
-before scanning blocks, zcli fetches a combined proof from zidecar and
-verifies it locally. the wire format:
+zcli verifies chain data in three layers before trusting it. each layer
+builds on the previous one:
 </p>
-<pre>[giga_full_size: u32][giga_full][tip_full]</pre>
+<h3>layer 1: header chain (ligerito)</h3>
 <p>
-each full proof contains embedded public outputs (block hashes, heights,
-difficulty) followed by a ligerito polynomial commitment proof. the client:
+before scanning, zcli fetches a combined proof and verifies it locally.
+the gigaproof (2^26, ~300KB) covers the full historical chain. the tip
+proof (2^20, ~150KB) covers the gap to current tip, regenerated every block.
 </p>
 <pre>1. splits combined blob into gigaproof + tip proof
-2. deserializes public outputs from each
-3. verifies both ligerito proofs cryptographically
-4. checks continuity: tip.start_prev_hash == giga.tip_hash
-5. rejects if any check fails</pre>
+2. verifies both ligerito proofs cryptographically
+3. checks continuity: tip.start_prev_hash == giga.tip_hash
+4. rejects if any check fails</pre>
+<h3>layer 2: state roots (ligerito)</h3>
 <p>
-the gigaproof (2^26 config, ~300KB) covers the full historical chain and is
-regenerated periodically. the tip proof (2^20, ~150KB) covers the gap from
-gigaproof end to current tip, regenerated every block. continuity checking
-ensures the server can't splice unrelated proofs together - the client
-verifies the hash chain links without trusting the server.
+zidecar indexes the zcash chain into <a href="https://github.com/thrumdev/nomt">nomt</a>
+merkle trees. a ligerito proof covers the state transition from a known
+checkpoint to the current height, binding tree_root and nullifier_root to
+the proven header chain.
+</p>
+<h3>layer 3: individual entries (NOMT)</h3>
+<p>
+SHA256 merkle proofs verify individual commitments and nullifiers against
+the proven state roots:
+</p>
+<pre>commitment proofs: cmx exists in tree at position (against tree_root)
+nullifier proofs:  nullifier spent/unspent status (against nullifier_root)</pre>
+<p>
+if a nullifier is proven spent but the wallet thinks it's unspent, the
+wallet updates its state. all layers soft-fail gracefully when the server
+doesn't support the RPCs yet.
+</p>
+<h3>what still requires trust</h3>
+<p>
+zcash is a proof-of-work chain with no finality. there is no consensus
+checkpoint a light client can verify independently - the network head is
+always probabilistic. zcli mitigates this by cross-verifying the tip hash
+and activation block between zidecar and an independent lightwalletd
+(default: <code>mainnet.lightwalletd.com</code>, override with
+<code>--verify-endpoint</code>). if the block hashes diverge, sync aborts.
+</p>
+<p>
+this means you trust that at least one of your two endpoints is honest
+about which fork is the real chain. a state-level adversary controlling
+both could serve a consistent but fabricated fork. this is inherent to PoW
+light clients without SPV header validation - and zcli does not yet
+validate proof-of-work on headers. the ligerito proofs guarantee internal
+consistency of whatever chain you're given, but not that it's the chain
+with the most work.
 </p>
 </div>
 

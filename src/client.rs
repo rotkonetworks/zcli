@@ -9,8 +9,12 @@
 //   response: [0x00][4-byte big-endian len][protobuf]  (data frame)
 //             [0x80][4-byte big-endian len][trailers]   (trailer frame)
 
-use prost::Message;
 use crate::error::Error;
+use prost::Message;
+use zync_core::trustless::{
+    CommitmentProof, EpochCheckpoint, FrostSignature, NomtProof, NullifierProof,
+    StateTransitionProof, TrustlessStateProof,
+};
 
 pub mod zidecar_proto {
     tonic::include_proto!("zidecar.v1");
@@ -61,6 +65,92 @@ impl SendResult {
     }
 }
 
+// -- proto → zync-core conversion --
+
+fn bytes_to_32(b: &[u8]) -> Result<[u8; 32], Error> {
+    b.try_into()
+        .map_err(|_| Error::Network(format!("expected 32 bytes, got {}", b.len())))
+}
+
+fn proto_to_nomt_proof(p: zidecar_proto::NomtMerkleProof) -> Result<NomtProof, Error> {
+    Ok(NomtProof {
+        key: bytes_to_32(&p.key)?,
+        root: bytes_to_32(&p.root)?,
+        exists: p.exists,
+        path: p
+            .path
+            .iter()
+            .map(|b| bytes_to_32(b))
+            .collect::<Result<Vec<_>, _>>()?,
+        indices: p.indices,
+    })
+}
+
+fn proto_to_frost_sig(s: &zidecar_proto::FrostSignatureMsg) -> Result<FrostSignature, Error> {
+    Ok(FrostSignature {
+        r: bytes_to_32(&s.r)?,
+        s: bytes_to_32(&s.s)?,
+    })
+}
+
+fn proto_to_checkpoint(c: zidecar_proto::EpochCheckpointMsg) -> Result<EpochCheckpoint, Error> {
+    let sig = c
+        .signature
+        .as_ref()
+        .ok_or_else(|| Error::Network("missing checkpoint signature".into()))?;
+    Ok(EpochCheckpoint {
+        epoch_index: c.epoch_index,
+        height: c.height,
+        block_hash: bytes_to_32(&c.block_hash)?,
+        tree_root: bytes_to_32(&c.tree_root)?,
+        nullifier_root: bytes_to_32(&c.nullifier_root)?,
+        timestamp: c.timestamp,
+        signature: proto_to_frost_sig(sig)?,
+        signer_set_id: bytes_to_32(&c.signer_set_id)?,
+    })
+}
+
+fn proto_to_transition(
+    t: zidecar_proto::StateTransitionProofMsg,
+) -> Result<StateTransitionProof, Error> {
+    Ok(StateTransitionProof {
+        proof_bytes: t.proof_bytes,
+        from_height: t.from_height,
+        from_tree_root: bytes_to_32(&t.from_tree_root)?,
+        from_nullifier_root: bytes_to_32(&t.from_nullifier_root)?,
+        to_height: t.to_height,
+        to_tree_root: bytes_to_32(&t.to_tree_root)?,
+        to_nullifier_root: bytes_to_32(&t.to_nullifier_root)?,
+        proof_log_size: t.proof_log_size,
+    })
+}
+
+fn proto_to_commitment_proof(
+    p: zidecar_proto::CommitmentProofMsg,
+) -> Result<CommitmentProof, Error> {
+    let nomt = p
+        .proof
+        .ok_or_else(|| Error::Network("missing commitment merkle proof".into()))?;
+    Ok(CommitmentProof {
+        cmx: bytes_to_32(&p.cmx)?,
+        position: p.position,
+        tree_root: bytes_to_32(&p.tree_root)?,
+        proof: proto_to_nomt_proof(nomt)?,
+    })
+}
+
+fn proto_to_nullifier_proof(p: zidecar_proto::NullifierProofMsg) -> Result<NullifierProof, Error> {
+    let nomt = p
+        .proof
+        .ok_or_else(|| Error::Network("missing nullifier merkle proof".into()))?;
+    Ok(NullifierProof {
+        nullifier: bytes_to_32(&p.nullifier)?,
+        nullifier_root: bytes_to_32(&p.nullifier_root)?,
+        is_spent: p.is_spent,
+        proof: proto_to_nomt_proof(nomt)?,
+    })
+}
+
 // -- grpc-web transport --
 
 fn grpc_web_encode(msg: &impl Message) -> Vec<u8> {
@@ -80,7 +170,9 @@ fn grpc_web_decode(body: &[u8]) -> Result<(Vec<u8>, u8), Error> {
     let len = u32::from_be_bytes([body[1], body[2], body[3], body[4]]) as usize;
     if body.len() < 5 + len {
         return Err(Error::Network(format!(
-            "grpc-web: truncated frame (expected {} got {})", len, body.len() - 5
+            "grpc-web: truncated frame (expected {} got {})",
+            len,
+            body.len() - 5
         )));
     }
     Ok((body[5..5 + len].to_vec(), frame_type))
@@ -93,8 +185,10 @@ fn grpc_web_decode_stream(body: &[u8]) -> Result<Vec<Vec<u8>>, Error> {
     while offset + 5 <= body.len() {
         let frame_type = body[offset];
         let len = u32::from_be_bytes([
-            body[offset + 1], body[offset + 2],
-            body[offset + 3], body[offset + 4],
+            body[offset + 1],
+            body[offset + 2],
+            body[offset + 3],
+            body[offset + 4],
         ]) as usize;
         if offset + 5 + len > body.len() {
             return Err(Error::Network("grpc-web: truncated stream frame".into()));
@@ -113,7 +207,8 @@ fn check_grpc_status(headers: &reqwest::header::HeaderMap, body: &[u8]) -> Resul
     if let Some(status) = headers.get("grpc-status") {
         let code: i32 = status.to_str().unwrap_or("0").parse().unwrap_or(0);
         if code != 0 {
-            let msg = headers.get("grpc-message")
+            let msg = headers
+                .get("grpc-message")
                 .and_then(|v| v.to_str().ok())
                 .unwrap_or("unknown error");
             let msg = urlencoding::decode(msg).unwrap_or_else(|_| msg.into());
@@ -126,17 +221,22 @@ fn check_grpc_status(headers: &reqwest::header::HeaderMap, body: &[u8]) -> Resul
     while offset + 5 <= body.len() {
         let frame_type = body[offset];
         let len = u32::from_be_bytes([
-            body[offset + 1], body[offset + 2],
-            body[offset + 3], body[offset + 4],
+            body[offset + 1],
+            body[offset + 2],
+            body[offset + 3],
+            body[offset + 4],
         ]) as usize;
-        if offset + 5 + len > body.len() { break; }
+        if offset + 5 + len > body.len() {
+            break;
+        }
         if frame_type == 0x80 {
             let trailers = String::from_utf8_lossy(&body[offset + 5..offset + 5 + len]);
             for line in trailers.lines() {
                 if let Some(code) = line.strip_prefix("grpc-status:") {
                     let code: i32 = code.trim().parse().unwrap_or(0);
                     if code != 0 {
-                        let msg = trailers.lines()
+                        let msg = trailers
+                            .lines()
                             .find_map(|l| l.strip_prefix("grpc-message:"))
                             .unwrap_or("unknown error")
                             .trim();
@@ -167,12 +267,16 @@ impl ZidecarClient {
     }
 
     async fn call_unary<Req: Message, Resp: Message + Default>(
-        &self, method: &str, req: &Req,
+        &self,
+        method: &str,
+        req: &Req,
     ) -> Result<Resp, Error> {
         let url = format!("{}/{}", self.base_url, method);
         let body = grpc_web_encode(req);
 
-        let resp = self.http.post(&url)
+        let resp = self
+            .http
+            .post(&url)
             .header("content-type", "application/grpc-web+proto")
             .header("x-grpc-web", "1")
             .body(body)
@@ -182,7 +286,9 @@ impl ZidecarClient {
 
         let status = resp.status();
         let headers = resp.headers().clone();
-        let bytes = resp.bytes().await
+        let bytes = resp
+            .bytes()
+            .await
             .map_err(|e| Error::Network(format!("{}: read body: {}", method, e)))?;
 
         if !status.is_success() {
@@ -197,12 +303,16 @@ impl ZidecarClient {
     }
 
     async fn call_server_stream<Req: Message, Resp: Message + Default>(
-        &self, method: &str, req: &Req,
+        &self,
+        method: &str,
+        req: &Req,
     ) -> Result<Vec<Resp>, Error> {
         let url = format!("{}/{}", self.base_url, method);
         let body = grpc_web_encode(req);
 
-        let resp = self.http.post(&url)
+        let resp = self
+            .http
+            .post(&url)
             .header("content-type", "application/grpc-web+proto")
             .header("x-grpc-web", "1")
             .timeout(std::time::Duration::from_secs(120))
@@ -221,46 +331,58 @@ impl ZidecarClient {
         check_grpc_status(&headers, &[])?;
 
         // read full response body (grpc-web buffers server-stream in single response)
-        let bytes = resp.bytes().await
+        let bytes = resp
+            .bytes()
+            .await
             .map_err(|e| Error::Network(format!("{}: read body: {}", method, e)))?;
 
         let frames = grpc_web_decode_stream(&bytes)?;
-        frames.iter().map(|f| {
-            Resp::decode(f.as_slice())
-                .map_err(|e| Error::Network(format!("{}: decode: {}", method, e)))
-        }).collect()
+        frames
+            .iter()
+            .map(|f| {
+                Resp::decode(f.as_slice())
+                    .map_err(|e| Error::Network(format!("{}: decode: {}", method, e)))
+            })
+            .collect()
     }
 
     pub async fn get_tip(&self) -> Result<(u32, Vec<u8>), Error> {
-        let tip: zidecar_proto::BlockId = self.call_unary(
-            "zidecar.v1.Zidecar/GetTip",
-            &zidecar_proto::Empty {},
-        ).await?;
+        let tip: zidecar_proto::BlockId = self
+            .call_unary("zidecar.v1.Zidecar/GetTip", &zidecar_proto::Empty {})
+            .await?;
         Ok((tip.height, tip.hash))
     }
 
     pub async fn get_address_utxos(&self, addresses: Vec<String>) -> Result<Vec<Utxo>, Error> {
-        let resp: zidecar_proto::UtxoList = self.call_unary(
-            "zidecar.v1.Zidecar/GetAddressUtxos",
-            &zidecar_proto::TransparentAddressFilter {
-                addresses,
-                start_height: 0,
-                max_entries: 0,
-            },
-        ).await?;
+        let resp: zidecar_proto::UtxoList = self
+            .call_unary(
+                "zidecar.v1.Zidecar/GetAddressUtxos",
+                &zidecar_proto::TransparentAddressFilter {
+                    addresses,
+                    start_height: 0,
+                    max_entries: 0,
+                },
+            )
+            .await?;
 
-        Ok(resp.utxos.into_iter().map(|u| {
-            let mut txid = [0u8; 32];
-            if u.txid.len() == 32 { txid.copy_from_slice(&u.txid); }
-            Utxo {
-                address: u.address,
-                txid,
-                output_index: u.output_index,
-                script: u.script,
-                value_zat: u.value_zat,
-                height: u.height,
-            }
-        }).collect())
+        Ok(resp
+            .utxos
+            .into_iter()
+            .map(|u| {
+                let mut txid = [0u8; 32];
+                if u.txid.len() == 32 {
+                    txid.copy_from_slice(&u.txid);
+                }
+                Utxo {
+                    address: u.address,
+                    txid,
+                    output_index: u.output_index,
+                    script: u.script,
+                    value_zat: u.value_zat,
+                    height: u.height,
+                }
+            })
+            .collect())
     }
 
     pub async fn get_compact_blocks(
@@ -268,72 +390,255 @@ impl ZidecarClient {
         start_height: u32,
         end_height: u32,
     ) -> Result<Vec<CompactBlock>, Error> {
-        let protos: Vec<zidecar_proto::CompactBlock> = self.call_server_stream(
-            "zidecar.v1.Zidecar/GetCompactBlocks",
-            &zidecar_proto::BlockRange { start_height, end_height },
-        ).await?;
+        let protos: Vec<zidecar_proto::CompactBlock> = self
+            .call_server_stream(
+                "zidecar.v1.Zidecar/GetCompactBlocks",
+                &zidecar_proto::BlockRange {
+                    start_height,
+                    end_height,
+                },
+            )
+            .await?;
 
-        Ok(protos.into_iter().map(|block| {
-            let actions = block.actions.into_iter().filter_map(|a| {
-                if a.cmx.len() != 32 || a.ephemeral_key.len() != 32 || a.nullifier.len() != 32 {
-                    return None;
+        Ok(protos
+            .into_iter()
+            .map(|block| {
+                let actions = block
+                    .actions
+                    .into_iter()
+                    .filter_map(|a| {
+                        if a.cmx.len() != 32
+                            || a.ephemeral_key.len() != 32
+                            || a.nullifier.len() != 32
+                        {
+                            return None;
+                        }
+                        let mut cmx = [0u8; 32];
+                        let mut ek = [0u8; 32];
+                        let mut nf = [0u8; 32];
+                        cmx.copy_from_slice(&a.cmx);
+                        ek.copy_from_slice(&a.ephemeral_key);
+                        nf.copy_from_slice(&a.nullifier);
+                        Some(CompactAction {
+                            cmx,
+                            ephemeral_key: ek,
+                            ciphertext: a.ciphertext,
+                            nullifier: nf,
+                            txid: a.txid,
+                        })
+                    })
+                    .collect();
+
+                CompactBlock {
+                    height: block.height,
+                    hash: block.hash,
+                    actions,
                 }
-                let mut cmx = [0u8; 32];
-                let mut ek = [0u8; 32];
-                let mut nf = [0u8; 32];
-                cmx.copy_from_slice(&a.cmx);
-                ek.copy_from_slice(&a.ephemeral_key);
-                nf.copy_from_slice(&a.nullifier);
-                Some(CompactAction {
-                    cmx,
-                    ephemeral_key: ek,
-                    ciphertext: a.ciphertext,
-                    nullifier: nf,
-                    txid: a.txid,
-                })
-            }).collect();
-
-            CompactBlock {
-                height: block.height,
-                hash: block.hash,
-                actions,
-            }
-        }).collect())
+            })
+            .collect())
     }
 
     pub async fn get_header_proof(&self) -> Result<(Vec<u8>, u32, u32), Error> {
-        let resp: zidecar_proto::HeaderProof = self.call_unary(
-            "zidecar.v1.Zidecar/GetHeaderProof",
-            &zidecar_proto::ProofRequest { from_height: 0, to_height: 0 },
-        ).await?;
+        let resp: zidecar_proto::HeaderProof = self
+            .call_unary(
+                "zidecar.v1.Zidecar/GetHeaderProof",
+                &zidecar_proto::ProofRequest {
+                    from_height: 0,
+                    to_height: 0,
+                },
+            )
+            .await?;
         Ok((resp.ligerito_proof, resp.from_height, resp.to_height))
     }
 
     pub async fn get_tree_state(&self, height: u32) -> Result<(String, u32), Error> {
-        let state: zidecar_proto::TreeState = self.call_unary(
-            "zidecar.v1.Zidecar/GetTreeState",
-            &zidecar_proto::BlockId { height, hash: vec![] },
-        ).await?;
+        let state: zidecar_proto::TreeState = self
+            .call_unary(
+                "zidecar.v1.Zidecar/GetTreeState",
+                &zidecar_proto::BlockId {
+                    height,
+                    hash: vec![],
+                },
+            )
+            .await?;
         Ok((state.orchard_tree, state.height))
     }
 
     pub async fn get_transaction(&self, txid: &[u8]) -> Result<Vec<u8>, Error> {
-        let resp: zidecar_proto::RawTransaction = self.call_unary(
-            "zidecar.v1.Zidecar/GetTransaction",
-            &zidecar_proto::TxFilter { hash: txid.to_vec() },
-        ).await?;
+        let resp: zidecar_proto::RawTransaction = self
+            .call_unary(
+                "zidecar.v1.Zidecar/GetTransaction",
+                &zidecar_proto::TxFilter {
+                    hash: txid.to_vec(),
+                },
+            )
+            .await?;
         Ok(resp.data)
     }
 
     pub async fn send_transaction(&self, tx_data: Vec<u8>) -> Result<SendResult, Error> {
-        let r: zidecar_proto::SendResponse = self.call_unary(
-            "zidecar.v1.Zidecar/SendTransaction",
-            &zidecar_proto::RawTransaction { data: tx_data, height: 0 },
-        ).await?;
+        let r: zidecar_proto::SendResponse = self
+            .call_unary(
+                "zidecar.v1.Zidecar/SendTransaction",
+                &zidecar_proto::RawTransaction {
+                    data: tx_data,
+                    height: 0,
+                },
+            )
+            .await?;
         Ok(SendResult {
             txid: r.txid,
             error_code: r.error_code,
             error_message: r.error_message,
         })
+    }
+
+    pub async fn get_state_proof(&self, height: u32) -> Result<TrustlessStateProof, Error> {
+        let resp: zidecar_proto::TrustlessStateProofMsg = self
+            .call_unary(
+                "zidecar.v1.Zidecar/GetStateProof",
+                &zidecar_proto::GetStateProofRequest { height },
+            )
+            .await?;
+
+        let checkpoint = resp
+            .checkpoint
+            .ok_or_else(|| Error::Network("missing checkpoint in state proof".into()))?;
+        let transition = resp
+            .transition
+            .ok_or_else(|| Error::Network("missing transition in state proof".into()))?;
+
+        Ok(TrustlessStateProof {
+            checkpoint: proto_to_checkpoint(checkpoint)?,
+            transition: proto_to_transition(transition)?,
+            current_height: resp.current_height,
+            current_hash: bytes_to_32(&resp.current_hash)?,
+        })
+    }
+
+    pub async fn get_commitment_proofs(
+        &self,
+        cmxs: Vec<Vec<u8>>,
+        positions: Vec<u64>,
+        height: u32,
+    ) -> Result<(Vec<CommitmentProof>, [u8; 32]), Error> {
+        let resp: zidecar_proto::GetCommitmentProofsResponse = self
+            .call_unary(
+                "zidecar.v1.Zidecar/GetCommitmentProofs",
+                &zidecar_proto::GetCommitmentProofsRequest {
+                    cmxs,
+                    positions,
+                    height,
+                },
+            )
+            .await?;
+
+        let root = bytes_to_32(&resp.tree_root)?;
+        let proofs = resp
+            .proofs
+            .into_iter()
+            .map(proto_to_commitment_proof)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok((proofs, root))
+    }
+
+    pub async fn get_nullifier_proofs(
+        &self,
+        nullifiers: Vec<Vec<u8>>,
+        height: u32,
+    ) -> Result<(Vec<NullifierProof>, [u8; 32]), Error> {
+        let resp: zidecar_proto::GetNullifierProofsResponse = self
+            .call_unary(
+                "zidecar.v1.Zidecar/GetNullifierProofs",
+                &zidecar_proto::GetNullifierProofsRequest { nullifiers, height },
+            )
+            .await?;
+
+        let root = bytes_to_32(&resp.nullifier_root)?;
+        let proofs = resp
+            .proofs
+            .into_iter()
+            .map(proto_to_nullifier_proof)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok((proofs, root))
+    }
+}
+
+// -- lightwalletd cross-verification client --
+
+pub struct LightwalletdClient {
+    http: reqwest::Client,
+    base_url: String,
+}
+
+impl LightwalletdClient {
+    pub async fn connect(url: &str) -> Result<Self, Error> {
+        let base_url = url.trim_end_matches('/').to_string();
+        let http = reqwest::Client::builder()
+            .build()
+            .map_err(|e| Error::Network(format!("http client: {}", e)))?;
+        Ok(Self { http, base_url })
+    }
+
+    async fn call_unary<Req: Message, Resp: Message + Default>(
+        &self,
+        method: &str,
+        req: &Req,
+    ) -> Result<Resp, Error> {
+        let url = format!("{}/{}", self.base_url, method);
+        let body = grpc_web_encode(req);
+
+        let resp = self
+            .http
+            .post(&url)
+            .header("content-type", "application/grpc-web+proto")
+            .header("x-grpc-web", "1")
+            .timeout(std::time::Duration::from_secs(10))
+            .body(body)
+            .send()
+            .await
+            .map_err(|e| Error::Network(format!("{}: {}", method, e)))?;
+
+        let status = resp.status();
+        let headers = resp.headers().clone();
+        let bytes = resp
+            .bytes()
+            .await
+            .map_err(|e| Error::Network(format!("{}: read body: {}", method, e)))?;
+
+        if !status.is_success() {
+            return Err(Error::Network(format!("{}: HTTP {}", method, status)));
+        }
+
+        check_grpc_status(&headers, &bytes)?;
+
+        let (payload, _) = grpc_web_decode(&bytes)?;
+        Resp::decode(payload.as_slice())
+            .map_err(|e| Error::Network(format!("{}: decode: {}", method, e)))
+    }
+
+    /// get latest block from lightwalletd: (height, hash)
+    pub async fn get_latest_block(&self) -> Result<(u64, Vec<u8>), Error> {
+        let resp: lightwalletd_proto::BlockId = self
+            .call_unary(
+                "cash.z.wallet.sdk.rpc.CompactTxStreamer/GetLatestBlock",
+                &lightwalletd_proto::ChainSpec {},
+            )
+            .await?;
+        Ok((resp.height, resp.hash))
+    }
+
+    /// get block at height: (height, hash, prev_hash)
+    pub async fn get_block(&self, height: u64) -> Result<(u64, Vec<u8>, Vec<u8>), Error> {
+        let resp: lightwalletd_proto::CompactBlock = self
+            .call_unary(
+                "cash.z.wallet.sdk.rpc.CompactTxStreamer/GetBlock",
+                &lightwalletd_proto::BlockId {
+                    height,
+                    hash: vec![],
+                },
+            )
+            .await?;
+        Ok((resp.height, resp.hash, resp.prev_hash))
     }
 }
