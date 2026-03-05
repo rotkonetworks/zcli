@@ -8,6 +8,10 @@ repository = "https://github.com/rotkonetworks/zcli"
 keywords = ["zcash", "wallet", "cli", "privacy"]
 categories = ["command-line-utilities", "cryptography::cryptocurrencies"]
 
+[lib]
+name = "zecli"
+path = "src/lib.rs"
+
 [[bin]]
 name = "zcli"
 path = "src/main.rs"
@@ -72,6 +76,12 @@ anyhow = "1.0"
 
 # proof verification
 zync-core = { version = "0.2.2", default-features = false }
+
+# QUIC transport (exchange API)
+quinn = "0.11"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+rcgen = { version = "0.13", features = ["ring"] }
+ring = "0.17"
 
 # misc
 urlencoding = "2"

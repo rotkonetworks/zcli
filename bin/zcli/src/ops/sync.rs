@@ -58,7 +58,7 @@ pub async fn sync(
     endpoint: &str,
     verify_endpoint: &str,
     mainnet: bool,
-    script: bool,
+    json: bool,
     from: Option<u32>,
     from_position: Option<u64>,
 ) -> Result<u32, Error> {
@@ -110,13 +110,13 @@ pub async fn sync(
     eprintln!("tip={} start={}", tip, start);
 
     if start >= tip {
-        if !script {
+        if !json {
             eprintln!("wallet up to date at height {}", tip);
         }
         return Ok(0);
     }
 
-    if !script {
+    if !json {
         eprintln!(
             "scanning blocks from {} to {} ({} blocks)",
             start,
@@ -126,7 +126,7 @@ pub async fn sync(
     }
 
     let total_blocks = tip - start;
-    let pb = if !script && is_terminal::is_terminal(std::io::stderr()) {
+    let pb = if !json && is_terminal::is_terminal(std::io::stderr()) {
         let pb = ProgressBar::new(total_blocks as u64);
         pb.set_style(
             ProgressStyle::default_bar()
@@ -271,7 +271,7 @@ pub async fn sync(
         }
     }
 
-    if !script {
+    if !json {
         eprintln!(
             "synced to {} - {} new notes found (position {})",
             tip, found_total, position_counter

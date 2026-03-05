@@ -24,10 +24,8 @@ impl Drop for WalletSeed {
     }
 }
 
-/// load wallet seed from ed25519 ssh private key
-///
-/// derivation: BLAKE2b-512("ZcliWalletSeed" || ed25519_seed_32bytes)
-pub fn load_ssh_seed(path: &str) -> Result<WalletSeed, Error> {
+/// parse an openssh ed25519 private key, returning (seed_32, pubkey_32)
+fn parse_ssh_ed25519(path: &str) -> Result<([u8; 32], [u8; 32]), Error> {
     let key_data = std::fs::read_to_string(path)
         .map_err(|e| Error::Key(format!("cannot read {}: {}", path, e)))?;
     let passphrase = ssh_passphrase(&key_data)?;
@@ -46,20 +44,42 @@ pub fn load_ssh_seed(path: &str) -> Result<WalletSeed, Error> {
         _ => return Err(Error::Key("not an ed25519 key".into())),
     };
 
-    // ed25519 private key seed is the first 32 bytes
     let seed_bytes = ed25519_keypair.private.as_ref();
     if seed_bytes.len() < 32 {
         return Err(Error::Key("ed25519 seed too short".into()));
     }
 
+    let pub_bytes = ed25519_keypair.public.as_ref();
+    if pub_bytes.len() != 32 {
+        return Err(Error::Key("ed25519 pubkey wrong length".into()));
+    }
+
+    let mut seed = [0u8; 32];
+    seed.copy_from_slice(&seed_bytes[..32]);
+    let mut pubkey = [0u8; 32];
+    pubkey.copy_from_slice(pub_bytes);
+    Ok((seed, pubkey))
+}
+
+/// load wallet seed from ed25519 ssh private key
+///
+/// derivation: BLAKE2b-512("ZcliWalletSeed" || ed25519_seed_32bytes)
+pub fn load_ssh_seed(path: &str) -> Result<WalletSeed, Error> {
+    let (seed32, _) = parse_ssh_ed25519(path)?;
+
     let mut hasher = Blake2b512::new();
     hasher.update(b"ZcliWalletSeed");
-    hasher.update(&seed_bytes[..32]);
+    hasher.update(&seed32);
     let hash = hasher.finalize();
 
     let mut bytes = [0u8; 64];
     bytes.copy_from_slice(&hash);
     Ok(WalletSeed { bytes })
+}
+
+/// load raw ed25519 keypair from ssh key (for QUIC cert generation)
+pub fn load_ssh_ed25519_keypair(path: &str) -> Result<([u8; 32], [u8; 32]), Error> {
+    parse_ssh_ed25519(path)
 }
 
 /// decrypt a .age file using an ssh identity key, return contents as string

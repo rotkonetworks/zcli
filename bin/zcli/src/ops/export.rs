@@ -2,9 +2,9 @@ use crate::address;
 use crate::error::Error;
 use crate::key::WalletSeed;
 
-pub fn export(seed: &WalletSeed, mainnet: bool, script: bool) -> Result<(), Error> {
-    // interactive confirmation unless script mode or non-tty
-    if !script && is_terminal::is_terminal(std::io::stdin()) {
+pub fn export(seed: &WalletSeed, mainnet: bool, json: bool) -> Result<(), Error> {
+    // interactive confirmation unless json mode or non-tty
+    if !json && is_terminal::is_terminal(std::io::stdin()) {
         eprintln!("WARNING: this will display secret key material.");
         eprintln!("anyone with these keys can spend your funds.");
         eprint!("type YES to continue: ");
@@ -21,7 +21,7 @@ pub fn export(seed: &WalletSeed, mainnet: bool, script: bool) -> Result<(), Erro
     let taddr = address::transparent_address(seed, mainnet)?;
     let uaddr = address::orchard_address(seed, mainnet)?;
 
-    if script {
+    if json {
         println!(
             "{}",
             serde_json::json!({

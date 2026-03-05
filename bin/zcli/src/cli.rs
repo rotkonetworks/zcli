@@ -39,8 +39,8 @@ pub struct Cli {
     pub verify_endpoint: String,
 
     /// machine-readable json output, no prompts/progress/qr
-    #[arg(long, visible_alias = "json", global = true, env = "ZCLI_SCRIPT")]
-    pub script: bool,
+    #[arg(long, global = true, env = "ZCLI_JSON")]
+    pub json: bool,
 
     /// use mainnet (default)
     #[arg(long, global = true, default_value_t = true)]
@@ -161,6 +161,9 @@ pub enum Command {
     /// list all received notes
     Notes,
 
+    /// show transaction history (received + sent)
+    History,
+
     /// run board: sync loop + HTTP API serving notes as JSON
     Board {
         /// HTTP port
@@ -180,5 +183,115 @@ pub enum Command {
     TreeInfo {
         /// block height
         height: u32,
+    },
+
+    /// merchant payment acceptance + cold storage forwarding
+    Merchant {
+        #[command(subcommand)]
+        action: MerchantAction,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum MerchantAction {
+    /// create a new payment request (unique diversified address)
+    Create {
+        /// amount in ZEC (e.g. 0.001), or "0" for any amount
+        amount: String,
+
+        /// label / memo for this request
+        #[arg(long)]
+        memo: Option<String>,
+
+        /// permanent deposit address (exchange-style, accumulates deposits)
+        #[arg(long)]
+        deposit: bool,
+    },
+
+    /// list payment requests
+    List {
+        /// filter by status: pending, paid, forwarded, forward_failed
+        #[arg(long)]
+        status: Option<String>,
+    },
+
+    /// sync + match payments + optionally forward to cold storage
+    Check {
+        /// cold storage address (overrides env/db)
+        #[arg(long, env = "ZCLI_FORWARD")]
+        forward: Option<String>,
+
+        /// minimum confirmation depth for matching payments
+        #[arg(long, default_value_t = 10, env = "ZCLI_CONFIRMATIONS")]
+        confirmations: u32,
+
+        /// webhook URL to POST payment state
+        #[arg(long, env = "ZCLI_WEBHOOK_URL")]
+        webhook_url: Option<String>,
+
+        /// HMAC-SHA256 secret for webhook signatures
+        #[arg(long, env = "ZCLI_WEBHOOK_SECRET")]
+        webhook_secret: Option<String>,
+    },
+
+    /// continuous sync + match + forward loop
+    Watch {
+        /// cold storage address (overrides env/db)
+        #[arg(long, env = "ZCLI_FORWARD")]
+        forward: Option<String>,
+
+        /// minimum confirmation depth for matching payments
+        #[arg(long, default_value_t = 10, env = "ZCLI_CONFIRMATIONS")]
+        confirmations: u32,
+
+        /// sync interval in seconds
+        #[arg(long, default_value_t = 300)]
+        interval: u64,
+
+        /// write requests.json to this directory after each cycle (same-machine)
+        #[arg(long)]
+        dir: Option<String>,
+
+        /// webhook URL to POST payment state (remote)
+        #[arg(long, env = "ZCLI_WEBHOOK_URL")]
+        webhook_url: Option<String>,
+
+        /// HMAC-SHA256 secret for webhook signatures
+        #[arg(long, env = "ZCLI_WEBHOOK_SECRET")]
+        webhook_secret: Option<String>,
+
+        /// exchange API QUIC address (e.g. "192.168.1.10:4433")
+        #[arg(long, env = "ZCLI_QUIC")]
+        quic: Option<String>,
+
+        /// hex-encoded ed25519 pubkey of the exchange API (peer verification)
+        #[arg(long, env = "ZCLI_PEER_KEY")]
+        peer_key: Option<String>,
+    },
+
+    /// queue a withdrawal (payout from hot wallet)
+    Withdraw {
+        /// amount in ZEC (e.g. 0.5)
+        amount: String,
+
+        /// recipient address: t1.../u1...
+        address: String,
+
+        /// label / memo for this withdrawal
+        #[arg(long)]
+        memo: Option<String>,
+    },
+
+    /// list withdrawal requests
+    WithdrawList {
+        /// filter by status: pending, completed, failed, insufficient
+        #[arg(long)]
+        status: Option<String>,
+    },
+
+    /// set or show the default forward address
+    SetForward {
+        /// cold storage address to store (omit to show current)
+        address: Option<String>,
     },
 }
