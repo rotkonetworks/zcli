@@ -35,7 +35,10 @@ pub async fn send(
     } else if recipient.starts_with("u1") || recipient.starts_with("utest1") {
         send_to_shielded(seed, amount_zat, recipient, memo, endpoint, mainnet, script).await
     } else {
-        Err(Error::Address(format!("unrecognized address format: {}", recipient)))
+        Err(Error::Address(format!(
+            "unrecognized address format: {}",
+            recipient
+        )))
     }
 }
 
@@ -55,7 +58,10 @@ async fn send_to_transparent(
     let est_fee = compute_fee(1, 0, 1, true);
     let needed = amount + est_fee;
     if balance < needed {
-        return Err(Error::InsufficientFunds { have: balance, need: needed });
+        return Err(Error::InsufficientFunds {
+            have: balance,
+            need: needed,
+        });
     }
 
     // select notes (largest first until we cover amount + fee)
@@ -66,16 +72,25 @@ async fn send_to_transparent(
     let has_change = total_in > amount + compute_fee(selected.len(), 0, 1, true);
     let fee = compute_fee(selected.len(), 0, 1, has_change);
     if total_in < amount + fee {
-        return Err(Error::InsufficientFunds { have: total_in, need: amount + fee });
+        return Err(Error::InsufficientFunds {
+            have: total_in,
+            need: amount + fee,
+        });
     }
 
     if !script {
-        eprintln!("spending {:.8} ZEC → {} ({} notes, fee {:.8} ZEC)",
-            amount as f64 / 1e8, recipient, selected.len(), fee as f64 / 1e8);
+        eprintln!(
+            "spending {:.8} ZEC → {} ({} notes, fee {:.8} ZEC)",
+            amount as f64 / 1e8,
+            recipient,
+            selected.len(),
+            fee as f64 / 1e8
+        );
     }
 
     // reconstruct orchard notes
-    let orchard_notes: Vec<orchard::Note> = selected.iter()
+    let orchard_notes: Vec<orchard::Note> = selected
+        .iter()
         .map(|n| n.reconstruct_note())
         .collect::<Result<_, _>>()?;
 
@@ -86,13 +101,12 @@ async fn send_to_transparent(
     if !script {
         eprintln!("building merkle witnesses (replaying chain)...");
     }
-    let (anchor, paths) = witness::build_witnesses(
-        &client, &selected, tip, mainnet, script,
-    ).await?;
+    let (anchor, paths) =
+        witness::build_witnesses(&client, &selected, tip, mainnet, script).await?;
 
     // build spends vec
-    let spends: Vec<(orchard::Note, orchard::tree::MerklePath)> = orchard_notes
-        .into_iter().zip(paths.into_iter()).collect();
+    let spends: Vec<(orchard::Note, orchard::tree::MerklePath)> =
+        orchard_notes.into_iter().zip(paths.into_iter()).collect();
 
     let t_outputs = vec![(recipient.to_string(), amount)];
 
@@ -106,30 +120,41 @@ async fn send_to_transparent(
     let tx_bytes = tokio::task::spawn_blocking(move || {
         let seed = crate::key::WalletSeed::from_bytes(seed_bytes);
         tx::build_orchard_spend_tx(
-            &seed, &spends, &t_outputs, &[], fee,
-            anchor, anchor_height, mainnet,
+            &seed,
+            &spends,
+            &t_outputs,
+            &[],
+            fee,
+            anchor,
+            anchor_height,
+            mainnet,
         )
-    }).await
-        .map_err(|e| Error::Other(format!("spawn_blocking: {}", e)))??;
+    })
+    .await
+    .map_err(|e| Error::Other(format!("spawn_blocking: {}", e)))??;
 
     // broadcast
     let result = client.send_transaction(tx_bytes).await?;
 
     if script {
-        println!("{}", serde_json::json!({
-            "txid": result.txid,
-            "amount_zat": amount,
-            "fee_zat": fee,
-            "recipient": recipient,
-            "type": "z→t",
-            "success": result.is_success(),
-            "error": result.error_message,
-        }));
+        println!(
+            "{}",
+            serde_json::json!({
+                "txid": result.txid,
+                "amount_zat": amount,
+                "fee_zat": fee,
+                "recipient": recipient,
+                "type": "z→t",
+                "success": result.is_success(),
+                "error": result.error_message,
+            })
+        );
     } else if result.is_success() {
         println!("txid: {}", result.txid);
     } else {
         return Err(Error::Transaction(format!(
-            "broadcast failed ({}): {}", result.error_code, result.error_message
+            "broadcast failed ({}): {}",
+            result.error_code, result.error_message
         )));
     }
 
@@ -155,7 +180,10 @@ async fn send_to_shielded(
     let est_fee = compute_fee(1, 1, 0, true);
     let needed = amount + est_fee;
     if balance < needed {
-        return Err(Error::InsufficientFunds { have: balance, need: needed });
+        return Err(Error::InsufficientFunds {
+            have: balance,
+            need: needed,
+        });
     }
 
     // select notes
@@ -165,17 +193,30 @@ async fn send_to_shielded(
     let has_change = total_in > amount + compute_fee(selected.len(), 1, 0, true);
     let fee = compute_fee(selected.len(), 1, 0, has_change);
     if total_in < amount + fee {
-        return Err(Error::InsufficientFunds { have: total_in, need: amount + fee });
+        return Err(Error::InsufficientFunds {
+            have: total_in,
+            need: amount + fee,
+        });
     }
 
     if !script {
-        let addr_preview = if recipient.len() > 20 { &recipient[..20] } else { recipient };
-        eprintln!("spending {:.8} ZEC → {}... ({} notes, fee {:.8} ZEC)",
-            amount as f64 / 1e8, addr_preview, selected.len(), fee as f64 / 1e8);
+        let addr_preview = if recipient.len() > 20 {
+            &recipient[..20]
+        } else {
+            recipient
+        };
+        eprintln!(
+            "spending {:.8} ZEC → {}... ({} notes, fee {:.8} ZEC)",
+            amount as f64 / 1e8,
+            addr_preview,
+            selected.len(),
+            fee as f64 / 1e8
+        );
     }
 
     // reconstruct orchard notes
-    let orchard_notes: Vec<orchard::Note> = selected.iter()
+    let orchard_notes: Vec<orchard::Note> = selected
+        .iter()
         .map(|n| n.reconstruct_note())
         .collect::<Result<_, _>>()?;
 
@@ -186,12 +227,11 @@ async fn send_to_shielded(
     if !script {
         eprintln!("building merkle witnesses (replaying chain)...");
     }
-    let (anchor, paths) = witness::build_witnesses(
-        &client, &selected, tip, mainnet, script,
-    ).await?;
+    let (anchor, paths) =
+        witness::build_witnesses(&client, &selected, tip, mainnet, script).await?;
 
-    let spends: Vec<(orchard::Note, orchard::tree::MerklePath)> = orchard_notes
-        .into_iter().zip(paths.into_iter()).collect();
+    let spends: Vec<(orchard::Note, orchard::tree::MerklePath)> =
+        orchard_notes.into_iter().zip(paths.into_iter()).collect();
 
     // build memo (512 bytes, text padded with zeros)
     let mut memo_bytes = [0u8; 512];
@@ -212,30 +252,41 @@ async fn send_to_shielded(
     let tx_bytes = tokio::task::spawn_blocking(move || {
         let seed = crate::key::WalletSeed::from_bytes(seed_bytes);
         tx::build_orchard_spend_tx(
-            &seed, &spends, &[], &z_outputs, fee,
-            anchor, anchor_height, mainnet,
+            &seed,
+            &spends,
+            &[],
+            &z_outputs,
+            fee,
+            anchor,
+            anchor_height,
+            mainnet,
         )
-    }).await
-        .map_err(|e| Error::Other(format!("spawn_blocking: {}", e)))??;
+    })
+    .await
+    .map_err(|e| Error::Other(format!("spawn_blocking: {}", e)))??;
 
     // broadcast
     let result = client.send_transaction(tx_bytes).await?;
 
     if script {
-        println!("{}", serde_json::json!({
-            "txid": result.txid,
-            "amount_zat": amount,
-            "fee_zat": fee,
-            "recipient": recipient,
-            "type": "z→z",
-            "success": result.is_success(),
-            "error": result.error_message,
-        }));
+        println!(
+            "{}",
+            serde_json::json!({
+                "txid": result.txid,
+                "amount_zat": amount,
+                "fee_zat": fee,
+                "recipient": recipient,
+                "type": "z→z",
+                "success": result.is_success(),
+                "error": result.error_message,
+            })
+        );
     } else if result.is_success() {
         println!("txid: {}", result.txid);
     } else {
         return Err(Error::Transaction(format!(
-            "broadcast failed ({}): {}", result.error_code, result.error_message
+            "broadcast failed ({}): {}",
+            result.error_code, result.error_message
         )));
     }
 
@@ -243,7 +294,10 @@ async fn send_to_shielded(
 }
 
 /// select notes covering target amount (largest first)
-fn select_notes(notes: &[crate::wallet::WalletNote], target: u64) -> Result<Vec<crate::wallet::WalletNote>, Error> {
+fn select_notes(
+    notes: &[crate::wallet::WalletNote],
+    target: u64,
+) -> Result<Vec<crate::wallet::WalletNote>, Error> {
     let mut sorted: Vec<_> = notes.to_vec();
     sorted.sort_by(|a, b| b.value.cmp(&a.value));
 
@@ -257,20 +311,25 @@ fn select_notes(notes: &[crate::wallet::WalletNote], target: u64) -> Result<Vec<
         }
     }
 
-    Err(Error::InsufficientFunds { have: total, need: target })
+    Err(Error::InsufficientFunds {
+        have: total,
+        need: target,
+    })
 }
 
 fn parse_amount(s: &str) -> Result<u64, Error> {
     // accept both ZEC (decimal) and zatoshi (integer)
     if s.contains('.') {
-        let zec: f64 = s.parse()
+        let zec: f64 = s
+            .parse()
             .map_err(|_| Error::Transaction(format!("invalid amount: {}", s)))?;
         if zec < 0.0 {
             return Err(Error::Transaction("amount must be positive".into()));
         }
         Ok((zec * 1e8).round() as u64)
     } else {
-        let zat: u64 = s.parse()
+        let zat: u64 = s
+            .parse()
             .map_err(|_| Error::Transaction(format!("invalid amount: {}", s)))?;
         Ok(zat)
     }

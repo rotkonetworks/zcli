@@ -18,7 +18,7 @@ pub async fn get_balance(
 ) -> Result<Balance, Error> {
     let taddr = address::transparent_address(seed, mainnet)?;
 
-    let mut client = ZidecarClient::connect(endpoint).await?;
+    let client = ZidecarClient::connect(endpoint).await?;
 
     // transparent balance from UTXOs
     let utxos = client.get_address_utxos(vec![taddr]).await?;

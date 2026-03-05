@@ -17,8 +17,8 @@ fn bip32_master_key(seed: &[u8]) -> Bip32Key {
     use hmac::{Hmac, Mac};
     use sha2::Sha512;
 
-    let mut mac = Hmac::<Sha512>::new_from_slice(b"Bitcoin seed")
-        .expect("HMAC accepts any key length");
+    let mut mac =
+        Hmac::<Sha512>::new_from_slice(b"Bitcoin seed").expect("HMAC accepts any key length");
     mac.update(seed);
     let result = mac.finalize().into_bytes();
 
@@ -36,8 +36,8 @@ fn bip32_derive_child(parent: &Bip32Key, index: u32, hardened: bool) -> Result<B
     use k256::elliptic_curve::PrimeField;
     use sha2::Sha512;
 
-    let mut mac = Hmac::<Sha512>::new_from_slice(&parent.chain_code)
-        .expect("HMAC accepts any key length");
+    let mut mac =
+        Hmac::<Sha512>::new_from_slice(&parent.chain_code).expect("HMAC accepts any key length");
 
     let child_index = if hardened { index | 0x80000000 } else { index };
 
@@ -117,7 +117,11 @@ fn base58check_encode(version: &[u8], payload: &[u8]) -> String {
         out.push(ALPHABET[rem as usize]);
     }
     for &b in data.iter() {
-        if b == 0 { out.push(b'1'); } else { break; }
+        if b == 0 {
+            out.push(b'1');
+        } else {
+            break;
+        }
     }
     out.reverse();
     String::from_utf8(out).unwrap()
@@ -153,7 +157,11 @@ fn transparent_address_from_privkey(privkey: &[u8; 32], mainnet: bool) -> Result
     let pkh = hash160(pubkey.as_bytes());
 
     // zcash t-addr version: mainnet=0x1cb8, testnet=0x1d25
-    let version = if mainnet { &[0x1c, 0xb8][..] } else { &[0x1d, 0x25][..] };
+    let version = if mainnet {
+        &[0x1c, 0xb8][..]
+    } else {
+        &[0x1d, 0x25][..]
+    };
     Ok(base58check_encode(version, &pkh))
 }
 
@@ -206,8 +214,7 @@ mod tests {
     use super::*;
     use crate::key::load_mnemonic_seed;
 
-    const TEST_MNEMONIC: &str =
-        "abandon abandon abandon abandon abandon abandon abandon abandon \
+    const TEST_MNEMONIC: &str = "abandon abandon abandon abandon abandon abandon abandon abandon \
          abandon abandon abandon abandon abandon abandon abandon abandon \
          abandon abandon abandon abandon abandon abandon abandon art";
 
