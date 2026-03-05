@@ -10,7 +10,7 @@ const GRACE_ACTIONS: usize = 2;
 const MIN_ORCHARD_ACTIONS: usize = 2;
 
 /// ZIP-317 fee computation
-fn compute_fee(n_spends: usize, n_z_outputs: usize, n_t_outputs: usize, has_change: bool) -> u64 {
+pub(crate) fn compute_fee(n_spends: usize, n_z_outputs: usize, n_t_outputs: usize, has_change: bool) -> u64 {
     let n_orchard_outputs = n_z_outputs + if has_change { 1 } else { 0 };
     let n_orchard_actions = n_spends.max(n_orchard_outputs).max(MIN_ORCHARD_ACTIONS);
     let n_t_logical = n_t_outputs; // no transparent inputs in orchard spends
@@ -25,15 +25,15 @@ pub async fn send(
     memo: Option<&str>,
     endpoint: &str,
     mainnet: bool,
-    script: bool,
+    json: bool,
 ) -> Result<(), Error> {
     let amount_zat = parse_amount(amount_str)?;
 
     // determine recipient type
     if recipient.starts_with("t1") || recipient.starts_with("tm") {
-        send_to_transparent(seed, amount_zat, recipient, endpoint, mainnet, script).await
+        send_to_transparent(seed, amount_zat, recipient, endpoint, mainnet, json).await
     } else if recipient.starts_with("u1") || recipient.starts_with("utest1") {
-        send_to_shielded(seed, amount_zat, recipient, memo, endpoint, mainnet, script).await
+        send_to_shielded(seed, amount_zat, recipient, memo, endpoint, mainnet, json).await
     } else {
         Err(Error::Address(format!(
             "unrecognized address format: {}",
@@ -49,23 +49,25 @@ async fn send_to_transparent(
     recipient: &str,
     endpoint: &str,
     mainnet: bool,
-    script: bool,
+    json: bool,
 ) -> Result<(), Error> {
-    let wallet = Wallet::open(&Wallet::default_path())?;
-    let (balance, notes) = wallet.shielded_balance()?;
+    let selected = {
+        let wallet = Wallet::open(&Wallet::default_path())?;
+        let (balance, notes) = wallet.shielded_balance()?;
 
-    // estimate fee (may adjust after note selection)
-    let est_fee = compute_fee(1, 0, 1, true);
-    let needed = amount + est_fee;
-    if balance < needed {
-        return Err(Error::InsufficientFunds {
-            have: balance,
-            need: needed,
-        });
-    }
+        // estimate fee (may adjust after note selection)
+        let est_fee = compute_fee(1, 0, 1, true);
+        let needed = amount + est_fee;
+        if balance < needed {
+            return Err(Error::InsufficientFunds {
+                have: balance,
+                need: needed,
+            });
+        }
 
-    // select notes (largest first until we cover amount + fee)
-    let selected = select_notes(&notes, needed)?;
+        // select notes (largest first until we cover amount + fee)
+        select_notes(&notes, needed)?
+    }; // drop wallet before later re-open
 
     // compute exact fee based on selected notes
     let total_in: u64 = selected.iter().map(|n| n.value).sum();
@@ -78,7 +80,7 @@ async fn send_to_transparent(
         });
     }
 
-    if !script {
+    if !json {
         eprintln!(
             "spending {:.8} ZEC → {} ({} notes, fee {:.8} ZEC)",
             amount as f64 / 1e8,
@@ -98,11 +100,10 @@ async fn send_to_transparent(
     let client = ZidecarClient::connect(endpoint).await?;
     let (tip, _) = client.get_tip().await?;
 
-    if !script {
+    if !json {
         eprintln!("building merkle witnesses (replaying chain)...");
     }
-    let (anchor, paths) =
-        witness::build_witnesses(&client, &selected, tip, mainnet, script).await?;
+    let (anchor, paths) = witness::build_witnesses(&client, &selected, tip, mainnet, json).await?;
 
     // build spends vec
     let spends: Vec<(orchard::Note, orchard::tree::MerklePath)> =
@@ -110,7 +111,7 @@ async fn send_to_transparent(
 
     let t_outputs = vec![(recipient.to_string(), amount)];
 
-    if !script {
+    if !json {
         eprintln!("building transaction (halo 2 proving)...");
     }
 
@@ -136,7 +137,24 @@ async fn send_to_transparent(
     // broadcast
     let result = client.send_transaction(tx_bytes).await?;
 
-    if script {
+    if result.is_success() {
+        let w = Wallet::open(&Wallet::default_path())?;
+        let _ = w.insert_sent_tx(&crate::wallet::SentTx {
+            txid: result.txid.clone(),
+            amount,
+            fee,
+            recipient: recipient.to_string(),
+            tx_type: "z\u{2192}t".into(),
+            block_height: 0,
+            memo: None,
+            timestamp: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0),
+        });
+    }
+
+    if json {
         println!(
             "{}",
             serde_json::json!({
@@ -169,25 +187,26 @@ async fn send_to_shielded(
     memo: Option<&str>,
     endpoint: &str,
     mainnet: bool,
-    script: bool,
+    json: bool,
 ) -> Result<(), Error> {
     // parse recipient
     let recipient_addr = tx::parse_orchard_address(recipient, mainnet)?;
 
-    let wallet = Wallet::open(&Wallet::default_path())?;
-    let (balance, notes) = wallet.shielded_balance()?;
+    let selected = {
+        let wallet = Wallet::open(&Wallet::default_path())?;
+        let (balance, notes) = wallet.shielded_balance()?;
 
-    let est_fee = compute_fee(1, 1, 0, true);
-    let needed = amount + est_fee;
-    if balance < needed {
-        return Err(Error::InsufficientFunds {
-            have: balance,
-            need: needed,
-        });
-    }
+        let est_fee = compute_fee(1, 1, 0, true);
+        let needed = amount + est_fee;
+        if balance < needed {
+            return Err(Error::InsufficientFunds {
+                have: balance,
+                need: needed,
+            });
+        }
 
-    // select notes
-    let selected = select_notes(&notes, needed)?;
+        select_notes(&notes, needed)?
+    }; // drop wallet before later re-open
 
     let total_in: u64 = selected.iter().map(|n| n.value).sum();
     let has_change = total_in > amount + compute_fee(selected.len(), 1, 0, true);
@@ -199,7 +218,7 @@ async fn send_to_shielded(
         });
     }
 
-    if !script {
+    if !json {
         let addr_preview = if recipient.len() > 20 {
             &recipient[..20]
         } else {
@@ -224,11 +243,10 @@ async fn send_to_shielded(
     let client = ZidecarClient::connect(endpoint).await?;
     let (tip, _) = client.get_tip().await?;
 
-    if !script {
+    if !json {
         eprintln!("building merkle witnesses (replaying chain)...");
     }
-    let (anchor, paths) =
-        witness::build_witnesses(&client, &selected, tip, mainnet, script).await?;
+    let (anchor, paths) = witness::build_witnesses(&client, &selected, tip, mainnet, json).await?;
 
     let spends: Vec<(orchard::Note, orchard::tree::MerklePath)> =
         orchard_notes.into_iter().zip(paths.into_iter()).collect();
@@ -243,7 +261,7 @@ async fn send_to_shielded(
 
     let z_outputs = vec![(recipient_addr, amount, memo_bytes)];
 
-    if !script {
+    if !json {
         eprintln!("building transaction (halo 2 proving)...");
     }
 
@@ -268,7 +286,24 @@ async fn send_to_shielded(
     // broadcast
     let result = client.send_transaction(tx_bytes).await?;
 
-    if script {
+    if result.is_success() {
+        let wallet = Wallet::open(&Wallet::default_path())?;
+        let _ = wallet.insert_sent_tx(&crate::wallet::SentTx {
+            txid: result.txid.clone(),
+            amount,
+            fee,
+            recipient: recipient.to_string(),
+            tx_type: "z\u{2192}z".into(),
+            block_height: 0,
+            memo: memo.map(String::from),
+            timestamp: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0),
+        });
+    }
+
+    if json {
         println!(
             "{}",
             serde_json::json!({
@@ -294,7 +329,7 @@ async fn send_to_shielded(
 }
 
 /// select notes covering target amount (largest first)
-fn select_notes(
+pub(crate) fn select_notes(
     notes: &[crate::wallet::WalletNote],
     target: u64,
 ) -> Result<Vec<crate::wallet::WalletNote>, Error> {

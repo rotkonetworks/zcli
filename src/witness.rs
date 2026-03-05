@@ -196,7 +196,7 @@ pub async fn build_witnesses(
     notes: &[WalletNote],
     anchor_height: u32,
     mainnet: bool,
-    script: bool,
+    json: bool,
 ) -> Result<(Anchor, Vec<MerklePath>), Error> {
     let activation = if mainnet { 1_687_104 } else { 1_842_420 };
 
@@ -213,7 +213,7 @@ pub async fn build_witnesses(
         .min()
         .ok_or_else(|| Error::Other("no notes to build witnesses for".into()))?;
 
-    if !script {
+    if !json {
         eprintln!("earliest note position: {}", earliest_position);
     }
 
@@ -221,7 +221,7 @@ pub async fn build_witnesses(
     let (checkpoint_height, checkpoint_size) =
         find_checkpoint_height(client, earliest_position, activation, anchor_height).await?;
 
-    if !script {
+    if !json {
         eprintln!(
             "checkpoint: height={} size={} (target={})",
             checkpoint_height, checkpoint_size, earliest_position
@@ -236,7 +236,7 @@ pub async fn build_witnesses(
 
     // verify size matches
     let actual_size = tree.size() as u64;
-    if actual_size != checkpoint_size && !script {
+    if actual_size != checkpoint_size && !json {
         eprintln!(
             "warning: tree.size()={} vs computed={}",
             actual_size, checkpoint_size
@@ -255,7 +255,7 @@ pub async fn build_witnesses(
     // at checkpoint_height already includes that block's actions
     let replay_start = checkpoint_height + 1;
     let replay_blocks = anchor_height - replay_start;
-    let pb = if !script && is_terminal::is_terminal(std::io::stderr()) {
+    let pb = if !json && is_terminal::is_terminal(std::io::stderr()) {
         let pb = ProgressBar::new(replay_blocks as u64);
         pb.set_style(
             ProgressStyle::default_bar()
@@ -270,7 +270,7 @@ pub async fn build_witnesses(
         None
     };
 
-    if !script {
+    if !json {
         eprintln!("replaying {} blocks for merkle witnesses...", replay_blocks);
     }
 
@@ -360,7 +360,7 @@ pub async fn build_witnesses(
         paths.push(MerklePath::from(imt_path));
     }
 
-    if !script {
+    if !json {
         eprintln!(
             "witnesses built - anchor: {}",
             hex::encode(anchor.to_bytes())

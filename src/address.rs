@@ -201,6 +201,26 @@ fn encode_unified_address(addr: &orchard::Address, mainnet: bool) -> Result<Stri
     Ok(ua.encode(&network))
 }
 
+/// derive orchard address at a specific diversifier index
+/// returns (orchard::Address, unified address string)
+pub fn orchard_address_at(
+    seed: &WalletSeed,
+    index: u64,
+    mainnet: bool,
+) -> Result<(orchard::Address, String), Error> {
+    let seed_bytes = seed.as_bytes();
+    if seed_bytes.len() != 64 {
+        return Err(Error::Address("seed must be 64 bytes".into()));
+    }
+    let coin_type = if mainnet { 133 } else { 1 };
+    let sk = SpendingKey::from_zip32_seed(seed_bytes, coin_type, zip32::AccountId::ZERO)
+        .map_err(|_| Error::Address("failed to derive spending key".into()))?;
+    let fvk = FullViewingKey::from(&sk);
+    let addr = fvk.address_at(index, Scope::External);
+    let ua_str = encode_unified_address(&addr, mainnet)?;
+    Ok((addr, ua_str))
+}
+
 /// get the full viewing key from seed (for display/export)
 pub fn full_viewing_key(seed: &WalletSeed, mainnet: bool) -> Result<FullViewingKey, Error> {
     let coin_type = if mainnet { 133 } else { 1 };

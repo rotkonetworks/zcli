@@ -8,8 +8,14 @@ use crate::error::Error;
 
 const SYNC_HEIGHT_KEY: &[u8] = b"sync_height";
 const ORCHARD_POSITION_KEY: &[u8] = b"orchard_position";
+const NEXT_REQUEST_ID_KEY: &[u8] = b"next_request_id";
+const FORWARD_ADDRESS_KEY: &[u8] = b"forward_address";
 const NOTES_TREE: &str = "notes";
 const NULLIFIERS_TREE: &str = "nullifiers";
+const SENT_TXS_TREE: &str = "sent_txs";
+const PAYMENT_REQUESTS_TREE: &str = "payment_requests";
+const WITHDRAWAL_REQUESTS_TREE: &str = "withdrawal_requests";
+const NEXT_WITHDRAWAL_ID_KEY: &[u8] = b"next_withdrawal_id";
 
 /// a received note stored in the wallet
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -52,6 +58,66 @@ impl WalletNote {
         Option::from(orchard::Note::from_parts(recipient, value, rho, rseed))
             .ok_or_else(|| Error::Wallet("failed to reconstruct note".into()))
     }
+}
+
+/// a sent transaction stored in the wallet
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SentTx {
+    pub txid: String,
+    pub amount: u64,
+    pub fee: u64,
+    pub recipient: String,
+    pub tx_type: String, // "z→t", "z→z", "shield"
+    pub block_height: u32,
+    pub memo: Option<String>,
+    pub timestamp: u64, // unix seconds when broadcast
+}
+
+/// a single deposit event on a payment request
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Deposit {
+    pub nullifier: Vec<u8>,
+    pub amount_zat: u64,
+    pub block_height: u32,
+    pub forward_txid: Option<String>,
+}
+
+/// a merchant payment request
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct PaymentRequest {
+    pub id: u64,
+    pub diversifier_index: u64,
+    pub recipient: Vec<u8>,   // 43-byte raw orchard address for matching
+    pub address: String,      // u1... unified address for display
+    pub amount_zat: u64,      // 0 = any amount
+    pub label: Option<String>,
+    pub created_at: u64,
+    pub status: String, // pending / paid / forwarded / forward_failed
+    /// true = deposit address (stays pending, accumulates deposits)
+    /// false = invoice (one payment, then done)
+    #[serde(default)]
+    pub deposit: bool,
+    /// all deposits received at this address (deposit mode)
+    #[serde(default)]
+    pub deposits: Vec<Deposit>,
+    // legacy single-match fields (invoice mode)
+    pub matched_nullifier: Option<Vec<u8>>,
+    pub received_zat: Option<u64>,
+    pub forward_txid: Option<String>,
+}
+
+/// a withdrawal request (exchange payout)
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct WithdrawalRequest {
+    pub id: u64,
+    pub address: String,       // t1.../u1...
+    pub amount_zat: u64,
+    pub label: Option<String>,
+    pub created_at: u64,
+    pub status: String,        // pending / completed / failed / insufficient
+    pub txid: Option<String>,
+    pub fee_zat: Option<u64>,
+    pub error: Option<String>,
 }
 
 pub struct Wallet {
@@ -194,6 +260,39 @@ impl Wallet {
         Ok((balance, unspent))
     }
 
+    /// store a sent transaction
+    pub fn insert_sent_tx(&self, tx: &SentTx) -> Result<(), Error> {
+        let tree = self
+            .db
+            .open_tree(SENT_TXS_TREE)
+            .map_err(|e| Error::Wallet(format!("open sent_txs tree: {}", e)))?;
+        let value = serde_json::to_vec(tx)
+            .map_err(|e| Error::Wallet(format!("serialize sent tx: {}", e)))?;
+        tree.insert(tx.txid.as_bytes(), value)
+            .map_err(|e| Error::Wallet(format!("insert sent tx: {}", e)))?;
+        Ok(())
+    }
+
+    /// all sent transactions, sorted by timestamp descending
+    pub fn all_sent_txs(&self) -> Result<Vec<SentTx>, Error> {
+        let tree = self
+            .db
+            .open_tree(SENT_TXS_TREE)
+            .map_err(|e| Error::Wallet(format!("open sent_txs tree: {}", e)))?;
+
+        let mut txs = Vec::new();
+        for entry in tree.iter() {
+            let (_, value) =
+                entry.map_err(|e| Error::Wallet(format!("iterate sent_txs: {}", e)))?;
+            let tx: SentTx = serde_json::from_slice(&value)
+                .map_err(|e| Error::Wallet(format!("deserialize sent tx: {}", e)))?;
+            txs.push(tx);
+        }
+
+        txs.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+        Ok(txs)
+    }
+
     /// all received notes (non-change), sorted by height descending
     pub fn all_received_notes(&self) -> Result<Vec<WalletNote>, Error> {
         let notes_tree = self
@@ -213,5 +312,218 @@ impl Wallet {
 
         notes.sort_by(|a, b| b.block_height.cmp(&a.block_height));
         Ok(notes)
+    }
+
+    // -- payment request methods --
+
+    /// monotonic counter for payment request IDs (atomic via sled CAS)
+    pub fn next_request_id(&self) -> Result<u64, Error> {
+        loop {
+            let old = self
+                .db
+                .get(NEXT_REQUEST_ID_KEY)
+                .map_err(|e| Error::Wallet(format!("read next_request_id: {}", e)))?;
+
+            let current = match &old {
+                Some(bytes) if bytes.len() == 8 => {
+                    u64::from_le_bytes(bytes.as_ref().try_into().expect("len checked"))
+                }
+                _ => 0,
+            };
+
+            let next = current + 1;
+            let cas_result = self
+                .db
+                .compare_and_swap(
+                    NEXT_REQUEST_ID_KEY,
+                    old.as_deref(),
+                    Some(&next.to_le_bytes()[..]),
+                )
+                .map_err(|e| Error::Wallet(format!("CAS next_request_id: {}", e)))?;
+
+            if cas_result.is_ok() {
+                return Ok(current);
+            }
+            // CAS failed = concurrent modification, retry
+        }
+    }
+
+    pub fn insert_payment_request(&self, req: &PaymentRequest) -> Result<(), Error> {
+        let tree = self
+            .db
+            .open_tree(PAYMENT_REQUESTS_TREE)
+            .map_err(|e| Error::Wallet(format!("open payment_requests tree: {}", e)))?;
+        let value = serde_json::to_vec(req)
+            .map_err(|e| Error::Wallet(format!("serialize payment request: {}", e)))?;
+        tree.insert(req.id.to_be_bytes(), value)
+            .map_err(|e| Error::Wallet(format!("insert payment request: {}", e)))?;
+        Ok(())
+    }
+
+    pub fn get_payment_request(&self, id: u64) -> Result<PaymentRequest, Error> {
+        let tree = self
+            .db
+            .open_tree(PAYMENT_REQUESTS_TREE)
+            .map_err(|e| Error::Wallet(format!("open payment_requests tree: {}", e)))?;
+        let value = tree
+            .get(id.to_be_bytes())
+            .map_err(|e| Error::Wallet(format!("get payment request: {}", e)))?
+            .ok_or_else(|| Error::Wallet(format!("payment request {} not found", id)))?;
+        serde_json::from_slice(&value)
+            .map_err(|e| Error::Wallet(format!("deserialize payment request: {}", e)))
+    }
+
+    pub fn update_payment_request(&self, req: &PaymentRequest) -> Result<(), Error> {
+        self.insert_payment_request(req)
+    }
+
+    /// list payment requests with optional status filter
+    pub fn list_payment_requests(
+        &self,
+        status_filter: Option<&str>,
+    ) -> Result<Vec<PaymentRequest>, Error> {
+        let tree = self
+            .db
+            .open_tree(PAYMENT_REQUESTS_TREE)
+            .map_err(|e| Error::Wallet(format!("open payment_requests tree: {}", e)))?;
+        let mut reqs = Vec::new();
+        for entry in tree.iter() {
+            let (_, value) = entry
+                .map_err(|e| Error::Wallet(format!("iterate payment_requests: {}", e)))?;
+            let req: PaymentRequest = serde_json::from_slice(&value)
+                .map_err(|e| Error::Wallet(format!("deserialize payment request: {}", e)))?;
+            if let Some(filter) = status_filter {
+                if req.status != filter {
+                    continue;
+                }
+            }
+            reqs.push(req);
+        }
+        Ok(reqs)
+    }
+
+    /// find a pending request whose recipient matches the given 43-byte address
+    pub fn find_request_by_recipient(&self, recipient_bytes: &[u8]) -> Result<Option<PaymentRequest>, Error> {
+        let tree = self
+            .db
+            .open_tree(PAYMENT_REQUESTS_TREE)
+            .map_err(|e| Error::Wallet(format!("open payment_requests tree: {}", e)))?;
+        for entry in tree.iter() {
+            let (_, value) = entry
+                .map_err(|e| Error::Wallet(format!("iterate payment_requests: {}", e)))?;
+            let req: PaymentRequest = serde_json::from_slice(&value)
+                .map_err(|e| Error::Wallet(format!("deserialize payment request: {}", e)))?;
+            if req.status == "pending" && req.recipient == recipient_bytes {
+                return Ok(Some(req));
+            }
+        }
+        Ok(None)
+    }
+
+    pub fn set_forward_address(&self, addr: &str) -> Result<(), Error> {
+        self.db
+            .insert(FORWARD_ADDRESS_KEY, addr.as_bytes())
+            .map_err(|e| Error::Wallet(format!("write forward address: {}", e)))?;
+        Ok(())
+    }
+
+    pub fn get_forward_address(&self) -> Result<Option<String>, Error> {
+        match self
+            .db
+            .get(FORWARD_ADDRESS_KEY)
+            .map_err(|e| Error::Wallet(format!("read forward address: {}", e)))?
+        {
+            Some(bytes) => {
+                let s = String::from_utf8(bytes.to_vec())
+                    .map_err(|e| Error::Wallet(format!("forward address not utf8: {}", e)))?;
+                Ok(Some(s))
+            }
+            None => Ok(None),
+        }
+    }
+
+    // -- withdrawal request methods --
+
+    pub fn next_withdrawal_id(&self) -> Result<u64, Error> {
+        loop {
+            let old = self
+                .db
+                .get(NEXT_WITHDRAWAL_ID_KEY)
+                .map_err(|e| Error::Wallet(format!("read next_withdrawal_id: {}", e)))?;
+
+            let current = match &old {
+                Some(bytes) if bytes.len() == 8 => {
+                    u64::from_le_bytes(bytes.as_ref().try_into().expect("len checked"))
+                }
+                _ => 0,
+            };
+
+            let next = current + 1;
+            let cas_result = self
+                .db
+                .compare_and_swap(
+                    NEXT_WITHDRAWAL_ID_KEY,
+                    old.as_deref(),
+                    Some(&next.to_le_bytes()[..]),
+                )
+                .map_err(|e| Error::Wallet(format!("CAS next_withdrawal_id: {}", e)))?;
+
+            if cas_result.is_ok() {
+                return Ok(current);
+            }
+        }
+    }
+
+    pub fn insert_withdrawal_request(&self, req: &WithdrawalRequest) -> Result<(), Error> {
+        let tree = self
+            .db
+            .open_tree(WITHDRAWAL_REQUESTS_TREE)
+            .map_err(|e| Error::Wallet(format!("open withdrawal_requests tree: {}", e)))?;
+        let value = serde_json::to_vec(req)
+            .map_err(|e| Error::Wallet(format!("serialize withdrawal request: {}", e)))?;
+        tree.insert(req.id.to_be_bytes(), value)
+            .map_err(|e| Error::Wallet(format!("insert withdrawal request: {}", e)))?;
+        Ok(())
+    }
+
+    pub fn get_withdrawal_request(&self, id: u64) -> Result<WithdrawalRequest, Error> {
+        let tree = self
+            .db
+            .open_tree(WITHDRAWAL_REQUESTS_TREE)
+            .map_err(|e| Error::Wallet(format!("open withdrawal_requests tree: {}", e)))?;
+        let value = tree
+            .get(id.to_be_bytes())
+            .map_err(|e| Error::Wallet(format!("get withdrawal request: {}", e)))?
+            .ok_or_else(|| Error::Wallet(format!("withdrawal request {} not found", id)))?;
+        serde_json::from_slice(&value)
+            .map_err(|e| Error::Wallet(format!("deserialize withdrawal request: {}", e)))
+    }
+
+    pub fn update_withdrawal_request(&self, req: &WithdrawalRequest) -> Result<(), Error> {
+        self.insert_withdrawal_request(req)
+    }
+
+    pub fn list_withdrawal_requests(
+        &self,
+        status_filter: Option<&str>,
+    ) -> Result<Vec<WithdrawalRequest>, Error> {
+        let tree = self
+            .db
+            .open_tree(WITHDRAWAL_REQUESTS_TREE)
+            .map_err(|e| Error::Wallet(format!("open withdrawal_requests tree: {}", e)))?;
+        let mut reqs = Vec::new();
+        for entry in tree.iter() {
+            let (_, value) = entry
+                .map_err(|e| Error::Wallet(format!("iterate withdrawal_requests: {}", e)))?;
+            let req: WithdrawalRequest = serde_json::from_slice(&value)
+                .map_err(|e| Error::Wallet(format!("deserialize withdrawal request: {}", e)))?;
+            if let Some(filter) = status_filter {
+                if req.status != filter {
+                    continue;
+                }
+            }
+            reqs.push(req);
+        }
+        Ok(reqs)
     }
 }

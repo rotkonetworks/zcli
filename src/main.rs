@@ -1,11 +1,12 @@
 mod address;
 mod cli;
 mod client;
-mod error;
+pub mod error;
 mod key;
 mod ops;
+pub mod quic;
 mod tx;
-mod wallet;
+pub mod wallet;
 mod witness;
 
 use std::sync::{Arc, Mutex};
@@ -14,7 +15,7 @@ use clap::Parser;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
 
-use cli::{Cli, Command};
+use cli::{Cli, Command, MerchantAction};
 use error::Error;
 
 #[tokio::main]
@@ -24,7 +25,7 @@ async fn main() {
         Ok(()) => 0,
         Err(e) => {
             let code = e.exit_code();
-            if cli.script {
+            if cli.json {
                 let msg = serde_json::json!({ "error": e.to_string() });
                 eprintln!("{}", msg);
             } else {
@@ -46,11 +47,12 @@ async fn run(cli: &Cli) -> Result<(), Error> {
         } => cmd_address(cli, mainnet, *orchard, *transparent),
         Command::Receive => cmd_receive(cli, mainnet),
         Command::Notes => cmd_notes(cli),
+        Command::History => cmd_history(cli),
         Command::Balance => cmd_balance(cli, mainnet).await,
         Command::Sync { from, position } => cmd_sync(cli, mainnet, *from, *position).await,
         Command::Shield { fee } => {
             let seed = load_seed(cli)?;
-            ops::shield::shield(&seed, &cli.endpoint, *fee, mainnet, cli.script).await
+            ops::shield::shield(&seed, &cli.endpoint, *fee, mainnet, cli.json).await
         }
         Command::Send {
             amount,
@@ -65,7 +67,7 @@ async fn run(cli: &Cli) -> Result<(), Error> {
                 memo.as_deref(),
                 &cli.endpoint,
                 mainnet,
-                cli.script,
+                cli.json,
             )
             .await
         }
@@ -80,7 +82,10 @@ async fn run(cli: &Cli) -> Result<(), Error> {
         Command::TreeInfo { height } => cmd_tree_info(cli, *height).await,
         Command::Export => {
             let seed = load_seed(cli)?;
-            ops::export::export(&seed, mainnet, cli.script)
+            ops::export::export(&seed, mainnet, cli.json)
+        }
+        Command::Merchant { action } => {
+            cmd_merchant(cli, mainnet, action).await
         }
     }
 }
@@ -103,7 +108,7 @@ fn cmd_address(
 
     if show_t {
         let taddr = address::transparent_address(&seed, mainnet)?;
-        if cli.script {
+        if cli.json {
             result.insert("transparent".into(), serde_json::Value::String(taddr));
         } else {
             println!("{}", taddr);
@@ -112,14 +117,14 @@ fn cmd_address(
 
     if show_o {
         let uaddr = address::orchard_address(&seed, mainnet)?;
-        if cli.script {
+        if cli.json {
             result.insert("orchard".into(), serde_json::Value::String(uaddr));
         } else {
             println!("{}", uaddr);
         }
     }
 
-    if cli.script {
+    if cli.json {
         println!("{}", serde_json::Value::Object(result));
     }
 
@@ -131,7 +136,7 @@ fn cmd_receive(cli: &Cli, mainnet: bool) -> Result<(), Error> {
     let uaddr = address::orchard_address(&seed, mainnet)?;
     let taddr = address::transparent_address(&seed, mainnet)?;
 
-    if cli.script {
+    if cli.json {
         println!(
             "{}",
             serde_json::json!({
@@ -189,7 +194,7 @@ async fn cmd_balance(cli: &Cli, mainnet: bool) -> Result<(), Error> {
     let seed = load_seed(cli)?;
     let bal = ops::balance::get_balance(&seed, &cli.endpoint, mainnet).await?;
 
-    if cli.script {
+    if cli.json {
         println!(
             "{}",
             serde_json::json!({
@@ -225,13 +230,13 @@ async fn cmd_sync(
         &cli.endpoint,
         &cli.verify_endpoint,
         mainnet,
-        cli.script,
+        cli.json,
         from,
         position,
     )
     .await?;
 
-    if cli.script {
+    if cli.json {
         println!("{}", serde_json::json!({ "notes_found": found }));
     }
 
@@ -251,7 +256,7 @@ async fn cmd_tree_info(cli: &Cli, height: u32) -> Result<(), Error> {
     // quick parse: count the 01-prefixed nodes in the frontier
     let tree_size = parse_frontier_size(&tree_bytes)?;
 
-    if cli.script {
+    if cli.json {
         println!(
             "{}",
             serde_json::json!({
@@ -277,7 +282,7 @@ fn cmd_notes(cli: &Cli) -> Result<(), Error> {
     let wallet = wallet::Wallet::open(&wallet::Wallet::default_path())?;
     let notes = wallet.all_received_notes()?;
 
-    if cli.script {
+    if cli.json {
         let json: Vec<_> = notes
             .iter()
             .map(|n| {
@@ -287,8 +292,12 @@ fn cmd_notes(cli: &Cli) -> Result<(), Error> {
                     "zec": format!("{:.8}", n.value as f64 / 1e8),
                     "height": n.block_height,
                     "cmx": hex::encode(&n.cmx[..8]),
+                    "nullifier": hex::encode(n.nullifier),
                     "spent": spent,
                 });
+                if !n.txid.is_empty() {
+                    obj["txid"] = hex::encode(&n.txid).into();
+                }
                 if let Some(ref memo) = n.memo {
                     obj["memo"] = serde_json::Value::String(memo.clone());
                 }
@@ -304,17 +313,164 @@ fn cmd_notes(cli: &Cli) -> Result<(), Error> {
             println!("no received notes");
             return Ok(());
         }
-        println!("{:<10} {:>14} {:>18} memo", "height", "ZEC", "cmx");
+        println!("{:<10} {:>14} {:>7} memo", "height", "ZEC", "spent");
         for n in &notes {
+            let spent = wallet.is_spent(&n.nullifier).unwrap_or(false);
             let memo = n.memo.as_deref().unwrap_or("");
             println!(
-                "{:<10} {:>14.8} {:>18} {}",
+                "{:<10} {:>14.8} {:>7} {}",
                 n.block_height,
                 n.value as f64 / 1e8,
-                hex::encode(&n.cmx[..8]),
+                if spent { "yes" } else { "" },
                 memo,
             );
         }
+    }
+
+    Ok(())
+}
+
+/// unified history entry for sorting recv + sent together
+struct HistoryEntry {
+    height: u32,
+    timestamp: u64,
+    direction: &'static str,
+    amount: u64,
+    memo: Option<String>,
+    txid: String,
+    // sent-only fields
+    fee: Option<u64>,
+    recipient: Option<String>,
+    tx_type: Option<String>,
+    // recv-only
+    spent: Option<bool>,
+}
+
+impl HistoryEntry {
+    /// sort key: height first (descending), then timestamp for unconfirmed
+    fn sort_key(&self) -> (std::cmp::Reverse<u32>, std::cmp::Reverse<u64>) {
+        (
+            std::cmp::Reverse(self.height),
+            std::cmp::Reverse(self.timestamp),
+        )
+    }
+}
+
+fn cmd_history(cli: &Cli) -> Result<(), Error> {
+    let wallet = wallet::Wallet::open(&wallet::Wallet::default_path())?;
+
+    let mut entries: Vec<HistoryEntry> = Vec::new();
+
+    // received notes
+    for n in wallet.all_received_notes()? {
+        let spent = wallet.is_spent(&n.nullifier).unwrap_or(false);
+        entries.push(HistoryEntry {
+            height: n.block_height,
+            timestamp: 0,
+            direction: "recv",
+            amount: n.value,
+            memo: n.memo.clone(),
+            txid: if n.txid.is_empty() {
+                String::new()
+            } else {
+                hex::encode(&n.txid)
+            },
+            fee: None,
+            recipient: None,
+            tx_type: None,
+            spent: Some(spent),
+        });
+    }
+
+    // sent transactions
+    for tx in wallet.all_sent_txs()? {
+        entries.push(HistoryEntry {
+            height: tx.block_height,
+            timestamp: tx.timestamp,
+            direction: "sent",
+            amount: tx.amount,
+            memo: tx.memo.clone(),
+            txid: tx.txid.clone(),
+            fee: Some(tx.fee),
+            recipient: Some(tx.recipient.clone()),
+            tx_type: Some(tx.tx_type.clone()),
+            spent: None,
+        });
+    }
+
+    entries.sort_by_key(|e| e.sort_key());
+
+    if cli.json {
+        let json: Vec<_> = entries
+            .iter()
+            .map(|e| {
+                let mut obj = serde_json::json!({
+                    "direction": e.direction,
+                    "zat": e.amount,
+                    "zec": format!("{:.8}", e.amount as f64 / 1e8),
+                    "height": e.height,
+                    "txid": e.txid,
+                });
+                if let Some(fee) = e.fee {
+                    obj["fee_zat"] = fee.into();
+                }
+                if let Some(ref r) = e.recipient {
+                    obj["recipient"] = r.clone().into();
+                }
+                if let Some(ref t) = e.tx_type {
+                    obj["type"] = t.clone().into();
+                }
+                if let Some(spent) = e.spent {
+                    obj["spent"] = spent.into();
+                }
+                if let Some(ref m) = e.memo {
+                    obj["memo"] = m.clone().into();
+                }
+                if e.timestamp > 0 {
+                    obj["timestamp"] = e.timestamp.into();
+                }
+                obj
+            })
+            .collect();
+        println!(
+            "{}",
+            serde_json::to_string(&json).unwrap_or_else(|_| "[]".into())
+        );
+        return Ok(());
+    }
+
+    if entries.is_empty() {
+        println!("no transaction history");
+        return Ok(());
+    }
+
+    println!(
+        "{:<6} {:<10} {:>14} {:>8} {}",
+        "dir", "height", "ZEC", "txid", "info"
+    );
+    for e in &entries {
+        let txid_short = if e.txid.len() >= 8 {
+            &e.txid[..8]
+        } else {
+            &e.txid
+        };
+        let info = match e.direction {
+            "recv" => e.memo.as_deref().unwrap_or("").to_string(),
+            "sent" => e.tx_type.as_deref().unwrap_or("").to_string(),
+            _ => String::new(),
+        };
+        println!(
+            "{:<6} {:<10} {:>14.8} {:>8} {}",
+            e.direction,
+            if e.height > 0 {
+                e.height.to_string()
+            } else {
+                "pending".into()
+            },
+            e.amount as f64 / 1e8,
+            txid_short,
+            info,
+        );
     }
 
     Ok(())
@@ -337,9 +493,11 @@ fn notes_json() -> String {
                 "zat": n.value,
                 "zec": format!("{:.8}", n.value as f64 / 1e8),
                 "height": n.block_height,
-                "cmx": hex::encode(&n.cmx[..8]),
                 "spent": spent,
             });
+            if !n.txid.is_empty() {
+                obj["txid"] = hex::encode(&n.txid).into();
+            }
             if let Some(ref memo) = n.memo {
                 obj["memo"] = serde_json::Value::String(memo.clone());
             }
@@ -437,6 +595,459 @@ async fn cmd_board(
             json,
         );
         let _ = stream.write_all(response.as_bytes()).await;
+    }
+}
+
+async fn cmd_merchant(
+    cli: &Cli,
+    mainnet: bool,
+    action: &MerchantAction,
+) -> Result<(), Error> {
+    match action {
+        MerchantAction::Create { amount, memo, deposit } => {
+            let seed = load_seed(cli)?;
+            let amount_zat = ops::merchant::parse_amount(amount)?;
+            let req =
+                ops::merchant::create_request(&seed, amount_zat, memo.as_deref(), *deposit, mainnet)?;
+
+            if cli.json {
+                println!("{}", serde_json::json!({
+                    "id": req.id,
+                    "address": req.address,
+                    "amount_zat": req.amount_zat,
+                    "amount_zec": format!("{:.8}", req.amount_zat as f64 / 1e8),
+                    "label": req.label,
+                    "deposit": req.deposit,
+                    "status": req.status,
+                }));
+            } else {
+                // QR code
+                use qrcode::QrCode;
+                if let Ok(code) = QrCode::new(req.address.as_bytes()) {
+                    let width = code.width();
+                    let modules = code.into_colors();
+                    let dark = |r: usize, c: usize| -> bool {
+                        if r < width && c < width {
+                            modules[r * width + c] == qrcode::Color::Dark
+                        } else {
+                            false
+                        }
+                    };
+                    let quiet = 1;
+                    let total = width + quiet * 2;
+                    for row in (0..total).step_by(2) {
+                        for col in 0..total {
+                            let r0 = row.wrapping_sub(quiet);
+                            let c0 = col.wrapping_sub(quiet);
+                            let r1 = r0.wrapping_add(1);
+                            let top = dark(r0, c0);
+                            let bot = dark(r1, c0);
+                            match (top, bot) {
+                                (true, true) => print!("\u{2588}"),
+                                (true, false) => print!("\u{2580}"),
+                                (false, true) => print!("\u{2584}"),
+                                (false, false) => print!(" "),
+                            }
+                        }
+                        println!();
+                    }
+                    println!();
+                }
+
+                println!("request: #{}", req.id);
+                println!("address: {}", req.address);
+                if req.amount_zat > 0 {
+                    println!("amount:  {:.8} ZEC", req.amount_zat as f64 / 1e8);
+                } else {
+                    println!("amount:  any");
+                }
+                if req.deposit {
+                    println!("mode:    deposit (permanent, accumulates)");
+                }
+                if let Some(ref label) = req.label {
+                    println!("label:   {}", label);
+                }
+            }
+            Ok(())
+        }
+
+        MerchantAction::List { status } => {
+            let wallet = wallet::Wallet::open(&wallet::Wallet::default_path())?;
+            let reqs = wallet.list_payment_requests(status.as_deref())?;
+
+            if cli.json {
+                let json: Vec<_> = reqs
+                    .iter()
+                    .map(|r| {
+                        serde_json::json!({
+                            "id": r.id,
+                            "address": r.address,
+                            "amount_zat": r.amount_zat,
+                            "amount_zec": format!("{:.8}", r.amount_zat as f64 / 1e8),
+                            "label": r.label,
+                            "status": r.status,
+                            "received_zat": r.received_zat,
+                            "forward_txid": r.forward_txid,
+                        })
+                    })
+                    .collect();
+                println!(
+                    "{}",
+                    serde_json::to_string(&json).unwrap_or_else(|_| "[]".into())
+                );
+            } else {
+                if reqs.is_empty() {
+                    println!("no payment requests");
+                    return Ok(());
+                }
+                println!(
+                    "{:<4} {:>14} {:<12} {:<24} {}",
+                    "id", "ZEC", "status", "address", "label"
+                );
+                for r in &reqs {
+                    let addr_short = if r.address.len() > 20 {
+                        &r.address[..20]
+                    } else {
+                        &r.address
+                    };
+                    let amt = if r.amount_zat > 0 {
+                        format!("{:.8}", r.amount_zat as f64 / 1e8)
+                    } else {
+                        "any".into()
+                    };
+                    println!(
+                        "{:<4} {:>14} {:<12} {:<24} {}",
+                        r.id,
+                        amt,
+                        r.status,
+                        format!("{}...", addr_short),
+                        r.label.as_deref().unwrap_or(""),
+                    );
+                }
+            }
+            Ok(())
+        }
+
+        MerchantAction::Check { forward, confirmations, webhook_url, webhook_secret } => {
+            let seed = load_seed(cli)?;
+
+            // sync first
+            if !cli.json {
+                eprintln!("syncing...");
+            }
+            let _ = ops::sync::sync(
+                &seed,
+                &cli.endpoint,
+                &cli.verify_endpoint,
+                mainnet,
+                cli.json,
+                None,
+                None,
+            )
+            .await;
+
+            // match payments (with confirmation depth)
+            let tip = wallet::Wallet::open(&wallet::Wallet::default_path())?.sync_height()?;
+            let matched = ops::merchant::match_payments(tip, *confirmations)?;
+            if !cli.json && matched > 0 {
+                eprintln!("{} payment(s) matched", matched);
+            }
+
+            // process withdrawals
+            let (w_ok, w_fail, w_insuf) =
+                ops::merchant::process_withdrawals(&seed, &cli.endpoint, mainnet, cli.json)
+                .await.unwrap_or((0, 0, 0));
+
+            // forward if address available
+            let fwd_addr = ops::merchant::resolve_forward_address(forward.as_deref())?;
+            let (forwarded, fwd_failed) = if let Some(ref addr) = fwd_addr {
+                ops::merchant::forward_payments(
+                    &seed,
+                    addr,
+                    &cli.endpoint,
+                    mainnet,
+                    cli.json,
+                )
+                .await?
+            } else {
+                (0, 0)
+            };
+
+            // webhook: POST full state
+            if let (Some(url), Some(secret)) = (webhook_url.as_deref(), webhook_secret.as_deref()) {
+                let body = ops::merchant::requests_json();
+                if let Err(e) = ops::merchant::post_webhook(url, secret, &body).await {
+                    eprintln!("webhook failed: {}", e);
+                }
+            }
+
+            if cli.json {
+                println!("{}", serde_json::json!({
+                    "matched": matched,
+                    "forwarded": forwarded,
+                    "forward_failed": fwd_failed,
+                    "forward_address": fwd_addr,
+                    "withdrawals_completed": w_ok,
+                    "withdrawals_failed": w_fail,
+                    "withdrawals_insufficient": w_insuf,
+                }));
+            } else {
+                println!(
+                    "matched: {}, forwarded: {}, failed: {}, withdrawals: {}/{}/{}",
+                    matched, forwarded, fwd_failed, w_ok, w_fail, w_insuf
+                );
+            }
+            Ok(())
+        }
+
+        MerchantAction::Watch { forward, confirmations, interval, dir, webhook_url, webhook_secret, quic, peer_key } => {
+            let seed = load_seed(cli)?;
+            let interval = *interval;
+            let confirmations = *confirmations;
+
+            // QUIC link to exchange API
+            let mut quic_link = if let Some(ref addr) = quic {
+                let peer_hex = peer_key.as_deref().ok_or_else(|| {
+                    Error::Other("--peer-key required when using --quic".into())
+                })?;
+                let peer_pk = quic::parse_peer_key(peer_hex)?;
+                let (seed32, pub32) = key::load_ssh_ed25519_keypair(&cli.identity_path())?;
+                let (cert, qkey) = quic::generate_cert(&seed32, &pub32)?;
+                let config = quic::client_config(cert, qkey, &peer_pk)?;
+                let link = quic::QuicLink::connect(addr, config).await?;
+
+                // spawn CE stream handler
+                let conn = link.connection().clone();
+                let seed_copy = key::WalletSeed::from_bytes(*seed.as_bytes());
+                tokio::spawn(async move {
+                    quic::QuicLink::handle_incoming(conn, seed_copy, mainnet).await;
+                });
+
+                if !cli.json {
+                    eprintln!("quic: connected to {}", addr);
+                }
+                Some(link)
+            } else {
+                None
+            };
+
+            loop {
+                // sync
+                if !cli.json {
+                    eprintln!("syncing...");
+                }
+                let _ = ops::sync::sync(
+                    &seed,
+                    &cli.endpoint,
+                    &cli.verify_endpoint,
+                    mainnet,
+                    cli.json,
+                    None,
+                    None,
+                )
+                .await;
+
+                // match (with confirmation depth)
+                let tip = wallet::Wallet::open(&wallet::Wallet::default_path())?
+                    .sync_height()?;
+                let matched = ops::merchant::match_payments(tip, confirmations)?;
+
+                // withdraw
+                let (w_ok, w_fail, w_insuf) =
+                    ops::merchant::process_withdrawals(&seed, &cli.endpoint, mainnet, cli.json)
+                    .await.unwrap_or((0, 0, 0));
+
+                // forward
+                let fwd_addr = ops::merchant::resolve_forward_address(forward.as_deref())?;
+                let (forwarded, fwd_failed) = if let Some(ref addr) = fwd_addr {
+                    ops::merchant::forward_payments(
+                        &seed,
+                        addr,
+                        &cli.endpoint,
+                        mainnet,
+                        cli.json,
+                    )
+                    .await
+                    .unwrap_or((0, 0))
+                } else {
+                    (0, 0)
+                };
+
+                let state_json = ops::merchant::requests_json();
+
+                // local: atomic file push (same-machine)
+                if let Some(ref d) = dir {
+                    if let Err(e) = ops::merchant::atomic_write(
+                        &format!("{}/requests.json", d),
+                        state_json.as_bytes(),
+                    ) {
+                        eprintln!("warning: failed to write requests.json: {}", e);
+                    }
+                }
+
+                // remote: outbound webhook (HMAC-SHA256 signed)
+                if let (Some(url), Some(secret)) = (webhook_url.as_deref(), webhook_secret.as_deref()) {
+                    if let Err(e) = ops::merchant::post_webhook(url, secret, &state_json).await {
+                        eprintln!("webhook failed: {}", e);
+                    }
+                }
+
+                // QUIC: push state to exchange API
+                if let Some(ref mut link) = quic_link {
+                    if let Err(e) = link.push_state(&state_json).await {
+                        eprintln!("quic push failed: {}", e);
+                    }
+                }
+
+                if !cli.json {
+                    eprintln!(
+                        "matched: {}, fwd: {}/{}, withdraw: {}/{}/{} — sleeping {}s",
+                        matched, forwarded, fwd_failed, w_ok, w_fail, w_insuf, interval
+                    );
+                }
+
+                tokio::time::sleep(std::time::Duration::from_secs(interval)).await;
+            }
+        }
+
+        MerchantAction::Withdraw { amount, address, memo } => {
+            // validate address format
+            if !(address.starts_with("t1") || address.starts_with("tm")
+                || address.starts_with("u1") || address.starts_with("utest1"))
+            {
+                return Err(Error::Address(format!(
+                    "unrecognized address format: {}", address
+                )));
+            }
+
+            let amount_zat = ops::merchant::parse_amount(amount)?;
+            let min_amount = 10_000; // MARGINAL_FEE * 2
+            if amount_zat <= min_amount {
+                return Err(Error::Transaction(format!(
+                    "withdrawal amount must be > {} zat (got {})", min_amount, amount_zat
+                )));
+            }
+
+            let w = wallet::Wallet::open(&wallet::Wallet::default_path())?;
+            let id = w.next_withdrawal_id()?;
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+
+            let wr = wallet::WithdrawalRequest {
+                id,
+                address: address.clone(),
+                amount_zat,
+                label: memo.clone(),
+                created_at: now,
+                status: "pending".into(),
+                txid: None,
+                fee_zat: None,
+                error: None,
+            };
+            w.insert_withdrawal_request(&wr)?;
+
+            if cli.json {
+                println!("{}", serde_json::json!({
+                    "id": wr.id,
+                    "amount_zat": wr.amount_zat,
+                    "amount_zec": format!("{:.8}", wr.amount_zat as f64 / 1e8),
+                    "address": wr.address,
+                    "label": wr.label,
+                    "status": wr.status,
+                }));
+            } else {
+                println!("withdrawal #{} queued: {:.8} ZEC → {}", wr.id, wr.amount_zat as f64 / 1e8, address);
+                if let Some(ref label) = wr.label {
+                    println!("label: {}", label);
+                }
+            }
+            Ok(())
+        }
+
+        MerchantAction::WithdrawList { status } => {
+            let w = wallet::Wallet::open(&wallet::Wallet::default_path())?;
+            let reqs = w.list_withdrawal_requests(status.as_deref())?;
+
+            if cli.json {
+                let json: Vec<_> = reqs
+                    .iter()
+                    .map(|r| {
+                        serde_json::json!({
+                            "id": r.id,
+                            "amount_zat": r.amount_zat,
+                            "amount_zec": format!("{:.8}", r.amount_zat as f64 / 1e8),
+                            "address": r.address,
+                            "label": r.label,
+                            "status": r.status,
+                            "txid": r.txid,
+                            "fee_zat": r.fee_zat,
+                            "error": r.error,
+                        })
+                    })
+                    .collect();
+                println!(
+                    "{}",
+                    serde_json::to_string(&json).unwrap_or_else(|_| "[]".into())
+                );
+            } else {
+                if reqs.is_empty() {
+                    println!("no withdrawal requests");
+                    return Ok(());
+                }
+                println!(
+                    "{:<4} {:>14} {:<12} {:>10} {}",
+                    "id", "ZEC", "status", "txid", "label"
+                );
+                for r in &reqs {
+                    let txid_short = r.txid.as_deref().map(|t| {
+                        if t.len() > 8 { &t[..8] } else { t }
+                    }).unwrap_or("");
+                    println!(
+                        "{:<4} {:>14.8} {:<12} {:>10} {}",
+                        r.id,
+                        r.amount_zat as f64 / 1e8,
+                        r.status,
+                        txid_short,
+                        r.label.as_deref().unwrap_or(""),
+                    );
+                }
+            }
+            Ok(())
+        }
+
+        MerchantAction::SetForward { address } => {
+            let wallet = wallet::Wallet::open(&wallet::Wallet::default_path())?;
+            if let Some(addr) = address {
+                // validate address format before storing
+                if !(addr.starts_with("t1") || addr.starts_with("tm")
+                    || addr.starts_with("u1") || addr.starts_with("utest1"))
+                {
+                    return Err(Error::Address(format!(
+                        "unrecognized address format: {}",
+                        addr
+                    )));
+                }
+                wallet.set_forward_address(addr)?;
+                if cli.json {
+                    println!("{}", serde_json::json!({ "forward_address": addr }));
+                } else {
+                    println!("forward address set: {}", addr);
+                }
+            } else {
+                let current = wallet.get_forward_address()?;
+                if cli.json {
+                    println!("{}", serde_json::json!({ "forward_address": current }));
+                } else {
+                    match current {
+                        Some(addr) => println!("forward address: {}", addr),
+                        None => println!("no forward address set"),
+                    }
+                }
+            }
+            Ok(())
+        }
     }
 }
 

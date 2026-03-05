@@ -20,7 +20,7 @@ pub async fn shield(
     endpoint: &str,
     fee_override: Option<u64>,
     mainnet: bool,
-    script: bool,
+    json: bool,
 ) -> Result<(), Error> {
     let taddr = address::transparent_address(seed, mainnet)?;
 
@@ -58,7 +58,7 @@ pub async fn shield(
     // recipient is our own orchard address
     let recipient = tx::self_shielding_address(seed, mainnet)?;
 
-    if !script {
+    if !json {
         eprintln!(
             "shielding {:.8} ZEC ({} UTXOs, fee {:.8} ZEC)",
             (total - fee) as f64 / 1e8,
@@ -73,7 +73,7 @@ pub async fn shield(
     // broadcast
     let result = client.send_transaction(tx_bytes).await?;
 
-    if script {
+    if json {
         println!(
             "{}",
             serde_json::json!({
