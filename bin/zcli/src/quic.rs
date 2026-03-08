@@ -78,16 +78,16 @@ pub fn generate_cert(
 
     // privateKey OCTET STRING { OCTET STRING { seed } }
     pkcs8.push(0x04); // outer OCTET STRING
-    pkcs8.push(34);   // length = 2 + 32
+    pkcs8.push(34); // length = 2 + 32
     pkcs8.push(0x04); // inner OCTET STRING
     pkcs8.push(32);
     pkcs8.extend_from_slice(seed);
 
     // publicKey [1] { BIT STRING { pubkey } }
     pkcs8.push(0xa1); // context tag [1]
-    pkcs8.push(35);   // length = 3 + 32
+    pkcs8.push(35); // length = 3 + 32
     pkcs8.push(0x03); // BIT STRING
-    pkcs8.push(33);   // length = 1 + 32
+    pkcs8.push(33); // length = 1 + 32
     pkcs8.push(0x00); // no unused bits
     pkcs8.extend_from_slice(pubkey);
 
@@ -155,9 +155,8 @@ impl rustls::client::danger::ServerCertVerifier for PinnedServerVerifier {
         _ocsp_response: &[u8],
         _now: rustls::pki_types::UnixTime,
     ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
-        let pubkey = extract_pubkey_from_cert(end_entity.as_ref()).ok_or_else(|| {
-            rustls::Error::General("no ed25519 pubkey in server cert".into())
-        })?;
+        let pubkey = extract_pubkey_from_cert(end_entity.as_ref())
+            .ok_or_else(|| rustls::Error::General("no ed25519 pubkey in server cert".into()))?;
         if pubkey != self.expected {
             return Err(rustls::Error::General(format!(
                 "server pubkey mismatch: got {}, expected {}",
@@ -207,9 +206,8 @@ impl rustls::server::danger::ClientCertVerifier for ClientCertVerifier {
         _now: rustls::pki_types::UnixTime,
     ) -> Result<rustls::server::danger::ClientCertVerified, rustls::Error> {
         // just verify we can extract a valid ed25519 pubkey
-        extract_pubkey_from_cert(end_entity.as_ref()).ok_or_else(|| {
-            rustls::Error::General("no ed25519 pubkey in client cert".into())
-        })?;
+        extract_pubkey_from_cert(end_entity.as_ref())
+            .ok_or_else(|| rustls::Error::General("no ed25519 pubkey in client cert".into()))?;
         Ok(rustls::server::danger::ClientCertVerified::assertion())
     }
 
@@ -397,11 +395,7 @@ impl QuicLink {
     }
 
     /// accept and handle incoming CE streams (deposit/withdrawal requests)
-    pub async fn handle_incoming(
-        connection: quinn::Connection,
-        seed: WalletSeed,
-        mainnet: bool,
-    ) {
+    pub async fn handle_incoming(connection: quinn::Connection, seed: WalletSeed, mainnet: bool) {
         loop {
             let (mut send, mut recv) = match connection.accept_bi().await {
                 Ok(s) => s,
@@ -412,9 +406,7 @@ impl QuicLink {
             };
             let seed_bytes = *seed.as_bytes();
             tokio::spawn(async move {
-                if let Err(e) =
-                    handle_ce_stream(&mut send, &mut recv, &seed_bytes, mainnet).await
-                {
+                if let Err(e) = handle_ce_stream(&mut send, &mut recv, &seed_bytes, mainnet).await {
                     eprintln!("quic ce error: {}", e);
                 }
             });
@@ -442,7 +434,10 @@ async fn handle_ce_stream(
         STREAM_CE_DEPOSIT => handle_deposit(&req, seed_bytes, mainnet).await?,
         STREAM_CE_WITHDRAW => handle_withdraw(&req).await?,
         other => {
-            return Err(Error::Other(format!("unknown stream kind: 0x{:02x}", other)));
+            return Err(Error::Other(format!(
+                "unknown stream kind: 0x{:02x}",
+                other
+            )));
         }
     };
 
@@ -471,13 +466,8 @@ async fn handle_deposit(
     // retry on wallet lock contention
     for attempt in 0..10u64 {
         let seed = WalletSeed::from_bytes(*seed_bytes);
-        match merchant::create_request(
-            &seed,
-            amount_zat,
-            label_owned.as_deref(),
-            deposit,
-            mainnet,
-        ) {
+        match merchant::create_request(&seed, amount_zat, label_owned.as_deref(), deposit, mainnet)
+        {
             Ok(pr) => {
                 return Ok(serde_json::json!({
                     "id": pr.id,

@@ -1,6 +1,6 @@
 [package]
 name = "zecli"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 license = "MIT"
 description = "zcash wallet CLI - ssh keys as wallet seed, agent-friendly"
@@ -46,13 +46,16 @@ hmac = "0.12"
 sha2 = "0.10"
 ripemd = "0.1"
 
+# finite field traits (for pallas::Scalar::to_repr)
+ff = "0.13"
+
 # hashing
 blake2 = "0.10"
 blake2b_simd = "1.0"
 
 # gRPC-web client
 prost = "0.12"
-reqwest = { version = "0.12", features = ["rustls-tls"], default-features = false }
+reqwest = { version = "0.12", features = ["rustls-tls", "http2"], default-features = false }
 
 # gRPC (build-time proto codegen)
 tonic = { version = "0.11", default-features = false, features = ["codegen", "prost"] }
@@ -82,6 +85,9 @@ quinn = "0.11"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 rcgen = { version = "0.13", features = ["ring"] }
 ring = "0.17"
+
+# UR (Uniform Resources) decoding for zigner QR interop
+ur = "0.4"
 
 # misc
 urlencoding = "2"

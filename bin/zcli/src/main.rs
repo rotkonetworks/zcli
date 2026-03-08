@@ -1,4 +1,6 @@
 mod address;
+#[cfg(target_os = "linux")]
+mod cam;
 mod cli;
 mod client;
 pub mod error;
@@ -51,6 +53,11 @@ async fn run(cli: &Cli) -> Result<(), Error> {
         Command::Balance => cmd_balance(cli, mainnet).await,
         Command::Sync { from, position } => cmd_sync(cli, mainnet, *from, *position).await,
         Command::Shield { fee } => {
+            if load_fvk(cli, mainnet).is_some() {
+                return Err(Error::Other(
+                    "watch-only wallet: shielding requires spending key".into(),
+                ));
+            }
             let seed = load_seed(cli)?;
             ops::shield::shield(&seed, &cli.endpoint, *fee, mainnet, cli.json).await
         }
@@ -58,19 +65,58 @@ async fn run(cli: &Cli) -> Result<(), Error> {
             amount,
             recipient,
             memo,
+            airgap,
         } => {
-            let seed = load_seed(cli)?;
-            ops::send::send(
-                &seed,
-                amount,
-                recipient,
-                memo.as_deref(),
-                &cli.endpoint,
-                mainnet,
-                cli.json,
-            )
-            .await
+            if *airgap {
+                // airgap mode: try FVK first (watch-only), fall back to seed
+                let fvk = load_fvk(cli, mainnet);
+                if let Some(ref fvk) = fvk {
+                    ops::airgap::send_airgap_with_fvk(
+                        fvk,
+                        amount,
+                        recipient,
+                        memo.as_deref(),
+                        &cli.endpoint,
+                        mainnet,
+                        cli.json,
+                    )
+                    .await
+                } else {
+                    let seed = load_seed(cli)?;
+                    ops::airgap::send_airgap(
+                        &seed,
+                        amount,
+                        recipient,
+                        memo.as_deref(),
+                        &cli.endpoint,
+                        mainnet,
+                        cli.json,
+                    )
+                    .await
+                }
+            } else {
+                // non-airgap: requires spending key
+                let fvk = load_fvk(cli, mainnet);
+                if fvk.is_some() {
+                    return Err(Error::Other(
+                        "watch-only wallet: use --airgap for signing via zigner".into(),
+                    ));
+                }
+                let seed = load_seed(cli)?;
+                ops::send::send(
+                    &seed,
+                    amount,
+                    recipient,
+                    memo.as_deref(),
+                    &cli.endpoint,
+                    mainnet,
+                    cli.json,
+                )
+                .await
+            }
         }
+        Command::ImportFvk { hex } => cmd_import_fvk(cli, mainnet, hex.as_deref()),
+        Command::Scan { device, timeout } => cmd_scan(cli, device, *timeout),
         Command::Board {
             port,
             interval,
@@ -81,12 +127,15 @@ async fn run(cli: &Cli) -> Result<(), Error> {
         }
         Command::TreeInfo { height } => cmd_tree_info(cli, *height).await,
         Command::Export => {
+            if load_fvk(cli, mainnet).is_some() {
+                return Err(Error::Other(
+                    "watch-only wallet: export requires spending key".into(),
+                ));
+            }
             let seed = load_seed(cli)?;
             ops::export::export(&seed, mainnet, cli.json)
         }
-        Command::Merchant { action } => {
-            cmd_merchant(cli, mainnet, action).await
-        }
+        Command::Merchant { action } => cmd_merchant(cli, mainnet, action).await,
     }
 }
 
@@ -96,8 +145,6 @@ fn cmd_address(
     show_orchard: bool,
     show_transparent: bool,
 ) -> Result<(), Error> {
-    let seed = load_seed(cli)?;
-
     let (show_o, show_t) = if !show_orchard && !show_transparent {
         (true, true)
     } else {
@@ -106,17 +153,37 @@ fn cmd_address(
 
     let mut result = serde_json::Map::new();
 
+    // try FVK first (watch-only), fall back to seed
+    let fvk = load_fvk(cli, mainnet);
+
     if show_t {
-        let taddr = address::transparent_address(&seed, mainnet)?;
-        if cli.json {
-            result.insert("transparent".into(), serde_json::Value::String(taddr));
+        if fvk.is_some() {
+            if cli.json {
+                result.insert(
+                    "transparent".into(),
+                    serde_json::Value::String("(watch-only: no transparent key)".into()),
+                );
+            } else {
+                eprintln!("(watch-only wallet: transparent address unavailable)");
+            }
         } else {
-            println!("{}", taddr);
+            let seed = load_seed(cli)?;
+            let taddr = address::transparent_address(&seed, mainnet)?;
+            if cli.json {
+                result.insert("transparent".into(), serde_json::Value::String(taddr));
+            } else {
+                println!("{}", taddr);
+            }
         }
     }
 
     if show_o {
-        let uaddr = address::orchard_address(&seed, mainnet)?;
+        let uaddr = if let Some(ref fvk) = fvk {
+            address::orchard_address_from_fvk(fvk, mainnet)?
+        } else {
+            let seed = load_seed(cli)?;
+            address::orchard_address(&seed, mainnet)?
+        };
         if cli.json {
             result.insert("orchard".into(), serde_json::Value::String(uaddr));
         } else {
@@ -132,9 +199,16 @@ fn cmd_address(
 }
 
 fn cmd_receive(cli: &Cli, mainnet: bool) -> Result<(), Error> {
-    let seed = load_seed(cli)?;
-    let uaddr = address::orchard_address(&seed, mainnet)?;
-    let taddr = address::transparent_address(&seed, mainnet)?;
+    let fvk = load_fvk(cli, mainnet);
+    let (uaddr, taddr) = if let Some(ref fvk) = fvk {
+        let ua = address::orchard_address_from_fvk(fvk, mainnet)?;
+        (ua, "(watch-only)".to_string())
+    } else {
+        let seed = load_seed(cli)?;
+        let ua = address::orchard_address(&seed, mainnet)?;
+        let ta = address::transparent_address(&seed, mainnet)?;
+        (ua, ta)
+    };
 
     if cli.json {
         println!(
@@ -191,8 +265,21 @@ fn cmd_receive(cli: &Cli, mainnet: bool) -> Result<(), Error> {
 }
 
 async fn cmd_balance(cli: &Cli, mainnet: bool) -> Result<(), Error> {
-    let seed = load_seed(cli)?;
-    let bal = ops::balance::get_balance(&seed, &cli.endpoint, mainnet).await?;
+    // balance uses transparent + shielded; for watch-only we skip transparent
+    let fvk = load_fvk(cli, mainnet);
+    let bal = if fvk.is_some() {
+        // watch-only: shielded balance only (from local wallet db)
+        let wallet = wallet::Wallet::open(&wallet::Wallet::default_path())?;
+        let (shielded, _) = wallet.shielded_balance()?;
+        ops::balance::Balance {
+            transparent: 0,
+            shielded,
+            total: shielded,
+        }
+    } else {
+        let seed = load_seed(cli)?;
+        ops::balance::get_balance(&seed, &cli.endpoint, mainnet).await?
+    };
 
     if cli.json {
         println!(
@@ -224,17 +311,31 @@ async fn cmd_sync(
     from: Option<u32>,
     position: Option<u64>,
 ) -> Result<(), Error> {
-    let seed = load_seed(cli)?;
-    let found = ops::sync::sync(
-        &seed,
-        &cli.endpoint,
-        &cli.verify_endpoint,
-        mainnet,
-        cli.json,
-        from,
-        position,
-    )
-    .await?;
+    let fvk = load_fvk(cli, mainnet);
+    let found = if let Some(ref fvk) = fvk {
+        ops::sync::sync_with_fvk(
+            fvk,
+            &cli.endpoint,
+            &cli.verify_endpoints,
+            mainnet,
+            cli.json,
+            from,
+            position,
+        )
+        .await?
+    } else {
+        let seed = load_seed(cli)?;
+        ops::sync::sync(
+            &seed,
+            &cli.endpoint,
+            &cli.verify_endpoints,
+            mainnet,
+            cli.json,
+            from,
+            position,
+        )
+        .await?
+    };
 
     if cli.json {
         println!("{}", serde_json::json!({ "notes_found": found }));
@@ -522,7 +623,7 @@ async fn cmd_board(
     let _ = ops::sync::sync(
         seed,
         &cli.endpoint,
-        &cli.verify_endpoint,
+        &cli.verify_endpoints,
         mainnet,
         true,
         None,
@@ -541,7 +642,7 @@ async fn cmd_board(
     // sync loop
     let sync_state = Arc::clone(&state);
     let endpoint = cli.endpoint.clone();
-    let verify_endpoint = cli.verify_endpoint.clone();
+    let verify_endpoints = cli.verify_endpoints.clone();
     let seed_bytes: [u8; 64] = *seed.as_bytes();
     let dir_owned = dir.map(String::from);
     tokio::spawn(async move {
@@ -551,7 +652,7 @@ async fn cmd_board(
             match ops::sync::sync(
                 &seed,
                 &endpoint,
-                &verify_endpoint,
+                &verify_endpoints,
                 mainnet,
                 true,
                 None,
@@ -598,28 +699,36 @@ async fn cmd_board(
     }
 }
 
-async fn cmd_merchant(
-    cli: &Cli,
-    mainnet: bool,
-    action: &MerchantAction,
-) -> Result<(), Error> {
+async fn cmd_merchant(cli: &Cli, mainnet: bool, action: &MerchantAction) -> Result<(), Error> {
     match action {
-        MerchantAction::Create { amount, memo, deposit } => {
+        MerchantAction::Create {
+            amount,
+            memo,
+            deposit,
+        } => {
             let seed = load_seed(cli)?;
             let amount_zat = ops::merchant::parse_amount(amount)?;
-            let req =
-                ops::merchant::create_request(&seed, amount_zat, memo.as_deref(), *deposit, mainnet)?;
+            let req = ops::merchant::create_request(
+                &seed,
+                amount_zat,
+                memo.as_deref(),
+                *deposit,
+                mainnet,
+            )?;
 
             if cli.json {
-                println!("{}", serde_json::json!({
-                    "id": req.id,
-                    "address": req.address,
-                    "amount_zat": req.amount_zat,
-                    "amount_zec": format!("{:.8}", req.amount_zat as f64 / 1e8),
-                    "label": req.label,
-                    "deposit": req.deposit,
-                    "status": req.status,
-                }));
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "id": req.id,
+                        "address": req.address,
+                        "amount_zat": req.amount_zat,
+                        "amount_zec": format!("{:.8}", req.amount_zat as f64 / 1e8),
+                        "label": req.label,
+                        "deposit": req.deposit,
+                        "status": req.status,
+                    })
+                );
             } else {
                 // QR code
                 use qrcode::QrCode;
@@ -728,7 +837,12 @@ async fn cmd_merchant(
             Ok(())
         }
 
-        MerchantAction::Check { forward, confirmations, webhook_url, webhook_secret } => {
+        MerchantAction::Check {
+            forward,
+            confirmations,
+            webhook_url,
+            webhook_secret,
+        } => {
             let seed = load_seed(cli)?;
 
             // sync first
@@ -738,7 +852,7 @@ async fn cmd_merchant(
             let _ = ops::sync::sync(
                 &seed,
                 &cli.endpoint,
-                &cli.verify_endpoint,
+                &cli.verify_endpoints,
                 mainnet,
                 cli.json,
                 None,
@@ -756,19 +870,14 @@ async fn cmd_merchant(
             // process withdrawals
             let (w_ok, w_fail, w_insuf) =
                 ops::merchant::process_withdrawals(&seed, &cli.endpoint, mainnet, cli.json)
-                .await.unwrap_or((0, 0, 0));
+                    .await
+                    .unwrap_or((0, 0, 0));
 
             // forward if address available
             let fwd_addr = ops::merchant::resolve_forward_address(forward.as_deref())?;
             let (forwarded, fwd_failed) = if let Some(ref addr) = fwd_addr {
-                ops::merchant::forward_payments(
-                    &seed,
-                    addr,
-                    &cli.endpoint,
-                    mainnet,
-                    cli.json,
-                )
-                .await?
+                ops::merchant::forward_payments(&seed, addr, &cli.endpoint, mainnet, cli.json)
+                    .await?
             } else {
                 (0, 0)
             };
@@ -782,15 +891,18 @@ async fn cmd_merchant(
             }
 
             if cli.json {
-                println!("{}", serde_json::json!({
-                    "matched": matched,
-                    "forwarded": forwarded,
-                    "forward_failed": fwd_failed,
-                    "forward_address": fwd_addr,
-                    "withdrawals_completed": w_ok,
-                    "withdrawals_failed": w_fail,
-                    "withdrawals_insufficient": w_insuf,
-                }));
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "matched": matched,
+                        "forwarded": forwarded,
+                        "forward_failed": fwd_failed,
+                        "forward_address": fwd_addr,
+                        "withdrawals_completed": w_ok,
+                        "withdrawals_failed": w_fail,
+                        "withdrawals_insufficient": w_insuf,
+                    })
+                );
             } else {
                 println!(
                     "matched: {}, forwarded: {}, failed: {}, withdrawals: {}/{}/{}",
@@ -800,16 +912,25 @@ async fn cmd_merchant(
             Ok(())
         }
 
-        MerchantAction::Watch { forward, confirmations, interval, dir, webhook_url, webhook_secret, quic, peer_key } => {
+        MerchantAction::Watch {
+            forward,
+            confirmations,
+            interval,
+            dir,
+            webhook_url,
+            webhook_secret,
+            quic,
+            peer_key,
+        } => {
             let seed = load_seed(cli)?;
             let interval = *interval;
             let confirmations = *confirmations;
 
             // QUIC link to exchange API
             let mut quic_link = if let Some(ref addr) = quic {
-                let peer_hex = peer_key.as_deref().ok_or_else(|| {
-                    Error::Other("--peer-key required when using --quic".into())
-                })?;
+                let peer_hex = peer_key
+                    .as_deref()
+                    .ok_or_else(|| Error::Other("--peer-key required when using --quic".into()))?;
                 let peer_pk = quic::parse_peer_key(peer_hex)?;
                 let (seed32, pub32) = key::load_ssh_ed25519_keypair(&cli.identity_path())?;
                 let (cert, qkey) = quic::generate_cert(&seed32, &pub32)?;
@@ -839,7 +960,7 @@ async fn cmd_merchant(
                 let _ = ops::sync::sync(
                     &seed,
                     &cli.endpoint,
-                    &cli.verify_endpoint,
+                    &cli.verify_endpoints,
                     mainnet,
                     cli.json,
                     None,
@@ -848,27 +969,21 @@ async fn cmd_merchant(
                 .await;
 
                 // match (with confirmation depth)
-                let tip = wallet::Wallet::open(&wallet::Wallet::default_path())?
-                    .sync_height()?;
+                let tip = wallet::Wallet::open(&wallet::Wallet::default_path())?.sync_height()?;
                 let matched = ops::merchant::match_payments(tip, confirmations)?;
 
                 // withdraw
                 let (w_ok, w_fail, w_insuf) =
                     ops::merchant::process_withdrawals(&seed, &cli.endpoint, mainnet, cli.json)
-                    .await.unwrap_or((0, 0, 0));
+                        .await
+                        .unwrap_or((0, 0, 0));
 
                 // forward
                 let fwd_addr = ops::merchant::resolve_forward_address(forward.as_deref())?;
                 let (forwarded, fwd_failed) = if let Some(ref addr) = fwd_addr {
-                    ops::merchant::forward_payments(
-                        &seed,
-                        addr,
-                        &cli.endpoint,
-                        mainnet,
-                        cli.json,
-                    )
-                    .await
-                    .unwrap_or((0, 0))
+                    ops::merchant::forward_payments(&seed, addr, &cli.endpoint, mainnet, cli.json)
+                        .await
+                        .unwrap_or((0, 0))
                 } else {
                     (0, 0)
                 };
@@ -886,7 +1001,9 @@ async fn cmd_merchant(
                 }
 
                 // remote: outbound webhook (HMAC-SHA256 signed)
-                if let (Some(url), Some(secret)) = (webhook_url.as_deref(), webhook_secret.as_deref()) {
+                if let (Some(url), Some(secret)) =
+                    (webhook_url.as_deref(), webhook_secret.as_deref())
+                {
                     if let Err(e) = ops::merchant::post_webhook(url, secret, &state_json).await {
                         eprintln!("webhook failed: {}", e);
                     }
@@ -910,13 +1027,20 @@ async fn cmd_merchant(
             }
         }
 
-        MerchantAction::Withdraw { amount, address, memo } => {
+        MerchantAction::Withdraw {
+            amount,
+            address,
+            memo,
+        } => {
             // validate address format
-            if !(address.starts_with("t1") || address.starts_with("tm")
-                || address.starts_with("u1") || address.starts_with("utest1"))
+            if !(address.starts_with("t1")
+                || address.starts_with("tm")
+                || address.starts_with("u1")
+                || address.starts_with("utest1"))
             {
                 return Err(Error::Address(format!(
-                    "unrecognized address format: {}", address
+                    "unrecognized address format: {}",
+                    address
                 )));
             }
 
@@ -924,7 +1048,8 @@ async fn cmd_merchant(
             let min_amount = 10_000; // MARGINAL_FEE * 2
             if amount_zat <= min_amount {
                 return Err(Error::Transaction(format!(
-                    "withdrawal amount must be > {} zat (got {})", min_amount, amount_zat
+                    "withdrawal amount must be > {} zat (got {})",
+                    min_amount, amount_zat
                 )));
             }
 
@@ -949,16 +1074,24 @@ async fn cmd_merchant(
             w.insert_withdrawal_request(&wr)?;
 
             if cli.json {
-                println!("{}", serde_json::json!({
-                    "id": wr.id,
-                    "amount_zat": wr.amount_zat,
-                    "amount_zec": format!("{:.8}", wr.amount_zat as f64 / 1e8),
-                    "address": wr.address,
-                    "label": wr.label,
-                    "status": wr.status,
-                }));
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "id": wr.id,
+                        "amount_zat": wr.amount_zat,
+                        "amount_zec": format!("{:.8}", wr.amount_zat as f64 / 1e8),
+                        "address": wr.address,
+                        "label": wr.label,
+                        "status": wr.status,
+                    })
+                );
             } else {
-                println!("withdrawal #{} queued: {:.8} ZEC → {}", wr.id, wr.amount_zat as f64 / 1e8, address);
+                println!(
+                    "withdrawal #{} queued: {:.8} ZEC → {}",
+                    wr.id,
+                    wr.amount_zat as f64 / 1e8,
+                    address
+                );
                 if let Some(ref label) = wr.label {
                     println!("label: {}", label);
                 }
@@ -1001,9 +1134,11 @@ async fn cmd_merchant(
                     "id", "ZEC", "status", "txid", "label"
                 );
                 for r in &reqs {
-                    let txid_short = r.txid.as_deref().map(|t| {
-                        if t.len() > 8 { &t[..8] } else { t }
-                    }).unwrap_or("");
+                    let txid_short = r
+                        .txid
+                        .as_deref()
+                        .map(|t| if t.len() > 8 { &t[..8] } else { t })
+                        .unwrap_or("");
                     println!(
                         "{:<4} {:>14.8} {:<12} {:>10} {}",
                         r.id,
@@ -1021,8 +1156,10 @@ async fn cmd_merchant(
             let wallet = wallet::Wallet::open(&wallet::Wallet::default_path())?;
             if let Some(addr) = address {
                 // validate address format before storing
-                if !(addr.starts_with("t1") || addr.starts_with("tm")
-                    || addr.starts_with("u1") || addr.starts_with("utest1"))
+                if !(addr.starts_with("t1")
+                    || addr.starts_with("tm")
+                    || addr.starts_with("u1")
+                    || addr.starts_with("utest1"))
                 {
                     return Err(Error::Address(format!(
                         "unrecognized address format: {}",
@@ -1049,6 +1186,162 @@ async fn cmd_merchant(
             Ok(())
         }
     }
+}
+
+fn cmd_scan(cli: &Cli, device: &str, timeout: u64) -> Result<(), Error> {
+    #[cfg(not(target_os = "linux"))]
+    {
+        return Err(Error::Other("webcam scanning requires linux".into()));
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        if !cli.json {
+            eprintln!("scanning QR from {}... ({}s timeout)", device, timeout);
+        }
+        let data = cam::scan_qr(device, timeout)?;
+
+        // try to interpret the data
+        let hex_str = hex::encode(&data);
+
+        if cli.json {
+            // try utf-8 interpretation
+            let text = String::from_utf8_lossy(&data);
+            println!(
+                "{}",
+                serde_json::json!({
+                    "hex": hex_str,
+                    "bytes": data.len(),
+                    "text": text,
+                })
+            );
+        } else {
+            eprintln!("decoded {} bytes", data.len());
+
+            // detect zigner protocol types
+            if data.len() >= 3 && data[0] == 0x53 && data[1] == 0x04 {
+                match data[2] {
+                    0x01 => eprintln!("type: zigner FVK export"),
+                    0x02 => eprintln!("type: zigner sign request"),
+                    0x03 => eprintln!("type: zigner signature response"),
+                    _ => eprintln!("type: zigner unknown (0x{:02x})", data[2]),
+                }
+            }
+
+            // show hex
+            println!("{}", hex_str);
+
+            // also try to show as text if it looks like UTF-8
+            if let Ok(text) = std::str::from_utf8(&data) {
+                if text.chars().all(|c| !c.is_control() || c == '\n') {
+                    eprintln!("text: {}", text);
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// try to load FVK from wallet db (watch-only mode)
+fn load_fvk(_cli: &Cli, mainnet: bool) -> Option<orchard::keys::FullViewingKey> {
+    let wallet = wallet::Wallet::open(&wallet::Wallet::default_path()).ok()?;
+    if !wallet.is_watch_only() {
+        return None;
+    }
+    let fvk_bytes = wallet.get_fvk_bytes().ok()??;
+    let _ = mainnet; // FVK is network-agnostic at the byte level
+    address::fvk_from_bytes(&fvk_bytes).ok()
+}
+
+fn cmd_import_fvk(cli: &Cli, mainnet: bool, hex_input: Option<&str>) -> Result<(), Error> {
+    let data = if let Some(hex_str) = hex_input {
+        hex::decode(hex_str.trim()).map_err(|e| Error::Other(format!("invalid hex: {}", e)))?
+    } else {
+        // try webcam scan or manual input
+        #[cfg(target_os = "linux")]
+        {
+            let cam_device = std::env::var("ZCLI_CAM").unwrap_or_else(|_| "/dev/video0".into());
+            if cam_device != "none" && std::path::Path::new(&cam_device).exists() {
+                eprintln!("show zigner FVK export QR to camera ({})...", cam_device);
+                match cam::scan_qr(&cam_device, 60) {
+                    Ok(d) => {
+                        eprintln!("QR decoded ({} bytes)", d.len());
+                        d
+                    }
+                    Err(e) => {
+                        eprintln!("camera scan failed: {}", e);
+                        eprintln!("enter FVK export hex:");
+                        read_hex_line()?
+                    }
+                }
+            } else {
+                eprintln!("enter FVK export hex:");
+                read_hex_line()?
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            eprintln!("enter FVK export hex:");
+            read_hex_line()?
+        }
+    };
+
+    let (fvk_bytes, is_mainnet, account, label) = ops::airgap::parse_fvk_export(&data)?;
+
+    // validate the FVK parses correctly
+    let fvk = address::fvk_from_bytes(&fvk_bytes)?;
+    let uaddr = address::orchard_address_from_fvk(&fvk, is_mainnet)?;
+
+    if is_mainnet != mainnet {
+        eprintln!(
+            "warning: FVK is for {} but cli is set to {}",
+            if is_mainnet { "mainnet" } else { "testnet" },
+            if mainnet { "mainnet" } else { "testnet" },
+        );
+    }
+
+    // store in wallet
+    let wallet = wallet::Wallet::open(&wallet::Wallet::default_path())?;
+    wallet.store_fvk(&fvk_bytes)?;
+
+    if cli.json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "mode": "watch-only",
+                "account": account,
+                "label": label,
+                "mainnet": is_mainnet,
+                "address": uaddr,
+                "fvk_hex": hex::encode(&fvk_bytes),
+            })
+        );
+    } else {
+        eprintln!("imported FVK (watch-only wallet)");
+        if !label.is_empty() {
+            eprintln!("label:   {}", label);
+        }
+        eprintln!("account: {}", account);
+        eprintln!(
+            "network: {}",
+            if is_mainnet { "mainnet" } else { "testnet" }
+        );
+        println!("{}", uaddr);
+    }
+
+    Ok(())
+}
+
+fn read_hex_line() -> Result<Vec<u8>, Error> {
+    use std::io::{self, BufRead};
+    let stdin = io::stdin();
+    let line = stdin
+        .lock()
+        .lines()
+        .next()
+        .ok_or_else(|| Error::Other("no input".into()))?
+        .map_err(|e| Error::Other(format!("read stdin: {}", e)))?;
+    hex::decode(line.trim()).map_err(|e| Error::Other(format!("invalid hex: {}", e)))
 }
 
 fn load_seed(cli: &Cli) -> Result<key::WalletSeed, Error> {

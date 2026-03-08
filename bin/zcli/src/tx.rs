@@ -46,7 +46,7 @@ fn make_p2pkh_script(pubkey_hash: &[u8; 20]) -> Vec<u8> {
     s
 }
 
-fn compact_size(n: u64) -> Vec<u8> {
+pub fn compact_size(n: u64) -> Vec<u8> {
     if n < 0xfd {
         vec![n as u8]
     } else if n <= 0xffff {
@@ -64,7 +64,7 @@ fn compact_size(n: u64) -> Vec<u8> {
     }
 }
 
-fn serialize_orchard_bundle(
+pub fn serialize_orchard_bundle(
     bundle: &orchard::Bundle<orchard::bundle::Authorized, ZatBalance>,
     out: &mut Vec<u8>,
 ) -> Result<(), Error> {
@@ -566,7 +566,7 @@ pub fn build_orchard_spend_tx(
 }
 
 /// decode a t-address to a P2PKH scriptPubKey
-fn decode_t_address_script(addr: &str, mainnet: bool) -> Result<Vec<u8>, Error> {
+pub fn decode_t_address_script(addr: &str, mainnet: bool) -> Result<Vec<u8>, Error> {
     let decoded = base58_decode(addr)
         .map_err(|_| Error::Address(format!("invalid base58 in t-address: {}", addr)))?;
     let expected = if mainnet { [0x1c, 0xb8] } else { [0x1d, 0x25] };

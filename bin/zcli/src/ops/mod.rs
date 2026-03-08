@@ -1,3 +1,4 @@
+pub mod airgap;
 pub mod balance;
 pub mod export;
 pub mod merchant;

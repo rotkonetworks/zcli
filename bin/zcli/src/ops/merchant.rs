@@ -107,9 +107,7 @@ pub fn match_payments(tip: u32, min_confirmations: u32) -> Result<usize, Error> 
                 block_height: note.block_height,
                 forward_txid: None,
             });
-            req.received_zat = Some(
-                req.received_zat.unwrap_or(0) + note.value,
-            );
+            req.received_zat = Some(req.received_zat.unwrap_or(0) + note.value);
             wallet.update_payment_request(&req)?;
             matched += 1;
         } else {
@@ -303,7 +301,11 @@ pub async fn process_withdrawals(
         if total_in < wr.amount_zat + fee {
             let mut wr = wallet.get_withdrawal_request(wr.id)?;
             wr.status = "insufficient".into();
-            wr.error = Some(format!("need {} zat with fee, have {}", wr.amount_zat + fee, total_in));
+            wr.error = Some(format!(
+                "need {} zat with fee, have {}",
+                wr.amount_zat + fee,
+                total_in
+            ));
             wallet.update_withdrawal_request(&wr)?;
             insufficient += 1;
             continue;
@@ -314,7 +316,11 @@ pub async fn process_withdrawals(
                 "withdrawal #{}: {:.8} ZEC → {}...",
                 wr.id,
                 wr.amount_zat as f64 / 1e8,
-                if wr.address.len() > 20 { &wr.address[..20] } else { &wr.address }
+                if wr.address.len() > 20 {
+                    &wr.address[..20]
+                } else {
+                    &wr.address
+                }
             );
         }
 
@@ -385,7 +391,14 @@ pub async fn process_withdrawals(
             tokio::task::spawn_blocking(move || {
                 let seed = WalletSeed::from_bytes(seed_bytes);
                 tx::build_orchard_spend_tx(
-                    &seed, &spends, &t_outputs, &[], fee, anchor, anchor_height, mainnet,
+                    &seed,
+                    &spends,
+                    &t_outputs,
+                    &[],
+                    fee,
+                    anchor,
+                    anchor_height,
+                    mainnet,
                 )
             })
             .await
@@ -408,7 +421,14 @@ pub async fn process_withdrawals(
             tokio::task::spawn_blocking(move || {
                 let seed = WalletSeed::from_bytes(seed_bytes);
                 tx::build_orchard_spend_tx(
-                    &seed, &spends, &[], &z_outputs, fee, anchor, anchor_height, mainnet,
+                    &seed,
+                    &spends,
+                    &[],
+                    &z_outputs,
+                    fee,
+                    anchor,
+                    anchor_height,
+                    mainnet,
                 )
             })
             .await
@@ -446,7 +466,10 @@ pub async fn process_withdrawals(
             Ok(result) => {
                 let mut wr = wallet.get_withdrawal_request(wr.id)?;
                 wr.status = "failed".into();
-                wr.error = Some(format!("broadcast ({}): {}", result.error_code, result.error_message));
+                wr.error = Some(format!(
+                    "broadcast ({}): {}",
+                    result.error_code, result.error_message
+                ));
                 wallet.update_withdrawal_request(&wr)?;
                 failed += 1;
             }
@@ -505,8 +528,7 @@ async fn forward_single_note(
     let spends = vec![(orchard_note, paths.into_iter().next().unwrap())];
 
     // determine if forwarding to transparent or shielded
-    let is_transparent =
-        forward_addr.starts_with("t1") || forward_addr.starts_with("tm");
+    let is_transparent = forward_addr.starts_with("t1") || forward_addr.starts_with("tm");
 
     let seed_bytes = *seed.as_bytes();
     let anchor_height = tip;
@@ -562,13 +584,24 @@ async fn forward_single_note(
     }
 }
 
-fn record_sent_tx(wallet: &Wallet, txid: &str, amount: u64, fee: u64, recipient: &str, is_transparent: bool) {
+fn record_sent_tx(
+    wallet: &Wallet,
+    txid: &str,
+    amount: u64,
+    fee: u64,
+    recipient: &str,
+    is_transparent: bool,
+) {
     let _ = wallet.insert_sent_tx(&SentTx {
         txid: txid.to_string(),
         amount,
         fee,
         recipient: recipient.to_string(),
-        tx_type: if is_transparent { "z\u{2192}t".into() } else { "z\u{2192}z".into() },
+        tx_type: if is_transparent {
+            "z\u{2192}t".into()
+        } else {
+            "z\u{2192}z".into()
+        },
         block_height: 0,
         memo: None,
         timestamp: std::time::SystemTime::now()
@@ -633,13 +666,17 @@ pub fn requests_json() -> String {
                 "received_zat": r.received_zat,
             });
             if r.deposit && !r.deposits.is_empty() {
-                obj["deposits"] = serde_json::json!(r.deposits.iter().map(|d| {
-                    serde_json::json!({
-                        "amount_zat": d.amount_zat,
-                        "block_height": d.block_height,
-                        "forwarded": d.forward_txid.is_some(),
+                obj["deposits"] = serde_json::json!(r
+                    .deposits
+                    .iter()
+                    .map(|d| {
+                        serde_json::json!({
+                            "amount_zat": d.amount_zat,
+                            "block_height": d.block_height,
+                            "forwarded": d.forward_txid.is_some(),
+                        })
                     })
-                }).collect::<Vec<_>>());
+                    .collect::<Vec<_>>());
                 obj["deposit_count"] = r.deposits.len().into();
             }
             obj
