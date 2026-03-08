@@ -11,10 +11,7 @@
 
 use crate::error::Error;
 use prost::Message;
-use zync_core::trustless::{
-    CommitmentProof, EpochCheckpoint, FrostSignature, NomtProof, NullifierProof,
-    StateTransitionProof, TrustlessStateProof,
-};
+use zync_core::trustless::{CommitmentProof, NomtProof, NullifierProof};
 
 pub mod zidecar_proto {
     tonic::include_proto!("zidecar.v1");
@@ -65,7 +62,7 @@ impl SendResult {
     }
 }
 
-// -- proto → zync-core conversion --
+// -- proto conversion --
 
 fn bytes_to_32(b: &[u8]) -> Result<[u8; 32], Error> {
     b.try_into()
@@ -83,45 +80,6 @@ fn proto_to_nomt_proof(p: zidecar_proto::NomtMerkleProof) -> Result<NomtProof, E
             .map(|b| bytes_to_32(b))
             .collect::<Result<Vec<_>, _>>()?,
         indices: p.indices,
-    })
-}
-
-fn proto_to_frost_sig(s: &zidecar_proto::FrostSignatureMsg) -> Result<FrostSignature, Error> {
-    Ok(FrostSignature {
-        r: bytes_to_32(&s.r)?,
-        s: bytes_to_32(&s.s)?,
-    })
-}
-
-fn proto_to_checkpoint(c: zidecar_proto::EpochCheckpointMsg) -> Result<EpochCheckpoint, Error> {
-    let sig = c
-        .signature
-        .as_ref()
-        .ok_or_else(|| Error::Network("missing checkpoint signature".into()))?;
-    Ok(EpochCheckpoint {
-        epoch_index: c.epoch_index,
-        height: c.height,
-        block_hash: bytes_to_32(&c.block_hash)?,
-        tree_root: bytes_to_32(&c.tree_root)?,
-        nullifier_root: bytes_to_32(&c.nullifier_root)?,
-        timestamp: c.timestamp,
-        signature: proto_to_frost_sig(sig)?,
-        signer_set_id: bytes_to_32(&c.signer_set_id)?,
-    })
-}
-
-fn proto_to_transition(
-    t: zidecar_proto::StateTransitionProofMsg,
-) -> Result<StateTransitionProof, Error> {
-    Ok(StateTransitionProof {
-        proof_bytes: t.proof_bytes,
-        from_height: t.from_height,
-        from_tree_root: bytes_to_32(&t.from_tree_root)?,
-        from_nullifier_root: bytes_to_32(&t.from_nullifier_root)?,
-        to_height: t.to_height,
-        to_tree_root: bytes_to_32(&t.to_tree_root)?,
-        to_nullifier_root: bytes_to_32(&t.to_nullifier_root)?,
-        proof_log_size: t.proof_log_size,
     })
 }
 
@@ -438,19 +396,6 @@ impl ZidecarClient {
             .collect())
     }
 
-    pub async fn get_header_proof(&self) -> Result<(Vec<u8>, u32, u32), Error> {
-        let resp: zidecar_proto::HeaderProof = self
-            .call_unary(
-                "zidecar.v1.Zidecar/GetHeaderProof",
-                &zidecar_proto::ProofRequest {
-                    from_height: 0,
-                    to_height: 0,
-                },
-            )
-            .await?;
-        Ok((resp.ligerito_proof, resp.from_height, resp.to_height))
-    }
-
     pub async fn get_tree_state(&self, height: u32) -> Result<(String, u32), Error> {
         let state: zidecar_proto::TreeState = self
             .call_unary(
@@ -493,27 +438,17 @@ impl ZidecarClient {
         })
     }
 
-    pub async fn get_state_proof(&self, height: u32) -> Result<TrustlessStateProof, Error> {
-        let resp: zidecar_proto::TrustlessStateProofMsg = self
+    pub async fn get_header_proof(&self) -> Result<(Vec<u8>, u32, u32), Error> {
+        let resp: zidecar_proto::HeaderProof = self
             .call_unary(
-                "zidecar.v1.Zidecar/GetStateProof",
-                &zidecar_proto::GetStateProofRequest { height },
+                "zidecar.v1.Zidecar/GetHeaderProof",
+                &zidecar_proto::ProofRequest {
+                    from_height: 0,
+                    to_height: 0,
+                },
             )
             .await?;
-
-        let checkpoint = resp
-            .checkpoint
-            .ok_or_else(|| Error::Network("missing checkpoint in state proof".into()))?;
-        let transition = resp
-            .transition
-            .ok_or_else(|| Error::Network("missing transition in state proof".into()))?;
-
-        Ok(TrustlessStateProof {
-            checkpoint: proto_to_checkpoint(checkpoint)?,
-            transition: proto_to_transition(transition)?,
-            current_height: resp.current_height,
-            current_hash: bytes_to_32(&resp.current_hash)?,
-        })
+        Ok((resp.ligerito_proof, resp.from_height, resp.to_height))
     }
 
     pub async fn get_commitment_proofs(
@@ -569,6 +504,8 @@ impl ZidecarClient {
 pub struct LightwalletdClient {
     http: reqwest::Client,
     base_url: String,
+    /// true = native gRPC (h2), false = gRPC-web
+    native_grpc: bool,
 }
 
 impl LightwalletdClient {
@@ -577,7 +514,37 @@ impl LightwalletdClient {
         let http = reqwest::Client::builder()
             .build()
             .map_err(|e| Error::Network(format!("http client: {}", e)))?;
-        Ok(Self { http, base_url })
+        // probe: try grpc-web first, fall back to native grpc
+        let probe_url = format!(
+            "{}/cash.z.wallet.sdk.rpc.CompactTxStreamer/GetLightdInfo",
+            base_url
+        );
+        let probe_body = grpc_web_encode(&lightwalletd_proto::Empty {});
+        let native_grpc = match http
+            .post(&probe_url)
+            .header("content-type", "application/grpc-web+proto")
+            .header("x-grpc-web", "1")
+            .timeout(std::time::Duration::from_secs(5))
+            .body(probe_body)
+            .send()
+            .await
+        {
+            Ok(resp) => {
+                let ct = resp
+                    .headers()
+                    .get("content-type")
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("");
+                // if server responds with native grpc content-type, use that
+                ct.starts_with("application/grpc") && !ct.contains("grpc-web")
+            }
+            Err(_) => false,
+        };
+        Ok(Self {
+            http,
+            base_url,
+            native_grpc,
+        })
     }
 
     async fn call_unary<Req: Message, Resp: Message + Default>(
@@ -588,13 +555,24 @@ impl LightwalletdClient {
         let url = format!("{}/{}", self.base_url, method);
         let body = grpc_web_encode(req);
 
-        let resp = self
+        let content_type = if self.native_grpc {
+            "application/grpc"
+        } else {
+            "application/grpc-web+proto"
+        };
+
+        let mut builder = self
             .http
             .post(&url)
-            .header("content-type", "application/grpc-web+proto")
-            .header("x-grpc-web", "1")
+            .header("content-type", content_type)
             .timeout(std::time::Duration::from_secs(10))
-            .body(body)
+            .body(body);
+
+        if !self.native_grpc {
+            builder = builder.header("x-grpc-web", "1");
+        }
+
+        let resp = builder
             .send()
             .await
             .map_err(|e| Error::Network(format!("{}: {}", method, e)))?;

@@ -17,6 +17,12 @@ const BATCH_SIZE: u32 = 500;
 const ORCHARD_ACTIVATION_MAINNET: u32 = 1_687_104;
 const ORCHARD_ACTIVATION_TESTNET: u32 = 1_842_420;
 
+// hardcoded activation block hashes (LE internal order) — immutable trust anchors
+const ACTIVATION_HASH_MAINNET: [u8; 32] = [
+    0x00, 0x00, 0x00, 0x00, 0x00, 0xd7, 0x23, 0x15, 0x6d, 0x9b, 0x65, 0xff, 0xcf, 0x49, 0x84, 0xda,
+    0x7a, 0x19, 0x67, 0x5e, 0xd7, 0xe2, 0xf0, 0x6d, 0x9e, 0x5d, 0x51, 0x88, 0xaf, 0x08, 0x7b, 0xf8,
+];
+
 struct CompactShieldedOutput {
     epk: [u8; 32],
     cmx: [u8; 32],
@@ -53,26 +59,70 @@ impl ShieldedOutput<OrchardDomain, ENC_CIPHERTEXT_SIZE> for FullShieldedOutput {
     }
 }
 
+/// sync using a FullViewingKey directly (for watch-only wallets)
+pub async fn sync_with_fvk(
+    fvk: &FullViewingKey,
+    endpoint: &str,
+    verify_endpoints: &str,
+    mainnet: bool,
+    json: bool,
+    from: Option<u32>,
+    from_position: Option<u64>,
+) -> Result<u32, Error> {
+    sync_inner(
+        fvk,
+        endpoint,
+        verify_endpoints,
+        mainnet,
+        json,
+        from,
+        from_position,
+    )
+    .await
+}
+
 pub async fn sync(
     seed: &WalletSeed,
     endpoint: &str,
-    verify_endpoint: &str,
+    verify_endpoints: &str,
     mainnet: bool,
     json: bool,
     from: Option<u32>,
     from_position: Option<u64>,
 ) -> Result<u32, Error> {
     let coin_type = if mainnet { 133 } else { 1 };
+
+    // derive viewing keys
+    let sk = SpendingKey::from_zip32_seed(seed.as_bytes(), coin_type, zip32::AccountId::ZERO)
+        .map_err(|_| Error::Wallet("failed to derive spending key".into()))?;
+    let fvk = FullViewingKey::from(&sk);
+    sync_inner(
+        &fvk,
+        endpoint,
+        verify_endpoints,
+        mainnet,
+        json,
+        from,
+        from_position,
+    )
+    .await
+}
+
+async fn sync_inner(
+    fvk: &FullViewingKey,
+    endpoint: &str,
+    verify_endpoints: &str,
+    mainnet: bool,
+    json: bool,
+    from: Option<u32>,
+    from_position: Option<u64>,
+) -> Result<u32, Error> {
     let activation = if mainnet {
         ORCHARD_ACTIVATION_MAINNET
     } else {
         ORCHARD_ACTIVATION_TESTNET
     };
 
-    // derive viewing keys
-    let sk = SpendingKey::from_zip32_seed(seed.as_bytes(), coin_type, zip32::AccountId::ZERO)
-        .map_err(|_| Error::Wallet("failed to derive spending key".into()))?;
-    let fvk = FullViewingKey::from(&sk);
     let ivk_ext = fvk.to_ivk(Scope::External).prepare();
     let ivk_int = fvk.to_ivk(Scope::Internal).prepare();
 
@@ -94,18 +144,32 @@ pub async fn sync(
     };
     let (tip, tip_hash) = client.get_tip().await?;
 
-    // cross-verify against independent lightwalletd
-    if !verify_endpoint.is_empty() {
-        eprintln!("cross-verifying with {}...", verify_endpoint);
-        cross_verify(&client, verify_endpoint, tip, &tip_hash, activation).await;
+    // verify activation block hash against hardcoded anchor
+    if mainnet {
+        let blocks = client.get_compact_blocks(activation, activation).await?;
+        if !blocks.is_empty() && !blocks[0].hash.is_empty() {
+            if blocks[0].hash != ACTIVATION_HASH_MAINNET {
+                return Err(Error::Other(format!(
+                    "activation block hash mismatch: got {} expected {}",
+                    hex::encode(&blocks[0].hash),
+                    hex::encode(ACTIVATION_HASH_MAINNET),
+                )));
+            }
+        }
     }
 
-    // verify header chain proof before trusting any blocks
-    verify_header_proof(&client).await?;
+    // cross-verify tip against independent lightwalletd node(s)
+    let endpoints: Vec<&str> = verify_endpoints
+        .split(',')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if !endpoints.is_empty() {
+        cross_verify(&client, &endpoints, tip, &tip_hash, activation).await?;
+    }
 
-    // verify state proof (ligerito transition → verified roots)
-    let (verified_tree_root, verified_nullifier_root) =
-        verify_state_proof(&client, tip, mainnet).await?;
+    // verify header chain proof (ligerito)
+    verify_header_proof(&client, tip).await?;
 
     eprintln!("tip={} start={}", tip, start);
 
@@ -241,17 +305,13 @@ pub async fn sync(
         pb.finish_and_clear();
     }
 
-    // verify commitment proofs against verified tree root
+    // verify commitment proofs (NOMT) for received notes
     if !received_cmxs.is_empty() {
-        if let Some(vroot) = verified_tree_root {
-            verify_commitments(&client, &received_cmxs, &received_positions, tip, &vroot).await?;
-        }
+        verify_commitments(&client, &received_cmxs, &received_positions, tip).await?;
     }
 
-    // verify nullifier proofs for unspent notes
-    if let Some(vroot) = verified_nullifier_root {
-        verify_nullifiers(&client, &wallet, tip, &vroot).await?;
-    }
+    // verify nullifier proofs (NOMT) for unspent notes
+    verify_nullifiers(&client, &wallet, tip).await?;
 
     // fetch memos for newly found notes
     if !needs_memo.is_empty() {
@@ -332,81 +392,141 @@ fn try_decrypt(
     None
 }
 
-/// cross-verify tip and activation block against an independent lightwalletd.
-/// hard-fails on hash mismatch (fork divergence), soft-fails on connectivity.
+/// compare two block hashes, accounting for LE/BE byte order differences
+/// between native gRPC lightwalletd (BE display order) and zidecar (LE internal).
+fn hashes_match(a: &[u8], b: &[u8]) -> bool {
+    if a.is_empty() || b.is_empty() {
+        return true; // can't compare empty hashes
+    }
+    if a == b {
+        return true;
+    }
+    let mut b_rev = b.to_vec();
+    b_rev.reverse();
+    a == b_rev.as_slice()
+}
+
+/// cross-verify tip and activation block against independent lightwalletd nodes.
+/// requires BFT majority (>2/3 of reachable nodes) to agree with zidecar.
+/// hard-fails on hash mismatch, soft-fails only when no nodes reachable.
 async fn cross_verify(
     zidecar: &ZidecarClient,
-    verify_endpoint: &str,
+    endpoints: &[&str],
     tip: u32,
     tip_hash: &[u8],
     activation: u32,
-) {
-    let lwd = match LightwalletdClient::connect(verify_endpoint).await {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("warning: could not connect to verify endpoint: {}", e);
-            return;
-        }
-    };
+) -> Result<(), Error> {
+    eprintln!(
+        "cross-verifying against {} lightwalletd node(s)...",
+        endpoints.len()
+    );
 
-    let lwd_tip = match lwd.get_latest_block().await {
-        Ok((h, _)) => h,
-        Err(e) => {
-            eprintln!("warning: lwd get_latest_block: {}", e);
-            return;
-        }
-    };
-
-    // compare block at zidecar tip height
-    if let Ok((_, lwd_hash, _)) = lwd.get_block(tip as u64).await {
-        if !tip_hash.is_empty() && !lwd_hash.is_empty() && tip_hash != lwd_hash {
-            eprintln!(
-                "FATAL: tip hash mismatch at height {}: zidecar={} lwd={}",
-                tip,
-                hex::encode(tip_hash),
-                hex::encode(&lwd_hash)
-            );
-            std::process::exit(1);
-        }
-        eprintln!("tip cross-check ok (height {} lwd_tip={})", tip, lwd_tip);
-    } else {
-        eprintln!("warning: lwd could not fetch block at tip height {}", tip);
-    }
-
-    // compare activation block
-    let lwd_act = match lwd.get_block(activation as u64).await {
-        Ok((_, hash, _)) => hash,
-        Err(e) => {
-            eprintln!("warning: lwd get_block({}): {}", activation, e);
-            return;
-        }
-    };
+    // fetch activation block hash from zidecar once
     let zid_act = match zidecar.get_compact_blocks(activation, activation).await {
         Ok(blocks) if !blocks.is_empty() => blocks[0].hash.clone(),
-        _ => {
-            eprintln!("warning: could not fetch activation block from zidecar");
-            return;
-        }
+        _ => vec![],
     };
-    if !zid_act.is_empty() && !lwd_act.is_empty() && zid_act != lwd_act {
-        eprintln!(
-            "FATAL: activation block hash mismatch at {}: zidecar={} lwd={}",
-            activation,
-            hex::encode(&zid_act),
-            hex::encode(&lwd_act)
-        );
-        std::process::exit(1);
+
+    let mut tip_agree = 0u32;
+    let mut tip_disagree = 0u32;
+    let mut act_agree = 0u32;
+    let mut act_disagree = 0u32;
+
+    for &ep in endpoints {
+        let lwd = match LightwalletdClient::connect(ep).await {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("  {}: connect failed: {}", ep, e);
+                continue;
+            }
+        };
+
+        // check tip block hash
+        match lwd.get_block(tip as u64).await {
+            Ok((_, lwd_hash, _)) => {
+                if hashes_match(tip_hash, &lwd_hash) {
+                    tip_agree += 1;
+                } else {
+                    eprintln!(
+                        "  {}: tip MISMATCH at {}: zidecar={} lwd={}",
+                        ep,
+                        tip,
+                        hex::encode(tip_hash),
+                        hex::encode(&lwd_hash)
+                    );
+                    tip_disagree += 1;
+                }
+            }
+            Err(e) => {
+                eprintln!("  {}: get_block({}): {}", ep, tip, e);
+            }
+        }
+
+        // check activation block hash
+        match lwd.get_block(activation as u64).await {
+            Ok((_, lwd_hash, _)) => {
+                if hashes_match(&zid_act, &lwd_hash) {
+                    act_agree += 1;
+                } else {
+                    eprintln!(
+                        "  {}: activation MISMATCH at {}: zidecar={} lwd={}",
+                        ep,
+                        activation,
+                        hex::encode(&zid_act),
+                        hex::encode(&lwd_hash)
+                    );
+                    act_disagree += 1;
+                }
+            }
+            Err(e) => {
+                eprintln!("  {}: get_block({}): {}", ep, activation, e);
+            }
+        }
     }
-    eprintln!("activation block cross-check ok (height {})", activation);
+
+    let tip_total = tip_agree + tip_disagree;
+    let act_total = act_agree + act_disagree;
+
+    if tip_total == 0 && act_total == 0 {
+        eprintln!("warning: no verify nodes responded, continuing unverified");
+        return Ok(());
+    }
+
+    // BFT majority: need >2/3 of responding nodes to agree
+    if tip_total > 0 {
+        let threshold = (tip_total * 2 + 2) / 3;
+        if tip_agree < threshold {
+            return Err(Error::Other(format!(
+                "tip hash rejected: {}/{} nodes disagree at height {}",
+                tip_disagree, tip_total, tip,
+            )));
+        }
+    }
+
+    if act_total > 0 {
+        let threshold = (act_total * 2 + 2) / 3;
+        if act_agree < threshold {
+            return Err(Error::Other(format!(
+                "activation block rejected: {}/{} nodes disagree at height {}",
+                act_disagree, act_total, activation,
+            )));
+        }
+    }
+
+    eprintln!(
+        "cross-check ok: tip={} ({}/{}) activation={} ({}/{})",
+        tip, tip_agree, tip_total, activation, act_agree, act_total,
+    );
+    Ok(())
 }
 
-async fn verify_header_proof(client: &ZidecarClient) -> Result<(), Error> {
+async fn verify_header_proof(client: &ZidecarClient, tip: u32) -> Result<(), Error> {
     eprintln!("verifying header proof...");
     let (proof_bytes, proof_from, proof_to) = match client.get_header_proof().await {
         Ok(v) => v,
         Err(e) => {
             eprintln!("warning: could not get header proof: {}", e);
-            eprintln!("continuing without proof verification");
+            eprintln!("continuing without header proof verification");
             return Ok(());
         }
     };
@@ -414,7 +534,7 @@ async fn verify_header_proof(client: &ZidecarClient) -> Result<(), Error> {
         Ok(r) => r,
         Err(e) => {
             eprintln!("warning: proof not ready: {}", e);
-            eprintln!("continuing without verification");
+            eprintln!("continuing without header proof verification");
             return Ok(());
         }
     };
@@ -427,41 +547,20 @@ async fn verify_header_proof(client: &ZidecarClient) -> Result<(), Error> {
     if !result.continuous {
         return Err(Error::Other("proof chain discontinuous".into()));
     }
+    // bind proven range to our sync tip
+    if let Some(ref tip_out) = result.tip_outputs {
+        if tip_out.end_height < tip {
+            eprintln!(
+                "warning: header proof covers up to {} but tip is {}",
+                tip_out.end_height, tip,
+            );
+        }
+    }
     eprintln!(
-        "proofs valid ({}..{}) continuous=true",
+        "header proof valid ({}..{}) continuous=true",
         proof_from, proof_to
     );
     Ok(())
-}
-
-async fn verify_state_proof(
-    client: &ZidecarClient,
-    tip: u32,
-    mainnet: bool,
-) -> Result<(Option<[u8; 32]>, Option<[u8; 32]>), Error> {
-    eprintln!("verifying state proof...");
-    let state_proof = match client.get_state_proof(tip).await {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("warning: could not get state proof: {}", e);
-            eprintln!("continuing without state root verification");
-            return Ok((None, None));
-        }
-    };
-    let registry = zync_core::trustless::SignerRegistry::new();
-    let key = if mainnet {
-        registry.mainnet_key()
-    } else {
-        registry.testnet_key()
-    };
-    let verified = state_proof
-        .verify(key)
-        .map_err(|e| Error::Other(format!("state proof invalid: {}", e)))?;
-    eprintln!(
-        "state proof valid (epoch {} height {})",
-        verified.checkpoint_epoch, verified.height
-    );
-    Ok((Some(verified.tree_root), Some(verified.nullifier_root)))
 }
 
 async fn verify_commitments(
@@ -469,26 +568,19 @@ async fn verify_commitments(
     cmxs: &[[u8; 32]],
     positions: &[u64],
     tip: u32,
-    expected_root: &[u8; 32],
 ) -> Result<(), Error> {
     eprintln!("verifying {} commitment proofs...", cmxs.len());
     let cmx_vecs: Vec<Vec<u8>> = cmxs.iter().map(|c| c.to_vec()).collect();
-    let (proofs, response_root) = match client
+    let (proofs, _root) = match client
         .get_commitment_proofs(cmx_vecs, positions.to_vec(), tip)
         .await
     {
         Ok(v) => v,
         Err(e) => {
             eprintln!("warning: could not get commitment proofs: {}", e);
-            eprintln!("continuing without commitment verification");
             return Ok(());
         }
     };
-    if response_root != *expected_root {
-        return Err(Error::Other(
-            "commitment proof tree root doesn't match verified state".into(),
-        ));
-    }
     for proof in &proofs {
         match proof.verify() {
             Ok(true) => {}
@@ -510,12 +602,7 @@ async fn verify_commitments(
     Ok(())
 }
 
-async fn verify_nullifiers(
-    client: &ZidecarClient,
-    wallet: &Wallet,
-    tip: u32,
-    expected_root: &[u8; 32],
-) -> Result<(), Error> {
+async fn verify_nullifiers(client: &ZidecarClient, wallet: &Wallet, tip: u32) -> Result<(), Error> {
     let (_, unspent_notes) = wallet.shielded_balance()?;
     if unspent_notes.is_empty() {
         return Ok(());
@@ -525,19 +612,13 @@ async fn verify_nullifiers(
         unspent_notes.len()
     );
     let nf_vecs: Vec<Vec<u8>> = unspent_notes.iter().map(|n| n.nullifier.to_vec()).collect();
-    let (proofs, response_root) = match client.get_nullifier_proofs(nf_vecs, tip).await {
+    let (proofs, _root) = match client.get_nullifier_proofs(nf_vecs, tip).await {
         Ok(v) => v,
         Err(e) => {
             eprintln!("warning: could not get nullifier proofs: {}", e);
-            eprintln!("continuing without nullifier verification");
             return Ok(());
         }
     };
-    if response_root != *expected_root {
-        return Err(Error::Other(
-            "nullifier proof root doesn't match verified state".into(),
-        ));
-    }
     for proof in &proofs {
         match proof.verify() {
             Ok(true) => {

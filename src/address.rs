@@ -184,8 +184,31 @@ pub fn orchard_address(seed: &WalletSeed, mainnet: bool) -> Result<String, Error
     encode_unified_address(&addr, mainnet)
 }
 
+/// derive orchard unified address from FVK directly (watch-only mode)
+pub fn orchard_address_from_fvk(fvk: &FullViewingKey, mainnet: bool) -> Result<String, Error> {
+    let addr = fvk.address_at(0u64, Scope::External);
+    encode_unified_address(&addr, mainnet)
+}
+
+/// derive orchard address at a specific diversifier index from FVK
+pub fn orchard_address_at_from_fvk(
+    fvk: &FullViewingKey,
+    index: u64,
+    mainnet: bool,
+) -> Result<(orchard::Address, String), Error> {
+    let addr = fvk.address_at(index, Scope::External);
+    let ua_str = encode_unified_address(&addr, mainnet)?;
+    Ok((addr, ua_str))
+}
+
+/// parse 96-byte FVK from raw bytes
+pub fn fvk_from_bytes(bytes: &[u8; 96]) -> Result<FullViewingKey, Error> {
+    Option::from(FullViewingKey::from_bytes(bytes))
+        .ok_or_else(|| Error::Address("invalid FVK bytes".into()))
+}
+
 /// encode an orchard address as a unified address string
-fn encode_unified_address(addr: &orchard::Address, mainnet: bool) -> Result<String, Error> {
+pub fn encode_unified_address(addr: &orchard::Address, mainnet: bool) -> Result<String, Error> {
     use zcash_address::unified::Encoding;
 
     let raw = addr.to_raw_address_bytes();

@@ -1,4 +1,6 @@
 mod address;
+#[cfg(target_os = "linux")]
+mod cam;
 mod client;
 pub mod error;
 mod key;

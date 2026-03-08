@@ -29,14 +29,14 @@ pub struct Cli {
     )]
     pub endpoint: String,
 
-    /// lightwalletd endpoint for cross-verification (empty to disable)
+    /// lightwalletd endpoints for cross-verification (comma-separated, empty to disable)
     #[arg(
         long,
         global = true,
-        env = "ZCLI_VERIFY_ENDPOINT",
-        default_value = "https://mainnet.lightwalletd.com"
+        env = "ZCLI_VERIFY_ENDPOINTS",
+        default_value = "https://zec.rocks"
     )]
-    pub verify_endpoint: String,
+    pub verify_endpoints: String,
 
     /// machine-readable json output, no prompts/progress/qr
     #[arg(long, global = true, env = "ZCLI_JSON")]
@@ -139,6 +139,10 @@ pub enum Command {
         /// memo text (shielded only)
         #[arg(long)]
         memo: Option<String>,
+
+        /// airgap mode: display QR for zigner signing, wait for response
+        #[arg(long)]
+        airgap: bool,
     },
 
     /// print receiving address
@@ -177,6 +181,23 @@ pub enum Command {
         /// also write memos.json to this directory after each sync
         #[arg(long)]
         dir: Option<String>,
+    },
+
+    /// scan QR code from webcam
+    Scan {
+        /// camera device
+        #[arg(long, default_value = "/dev/video0", env = "ZCLI_CAM")]
+        device: String,
+
+        /// timeout in seconds
+        #[arg(long, default_value_t = 60)]
+        timeout: u64,
+    },
+
+    /// import FVK from zigner QR (watch-only wallet)
+    ImportFvk {
+        /// hex-encoded FVK bytes (or scan from webcam if omitted)
+        hex: Option<String>,
     },
 
     /// show orchard tree info at a height (for --position)

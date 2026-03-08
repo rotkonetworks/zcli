@@ -10,7 +10,12 @@ const GRACE_ACTIONS: usize = 2;
 const MIN_ORCHARD_ACTIONS: usize = 2;
 
 /// ZIP-317 fee computation
-pub(crate) fn compute_fee(n_spends: usize, n_z_outputs: usize, n_t_outputs: usize, has_change: bool) -> u64 {
+pub(crate) fn compute_fee(
+    n_spends: usize,
+    n_z_outputs: usize,
+    n_t_outputs: usize,
+    has_change: bool,
+) -> u64 {
     let n_orchard_outputs = n_z_outputs + if has_change { 1 } else { 0 };
     let n_orchard_actions = n_spends.max(n_orchard_outputs).max(MIN_ORCHARD_ACTIONS);
     let n_t_logical = n_t_outputs; // no transparent inputs in orchard spends
@@ -352,7 +357,7 @@ pub(crate) fn select_notes(
     })
 }
 
-fn parse_amount(s: &str) -> Result<u64, Error> {
+pub fn parse_amount(s: &str) -> Result<u64, Error> {
     // accept both ZEC (decimal) and zatoshi (integer)
     if s.contains('.') {
         let zec: f64 = s

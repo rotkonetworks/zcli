@@ -50,8 +50,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let quic_state = Arc::clone(&state);
     let peer_key_hex_clone = peer_key_hex.clone();
     tokio::spawn(async move {
-        if let Err(e) = run_quic(listen_addr, server_config, quic_state, peer_key_hex_clone).await
-        {
+        if let Err(e) = run_quic(listen_addr, server_config, quic_state, peer_key_hex_clone).await {
             eprintln!("quic server error: {}", e);
         }
     });
@@ -257,7 +256,10 @@ async fn run_quic(
             }
         }
 
-        eprintln!("quic: client connected from {}", connection.remote_address());
+        eprintln!(
+            "quic: client connected from {}",
+            connection.remote_address()
+        );
 
         // store connection for CE requests
         {
@@ -400,9 +402,7 @@ fn arg_value(args: &[String], flag: &str) -> Option<String> {
         .cloned()
 }
 
-fn load_or_generate_key(
-    path: &str,
-) -> Result<([u8; 32], [u8; 32]), Box<dyn std::error::Error>> {
+fn load_or_generate_key(path: &str) -> Result<([u8; 32], [u8; 32]), Box<dyn std::error::Error>> {
     if std::path::Path::new(path).exists() {
         // load existing: file is 64 bytes (seed + pubkey)
         let data = std::fs::read(path)?;
@@ -418,8 +418,7 @@ fn load_or_generate_key(
         // generate new keypair using ring
         use ring::signature::{Ed25519KeyPair, KeyPair};
         let rng = ring::rand::SystemRandom::new();
-        let pkcs8 = Ed25519KeyPair::generate_pkcs8(&rng)
-            .map_err(|e| format!("keygen: {}", e))?;
+        let pkcs8 = Ed25519KeyPair::generate_pkcs8(&rng).map_err(|e| format!("keygen: {}", e))?;
         let kp = Ed25519KeyPair::from_pkcs8(pkcs8.as_ref())
             .map_err(|e| format!("parse pkcs8: {}", e))?;
 

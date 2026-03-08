@@ -16,6 +16,8 @@ const SENT_TXS_TREE: &str = "sent_txs";
 const PAYMENT_REQUESTS_TREE: &str = "payment_requests";
 const WITHDRAWAL_REQUESTS_TREE: &str = "withdrawal_requests";
 const NEXT_WITHDRAWAL_ID_KEY: &[u8] = b"next_withdrawal_id";
+const FVK_KEY: &[u8] = b"full_viewing_key";
+const WALLET_MODE_KEY: &[u8] = b"wallet_mode";
 
 /// a received note stored in the wallet
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -87,9 +89,9 @@ pub struct Deposit {
 pub struct PaymentRequest {
     pub id: u64,
     pub diversifier_index: u64,
-    pub recipient: Vec<u8>,   // 43-byte raw orchard address for matching
-    pub address: String,      // u1... unified address for display
-    pub amount_zat: u64,      // 0 = any amount
+    pub recipient: Vec<u8>, // 43-byte raw orchard address for matching
+    pub address: String,    // u1... unified address for display
+    pub amount_zat: u64,    // 0 = any amount
     pub label: Option<String>,
     pub created_at: u64,
     pub status: String, // pending / paid / forwarded / forward_failed
@@ -110,11 +112,11 @@ pub struct PaymentRequest {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct WithdrawalRequest {
     pub id: u64,
-    pub address: String,       // t1.../u1...
+    pub address: String, // t1.../u1...
     pub amount_zat: u64,
     pub label: Option<String>,
     pub created_at: u64,
-    pub status: String,        // pending / completed / failed / insufficient
+    pub status: String, // pending / completed / failed / insufficient
     pub txid: Option<String>,
     pub fee_zat: Option<u64>,
     pub error: Option<String>,
@@ -388,8 +390,8 @@ impl Wallet {
             .map_err(|e| Error::Wallet(format!("open payment_requests tree: {}", e)))?;
         let mut reqs = Vec::new();
         for entry in tree.iter() {
-            let (_, value) = entry
-                .map_err(|e| Error::Wallet(format!("iterate payment_requests: {}", e)))?;
+            let (_, value) =
+                entry.map_err(|e| Error::Wallet(format!("iterate payment_requests: {}", e)))?;
             let req: PaymentRequest = serde_json::from_slice(&value)
                 .map_err(|e| Error::Wallet(format!("deserialize payment request: {}", e)))?;
             if let Some(filter) = status_filter {
@@ -403,14 +405,17 @@ impl Wallet {
     }
 
     /// find a pending request whose recipient matches the given 43-byte address
-    pub fn find_request_by_recipient(&self, recipient_bytes: &[u8]) -> Result<Option<PaymentRequest>, Error> {
+    pub fn find_request_by_recipient(
+        &self,
+        recipient_bytes: &[u8],
+    ) -> Result<Option<PaymentRequest>, Error> {
         let tree = self
             .db
             .open_tree(PAYMENT_REQUESTS_TREE)
             .map_err(|e| Error::Wallet(format!("open payment_requests tree: {}", e)))?;
         for entry in tree.iter() {
-            let (_, value) = entry
-                .map_err(|e| Error::Wallet(format!("iterate payment_requests: {}", e)))?;
+            let (_, value) =
+                entry.map_err(|e| Error::Wallet(format!("iterate payment_requests: {}", e)))?;
             let req: PaymentRequest = serde_json::from_slice(&value)
                 .map_err(|e| Error::Wallet(format!("deserialize payment request: {}", e)))?;
             if req.status == "pending" && req.recipient == recipient_bytes {
@@ -440,6 +445,50 @@ impl Wallet {
             }
             None => Ok(None),
         }
+    }
+
+    // -- FVK / watch-only methods --
+
+    /// store a 96-byte orchard full viewing key (enables watch-only mode)
+    pub fn store_fvk(&self, fvk_bytes: &[u8; 96]) -> Result<(), Error> {
+        self.db
+            .insert(FVK_KEY, fvk_bytes.as_ref())
+            .map_err(|e| Error::Wallet(format!("write fvk: {}", e)))?;
+        self.db
+            .insert(WALLET_MODE_KEY, b"watch-only")
+            .map_err(|e| Error::Wallet(format!("write wallet mode: {}", e)))?;
+        Ok(())
+    }
+
+    /// get stored FVK bytes (96 bytes), if any
+    pub fn get_fvk_bytes(&self) -> Result<Option<[u8; 96]>, Error> {
+        match self
+            .db
+            .get(FVK_KEY)
+            .map_err(|e| Error::Wallet(format!("read fvk: {}", e)))?
+        {
+            Some(bytes) => {
+                if bytes.len() == 96 {
+                    let mut fvk = [0u8; 96];
+                    fvk.copy_from_slice(&bytes);
+                    Ok(Some(fvk))
+                } else {
+                    Err(Error::Wallet(format!(
+                        "stored FVK wrong length: {} (expected 96)",
+                        bytes.len()
+                    )))
+                }
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// check if wallet is in watch-only mode
+    pub fn is_watch_only(&self) -> bool {
+        matches!(
+            self.db.get(WALLET_MODE_KEY),
+            Ok(Some(ref v)) if v.as_ref() == b"watch-only"
+        )
     }
 
     // -- withdrawal request methods --
@@ -513,8 +562,8 @@ impl Wallet {
             .map_err(|e| Error::Wallet(format!("open withdrawal_requests tree: {}", e)))?;
         let mut reqs = Vec::new();
         for entry in tree.iter() {
-            let (_, value) = entry
-                .map_err(|e| Error::Wallet(format!("iterate withdrawal_requests: {}", e)))?;
+            let (_, value) =
+                entry.map_err(|e| Error::Wallet(format!("iterate withdrawal_requests: {}", e)))?;
             let req: WithdrawalRequest = serde_json::from_slice(&value)
                 .map_err(|e| Error::Wallet(format!("deserialize withdrawal request: {}", e)))?;
             if let Some(filter) = status_filter {
