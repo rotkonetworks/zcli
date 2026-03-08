@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>zcli - donation board</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav>
+  <a href="index.html" class="nav-brand">zcli</a>
+  <div class="nav-links">
+    <a href="index.html">home</a>
+    <a href="docs.html">docs</a>
+    <a href="board.html">board</a>
+    <a href="https://github.com/rotkonetworks/zcli">source</a>
+  </div>
+</nav>
+
+<div class="section">
+  <h1>donation board</h1>
+  <p>send shielded ZEC — include a memo and it appears here.</p>
+  <p class="red">warning: memos sent to this address are published publicly on the board below.</p>
+</div>
+
+<div class="section">
+  <div class="qr">
+    <img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAYgAAAGIAQMAAABhjeVlAAAABlBMVEX0tygAAADsBbEVAAAAAnRSTlP//8i138cAAAAJcEhZcwAACxIAAAsSAdLdfvwAAAJLSURBVHic7ZUxcsNADAPx/08zGRMA6aTIuKCaQLFk3R2XKXZAoz69ECLEfyLQ12v1/QXu8gOWuSrENWExRYDHQvCjKsQx0ad80FLfsFXMS4iniNfS6YEgNwvxLDGxcT0w5yGeIbqM+94D9ZXa/JqJIU4IpuePP2UsxDExjrzoNNWUvJWFOCXgefZD1/SU5xAPEF1RjhbWD77fKREhHiDAcy+tkw9fFeKeoKXyklZVXozWNA1xSEAHrYj5GqF+nU+IS6Le/bUxQ4DkASGeIKaa6cKeaVqoWYhzgjmacOnheAkM8QRRzox9zbybkJWjFuKa6HeUhp1G3mRJuQpxTShFUC3WVdIrnyGOiaKhccgtGuOIY+hCXBNjzEHikqnyejkPcUYUs0SJ8JpjbZ0PFeKMUHUHB7rlb9ZKXYhTwpQ1rSO0Pr+HeIKYCecc7ZnHnRo4xC1RKpZCiuw00a4KQlwTq5zHiyJUgkPcEnL2Ku2B1uq0sfMU4pwoZmfcUZh11tIY4pxobfDLZKn9qdCfEJcECwD5JO/5tooqxDkhTZOdWv66m1KHEPdE9YamF2u8ctwcrRCnBHdKMscn3InfCHFPqJJBggo09rB6hLgnFCALXQoNYucsxCHRp7CoorXtTeUh7gld8HCzvfdxx2YhbgkoLB5sXQd38/xToxCXhHddXk1CNzuxb4hjooeZGO7g19r/IMQzRKuEI1U7VktuiIcIWvPzVQHrmwkX4pJQcNCeWMlu84VJWIhDgoYUHgjFajOhC3FMfHiFCPF/iC9vPK+fyDeZ6QAAAABJRU5ErkJggg==" alt="donation QR code - scan with zashi">
+  </div>
+  <code class="addr">u153khs43zxz6hcnlwnut77knyqmursnutmungxjxd7khruunhj77ea6tmpzxct9wzlgen66jxwc93ea053j22afkktu7hrs9rmsz003h3</code>
+  <p class="dim">scan with <a href="https://electriccoin.co/zashi/">zashi</a> or paste the unified address.</p>
+</div>
+
+<div class="section">
+  <h2>board</h2>
+  <p class="dim">received donations with memos. synced every 5 minutes.</p>
+  <div id="status"></div>
+  <div id="board" class="board">
+    <div class="empty">loading...</div>
+  </div>
+</div>
+
+<footer>
+  <a href="https://github.com/rotkonetworks/zcli">source</a>
+  <span class="dim"> · </span>
+  <a href="https://zigner.rotko.net">zigner</a>
+  <span class="dim"> · </span>
+  <a href="index.html">home</a>
+  <span class="dim"> · rotko networks</span>
+</footer>
+
+<script>
+(function(){
+  var board = document.getElementById('board');
+  var status = document.getElementById('status');
+
+  function esc(s){var d=document.createElement('div');d.textContent=s;return d.innerHTML;}
+
+  fetch('memos.json')
+    .then(function(r){ return r.json(); })
+    .then(function(notes){
+      if(!notes.length){
+        board.innerHTML = '<div class="empty">no donations yet</div>';
+        return;
+      }
+      var html = '';
+      var unspent = 0;
+      for(var i = 0; i < notes.length; i++){
+        var n = notes[i];
+        if(!n.spent) unspent++;
+        html += '<div class="entry' + (n.spent ? ' spent' : '') + '">'
+          + '<div class="head">'
+          + '<span class="amt">' + esc(n.zec) + ' ZEC</span>'
+          + '<span class="meta">height ' + n.height + '</span>'
+          + '</div>';
+        if(n.memo) html += '<div class="memo">' + esc(n.memo) + '</div>';
+        html += '</div>';
+      }
+      board.innerHTML = html;
+      status.textContent = unspent + ' unspent · ' + notes.length + ' total';
+    })
+    .catch(function(){
+      board.innerHTML = '<div class="empty">could not load board</div>';
+    });
+})();
+</script>
+
+</body>
+</html>

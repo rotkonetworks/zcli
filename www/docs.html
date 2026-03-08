@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>zcli - docs</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav>
+  <a href="index.html" class="nav-brand">zcli</a>
+  <div class="nav-links">
+    <a href="index.html">home</a>
+    <a href="docs.html">docs</a>
+    <a href="board.html">board</a>
+    <a href="https://github.com/rotkonetworks/zcli">source</a>
+  </div>
+</nav>
+
+<div class="section">
+  <h1>documentation</h1>
+</div>
+
+<div class="section">
+  <h2>architecture</h2>
+
+  <h3>zcli</h3>
+  <p>
+  the wallet. derives orchard spending keys and transparent keys from an ssh
+  ed25519 seed via <code>BLAKE2b-512("ZcliWalletSeed" || ed25519_seed)</code>.
+  trial-decrypts compact blocks locally — the server never learns which
+  addresses belong to you. builds and proves orchard transactions with halo2
+  locally.
+  </p>
+
+  <h3><a href="https://github.com/rotkonetworks/zeratul/tree/master/crates/bin/zidecar">zidecar</a></h3>
+  <p>
+  the backend. indexes the zcash chain into
+  <a href="https://github.com/thrumdev/nomt">nomt</a> and generates
+  <a href="https://crates.io/crates/ligerito">ligerito</a> proofs over the header
+  chain (gigaproof + tip). serves compact blocks and proofs over gRPC-web.
+  default endpoint: <code>zcash.rotko.net</code>.
+  </p>
+
+  <h3><a href="https://github.com/rotkonetworks/zeratul/tree/master/crates/zync-core">zync</a></h3>
+  <p>
+  shared scanner library. trial decryption, ligerito verification, nullifier
+  tracking, witness construction. used by zcli and
+  <a href="https://github.com/rotkonetworks/zeratul/tree/master/crates/bin/zafu">zafu</a>.
+  </p>
+</div>
+
+<div class="section" id="verification">
+  <h2>client-side verification</h2>
+  <p>
+  zcli verifies chain data in three layers before trusting it. each layer
+  builds on the previous one.
+  </p>
+
+  <h3>layer 1: header chain (ligerito)</h3>
+  <p>
+  before scanning, zcli fetches a combined proof and verifies it locally.
+  the gigaproof (2^26, ~300KB) covers the full historical chain. the tip
+  proof (2^20, ~150KB) covers the gap to current tip, regenerated every block.
+  </p>
+  <pre>1. splits combined blob into gigaproof + tip proof
+2. verifies both ligerito proofs cryptographically
+3. checks continuity: tip.start_prev_hash == giga.tip_hash
+4. rejects if any check fails</pre>
+
+  <h3>layer 2: state roots (nomt)</h3>
+  <p>
+  zidecar indexes the zcash chain into <a href="https://github.com/thrumdev/nomt">nomt</a>
+  merkle trees. a ligerito proof covers the state transition from a known
+  checkpoint to the current height, binding tree_root and nullifier_root to
+  the proven header chain.
+  </p>
+
+  <h3>layer 3: individual entries (nomt)</h3>
+  <p>
+  SHA256 merkle proofs verify individual commitments and nullifiers against
+  the proven state roots:
+  </p>
+  <pre>commitment proofs: cmx exists in tree at position (against tree_root)
+nullifier proofs:  nullifier spent/unspent status (against nullifier_root)</pre>
+  <p>
+  if a nullifier is proven spent but the wallet thinks it's unspent, the
+  wallet updates its state. all layers soft-fail gracefully when the server
+  doesn't support the RPCs yet.
+  </p>
+
+  <h3>what still requires trust</h3>
+  <p>
+  zcli cross-verifies the chain tip between zidecar and an independent
+  lightwalletd (default: <code>mainnet.lightwalletd.com</code>, override
+  with <code>--verify-endpoint</code>). if the block hashes diverge, sync
+  aborts. when the tip matches, the entire chain underneath is
+  cryptographically proven consistent — ligerito proves the header chain
+  from orchard activation (NU5, block 1,687,104) to tip, nomt proves every
+  transaction is tied to those headers.
+  </p>
+  <p>
+  the remaining trust assumption: at least one of your endpoints is honest
+  about the chain tip. if both endpoints collude and serve a forked
+  chain, no light client — with or without SPV header validation — can
+  detect this. verifying proof-of-work doesn't help because "most work"
+  is meaningless without seeing all competing chains, which requires a full
+  node. this is a fundamental limitation of all light clients, not specific
+  to zcli.
+  </p>
+</div>
+
+<div class="section">
+  <h2>usage reference</h2>
+  <pre><span class="prompt">zcli -i ~/.ssh/id_ed25519 address</span>          <span class="dim"># show addresses</span>
+<span class="prompt">zcli sync</span>                                   <span class="dim"># scan chain</span>
+<span class="prompt">zcli balance</span>                                <span class="dim"># check funds</span>
+<span class="prompt">zcli send 0.01 u1...</span>                        <span class="dim"># send shielded</span>
+<span class="prompt">zcli shield</span>                                 <span class="dim"># t-addr → shielded</span>
+<span class="prompt">zcli receive</span>                                <span class="dim"># QR code</span>
+<span class="prompt">zcli notes --json</span>                           <span class="dim"># list received notes</span>
+<span class="prompt">zcli export</span>                                 <span class="dim"># export viewing key</span>
+<span class="prompt">zcli board --port 3333</span>                      <span class="dim"># sync loop + JSON API</span></pre>
+  <p class="dim">all commands accept <code>--json</code> for machine-readable output.
+  set <code>ZCLI_IDENTITY</code>, <code>ZCLI_ENDPOINT</code> as env vars for headless operation.</p>
+
+  <h3>air-gapped signing (with zigner)</h3>
+  <pre><span class="prompt">zcli import-fvk --cam</span>                      <span class="dim"># scan FVK QR from zigner</span>
+<span class="prompt">zcli sync --wallet zigner</span>                  <span class="dim"># sync watch-only wallet</span>
+<span class="prompt">zcli balance --wallet zigner</span>               <span class="dim"># check balance</span>
+<span class="prompt">zcli send 1.0 u1... --wallet zigner --cam</span> <span class="dim"># build unsigned tx, scan signed QR</span></pre>
+  <p class="dim">see <a href="https://zigner.rotko.net">zigner.rotko.net</a> for the hardware signer.</p>
+</div>
+
+<div class="section">
+  <h2>environment variables</h2>
+  <pre>ZCLI_IDENTITY    <span class="dim">path to ed25519 ssh key (default: ~/.ssh/id_ed25519)</span>
+ZCLI_ENDPOINT    <span class="dim">gRPC-web endpoint (default: zcash.rotko.net)</span>
+SSH_PASSPHRASE   <span class="dim">key passphrase for non-interactive use</span></pre>
+</div>
+
+<footer>
+  <a href="https://github.com/rotkonetworks/zcli">source</a>
+  <span class="dim"> · </span>
+  <a href="https://zigner.rotko.net">zigner</a>
+  <span class="dim"> · </span>
+  <a href="board.html">donation board</a>
+  <span class="dim"> · rotko networks</span>
+</footer>
+
+</body>
+</html>
