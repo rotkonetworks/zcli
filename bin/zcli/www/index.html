@@ -50,6 +50,10 @@ pre{
 .entry .memo{color:#ccc;padding:0.2em 0 0;white-space:pre-wrap;word-break:break-word}
 .empty{color:#666;font-style:italic}
 #status{color:#666;font-size:0.85em}
+details summary{list-style:none}
+details summary::marker,details summary::-webkit-details-marker{display:none}
+details summary::before{content:"▸ ";color:#f4b728}
+details[open] summary::before{content:"▾ "}
 footer{margin-top:2em;padding-top:0.5em;border-top:1px solid #222;color:#444;font-size:0.85em}
 </style>
 </head>
@@ -86,11 +90,25 @@ deterministic derivation means no state to back up beyond the key itself.
 
 <div class="section">
 <h2>install</h2>
-<pre><span class="prompt">cargo install --git https://github.com/rotkonetworks/zcli</span></pre>
-<p>or build from source:</p>
+<div id="install-detect"></div>
+<pre id="install-cmd"><span class="prompt">curl -fsSL https://github.com/rotkonetworks/zcli/releases/latest/download/zcli-linux-amd64 -o zcli && chmod +x zcli && sudo mv zcli /usr/local/bin/</span></pre>
+<details>
+<summary class="dim" style="cursor:pointer;margin:0.5em 0">all platforms</summary>
+<h3>linux x86_64</h3>
+<pre><span class="prompt">curl -fsSL https://github.com/rotkonetworks/zcli/releases/latest/download/zcli-linux-amd64 -o zcli && chmod +x zcli && sudo mv zcli /usr/local/bin/</span></pre>
+<h3>linux arm64</h3>
+<pre><span class="prompt">curl -fsSL https://github.com/rotkonetworks/zcli/releases/latest/download/zcli-linux-arm64 -o zcli && chmod +x zcli && sudo mv zcli /usr/local/bin/</span></pre>
+<h3>macOS apple silicon</h3>
+<pre><span class="prompt">curl -fsSL https://github.com/rotkonetworks/zcli/releases/latest/download/zcli-macos-arm64 -o zcli && chmod +x zcli && sudo mv zcli /usr/local/bin/</span></pre>
+<h3>macOS intel</h3>
+<pre><span class="prompt">curl -fsSL https://github.com/rotkonetworks/zcli/releases/latest/download/zcli-macos-amd64 -o zcli && chmod +x zcli && sudo mv zcli /usr/local/bin/</span></pre>
+<h3>cargo</h3>
+<pre><span class="prompt">cargo install zecli</span></pre>
+<h3>source</h3>
 <pre><span class="prompt">git clone https://github.com/rotkonetworks/zcli</span>
 <span class="prompt">cd zcli && cargo build --release</span>
 <span class="prompt">cp target/release/zcli ~/.local/bin/</span></pre>
+</details>
 </div>
 
 <div class="section">
@@ -217,6 +235,43 @@ with the most work.
 </footer>
 
 <script>
+(function(){
+  var base = 'https://github.com/rotkonetworks/zcli/releases/latest/download/';
+  var ua = navigator.userAgent || '';
+  var plat = navigator.platform || '';
+  var binary, os;
+
+  if (/Mac/.test(plat) || /Macintosh/.test(ua)) {
+    // apple silicon vs intel: userAgentData if available, else assume arm64 (most macs since 2020)
+    var isArm = /arm64|aarch64/i.test(ua) ||
+      (navigator.userAgentData && navigator.userAgentData.architecture === 'arm');
+    if (isArm || !/Intel/.test(ua)) {
+      binary = 'zcli-macos-arm64'; os = 'macOS (Apple Silicon)';
+    } else {
+      binary = 'zcli-macos-amd64'; os = 'macOS (Intel)';
+    }
+  } else if (/Linux/.test(plat) || /Linux/.test(ua)) {
+    if (/aarch64|arm64/i.test(ua) || /aarch64/i.test(plat)) {
+      binary = 'zcli-linux-arm64'; os = 'Linux arm64';
+    } else {
+      binary = 'zcli-linux-amd64'; os = 'Linux x86_64';
+    }
+  } else if (/Win/.test(plat)) {
+    os = 'Windows';
+  }
+
+  var detect = document.getElementById('install-detect');
+  var cmd = document.getElementById('install-cmd');
+
+  if (binary) {
+    detect.innerHTML = '<span class="dim">detected: <span class="gold">' + os + '</span></span>';
+    cmd.innerHTML = '<span class="prompt">curl -fsSL ' + base + binary
+      + ' -o zcli && chmod +x zcli && sudo mv zcli /usr/local/bin/</span>';
+  } else if (os === 'Windows') {
+    detect.innerHTML = '<span class="dim">detected: <span class="gold">Windows</span> — use WSL2 with the Linux binary, or build from source with cargo</span>';
+    cmd.innerHTML = '<span class="prompt">cargo install zecli</span>';
+  }
+})();
 (function(){
   var board = document.getElementById('board');
   var status = document.getElementById('status');
