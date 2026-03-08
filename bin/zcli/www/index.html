@@ -3,235 +3,130 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>zcli - zcash wallet for agents</title>
-<style>
-*{margin:0;padding:0;box-sizing:border-box}
-body{
-  background:#000;color:#ccc;
-  font-family:'Courier New',Courier,monospace;
-  font-size:15px;line-height:1.6;
-  max-width:72ch;margin:0 auto;padding:1em;
-}
-a{color:#f4b728;text-decoration:none}
-a:hover{text-decoration:underline}
-h1,h2,h3{color:#f4b728;font-weight:normal}
-h1{font-size:1.4em;margin-bottom:0.5em}
-h2{font-size:1.1em;margin:1.5em 0 0.5em;border-bottom:1px solid #333;padding-bottom:0.2em}
-h3{font-size:1em;margin:1em 0 0.3em;color:#d4a028}
-code,pre{color:#f4b728}
-pre{
-  background:#0a0a0a;border:1px solid #222;
-  padding:0.8em;margin:0.5em 0;overflow-x:auto;
-  white-space:pre-wrap;word-break:break-all;
-}
-.dim{color:#666}
-.gold{color:#f4b728}
-.green{color:#5f5}
-.red{color:#f55}
-.prompt::before{content:"$ ";color:#666}
-.section{margin:1.5em 0}
-.addr{
-  font-size:0.85em;word-break:break-all;
-  background:#0a0a0a;padding:0.5em;border:1px solid #333;
-  display:block;margin:0.3em 0;
-}
-.qr{text-align:center;margin:1em 0}
-.qr img{
-  width:200px;height:200px;
-  image-rendering:pixelated;
-  border:4px solid #f4b728;
-}
-.board{margin:1em 0}
-.entry{border-bottom:1px solid #1a1a1a;padding:0.5em 0}
-.entry.spent{opacity:0.4}
-.entry .head{display:flex;justify-content:space-between}
-.entry .amt{color:#f4b728;font-weight:bold}
-.entry .meta{color:#666;font-size:0.85em}
-.entry .memo{color:#ccc;padding:0.2em 0 0;white-space:pre-wrap;word-break:break-word}
-.empty{color:#666;font-style:italic}
-#status{color:#666;font-size:0.85em}
-details summary{list-style:none}
-details summary::marker,details summary::-webkit-details-marker{display:none}
-details summary::before{content:"▸ ";color:#f4b728}
-details[open] summary::before{content:"▾ "}
-footer{margin-top:2em;padding-top:0.5em;border-top:1px solid #222;color:#444;font-size:0.85em}
-</style>
+<title>zcli - zcash wallet for agents &amp; humans</title>
+<link rel="stylesheet" href="style.css">
 </head>
 <body>
 
-<div class="section">
-<h1>zcli</h1>
-<pre class="dim">zcash wallet CLI - ssh keys as wallet seed</pre>
-<p>
-deterministic zcash wallet derived from ed25519 ssh keys.
-<span class="gold">built for agents</span> - any process with ssh access already has
-a wallet. no key ceremony, no mnemonic management, no interactive setup.
-same key, same wallet, same addresses, every time.
-</p>
+<nav>
+  <a href="index.html" class="nav-brand">zcli</a>
+  <div class="nav-links">
+    <a href="index.html">home</a>
+    <a href="docs.html">docs</a>
+    <a href="board.html">board</a>
+    <a href="https://github.com/rotkonetworks/zcli">source</a>
+  </div>
+</nav>
+
+<div class="hero">
+  <h1>zcli</h1>
+  <p class="tagline">a zcash wallet that works like you do</p>
+  <p>
+    derive a zcash wallet from your ssh key. no seed phrases, no interactive setup.
+    one binary, one key, done.
+  </p>
+  <div class="hero-actions">
+    <a href="#install" class="btn">install</a>
+    <a href="docs.html" class="btn btn-dim">how it works</a>
+  </div>
 </div>
 
 <div class="section">
-<h2>why agents</h2>
-<p>
-agents authenticate with ssh keys. zcli derives a zcash spending key from the
-same ed25519 seed - one key for both identity and money. no new secrets to
-provision, no seed phrases to store, no interactive prompts. a headless process
-can sync, check balance, and send transactions with a single binary and the key
-it already has.
-</p>
-<pre><span class="prompt">ZCLI_IDENTITY=~/.ssh/id_agent zcli balance --json</span>
-{"transparent":0,"shielded":50000,"total":50000,"total_zec":"0.00050000"}</pre>
-<p>
-<span class="dim">every agent gets a unique wallet from its ssh key.
-deterministic derivation means no state to back up beyond the key itself.
-</span>
-</p>
+  <h2>what it does</h2>
+  <div class="grid">
+    <div class="card">
+      <h3>ssh key = wallet</h3>
+      <p>your ed25519 key deterministically derives a zcash spending key.
+      same key, same wallet, same addresses, every time.</p>
+    </div>
+    <div class="card">
+      <h3>agent-friendly</h3>
+      <p>no prompts, no GUI. headless processes sync, check balance, and send
+      transactions with env vars and JSON output.</p>
+    </div>
+    <div class="card">
+      <h3>privacy by default</h3>
+      <p>trial decryption happens locally. the server never learns your
+      addresses. transactions are shielded with halo2 proofs.</p>
+    </div>
+    <div class="card">
+      <h3>verified chain</h3>
+      <p>cryptographic proofs verify the chain before trusting it.
+      cross-checks against independent servers.
+      <a href="docs.html#verification">learn more</a></p>
+    </div>
+  </div>
 </div>
 
 <div class="section">
-<h2>install</h2>
-<div id="install-detect"></div>
-<pre id="install-cmd"><span class="prompt">curl -fsSL https://github.com/rotkonetworks/zcli/releases/latest/download/zcli-linux-amd64 -o zcli && chmod +x zcli && sudo mv zcli /usr/local/bin/</span></pre>
-<details>
-<summary class="dim" style="cursor:pointer;margin:0.5em 0">all platforms</summary>
-<h3>linux x86_64</h3>
-<pre><span class="prompt">curl -fsSL https://github.com/rotkonetworks/zcli/releases/latest/download/zcli-linux-amd64 -o zcli && chmod +x zcli && sudo mv zcli /usr/local/bin/</span></pre>
-<h3>linux arm64</h3>
-<pre><span class="prompt">curl -fsSL https://github.com/rotkonetworks/zcli/releases/latest/download/zcli-linux-arm64 -o zcli && chmod +x zcli && sudo mv zcli /usr/local/bin/</span></pre>
-<h3>macOS apple silicon</h3>
-<pre><span class="prompt">curl -fsSL https://github.com/rotkonetworks/zcli/releases/latest/download/zcli-macos-arm64 -o zcli && chmod +x zcli && sudo mv zcli /usr/local/bin/</span></pre>
-<h3>macOS intel</h3>
-<pre><span class="prompt">curl -fsSL https://github.com/rotkonetworks/zcli/releases/latest/download/zcli-macos-amd64 -o zcli && chmod +x zcli && sudo mv zcli /usr/local/bin/</span></pre>
-<h3>cargo</h3>
-<pre><span class="prompt">cargo install zecli</span></pre>
-<h3>source</h3>
-<pre><span class="prompt">git clone https://github.com/rotkonetworks/zcli</span>
-<span class="prompt">cd zcli && cargo build --release</span>
-<span class="prompt">cp target/release/zcli ~/.local/bin/</span></pre>
-</details>
-</div>
-
-<div class="section">
-<h2>usage</h2>
-<pre><span class="prompt">zcli -i ~/.ssh/id_ed25519 address</span>          <span class="dim"># show addresses</span>
+<pre class="demo"><span class="prompt">zcli -i ~/.ssh/id_ed25519 address</span>          <span class="dim"># show addresses</span>
 <span class="prompt">zcli sync</span>                                   <span class="dim"># scan chain</span>
 <span class="prompt">zcli balance</span>                                <span class="dim"># check funds</span>
 <span class="prompt">zcli send 0.01 u1...</span>                        <span class="dim"># send shielded</span>
 <span class="prompt">zcli shield</span>                                 <span class="dim"># t-addr → shielded</span>
-<span class="prompt">zcli receive</span>                                <span class="dim"># QR code</span>
-<span class="prompt">zcli notes --json</span>                           <span class="dim"># list received notes</span>
-<span class="prompt">zcli export</span>                                 <span class="dim"># export viewing key</span>
-<span class="prompt">zcli board --port 3333</span>                      <span class="dim"># sync loop + JSON API</span></pre>
-<p>
-<span class="dim">all commands accept <code>--json</code> for machine-readable output.
-set <code>ZCLI_IDENTITY</code>, <code>ZCLI_ENDPOINT</code> as env vars for headless operation.</span>
-</p>
+<span class="prompt">zcli notes --json</span>                           <span class="dim"># list UTXOs</span>
+<span class="prompt">zcli export</span>                                 <span class="dim"># export viewing key</span></pre>
+<p class="dim">all commands accept <code>--json</code> for machine output.
+set <code>ZCLI_IDENTITY</code> and <code>ZCLI_ENDPOINT</code> as env vars.</p>
 </div>
 
-<div class="section">
-<h2>architecture</h2>
-<h3>zcli</h3>
-<p>
-the wallet. derives orchard spending keys and transparent keys from an ssh
-ed25519 seed via <code>BLAKE2b-512("ZcliWalletSeed" || ed25519_seed)</code>.
-verifies <a href="https://crates.io/crates/ligerito">ligerito</a> header proofs
-and <a href="https://github.com/thrumdev/nomt">nomt</a> state proofs from
-zidecar, and cross-checks the chain tip against an independent lightwalletd.
-trial-decrypts compact blocks locally. the server never learns which
-addresses belong to you. builds and proves orchard transactions with halo2
-locally.
-</p>
-<h3><a href="https://github.com/rotkonetworks/zeratul/tree/master/crates/bin/zidecar">zidecar</a></h3>
-<p>
-the backend. indexes the zcash chain into
-<a href="https://github.com/thrumdev/nomt">nomt</a> and generates
-<a href="https://crates.io/crates/ligerito">ligerito</a> proofs over the header
-chain (gigaproof + tip). serves compact blocks and proofs over gRPC-web.
-default endpoint: <code>zcash.rotko.net</code>.
-</p>
-<h3><a href="https://github.com/rotkonetworks/zeratul/tree/master/crates/zync-core">zync</a></h3>
-<p>
-shared scanner library. trial decryption, ligerito verification, nullifier
-tracking, witness construction. used by zcli and
-<a href="https://github.com/rotkonetworks/zeratul/tree/master/crates/bin/zafu">zafu</a>.
-</p>
-<h3>client-side verification</h3>
-<p>
-zcli verifies chain data in three layers before trusting it. each layer
-builds on the previous one:
-</p>
-<h3>layer 1: header chain (ligerito)</h3>
-<p>
-before scanning, zcli fetches a combined proof and verifies it locally.
-the gigaproof (2^26, ~300KB) covers the full historical chain. the tip
-proof (2^20, ~150KB) covers the gap to current tip, regenerated every block.
-</p>
-<pre>1. splits combined blob into gigaproof + tip proof
-2. verifies both ligerito proofs cryptographically
-3. checks continuity: tip.start_prev_hash == giga.tip_hash
-4. rejects if any check fails</pre>
-<h3>layer 2: state roots (ligerito)</h3>
-<p>
-zidecar indexes the zcash chain into <a href="https://github.com/thrumdev/nomt">nomt</a>
-merkle trees. a ligerito proof covers the state transition from a known
-checkpoint to the current height, binding tree_root and nullifier_root to
-the proven header chain.
-</p>
-<h3>layer 3: individual entries (NOMT)</h3>
-<p>
-SHA256 merkle proofs verify individual commitments and nullifiers against
-the proven state roots:
-</p>
-<pre>commitment proofs: cmx exists in tree at position (against tree_root)
-nullifier proofs:  nullifier spent/unspent status (against nullifier_root)</pre>
-<p>
-if a nullifier is proven spent but the wallet thinks it's unspent, the
-wallet updates its state. all layers soft-fail gracefully when the server
-doesn't support the RPCs yet.
-</p>
-<h3>what still requires trust</h3>
-<p>
-zcash is a proof-of-work chain with no finality. there is no consensus
-checkpoint a light client can verify independently - the network head is
-always probabilistic. zcli mitigates this by cross-verifying the tip hash
-and activation block between zidecar and an independent lightwalletd
-(default: <code>mainnet.lightwalletd.com</code>, override with
-<code>--verify-endpoint</code>). if the block hashes diverge, sync aborts.
-</p>
-<p>
-this means you trust that at least one of your two endpoints is honest
-about which fork is the real chain. a state-level adversary controlling
-both could serve a consistent but fabricated fork. this is inherent to PoW
-light clients without SPV header validation - and zcli does not yet
-validate proof-of-work on headers. the ligerito proofs guarantee internal
-consistency of whatever chain you're given, but not that it's the chain
-with the most work.
-</p>
+<div class="section" id="zigner">
+  <h2>cold storage with zigner</h2>
+  <p>
+    <a href="https://zigner.rotko.net" class="gold">zigner</a> is an air-gapped
+    hardware signer for zcash. it runs on an ESP32 with a camera and display -
+    no network, no USB data. keys never leave the device.
+  </p>
+  <div class="flow">
+    <div class="flow-step">
+      <span class="flow-label">zigner</span>
+      <span class="dim">generates keys, signs transactions offline via QR codes</span>
+    </div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-step">
+      <span class="flow-label">zcli</span>
+      <span class="dim">imports viewing key, syncs chain, builds unsigned tx, broadcasts signed tx</span>
+    </div>
+  </div>
+  <pre><span class="prompt">zcli import-fvk --cam</span>         <span class="dim"># scan zigner's FVK QR</span>
+<span class="prompt">zcli sync --wallet zigner</span>     <span class="dim"># sync the watch wallet</span>
+<span class="prompt">zcli send 1.0 u1... --cam</span>     <span class="dim"># build tx, scan signed QR back</span></pre>
+  <p>
+    <a href="https://zigner.rotko.net">zigner.rotko.net</a> -
+    open source, open hardware.
+  </p>
 </div>
 
-<div class="section">
-<h2>donate</h2>
-<p>send shielded ZEC to the board wallet. include a memo - it will appear on the board.</p>
-<p class="red">warning: memos sent to this address are published publicly on the board below.</p>
-<div class="qr">
-<img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAYgAAAGIAQMAAABhjeVlAAAABlBMVEX0tygAAADsBbEVAAAAAnRSTlP//8i138cAAAAJcEhZcwAACxIAAAsSAdLdfvwAAAJLSURBVHic7ZUxcsNADAPx/08zGRMA6aTIuKCaQLFk3R2XKXZAoz69ECLEfyLQ12v1/QXu8gOWuSrENWExRYDHQvCjKsQx0ad80FLfsFXMS4iniNfS6YEgNwvxLDGxcT0w5yGeIbqM+94D9ZXa/JqJIU4IpuePP2UsxDExjrzoNNWUvJWFOCXgefZD1/SU5xAPEF1RjhbWD77fKREhHiDAcy+tkw9fFeKeoKXyklZVXozWNA1xSEAHrYj5GqF+nU+IS6Le/bUxQ4DkASGeIKaa6cKeaVqoWYhzgjmacOnheAkM8QRRzox9zbybkJWjFuKa6HeUhp1G3mRJuQpxTShFUC3WVdIrnyGOiaKhccgtGuOIY+hCXBNjzEHikqnyejkPcUYUs0SJ8JpjbZ0PFeKMUHUHB7rlb9ZKXYhTwpQ1rSO0Pr+HeIKYCecc7ZnHnRo4xC1RKpZCiuw00a4KQlwTq5zHiyJUgkPcEnL2Ku2B1uq0sfMU4pwoZmfcUZh11tIY4pxobfDLZKn9qdCfEJcECwD5JO/5tooqxDkhTZOdWv66m1KHEPdE9YamF2u8ctwcrRCnBHdKMscn3InfCHFPqJJBggo09rB6hLgnFCALXQoNYucsxCHRp7CoorXtTeUh7gld8HCzvfdxx2YhbgkoLB5sXQd38/xToxCXhHddXk1CNzuxb4hjooeZGO7g19r/IMQzRKuEI1U7VktuiIcIWvPzVQHrmwkX4pJQcNCeWMlu84VJWIhDgoYUHgjFajOhC3FMfHiFCPF/iC9vPK+fyDeZ6QAAAABJRU5ErkJggg==" alt="donation QR code -scan with zashi">
-</div>
-<code class="addr">u153khs43zxz6hcnlwnut77knyqmursnutmungxjxd7khruunhj77ea6tmpzxct9wzlgen66jxwc93ea053j22afkktu7hrs9rmsz003h3</code>
-<p class="dim">scan with <a href="https://electriccoin.co/zashi/">zashi</a> or paste the unified address.</p>
-</div>
-
-<div class="section">
-<h2>board</h2>
-<p class="dim">received donations with memos. synced every 5 minutes.</p>
-<div id="status"></div>
-<div id="board" class="board">
-<div class="empty">loading...</div>
-</div>
+<div class="section" id="install">
+  <h2>install</h2>
+  <div id="install-detect"></div>
+  <pre id="install-cmd"><span class="prompt">curl -fsSL https://github.com/rotkonetworks/zcli/releases/latest/download/zcli-linux-amd64 -o zcli && chmod +x zcli && sudo mv zcli /usr/local/bin/</span></pre>
+  <details>
+  <summary class="dim" style="cursor:pointer;margin:0.5em 0">all platforms</summary>
+  <h3>linux x86_64</h3>
+  <pre><span class="prompt">curl -fsSL https://github.com/rotkonetworks/zcli/releases/latest/download/zcli-linux-amd64 -o zcli && chmod +x zcli && sudo mv zcli /usr/local/bin/</span></pre>
+  <h3>linux arm64</h3>
+  <pre><span class="prompt">curl -fsSL https://github.com/rotkonetworks/zcli/releases/latest/download/zcli-linux-arm64 -o zcli && chmod +x zcli && sudo mv zcli /usr/local/bin/</span></pre>
+  <h3>macOS apple silicon</h3>
+  <pre><span class="prompt">curl -fsSL https://github.com/rotkonetworks/zcli/releases/latest/download/zcli-macos-arm64 -o zcli && chmod +x zcli && sudo mv zcli /usr/local/bin/</span></pre>
+  <h3>macOS intel</h3>
+  <pre><span class="prompt">curl -fsSL https://github.com/rotkonetworks/zcli/releases/latest/download/zcli-macos-amd64 -o zcli && chmod +x zcli && sudo mv zcli /usr/local/bin/</span></pre>
+  <h3>cargo</h3>
+  <pre><span class="prompt">cargo install zecli</span></pre>
+  <h3>source</h3>
+  <pre><span class="prompt">git clone https://github.com/rotkonetworks/zcli</span>
+<span class="prompt">cd zcli && cargo build --release</span>
+<span class="prompt">cp target/release/zcli ~/.local/bin/</span></pre>
+  </details>
 </div>
 
 <footer>
-<a href="https://github.com/rotkonetworks/zcli">source</a>
-<span class="dim"> · rotko networks</span>
+  <a href="https://github.com/rotkonetworks/zcli">source</a>
+  <span class="dim"> · </span>
+  <a href="https://zigner.rotko.net">zigner</a>
+  <span class="dim"> · </span>
+  <a href="board.html">donation board</a>
+  <span class="dim"> · rotko networks</span>
 </footer>
 
 <script>
@@ -242,7 +137,6 @@ with the most work.
   var binary, os;
 
   if (/Mac/.test(plat) || /Macintosh/.test(ua)) {
-    // apple silicon vs intel: userAgentData if available, else assume arm64 (most macs since 2020)
     var isArm = /arm64|aarch64/i.test(ua) ||
       (navigator.userAgentData && navigator.userAgentData.architecture === 'arm');
     if (isArm || !/Intel/.test(ua)) {
@@ -271,39 +165,6 @@ with the most work.
     detect.innerHTML = '<span class="dim">detected: <span class="gold">Windows</span> — use WSL2 with the Linux binary, or build from source with cargo</span>';
     cmd.innerHTML = '<span class="prompt">cargo install zecli</span>';
   }
-})();
-(function(){
-  var board = document.getElementById('board');
-  var status = document.getElementById('status');
-
-  function esc(s){var d=document.createElement('div');d.textContent=s;return d.innerHTML;}
-
-  fetch('memos.json')
-    .then(function(r){ return r.json(); })
-    .then(function(notes){
-      if(!notes.length){
-        board.innerHTML = '<div class="empty">no donations yet</div>';
-        return;
-      }
-      var html = '';
-      var unspent = 0;
-      for(var i = 0; i < notes.length; i++){
-        var n = notes[i];
-        if(!n.spent) unspent++;
-        html += '<div class="entry' + (n.spent ? ' spent' : '') + '">'
-          + '<div class="head">'
-          + '<span class="amt">' + esc(n.zec) + ' ZEC</span>'
-          + '<span class="meta">height ' + n.height + '</span>'
-          + '</div>';
-        if(n.memo) html += '<div class="memo">' + esc(n.memo) + '</div>';
-        html += '</div>';
-      }
-      board.innerHTML = html;
-      status.textContent = unspent + ' unspent · ' + notes.length + ' total';
-    })
-    .catch(function(){
-      board.innerHTML = '<div class="empty">could not load board</div>';
-    });
 })();
 </script>
 
