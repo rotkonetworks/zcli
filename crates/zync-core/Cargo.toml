@@ -4,7 +4,7 @@ version = "0.3.0"
 edition = "2021"
 license = "MIT"
 description = "Zcash light client primitives — verification, scanning, proof types"
-repository = "https://github.com/rotkonetworks/zcash-lc"
+repository = "https://github.com/rotkonetworks/zcli"
 keywords = ["zcash", "ligerito", "light-client", "zk-proofs"]
 categories = ["cryptography"]
 
@@ -28,8 +28,8 @@ wasm-parallel = [
 
 [dependencies]
 # ligerito polynomial commitment scheme
-ligerito = { path = "../ligerito", features = ["transcript-blake2b"] }
-ligerito-binary-fields = { path = "../ligerito-binary-fields" }
+ligerito = { version = "0.4.0", path = "../ligerito", features = ["transcript-blake2b"] }
+ligerito-binary-fields = { version = "0.4.0", path = "../ligerito-binary-fields" }
 
 blake2 = "0.10"
 sha2 = "0.10"

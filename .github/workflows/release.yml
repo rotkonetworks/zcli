@@ -11,20 +11,21 @@ permissions:
 jobs:
   build:
     strategy:
+      fail-fast: false
       matrix:
         include:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-22.04
-            binary: zcli-linux-amd64
+            suffix: linux-amd64
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-22.04
-            binary: zcli-linux-arm64
+            suffix: linux-arm64
           - target: aarch64-apple-darwin
             os: macos-14
-            binary: zcli-macos-arm64
+            suffix: macos-arm64
           - target: x86_64-apple-darwin
-            os: macos-13
-            binary: zcli-macos-amd64
+            os: macos-14
+            suffix: macos-amd64
 
     runs-on: ${{ matrix.os }}
 
@@ -44,30 +45,45 @@ jobs:
           echo "CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
           echo "CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++" >> $GITHUB_ENV
 
-      - name: install protoc
-        uses: arduino/setup-protoc@v3
-        with:
-          version: '25.x'
+      - name: install protoc (linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - name: install protoc (macos)
+        if: runner.os == 'macOS'
+        run: brew install protobuf
 
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
 
-      - name: build
+      - name: build zcli
         run: cargo build --release --target ${{ matrix.target }} -p zecli
+
+      - name: build zidecar
+        run: cargo build --release --target ${{ matrix.target }} -p zidecar
 
       - name: package
         run: |
-          cp target/${{ matrix.target }}/release/zcli ${{ matrix.binary }}
-          strip ${{ matrix.binary }} 2>/dev/null || true
-          sha256sum ${{ matrix.binary }} > ${{ matrix.binary }}.sha256
+          for bin in zcli zidecar; do
+            name="${bin}-${{ matrix.suffix }}"
+            cp "target/${{ matrix.target }}/release/${bin}" "${name}"
+            strip "${name}" 2>/dev/null || true
+            if command -v sha256sum &>/dev/null; then
+              sha256sum "${name}" > "${name}.sha256"
+            else
+              shasum -a 256 "${name}" > "${name}.sha256"
+            fi
+          done
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.binary }}
+          name: binaries-${{ matrix.suffix }}
           path: |
-            ${{ matrix.binary }}
-            ${{ matrix.binary }}.sha256
+            zcli-${{ matrix.suffix }}
+            zcli-${{ matrix.suffix }}.sha256
+            zidecar-${{ matrix.suffix }}
+            zidecar-${{ matrix.suffix }}.sha256
 
   publish:
     needs: build
@@ -90,4 +106,12 @@ jobs:
             zcli-macos-arm64.sha256
             zcli-macos-amd64
             zcli-macos-amd64.sha256
+            zidecar-linux-amd64
+            zidecar-linux-amd64.sha256
+            zidecar-linux-arm64
+            zidecar-linux-arm64.sha256
+            zidecar-macos-arm64
+            zidecar-macos-arm64.sha256
+            zidecar-macos-amd64
+            zidecar-macos-amd64.sha256
           generate_release_notes: true

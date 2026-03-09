@@ -1,10 +1,10 @@
 [package]
 name = "zidecar"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 license = "MIT"
 description = "Ligerito-powered Zcash light server with real-time header chain proofs"
-repository = "https://github.com/rotkonetworks/zcash-lc"
+repository = "https://github.com/rotkonetworks/zcli"
 keywords = ["zcash", "ligerito", "light-server", "zk-proofs"]
 categories = ["cryptography"]
 
@@ -37,7 +37,7 @@ prost-types = "0.12"
 # orchard = "0.7"
 
 # http client for zebrad RPC
-reqwest = { version = "0.11", features = ["json"] }
+reqwest = { version = "0.11", default-features = false, features = ["json", "rustls-tls"] }
 serde_json = "1.0"
 
 # storage (nomt for sparse merkle trees)
