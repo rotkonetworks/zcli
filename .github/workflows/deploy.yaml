@@ -42,9 +42,11 @@ jobs:
             cp zcli-staging/www/*.css ${{ env.PROJECT_DIR }}/
             cp zcli-staging/www/memos.json ${{ env.PROJECT_DIR }}/ 2>/dev/null || true
 
-            # if container exists, just reload nginx (files are bind-mounted)
-            if podman ps -a --format '{{.Names}}' | grep -q '^${{ env.CONTAINER_NAME }}$'; then
+            # if container exists and is running, just reload nginx (files are bind-mounted)
+            if podman ps --format '{{.Names}}' | grep -q '^${{ env.CONTAINER_NAME }}$'; then
               podman exec ${{ env.CONTAINER_NAME }} nginx -s reload
+            elif podman ps -a --format '{{.Names}}' | grep -q '^${{ env.CONTAINER_NAME }}$'; then
+              podman start ${{ env.CONTAINER_NAME }}
             else
               cat > nginx-zcli.conf << 'NGINX_EOF'
             server {
