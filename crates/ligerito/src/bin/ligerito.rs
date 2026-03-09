@@ -1,3 +1,4 @@
+#![allow(clippy::all, unused_imports)]
 //! Ligerito CLI - Prove and verify polynomial commitments via stdin/stdout
 //!
 //! # Examples

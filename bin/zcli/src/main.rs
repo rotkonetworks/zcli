@@ -1,15 +1,4 @@
-mod address;
-#[cfg(target_os = "linux")]
-mod cam;
 mod cli;
-mod client;
-pub mod error;
-mod key;
-mod ops;
-pub mod quic;
-mod tx;
-pub mod wallet;
-mod witness;
 
 use std::sync::{Arc, Mutex};
 
@@ -17,8 +6,12 @@ use clap::Parser;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
 
+use zecli::{address, client, key, ops, quic, wallet, witness};
+#[cfg(target_os = "linux")]
+use zecli::cam;
+
 use cli::{Cli, Command, MerchantAction};
-use error::Error;
+use zecli::error::Error;
 
 #[tokio::main]
 async fn main() {

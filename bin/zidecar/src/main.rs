@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 #![allow(unused_imports)]
 #![allow(unused_variables)]
+#![allow(clippy::all)]
 
 use anyhow::Result;
 use clap::Parser;

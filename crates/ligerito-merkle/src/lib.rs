@@ -3,6 +3,7 @@
 //! Matches the Julia BatchedMerkleTree implementation
 
 #![cfg_attr(not(feature = "std"), no_std)]
+#![allow(clippy::all, unused_imports)]
 
 #[cfg(not(feature = "std"))]
 extern crate alloc;

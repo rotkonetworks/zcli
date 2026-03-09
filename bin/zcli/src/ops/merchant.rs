@@ -523,7 +523,7 @@ async fn forward_single_note(
     }
 
     let (anchor, paths) =
-        witness::build_witnesses(&client, &[note.clone()], tip, mainnet, json).await?;
+        witness::build_witnesses(&client, std::slice::from_ref(note), tip, mainnet, json).await?;
 
     let spends = vec![(orchard_note, paths.into_iter().next().unwrap())];
 

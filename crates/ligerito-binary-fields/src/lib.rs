@@ -3,6 +3,7 @@
 //! Mirrors the Julia BinaryFields module
 
 #![cfg_attr(not(feature = "std"), no_std)]
+#![allow(clippy::all, unused_parens, unused_imports, dead_code)]
 
 mod elem;
 pub mod fast_inverse;
