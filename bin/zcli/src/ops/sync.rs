@@ -13,15 +13,11 @@ use crate::wallet::{Wallet, WalletNote};
 
 const BATCH_SIZE: u32 = 500;
 
-// orchard activation heights
-const ORCHARD_ACTIVATION_MAINNET: u32 = 1_687_104;
-const ORCHARD_ACTIVATION_TESTNET: u32 = 1_842_420;
-
-// hardcoded activation block hashes (LE internal order) — immutable trust anchors
-const ACTIVATION_HASH_MAINNET: [u8; 32] = [
-    0x00, 0x00, 0x00, 0x00, 0x00, 0xd7, 0x23, 0x15, 0x6d, 0x9b, 0x65, 0xff, 0xcf, 0x49, 0x84, 0xda,
-    0x7a, 0x19, 0x67, 0x5e, 0xd7, 0xe2, 0xf0, 0x6d, 0x9e, 0x5d, 0x51, 0x88, 0xaf, 0x08, 0x7b, 0xf8,
-];
+use zync_core::{
+    ORCHARD_ACTIVATION_HEIGHT as ORCHARD_ACTIVATION_MAINNET,
+    ORCHARD_ACTIVATION_HEIGHT_TESTNET as ORCHARD_ACTIVATION_TESTNET,
+    ACTIVATION_HASH_MAINNET,
+};
 
 struct CompactShieldedOutput {
     epk: [u8; 32],
@@ -325,17 +321,14 @@ async fn sync_inner(
     }
 
     // verify actions commitment chain against proven value
-    // (only if proof includes actions commitment — zeros means old proof format)
-    if proven_roots.actions_commitment != [0u8; 32] {
-        if running_actions_commitment != proven_roots.actions_commitment {
-            return Err(Error::Other(format!(
-                "actions commitment mismatch: server tampered with block actions (computed={} proven={})",
-                hex::encode(&running_actions_commitment[..8]),
-                hex::encode(&proven_roots.actions_commitment[..8]),
-            )));
-        }
-        eprintln!("actions commitment verified: {}...", hex::encode(&running_actions_commitment[..8]));
+    if running_actions_commitment != proven_roots.actions_commitment {
+        return Err(Error::Other(format!(
+            "actions commitment mismatch: server tampered with block actions (computed={} proven={})",
+            hex::encode(&running_actions_commitment[..8]),
+            hex::encode(&proven_roots.actions_commitment[..8]),
+        )));
     }
+    eprintln!("actions commitment verified: {}...", hex::encode(&running_actions_commitment[..8]));
 
     // verify commitment proofs (NOMT) for received notes BEFORE storing
     if !received_cmxs.is_empty() {
@@ -672,7 +665,7 @@ async fn verify_commitments(
         .map_err(|e| Error::Other(format!("commitment proof fetch failed: {}", e)))?;
 
     // bind server-returned root to ligerito-proven root
-    if proven.tree_root != [0u8; 32] && root != proven.tree_root {
+    if root != proven.tree_root {
         return Err(Error::Other(format!(
             "commitment tree root mismatch: server={} proven={}",
             hex::encode(root),
@@ -719,7 +712,7 @@ async fn verify_commitments(
         }
 
         // verify proof root matches the proven root
-        if proven.tree_root != [0u8; 32] && proof.tree_root != proven.tree_root {
+        if proof.tree_root != proven.tree_root {
             return Err(Error::Other(format!(
                 "commitment proof root mismatch for cmx {}",
                 hex::encode(proof.cmx),
@@ -751,7 +744,7 @@ async fn verify_nullifiers(
         .map_err(|e| Error::Other(format!("nullifier proof fetch failed: {}", e)))?;
 
     // bind server-returned root to ligerito-proven root
-    if proven.nullifier_root != [0u8; 32] && root != proven.nullifier_root {
+    if root != proven.nullifier_root {
         return Err(Error::Other(format!(
             "nullifier root mismatch: server={} proven={}",
             hex::encode(root),

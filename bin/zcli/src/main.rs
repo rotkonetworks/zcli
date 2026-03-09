@@ -349,99 +349,181 @@ async fn cmd_verify(cli: &Cli, mainnet: bool) -> Result<(), Error> {
     let zidecar = client::ZidecarClient::connect(&cli.endpoint).await?;
     let (tip, tip_hash) = zidecar.get_tip().await?;
 
-    eprintln!("=== zcli verify ===");
-    eprintln!("endpoint: {}", cli.endpoint);
-    eprintln!("tip: {} hash: {}...", tip, hex::encode(&tip_hash[..8]));
+    let activation = if mainnet {
+        zync_core::ORCHARD_ACTIVATION_HEIGHT
+    } else {
+        zync_core::ORCHARD_ACTIVATION_HEIGHT_TESTNET
+    };
+    let network = if mainnet { "mainnet" } else { "testnet" };
 
-    // 1. verify activation block hash (mainnet only)
+    if !cli.json {
+        eprintln!("zcli verify - trustless verification chain");
+        eprintln!("network:  {}", network);
+        eprintln!("endpoint: {}", cli.endpoint);
+        eprintln!("tip:      {} ({})", tip, hex::encode(&tip_hash[..8]));
+        eprintln!();
+    }
+
+    // step 1: trust anchor
+    if !cli.json {
+        eprintln!("1. trust anchor");
+        eprintln!("   hardcoded orchard activation hash at height {}", activation);
+    }
     if mainnet {
-        let activation = 1_687_104u32;
         let blocks = zidecar.get_compact_blocks(activation, activation).await?;
-        let expected: [u8; 32] = [
-            0x00, 0x00, 0x00, 0x00, 0x00, 0xd7, 0x23, 0x15, 0x6d, 0x9b, 0x65, 0xff, 0xcf, 0x49,
-            0x84, 0xda, 0x7a, 0x19, 0x67, 0x5e, 0xd7, 0xe2, 0xf0, 0x6d, 0x9e, 0x5d, 0x51, 0x88,
-            0xaf, 0x08, 0x7b, 0xf8,
-        ];
-        if !blocks.is_empty() && blocks[0].hash == expected {
-            eprintln!("[OK] activation block hash matches hardcoded anchor");
-        } else {
-            return Err(Error::Other("activation block hash mismatch".into()));
+        if blocks.is_empty() || blocks[0].hash != zync_core::ACTIVATION_HASH_MAINNET {
+            return Err(Error::Other("activation block hash mismatch — server not on canonical chain".into()));
+        }
+        if !cli.json {
+            eprintln!("   server returned: {}", hex::encode(&blocks[0].hash[..8]));
+            eprintln!("   expected:        {}", hex::encode(&zync_core::ACTIVATION_HASH_MAINNET[..8]));
+            eprintln!("   PASS");
         }
     }
 
-    // 2. cross-verify tip against lightwalletd
+    // step 2: cross-verification
     let endpoints: Vec<&str> = cli
         .verify_endpoints
         .split(',')
         .map(|s| s.trim())
         .filter(|s| !s.is_empty())
         .collect();
+    if !cli.json {
+        eprintln!();
+        eprintln!("2. cross-verification ({} independent node{})", endpoints.len(), if endpoints.len() == 1 { "" } else { "s" });
+    }
     if !endpoints.is_empty() {
-        eprintln!("cross-verifying tip against {} lightwalletd node(s)...", endpoints.len());
-        let lwd = client::LightwalletdClient::connect(&endpoints[0]).await?;
-        match lwd.get_block(tip as u64).await {
-            Ok((_, hash, _)) => {
-                if hash == tip_hash {
-                    eprintln!("[OK] tip hash matches lightwalletd");
-                } else {
-                    eprintln!("[WARN] tip hash mismatch with lightwalletd");
+        let mut agree = 0u32;
+        let mut disagree = 0u32;
+        for &ep in &endpoints {
+            let lwd = match client::LightwalletdClient::connect(ep).await {
+                Ok(c) => c,
+                Err(e) => {
+                    if !cli.json {
+                        eprintln!("   {} - connect failed: {}", ep, e);
+                    }
+                    continue;
+                }
+            };
+            match lwd.get_block(tip as u64).await {
+                Ok((_, hash, _)) => {
+                    let mut hash_rev = hash.clone();
+                    hash_rev.reverse();
+                    if hash == tip_hash || hash_rev == tip_hash {
+                        agree += 1;
+                        if !cli.json {
+                            eprintln!("   {} - tip matches", ep);
+                        }
+                    } else {
+                        disagree += 1;
+                        if !cli.json {
+                            eprintln!("   {} - MISMATCH", ep);
+                        }
+                    }
+                }
+                Err(e) => {
+                    if !cli.json {
+                        eprintln!("   {} - unreachable: {}", ep, e);
+                    }
                 }
             }
-            Err(e) => eprintln!("[WARN] lightwalletd unreachable: {}", e),
         }
-    } else {
-        eprintln!("[SKIP] no lightwalletd endpoints configured");
+        let total = agree + disagree;
+        if total == 0 {
+            return Err(Error::Other("cross-verification failed: no nodes responded".into()));
+        }
+        let threshold = (total * 2).div_ceil(3);
+        if agree < threshold {
+            return Err(Error::Other(format!(
+                "cross-verification failed: {}/{} nodes disagree on tip",
+                disagree, total,
+            )));
+        }
+        if !cli.json {
+            eprintln!("   consensus: {}/{} agree (threshold: >2/3)", agree, total);
+            eprintln!("   PASS");
+        }
+    } else if !cli.json {
+        eprintln!("   skipped (no --verify-endpoints configured)");
     }
 
-    // 3. verify header chain proof (ligerito)
-    eprintln!("fetching header proof...");
+    // step 3: header chain proof
+    if !cli.json {
+        eprintln!();
+        eprintln!("3. header chain proof (ligerito)");
+    }
     let (proof_bytes, proof_from, proof_to) = zidecar.get_header_proof().await?;
-    eprintln!("proof covers blocks {}..{} ({} bytes)", proof_from, proof_to, proof_bytes.len());
 
     let result = zync_core::verifier::verify_proofs_full(&proof_bytes)
         .map_err(|e| Error::Other(format!("proof verification failed: {}", e)))?;
 
-    if result.gigaproof_valid {
-        eprintln!("[OK] gigaproof valid");
-    } else {
-        return Err(Error::Other("gigaproof INVALID".into()));
+    if !result.gigaproof_valid {
+        return Err(Error::Other("gigaproof cryptographically INVALID".into()));
     }
-    if result.tip_valid {
-        eprintln!("[OK] tip proof valid");
-    } else {
-        return Err(Error::Other("tip proof INVALID".into()));
+    if !result.tip_valid {
+        return Err(Error::Other("tip proof cryptographically INVALID".into()));
     }
-    if result.continuous {
-        eprintln!("[OK] proof chain continuous");
-    } else {
-        return Err(Error::Other("proof chain DISCONTINUOUS".into()));
+    if !result.continuous {
+        return Err(Error::Other("proof chain DISCONTINUOUS — gap between gigaproof and tip".into()));
     }
 
+    // verify gigaproof anchors to hardcoded activation hash
+    if mainnet && result.giga_outputs.start_hash != zync_core::ACTIVATION_HASH_MAINNET {
+        return Err(Error::Other("gigaproof start_hash doesn't match activation anchor".into()));
+    }
+
+    let giga = &result.giga_outputs;
+    let blocks_proven = proof_to - proof_from;
+    if !cli.json {
+        eprintln!("   gigaproof: {} -> {} ({} headers, {} KB)",
+            giga.start_height, giga.end_height,
+            giga.num_headers,
+            proof_bytes.len() / 1024,
+        );
+        eprintln!("   gigaproof anchored to activation hash: PASS");
+        eprintln!("   gigaproof cryptographic verification:  PASS");
+        if let Some(ref tip_out) = result.tip_outputs {
+            eprintln!("   tip proof: {} -> {} ({} headers)",
+                tip_out.start_height, tip_out.end_height, tip_out.num_headers);
+            eprintln!("   tip proof cryptographic verification:  PASS");
+        }
+        eprintln!("   chain continuity (tip chains to giga): PASS");
+        eprintln!("   total blocks proven: {}", blocks_proven);
+    }
+
+    // step 4: proven state roots
     let outputs = result.tip_outputs.as_ref().unwrap_or(&result.giga_outputs);
-    eprintln!("  start_height:  {}", outputs.start_height);
-    eprintln!("  end_height:    {}", outputs.end_height);
-    eprintln!("  tip_hash:      {}...", hex::encode(&outputs.tip_hash[..8]));
-    eprintln!("  tree_root:     {}...", hex::encode(&outputs.tip_tree_root[..8]));
-    eprintln!("  nullifier_root:{}...", hex::encode(&outputs.tip_nullifier_root[..8]));
-    eprintln!(
-        "  actions_commit:{}...",
-        hex::encode(&outputs.final_actions_commitment[..8])
-    );
-
     let staleness = tip.saturating_sub(outputs.end_height);
     if staleness > zync_core::EPOCH_SIZE {
-        eprintln!("[WARN] proof is {} blocks behind tip (>1 epoch)", staleness);
-    } else {
-        eprintln!("[OK] proof freshness: {} blocks behind tip", staleness);
+        return Err(Error::Other(format!(
+            "proof too stale: {} blocks behind tip (>1 epoch)", staleness
+        )));
+    }
+    if !cli.json {
+        eprintln!();
+        eprintln!("4. cryptographically proven state roots");
+        eprintln!("   (extracted from ligerito polynomial trace sentinel row)");
+        eprintln!("   tree_root:          {}", hex::encode(outputs.tip_tree_root));
+        eprintln!("   nullifier_root:     {}", hex::encode(outputs.tip_nullifier_root));
+        eprintln!("   actions_commitment: {}", hex::encode(outputs.final_actions_commitment));
+        eprintln!("   proof freshness: {} blocks behind tip", staleness);
+    }
+
+    if !cli.json {
+        eprintln!();
+        eprintln!("all checks passed");
     }
 
     if cli.json {
         println!(
             "{}",
             serde_json::json!({
+                "network": network,
                 "tip": tip,
+                "tip_hash": hex::encode(&tip_hash),
                 "proof_from": proof_from,
                 "proof_to": proof_to,
+                "blocks_proven": blocks_proven,
                 "gigaproof_valid": result.gigaproof_valid,
                 "tip_valid": result.tip_valid,
                 "continuous": result.continuous,
@@ -449,11 +531,11 @@ async fn cmd_verify(cli: &Cli, mainnet: bool) -> Result<(), Error> {
                 "nullifier_root": hex::encode(outputs.tip_nullifier_root),
                 "actions_commitment": hex::encode(outputs.final_actions_commitment),
                 "staleness_blocks": staleness,
+                "cross_verified": !endpoints.is_empty(),
             })
         );
     }
 
-    eprintln!("\n=== verification complete ===");
     Ok(())
 }
 
