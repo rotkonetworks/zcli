@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>zigner - air-gapped zcash signing app for android</title>
+<meta name="description" content="zigner is an air-gapped zcash signing app for android. spending keys stay offline on your phone. communicates with zcli through QR codes only — no wifi, no bluetooth, no USB.">
+<link rel="canonical" href="https://zcli.rotko.net/zigner.html">
+<meta property="og:type" content="website">
+<meta property="og:title" content="zigner - air-gapped zcash signing for android">
+<meta property="og:description" content="keep zcash spending keys on an offline android phone. sign transactions via QR codes. no network, no bluetooth, no USB.">
+<meta property="og:url" content="https://zcli.rotko.net/zigner.html">
+<meta name="robots" content="index, follow">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav>
+  <a href="index.html" class="nav-brand">zcli</a>
+  <div class="nav-links">
+    <a href="index.html">home</a>
+    <a href="docs.html">docs</a>
+    <a href="zigner.html">zigner</a>
+    <a href="board.html">donate</a>
+    <a href="https://github.com/rotkonetworks/zcli">source</a>
+  </div>
+</nav>
+
+<div class="hero">
+  <h1>zigner</h1>
+  <p class="tagline">air-gapped zcash signing for android</p>
+  <p>
+    spending keys stay on an offline phone. zcli talks to zigner
+    through QR codes — no wifi, no bluetooth, no USB.
+  </p>
+  <div class="hero-actions">
+    <a href="https://zigner.rotko.net" class="btn">get zigner</a>
+  </div>
+</div>
+
+<div class="section">
+  <h2>setup</h2>
+  <pre><span class="dim"># on zigner: generate wallet, display FVK QR</span>
+<span class="dim"># on your machine:</span>
+<span class="prompt">zcli import-fvk --cam</span>                     <span class="dim"># scan the viewing key QR</span>
+<span class="prompt">zcli sync --wallet zigner</span>                 <span class="dim"># sync watch-only wallet</span>
+<span class="prompt">zcli balance --wallet zigner</span>              <span class="dim"># check balance</span></pre>
+</div>
+
+<div class="section">
+  <h2>send</h2>
+  <pre><span class="prompt">zcli send 1.0 u1... --wallet zigner --cam</span> <span class="dim"># build unsigned tx, show QR</span>
+<span class="dim"># zigner scans it, signs offline, displays signed QR</span>
+<span class="dim"># zcli scans signed QR back, broadcasts to network</span></pre>
+</div>
+
+<div class="section">
+  <h2>the flow</h2>
+  <div class="irssi">
+    <div class="irssi-bar"><span>zcli x zigner</span><span class="dim">air-gapped</span></div>
+    <div class="irssi-body">
+<span class="dim">  zigner (offline)                  zcli (online)</span>
+<span class="dim">  ┌──────────────┐                 ┌──────────────┐</span>
+<span class="dim">  │</span> generate keys <span class="dim">│</span>    <span class="cmd">FVK QR</span>      <span class="dim">│</span> import-fvk   <span class="dim">│</span>
+<span class="dim">  │</span> hold spend key<span class="dim">│ ──────────────▸ │</span> watch-only   <span class="dim">│</span>
+<span class="dim">  └──────────────┘                 │</span> sync &amp; build <span class="dim">│</span>
+<span class="dim">  ┌──────────────┐    </span><span class="cmd">unsigned tx</span><span class="dim">  │              │</span>
+<span class="dim">  │</span> verify &amp; sign <span class="dim">│ ◂────────────── │</span> send --cam   <span class="dim">│</span>
+<span class="dim">  │</span> display QR   <span class="dim">│ ──────────────▸ │</span> broadcast    <span class="dim">│</span>
+<span class="dim">  └──────────────┘    </span><span class="cmd">signed tx</span><span class="dim">    └──────────────┘</span>
+</div>
+    <div class="irssi-bar irssi-bar-bottom"><span class="dim">keys never leave the device</span><span class="dim">QR codes only</span></div>
+  </div>
+</div>
+
+<footer>
+  <a href="https://github.com/rotkonetworks/zcli">source</a>
+  <span class="dim"> · </span>
+  <a href="https://zigner.rotko.net">zigner app</a>
+  <span class="dim"> · </span>
+  <a href="board.html">donate</a>
+  <span class="dim"> · rotko networks</span>
+</footer>
+
+</body>
+</html>

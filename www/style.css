@@ -1,4 +1,11 @@
 *{margin:0;padding:0;box-sizing:border-box}
+
+/* scrollbar */
+::-webkit-scrollbar{width:6px;height:6px}
+::-webkit-scrollbar-track{background:#0a0a0a}
+::-webkit-scrollbar-thumb{background:#332a00;border-radius:3px}
+::-webkit-scrollbar-thumb:hover{background:#f4b728}
+*{scrollbar-width:thin;scrollbar-color:#332a00 #0a0a0a}
 body{
   background:#000;color:#ccc;
   font-family:'Courier New',Courier,monospace;
@@ -106,6 +113,33 @@ details summary{list-style:none}
 details summary::marker,details summary::-webkit-details-marker{display:none}
 details summary::before{content:"▸ ";color:#f4b728}
 details[open] summary::before{content:"▾ "}
+
+/* irssi terminal */
+.irssi{
+  border:1px solid #333;margin:1em 0;
+  font-size:0.85em;line-height:1.5;
+  background:#000;overflow:hidden;
+}
+.irssi-bar{
+  background:#1a1200;color:#f4b728;
+  padding:0.2em 0.6em;font-size:0.85em;
+  display:flex;justify-content:space-between;
+  border-bottom:1px solid #332a00;
+}
+.irssi-bar-bottom{
+  border-bottom:none;border-top:1px solid #332a00;
+}
+.irssi-bar .dim{color:#8a7420}
+.irssi-body{
+  padding:0.6em 0.8em;overflow-x:auto;
+  white-space:pre;color:#ccc;
+}
+.irssi-body .cmd{color:#f4b728}
+.irssi-body .flag{color:#d4a028}
+.irssi-body .desc{color:#999}
+.irssi-body .heading{color:#f4b728;font-weight:bold}
+.irssi-body .env{color:#888}
+.irssi-body .default{color:#666}
 
 /* demo block */
 .demo{font-size:0.95em}

@@ -3,7 +3,14 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>zcli - donation board</title>
+<title>zcli - donate with zcash | shielded donations</title>
+<meta name="description" content="donate to zcli development with zcash shielded transactions. all donations and memos are displayed on the public board.">
+<link rel="canonical" href="https://zcli.rotko.net/board.html">
+<meta property="og:type" content="website">
+<meta property="og:title" content="zcli - donate with zcash">
+<meta property="og:description" content="support zcli development. donate with shielded zcash transactions.">
+<meta property="og:url" content="https://zcli.rotko.net/board.html">
+<meta name="robots" content="index, follow">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -13,15 +20,25 @@
   <div class="nav-links">
     <a href="index.html">home</a>
     <a href="docs.html">docs</a>
-    <a href="board.html">board</a>
+    <a href="zigner.html">zigner</a>
+    <a href="board.html">donate</a>
     <a href="https://github.com/rotkonetworks/zcli">source</a>
   </div>
 </nav>
 
 <div class="section">
-  <h1>donation board</h1>
-  <p>send shielded ZEC — include a memo and it appears here.</p>
-  <p class="red">warning: memos sent to this address are published publicly on the board below.</p>
+  <h1>donate</h1>
+  <p>
+    we built <a href="https://crates.io/crates/ligerito">ligerito</a> (polynomial
+    commitment proofs over 1.5M+ block headers),
+    <a href="docs.html#verification">nomt merkle verification</a> for every note
+    and nullifier, cross-verified trustless sync, and
+    <a href="zigner.html">air-gapped signing</a> — the primitives that make
+    real light clients possible on zcash. this took tremendous effort and is
+    all open source.
+  </p>
+  <p>if you find this useful, send some shielded ZEC. include a memo and it appears below.</p>
+  <p class="red">warning: memos sent to this address are published publicly on the board.</p>
 </div>
 
 <div class="section">

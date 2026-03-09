@@ -3,7 +3,14 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>zcli - docs</title>
+<title>zcli docs - architecture, verification &amp; usage reference</title>
+<meta name="description" content="zcli documentation: ssh key derivation, trustless sync architecture with zidecar and ligerito proofs, client-side verification chain, nomt merkle proofs, and complete usage reference.">
+<link rel="canonical" href="https://zcli.rotko.net/docs.html">
+<meta property="og:type" content="article">
+<meta property="og:title" content="zcli docs - architecture, verification &amp; usage">
+<meta property="og:description" content="how zcli verifies the zcash chain: ligerito header proofs, nomt merkle proofs, cross-verification, and trustless sync.">
+<meta property="og:url" content="https://zcli.rotko.net/docs.html">
+<meta name="robots" content="index, follow">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -13,7 +20,8 @@
   <div class="nav-links">
     <a href="index.html">home</a>
     <a href="docs.html">docs</a>
-    <a href="board.html">board</a>
+    <a href="zigner.html">zigner</a>
+    <a href="board.html">donate</a>
     <a href="https://github.com/rotkonetworks/zcli">source</a>
   </div>
 </nav>
@@ -25,7 +33,7 @@
 <div class="section">
   <h2>architecture</h2>
 
-  <h3>zcli</h3>
+  <h3><a href="https://github.com/rotkonetworks/zcli/tree/master/bin/zcli">zcli</a></h3>
   <p>
   the wallet. derives orchard spending keys and transparent keys from an ssh
   ed25519 seed via <code>BLAKE2b-512("ZcliWalletSeed" || ed25519_seed)</code>.
@@ -34,80 +42,121 @@
   locally.
   </p>
 
-  <h3><a href="https://github.com/rotkonetworks/zeratul/tree/master/crates/bin/zidecar">zidecar</a></h3>
+  <h3><a href="https://github.com/rotkonetworks/zcli/tree/master/bin/zidecar">zidecar</a></h3>
   <p>
   the backend. indexes the zcash chain into
   <a href="https://github.com/thrumdev/nomt">nomt</a> and generates
   <a href="https://crates.io/crates/ligerito">ligerito</a> proofs over the header
-  chain (gigaproof + tip). serves compact blocks and proofs over gRPC-web.
-  default endpoint: <code>zcash.rotko.net</code>.
+  chain (gigaproof + tip proof). serves compact blocks and proofs over
+  gRPC-web. default endpoint: <code>zcash.rotko.net</code>.
   </p>
 
-  <h3><a href="https://github.com/rotkonetworks/zeratul/tree/master/crates/zync-core">zync</a></h3>
+  <h3><a href="https://github.com/rotkonetworks/zcli/tree/master/crates/zync-core">zync-core</a></h3>
   <p>
-  shared scanner library. trial decryption, ligerito verification, nullifier
-  tracking, witness construction. used by zcli and
-  <a href="https://github.com/rotkonetworks/zeratul/tree/master/crates/bin/zafu">zafu</a>.
+  shared verification library. ligerito proof verification, nomt merkle proof
+  verification, actions commitment chain, trial decryption. used by both zcli
+  and <a href="https://github.com/rotkonetworks/zafu">zafu</a>.
   </p>
 </div>
 
 <div class="section" id="verification">
   <h2>client-side verification</h2>
   <p>
-  zcli verifies chain data in three layers before trusting it. each layer
-  builds on the previous one.
+  zcli verifies chain data before trusting it. nothing from the server is
+  accepted without cryptographic proof. run <code>zcli verify</code> to see
+  the full chain:
   </p>
 
-  <h3>layer 1: header chain (ligerito)</h3>
-  <p>
-  before scanning, zcli fetches a combined proof and verifies it locally.
-  the gigaproof (2^26, ~300KB) covers the full historical chain. the tip
-  proof (2^20, ~150KB) covers the gap to current tip, regenerated every block.
-  </p>
-  <pre>1. splits combined blob into gigaproof + tip proof
-2. verifies both ligerito proofs cryptographically
-3. checks continuity: tip.start_prev_hash == giga.tip_hash
-4. rejects if any check fails</pre>
+  <pre><span class="prompt">$ zcli verify</span>
+zcli verify - trustless verification chain
+network:  mainnet
+endpoint: https://zcash.rotko.net
+tip:      3266078 (000000000075b2db)
 
-  <h3>layer 2: state roots (nomt)</h3>
+1. trust anchor
+   hardcoded orchard activation hash at height 1687104
+   server returned: 0000000000d72315
+   expected:        0000000000d72315
+   PASS
+
+2. cross-verification (1 independent node)
+   https://zec.rocks - tip matches
+   consensus: 1/1 agree (threshold: >2/3)
+   PASS
+
+3. header chain proof (ligerito)
+   gigaproof: 1687104 -> 3265535 (1578432 headers, 452 KB)
+   gigaproof anchored to activation hash: PASS
+   gigaproof cryptographic verification:  PASS
+   tip proof: 3265536 -> 3266078 (543 headers)
+   tip proof cryptographic verification:  PASS
+   chain continuity (tip chains to giga): PASS
+   total blocks proven: 1578974
+
+4. cryptographically proven state roots
+   (extracted from ligerito polynomial trace sentinel row)
+   tree_root:          b375422028a896ed...
+   nullifier_root:     512ab0f1f95c751e...
+   actions_commitment: 18001392bc7a253b...
+   proof freshness: 0 blocks behind tip
+
+all checks passed</pre>
+
+  <h3>trust anchor</h3>
   <p>
-  zidecar indexes the zcash chain into <a href="https://github.com/thrumdev/nomt">nomt</a>
-  merkle trees. a ligerito proof covers the state transition from a known
-  checkpoint to the current height, binding tree_root and nullifier_root to
-  the proven header chain.
+  the orchard activation block hash (height 1,687,104) is hardcoded in the
+  binary. every proof chain must start from this immutable anchor. the
+  gigaproof's <code>start_hash</code> is checked against it.
   </p>
 
-  <h3>layer 3: individual entries (nomt)</h3>
+  <h3>cross-verification</h3>
   <p>
-  SHA256 merkle proofs verify individual commitments and nullifiers against
-  the proven state roots:
-  </p>
-  <pre>commitment proofs: cmx exists in tree at position (against tree_root)
-nullifier proofs:  nullifier spent/unspent status (against nullifier_root)</pre>
-  <p>
-  if a nullifier is proven spent but the wallet thinks it's unspent, the
-  wallet updates its state. all layers soft-fail gracefully when the server
-  doesn't support the RPCs yet.
+  tip block hash is compared against independent lightwalletd nodes
+  (default: <code>zec.rocks</code>, configurable via <code>--verify-endpoints</code>).
+  requires BFT majority (&gt;2/3 agreement). hard-fails on mismatch or
+  when no nodes respond.
   </p>
 
-  <h3>what still requires trust</h3>
+  <h3>header chain proof (ligerito)</h3>
   <p>
-  zcli cross-verifies the chain tip between zidecar and an independent
-  lightwalletd (default: <code>mainnet.lightwalletd.com</code>, override
-  with <code>--verify-endpoint</code>). if the block hashes diverge, sync
-  aborts. when the tip matches, the entire chain underneath is
-  cryptographically proven consistent — ligerito proves the header chain
-  from orchard activation (NU5, block 1,687,104) to tip, nomt proves every
-  transaction is tied to those headers.
+  the gigaproof (~300KB) covers the header chain from NU5 activation to the
+  latest epoch boundary. the tip proof (~150KB) covers from there to the
+  current tip, regenerated every block. both are verified cryptographically
+  and must chain continuously.
   </p>
   <p>
-  the remaining trust assumption: at least one of your endpoints is honest
-  about the chain tip. if both endpoints collude and serve a forked
-  chain, no light client — with or without SPV header validation — can
-  detect this. verifying proof-of-work doesn't help because "most work"
-  is meaningless without seeing all competing chains, which requires a full
-  node. this is a fundamental limitation of all light clients, not specific
-  to zcli.
+  the ligerito proof commits to a polynomial trace containing a sentinel row
+  with three state roots. these are cryptographically bound to the proven
+  header chain — the server cannot forge them.
+  </p>
+
+  <h3>proven state roots</h3>
+  <p>
+  the sentinel row in the ligerito trace contains:
+  </p>
+  <pre>tree_root          orchard commitment tree root (nomt)
+nullifier_root     nullifier set root (nomt)
+actions_commitment running chain of per-block action merkle trees</pre>
+
+  <h3>what happens during sync</h3>
+  <p>
+  during <code>zcli sync</code>, each received note gets a nomt merkle proof
+  verified against the proven <code>tree_root</code>. each unspent nullifier
+  gets a nomt proof against the proven <code>nullifier_root</code>. the
+  client recomputes per-block action merkle trees and chains them — the
+  result must match the proven <code>actions_commitment</code>. after trial
+  decryption, cmx is recomputed from the decrypted note and compared to the
+  server-provided value. notes are only stored after all proofs pass.
+  </p>
+  <p>
+  all verification hard-fails. no soft-fails, no warnings-instead-of-errors.
+  </p>
+
+  <h3>remaining trust assumption</h3>
+  <p>
+  at least one of your cross-verification endpoints must be honest about the
+  chain tip. if all endpoints collude and serve a forked chain, no light
+  client can detect this. this is fundamental to all light clients.
   </p>
 </div>
 
