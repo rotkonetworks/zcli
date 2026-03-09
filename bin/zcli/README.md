@@ -111,7 +111,7 @@ zcli send 1.0 u1... --wallet zigner --cam # build tx, scan signed QR back
 **ssh key mode** (default): reads your ed25519 private key, derives a
 zcash-specific seed via `BLAKE2b-512("ZcliWalletSeed" || ed25519_seed)`.
 your ssh key passphrase is prompted if the key is encrypted. set
-`SSH_PASSPHRASE` for non-interactive use.
+`ZCLI_PASSPHRASE` for non-interactive use.
 
 **mnemonic mode**: standard bip39 seed derivation, compatible with other
 zcash wallets.
@@ -140,7 +140,7 @@ resync from scratch.
 | `ZCLI_MNEMONIC` | bip39 mnemonic (overrides ssh key) |
 | `ZCLI_ENDPOINT` | zidecar gRPC endpoint (default: `https://zcash.rotko.net`) |
 | `ZCLI_VERIFY_ENDPOINTS` | lightwalletd endpoints for cross-verification (default: `https://zec.rocks`) |
-| `SSH_PASSPHRASE` | ssh key passphrase (non-interactive) |
+| `ZCLI_PASSPHRASE` | ssh key passphrase (non-interactive) |
 | `ZCLI_JSON` | enable json output |
 
 ## license
