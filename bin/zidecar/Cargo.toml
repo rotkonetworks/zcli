@@ -14,11 +14,11 @@ path = "src/main.rs"
 
 [dependencies]
 # zync core types
-zync-core = { path = "../../crates/zync-core" }
+zync-core = { version = "0.3.0", path = "../../crates/zync-core" }
 
 # ligerito polynomial commitment scheme
-ligerito = { path = "../../crates/ligerito", features = ["transcript-blake2b"] }
-ligerito-binary-fields = { path = "../../crates/ligerito-binary-fields" }
+ligerito = { version = "0.4.0", path = "../../crates/ligerito", features = ["transcript-blake2b"] }
+ligerito-binary-fields = { version = "0.4.0", path = "../../crates/ligerito-binary-fields" }
 
 # async runtime
 tokio = { version = "1", features = ["full"] }
