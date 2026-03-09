@@ -27,6 +27,10 @@ pub struct ProofPublicOutputs {
     pub final_commitment: [u8; 32],
     pub final_state_commitment: [u8; 32],
     pub num_headers: u32,
+    /// Tree root (orchard commitment tree) at proof's end height
+    pub tip_tree_root: [u8; 32],
+    /// Nullifier root (nomt) at proof's end height
+    pub tip_nullifier_root: [u8; 32],
 }
 
 /// result of proof verification

@@ -47,7 +47,7 @@ const EPOCH_SIZE: u32 = 1024;
 /// fields encoded per block header in trace (32 fields for full verification)
 pub const FIELDS_PER_HEADER: usize = 32;
 
-/// state roots at an epoch boundary (from z_gettreestate)
+/// state roots at an epoch boundary (from z_gettreestate + nomt)
 #[derive(Clone, Debug, Default)]
 pub struct EpochStateRoots {
     /// epoch number
@@ -58,6 +58,8 @@ pub struct EpochStateRoots {
     pub sapling_root: String,
     /// orchard note commitment tree root (32 bytes hex)
     pub orchard_root: String,
+    /// nullifier set root from nomt (raw 32 bytes)
+    pub nullifier_root: [u8; 32],
 }
 
 /// header chain trace for ligerito proving
@@ -86,6 +88,10 @@ pub struct HeaderChainTrace {
     pub final_state_commitment: [u8; 32],
     /// cumulative difficulty at end of trace (for chain work verification)
     pub cumulative_difficulty: u64,
+    /// tree root (orchard commitment tree) at tip height
+    pub tip_tree_root: [u8; 32],
+    /// nullifier root (nomt) at tip height
+    pub tip_nullifier_root: [u8; 32],
 }
 
 impl HeaderChainTrace {
@@ -213,9 +219,22 @@ impl HeaderChainTrace {
 
         info!("loaded {} headers from cache", headers.len());
 
-        // Fetch state roots at epoch boundaries
-        let state_roots = Self::fetch_epoch_state_roots(zebrad, start_height, end_height).await?;
+        // Fetch state roots at epoch boundaries (including nullifier roots from nomt)
+        let state_roots = Self::fetch_epoch_state_roots(zebrad, storage, start_height, end_height).await?;
         info!("fetched {} epoch state roots", state_roots.len());
+
+        // Get current tip roots for public outputs
+        let tip_nullifier_root = storage.get_nullifier_root();
+        let tip_tree_root = match storage.get_state_roots(end_height) {
+            Ok(Some((tree_root, _))) => tree_root,
+            _ => {
+                // Try to get from zebrad directly
+                match zebrad.get_tree_state(&end_height.to_string()).await {
+                    Ok(state) => parse_tree_root_bytes(&state.orchard.commitments.final_state),
+                    Err(_) => [0u8; 32],
+                }
+            }
+        };
 
         // encode trace with state roots (always use extended format)
         let initial_commitment = [0u8; 32];
@@ -243,12 +262,15 @@ impl HeaderChainTrace {
             initial_state_commitment,
             final_state_commitment,
             cumulative_difficulty,
+            tip_tree_root,
+            tip_nullifier_root,
         })
     }
 
-    /// fetch state roots at epoch boundaries from zebrad
+    /// fetch state roots at epoch boundaries from zebrad + nomt
     async fn fetch_epoch_state_roots(
         zebrad: &ZebradClient,
+        storage: &Arc<Storage>,
         start_height: u32,
         end_height: u32,
     ) -> Result<Vec<EpochStateRoots>> {
@@ -262,6 +284,12 @@ impl HeaderChainTrace {
 
             // Only fetch if epoch end is within our range
             if epoch_end_height <= end_height && epoch_end_height >= start_height {
+                // Get nullifier root from nomt storage (populated by nullifier sync)
+                let nullifier_root = match storage.get_state_roots(epoch_end_height) {
+                    Ok(Some((_, nf_root))) => nf_root,
+                    _ => storage.get_nullifier_root(),
+                };
+
                 match zebrad.get_tree_state(&epoch_end_height.to_string()).await {
                     Ok(tree_state) => {
                         roots.push(EpochStateRoots {
@@ -269,16 +297,17 @@ impl HeaderChainTrace {
                             height: epoch_end_height,
                             sapling_root: tree_state.sapling.commitments.final_state.clone(),
                             orchard_root: tree_state.orchard.commitments.final_state.clone(),
+                            nullifier_root,
                         });
                     }
                     Err(e) => {
                         warn!("failed to get tree state for epoch {}: {}", epoch, e);
-                        // Use empty roots if unavailable
                         roots.push(EpochStateRoots {
                             epoch,
                             height: epoch_end_height,
                             sapling_root: String::new(),
                             orchard_root: String::new(),
+                            nullifier_root,
                         });
                     }
                 }
@@ -390,15 +419,17 @@ impl HeaderChainTrace {
                     trace[offset + 24 + j] = bytes_to_field(&orchard[j * 4..(j + 1) * 4]);
                 }
 
-                // Fields 28-29: nullifier_root (reserved)
-                trace[offset + 28] = BinaryElem32::zero();
-                trace[offset + 29] = BinaryElem32::zero();
+                // Fields 28-29: nullifier_root (8 bytes = 2 x 4-byte fields)
+                let nf_root = &roots.nullifier_root;
+                trace[offset + 28] = bytes_to_field(&nf_root[0..4]);
+                trace[offset + 29] = bytes_to_field(&nf_root[4..8]);
 
-                // Field 30: state commitment
+                // Field 30: state commitment (includes nullifier root)
                 state_commitment = update_state_commitment(
                     &state_commitment,
                     &sapling,
                     &orchard,
+                    nf_root,
                     header.height,
                 );
                 trace[offset + 30] = bytes_to_field(&state_commitment[0..4]);
@@ -444,8 +475,8 @@ impl HeaderChainTrace {
                 }
             }
 
-            // re-fetch state roots
-            let state_roots = Self::fetch_epoch_state_roots(zebrad, start_height, end_height).await?;
+            // re-fetch state roots (with nullifier roots from storage)
+            let state_roots = Self::fetch_epoch_state_roots(zebrad, storage, start_height, end_height).await?;
 
             let (new_trace, final_commitment, final_state_commitment, cumulative_difficulty) =
                 Self::encode_trace(&headers, &state_roots, initial_commitment, initial_state_commitment)?;
@@ -537,12 +568,13 @@ fn update_running_commitment(
     result
 }
 
-/// update state commitment with epoch state roots
+/// update state commitment with epoch state roots (including nullifier root)
 /// This creates a verifiable chain of state commitments
 fn update_state_commitment(
     prev_commitment: &[u8; 32],
     sapling_root: &[u8],
     orchard_root: &[u8],
+    nullifier_root: &[u8],
     height: u32,
 ) -> [u8; 32] {
     let mut hasher = Blake2b512::new();
@@ -550,12 +582,22 @@ fn update_state_commitment(
     hasher.update(prev_commitment);
     hasher.update(sapling_root);
     hasher.update(orchard_root);
+    hasher.update(nullifier_root);
     hasher.update(&height.to_le_bytes());
 
     let hash = hasher.finalize();
     let mut result = [0u8; 32];
     result.copy_from_slice(&hash[..32]);
     result
+}
+
+/// parse tree root from zebrad hex-encoded final state (returns raw bytes)
+fn parse_tree_root_bytes(final_state: &str) -> [u8; 32] {
+    use sha2::{Digest as Sha2Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(b"ZIDECAR_TREE_ROOT");
+    hasher.update(final_state.as_bytes());
+    hasher.finalize().into()
 }
 
 /// convert nBits (compact difficulty target) to difficulty value

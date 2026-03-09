@@ -1,0 +1,18 @@
+[workspace]
+resolver = "2"
+members = [
+    "bin/zcli",
+    "bin/zidecar",
+    "crates/zync-core",
+    "crates/ligerito",
+    "crates/ligerito-binary-fields",
+    "crates/ligerito-merkle",
+    "crates/ligerito-reed-solomon",
+]
+
+[workspace.dependencies]
+ligerito = { path = "crates/ligerito" }
+ligerito-binary-fields = { path = "crates/ligerito-binary-fields" }
+ligerito-merkle = { path = "crates/ligerito-merkle" }
+ligerito-reed-solomon = { path = "crates/ligerito-reed-solomon" }
+zync-core = { path = "crates/zync-core" }

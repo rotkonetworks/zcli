@@ -44,6 +44,10 @@ pub struct ProofPublicOutputs {
     pub final_state_commitment: [u8; 32],
     /// Number of headers in proof
     pub num_headers: u32,
+    /// Tree root (orchard commitment tree) at proof's end height
+    pub tip_tree_root: [u8; 32],
+    /// Nullifier root (nomt) at proof's end height
+    pub tip_nullifier_root: [u8; 32],
 }
 
 /// header chain proof with public outputs
@@ -161,6 +165,8 @@ impl HeaderChainProof {
             final_commitment: trace.final_commitment,
             final_state_commitment: trace.final_state_commitment,
             num_headers: trace.num_headers as u32,
+            tip_tree_root: trace.tip_tree_root,
+            tip_nullifier_root: trace.tip_nullifier_root,
         })
     }
 

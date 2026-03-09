@@ -78,7 +78,7 @@ thiserror = "1.0"
 anyhow = "1.0"
 
 # proof verification
-zync-core = { version = "0.2.2", default-features = false }
+zync-core = { path = "../../crates/zync-core", default-features = false }
 
 # QUIC transport (exchange API)
 quinn = "0.11"
