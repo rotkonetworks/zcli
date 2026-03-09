@@ -9,7 +9,7 @@ use crate::{
     zebrad::ZebradClient,
     zidecar::{
         self,
-        sync_status::GigaproofStatus,
+        sync_status::EpochProofStatus,
         zidecar_server::Zidecar,
         BlockHeader as ProtoBlockHeader,
         BlockId,
@@ -112,10 +112,10 @@ impl Zidecar for ZidecarService {
         &self,
         _request: Request<ProofRequest>,
     ) -> std::result::Result<Response<HeaderProof>, Status> {
-        info!("header proof request (gigaproof + tip)");
+        info!("header proof request (epoch proof + tip)");
 
-        // get gigaproof + tip proof (both now contain public outputs)
-        let (gigaproof, tip_proof) = match self.epoch_manager.get_proofs().await {
+        // get epoch proof + tip proof (both now contain public outputs)
+        let (epoch_proof, tip_proof) = match self.epoch_manager.get_proofs().await {
             Ok(p) => p,
             Err(e) => {
                 error!("failed to get proofs: {}", e);
@@ -123,9 +123,9 @@ impl Zidecar for ZidecarService {
             }
         };
 
-        // deserialize public outputs from gigaproof
-        let (giga_outputs, _, _) = HeaderChainProof::deserialize_full(&gigaproof)
-            .map_err(|e| Status::internal(format!("failed to deserialize gigaproof: {}", e)))?;
+        // deserialize public outputs from epoch proof
+        let (epoch_outputs, _, _) = HeaderChainProof::deserialize_full(&epoch_proof)
+            .map_err(|e| Status::internal(format!("failed to deserialize epoch proof: {}", e)))?;
 
         // deserialize public outputs from tip proof (if present)
         let tip_outputs = if !tip_proof.is_empty() {
@@ -136,25 +136,25 @@ impl Zidecar for ZidecarService {
             None
         };
 
-        // verify continuity: tip proof's start_prev_hash == gigaproof's tip_hash
+        // verify continuity: tip proof's start_prev_hash == epoch proof's tip_hash
         let continuity_verified = if let Some(ref tip) = tip_outputs {
-            let is_continuous = tip.start_prev_hash == giga_outputs.tip_hash;
+            let is_continuous = tip.start_prev_hash == epoch_outputs.tip_hash;
             if is_continuous {
                 info!(
-                    "✓ continuity verified: gigaproof tip {} -> tip proof start prev {}",
-                    hex::encode(&giga_outputs.tip_hash[..8]),
+                    "✓ continuity verified: epoch proof tip {} -> tip proof start prev {}",
+                    hex::encode(&epoch_outputs.tip_hash[..8]),
                     hex::encode(&tip.start_prev_hash[..8])
                 );
             } else {
                 error!(
-                    "✗ continuity FAILED: gigaproof tip {} != tip proof start prev {}",
-                    hex::encode(&giga_outputs.tip_hash[..8]),
+                    "✗ continuity FAILED: epoch proof tip {} != tip proof start prev {}",
+                    hex::encode(&epoch_outputs.tip_hash[..8]),
                     hex::encode(&tip.start_prev_hash[..8])
                 );
             }
             is_continuous
         } else {
-            // no tip proof, gigaproof covers everything
+            // no tip proof, epoch proof covers everything
             true
         };
 
@@ -175,22 +175,22 @@ impl Zidecar for ZidecarService {
         let headers = Vec::new();
 
         // combine full proofs (with public outputs) - client verifies continuity
-        // format: [giga_full_size: u32][giga_full][tip_full]
-        let mut combined_proof = Vec::with_capacity(4 + gigaproof.len() + tip_proof.len());
-        combined_proof.extend_from_slice(&(gigaproof.len() as u32).to_le_bytes());
-        combined_proof.extend_from_slice(&gigaproof);
+        // format: [epoch_full_size: u32][epoch_full][tip_full]
+        let mut combined_proof = Vec::with_capacity(4 + epoch_proof.len() + tip_proof.len());
+        combined_proof.extend_from_slice(&(epoch_proof.len() as u32).to_le_bytes());
+        combined_proof.extend_from_slice(&epoch_proof);
         combined_proof.extend_from_slice(&tip_proof);
 
         info!(
-            "serving proof: {} KB gigaproof + {} KB tip = {} KB total (continuity={})",
-            gigaproof.len() / 1024,
+            "serving proof: {} KB epoch proof + {} KB tip = {} KB total (continuity={})",
+            epoch_proof.len() / 1024,
             tip_proof.len() / 1024,
             combined_proof.len() / 1024,
             continuity_verified
         );
 
         // convert public outputs to proto
-        let giga_proto = public_outputs_to_proto(&giga_outputs);
+        let epoch_proto = public_outputs_to_proto(&epoch_outputs);
         let tip_proto = tip_outputs.as_ref().map(public_outputs_to_proto);
 
         // Get current nullifier root from storage
@@ -202,7 +202,7 @@ impl Zidecar for ZidecarService {
             to_height: tip_info.blocks,
             tip_hash,
             headers,
-            gigaproof_outputs: Some(giga_proto),
+            epoch_proof_outputs: Some(epoch_proto),
             tip_proof_outputs: tip_proto,
             continuity_verified,
             nullifier_root,
@@ -393,27 +393,27 @@ impl Zidecar for ZidecarService {
             current_epoch.saturating_sub(1)
         };
 
-        // check gigaproof status
-        let (gigaproof_status, last_gigaproof_height) =
-            match self.epoch_manager.is_gigaproof_ready().await {
+        // check epoch proof status
+        let (epoch_proof_status, last_epoch_proof_height) =
+            match self.epoch_manager.is_epoch_proof_ready().await {
                 Ok(true) => {
                     let last_height = self
                         .epoch_manager
                         .last_complete_epoch_height()
                         .await
                         .unwrap_or(0);
-                    (GigaproofStatus::Ready as i32, last_height)
+                    (EpochProofStatus::Ready as i32, last_height)
                 }
                 Ok(false) => {
                     if complete_epochs == 0 {
-                        (GigaproofStatus::WaitingForEpoch as i32, 0)
+                        (EpochProofStatus::WaitingForEpoch as i32, 0)
                     } else {
-                        (GigaproofStatus::Generating as i32, 0)
+                        (EpochProofStatus::Generating as i32, 0)
                     }
                 }
                 Err(e) => {
-                    warn!("failed to check gigaproof status: {}", e);
-                    (GigaproofStatus::WaitingForEpoch as i32, 0)
+                    warn!("failed to check epoch proof status: {}", e);
+                    (EpochProofStatus::WaitingForEpoch as i32, 0)
                 }
             };
 
@@ -425,11 +425,11 @@ impl Zidecar for ZidecarService {
         };
 
         info!(
-            "sync status: height={} epoch={}/{} gigaproof={:?}",
+            "sync status: height={} epoch={}/{} epoch proof={:?}",
             current_height,
             blocks_in_epoch,
             zync_core::EPOCH_SIZE,
-            gigaproof_status
+            epoch_proof_status
         );
 
         Ok(Response::new(SyncStatus {
@@ -437,9 +437,9 @@ impl Zidecar for ZidecarService {
             current_epoch,
             blocks_in_epoch,
             complete_epochs,
-            gigaproof_status,
+            epoch_proof_status,
             blocks_until_ready,
-            last_gigaproof_height,
+            last_epoch_proof_height,
         }))
     }
 
@@ -669,8 +669,8 @@ impl Zidecar for ZidecarService {
     ) -> std::result::Result<Response<TrustlessStateProof>, Status> {
         info!("trustless state proof request");
 
-        // get gigaproof + tip proof (state transition proof)
-        let (gigaproof, _tip_proof) = match self.epoch_manager.get_proofs().await {
+        // get epoch proof + tip proof (state transition proof)
+        let (epoch_proof, _tip_proof) = match self.epoch_manager.get_proofs().await {
             Ok(p) => p,
             Err(e) => {
                 error!("failed to get proofs: {}", e);
@@ -705,7 +705,7 @@ impl Zidecar for ZidecarService {
 
         Ok(Response::new(TrustlessStateProof {
             checkpoint: None,
-            state_transition_proof: gigaproof,
+            state_transition_proof: epoch_proof,
             current_height: tip_info.blocks,
             current_hash,
             tree_root: tree_root.to_vec(),

@@ -331,11 +331,12 @@ async fn sync_inner(
     // verify actions commitment chain against proven value
     if !actions_commitment_available {
         // legacy wallet: no saved actions commitment from pre-0.5.1 sync.
-        // other verification (header proofs, commitment proofs, nullifier proofs,
-        // cross-verification) still protects against tampering. save the computed
-        // value so subsequent syncs can verify the full chain.
+        // we can't verify the chain (started mid-chain from zeros), so trust the
+        // proven value from the header proof and save it. subsequent syncs will
+        // chain correctly from this proven anchor.
+        running_actions_commitment = proven_roots.actions_commitment;
         eprintln!(
-            "actions commitment: migrating from pre-0.5.1 wallet, saving {}...",
+            "actions commitment: migrating from pre-0.5.1 wallet, saving proven {}...",
             hex::encode(&running_actions_commitment[..8]),
         );
     } else if running_actions_commitment != proven_roots.actions_commitment {
@@ -616,8 +617,8 @@ async fn verify_header_proof(
     let result = zync_core::verifier::verify_proofs_full(&proof_bytes)
         .map_err(|e| Error::Other(format!("header proof verification failed: {}", e)))?;
 
-    if !result.gigaproof_valid {
-        return Err(Error::Other("gigaproof invalid".into()));
+    if !result.epoch_proof_valid {
+        return Err(Error::Other("epoch proof invalid".into()));
     }
     if !result.tip_valid {
         return Err(Error::Other("tip proof invalid".into()));
@@ -626,19 +627,19 @@ async fn verify_header_proof(
         return Err(Error::Other("proof chain discontinuous".into()));
     }
 
-    // verify gigaproof anchors to hardcoded activation block hash
-    if mainnet && result.giga_outputs.start_hash != ACTIVATION_HASH_MAINNET {
+    // verify epoch proof anchors to hardcoded activation block hash
+    if mainnet && result.epoch_outputs.start_hash != ACTIVATION_HASH_MAINNET {
         return Err(Error::Other(format!(
-            "gigaproof start_hash doesn't match activation anchor: got {}",
-            hex::encode(&result.giga_outputs.start_hash[..8]),
+            "epoch proof start_hash doesn't match activation anchor: got {}",
+            hex::encode(&result.epoch_outputs.start_hash[..8]),
         )));
     }
 
-    // extract proven roots from the most recent proof (tip > giga)
+    // extract proven roots from the most recent proof (tip > epoch proof)
     let outputs = result
         .tip_outputs
         .as_ref()
-        .unwrap_or(&result.giga_outputs);
+        .unwrap_or(&result.epoch_outputs);
 
     // reject if proof is more than 1 epoch behind tip
     if outputs.end_height + zync_core::EPOCH_SIZE < tip {

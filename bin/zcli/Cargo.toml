@@ -1,6 +1,6 @@
 [package]
 name = "zecli"
-version = "0.5.1"
+version = "0.5.2"
 edition = "2021"
 license = "MIT"
 description = "zcash wallet CLI - ssh keys as wallet seed, agent-friendly"
@@ -78,7 +78,7 @@ thiserror = "1.0"
 anyhow = "1.0"
 
 # proof verification
-zync-core = { version = "0.3.0", path = "../../crates/zync-core", default-features = false }
+zync-core = { version = "0.4.0", path = "../../crates/zync-core", default-features = false }
 
 # QUIC transport (exchange API)
 quinn = "0.11"

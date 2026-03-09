@@ -45,7 +45,7 @@ pub const FIELDS_PER_ACTION: usize = 8;
 pub const TIP_TRACE_LOG_SIZE: usize = 20;
 
 /// polynomial size exponent for epoch proofs (2^26 config)
-pub const GIGAPROOF_TRACE_LOG_SIZE: usize = 26;
+pub const EPOCH_PROOF_TRACE_LOG_SIZE: usize = 26;
 
 /// security parameter (bits)
 pub const SECURITY_BITS: usize = 100;
@@ -84,7 +84,7 @@ pub fn tip_prover_config() -> ProverConfig<BinaryElem32, BinaryElem128> {
 }
 
 /// ligerito prover config for epoch proofs (2^26)
-pub fn gigaproof_prover_config() -> ProverConfig<BinaryElem32, BinaryElem128> {
+pub fn epoch_proof_prover_config() -> ProverConfig<BinaryElem32, BinaryElem128> {
     ligerito::hardcoded_config_26(PhantomData::<BinaryElem32>, PhantomData::<BinaryElem128>)
 }
 

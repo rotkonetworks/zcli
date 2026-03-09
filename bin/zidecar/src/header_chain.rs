@@ -79,8 +79,8 @@ pub struct HeaderChainTrace {
     /// end height
     pub end_height: u32,
     /// initial running commitment (for composing proofs)
-    /// - GIGAPROOF starts with all zeros
-    /// - TIP_PROOF starts with GIGAPROOF's final commitment
+    /// - EPOCH_PROOF starts with all zeros
+    /// - TIP_PROOF starts with EPOCH_PROOF's final commitment
     pub initial_commitment: [u8; 32],
     /// final running commitment (for composing proofs)
     /// - stored in field 19 of last header

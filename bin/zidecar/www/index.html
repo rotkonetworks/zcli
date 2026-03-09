@@ -429,7 +429,7 @@ button:disabled { background: var(--border); color: var(--dim); cursor: not-allo
   <div class="proof-details hidden" id="proof-details">
     <div class="proof-title">proof verification</div>
     <div class="proof-grid">
-      <span class="label">proven range</span><span class="value" id="proof-giga-range">-</span>
+      <span class="label">proven range</span><span class="value" id="proof-epoch-range">-</span>
       <span class="label">tip hash</span><span class="value hash" id="proof-tip-hash">-</span>
       <span class="label">chain work</span><span class="value" id="proof-work">-</span>
       <span class="label">continuity</span><span class="value" id="proof-continuity">-</span>
@@ -473,8 +473,8 @@ button:disabled { background: var(--border); color: var(--dim); cursor: not-allo
       <div class="modal-section">
         <div class="modal-section-title">Proof Structure</div>
         <div class="modal-text">
-          <p><strong>Gigaproof:</strong> Proves genesis → last epoch boundary. Generated once per ~1024 blocks. ~200KB, proves ~2.7M headers.</p>
-          <p><strong>Tip proof:</strong> Proves epoch boundary → current tip. Generated on-demand. Continuity check: tip_proof.start_hash == gigaproof.end_hash.</p>
+          <p><strong>Epoch proof:</strong> Proves genesis → last epoch boundary. Generated once per ~1024 blocks. ~200KB, proves ~2.7M headers.</p>
+          <p><strong>Tip proof:</strong> Proves epoch boundary → current tip. Generated on-demand. Continuity check: tip_proof.start_hash == epoch proof.end_hash.</p>
         </div>
       </div>
       <div class="modal-section">
@@ -498,7 +498,7 @@ button:disabled { background: var(--border); color: var(--dim); cursor: not-allo
         <div class="modal-section-title">Download Proofs</div>
         <div class="modal-text">
           <div style="display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap;">
-            <button id="download-gigaproof">Gigaproof (genesis→epoch)</button>
+            <button id="download-epoch-proof">Epoch proof (genesis→epoch)</button>
             <button id="download-tipproof">Tip Proof (epoch→tip)</button>
           </div>
           <div id="proof-info" style="margin-top: 8px; font-size: 10px; color: var(--dim);">
@@ -644,7 +644,7 @@ const [walletHeight, setWalletHeight] = signal(0);
 const [scanning, setScanning] = signal(false);
 const [notes, setNotes] = signal([]);
 const [spent, setSpent] = signal([]);
-const [gigaproofHeight, setGigaproofHeight] = signal(0);
+const [epochProofHeight, setEpochProofHeight] = signal(0);
 const [verifiedHeight, setVerifiedHeight] = signal(0);
 const [proofsVerified, setProofsVerified] = signal(0);
 const [nullifiersObserved, setNullifiersObserved] = signal(0);
@@ -679,7 +679,7 @@ const [showProofDetails, setShowProofDetails] = signal(false);
 // Computed values
 const provenHeight = computed(() => {
   const v = verifiedHeight();
-  const g = gigaproofHeight();
+  const g = epochProofHeight();
   return v > g ? v : g;
 });
 
@@ -731,8 +731,8 @@ const hasWallet = computed(() => walletKeys() !== null);
 const showWalletSection = computed(() => connected());
 const showSyncSection = computed(() => hasWallet());
 const showBalanceSection = computed(() => hasWallet());
-// Show security section when syncing, or when we have verified proofs, or when gigaproof is available
-const showSecuritySection = computed(() => hasWallet() && (scanning() || proofsVerified() > 0 || gigaproofHeight() > 0));
+// Show security section when syncing, or when we have verified proofs, or when epoch proof is available
+const showSecuritySection = computed(() => hasWallet() && (scanning() || proofsVerified() > 0 || epochProofHeight() > 0));
 
 // ============== REACTIVE BINDINGS ==============
 function setupBindings() {
@@ -837,7 +837,7 @@ function setupBindings() {
   });
 
   // Proof details - auto-update
-  bindText('proof-giga-range', proofRange);
+  bindText('proof-epoch-range', proofRange);
   effect(() => {
     $('proof-tip-hash').textContent = proofTipHash();
     $('proof-tip-hash').title = proofTipHash();
@@ -892,11 +892,11 @@ $('connect-btn').onclick = async () => {
       setConnected(true);
       setServerUrl(url);
       setChainHeight(resp.currentHeight);
-      setGigaproofHeight(resp.lastGigaproofHeight || 0);
+      setEpochProofHeight(resp.lastEpochProofHeight || 0);
     });
 
-    const proofStatus = resp.lastGigaproofHeight > 0
-      ? `proven to ${resp.lastGigaproofHeight.toLocaleString()}`
+    const proofStatus = resp.lastEpochProofHeight > 0
+      ? `proven to ${resp.lastEpochProofHeight.toLocaleString()}`
       : 'generating proof...';
 
     setConnectStatus(`connected - height ${resp.currentHeight.toLocaleString()}, ${proofStatus}`);
@@ -912,7 +912,7 @@ $('connect-btn').onclick = async () => {
 
         batch(() => {
           setChainHeight(newChainHeight);
-          setGigaproofHeight(r.lastGigaproofHeight || 0);
+          setEpochProofHeight(r.lastEpochProofHeight || 0);
         });
 
         // If chain advanced and we have verified proofs, verify new tip
@@ -1032,18 +1032,18 @@ $('sync-btn').onclick = async () => {
   }
 
   // Start verification in background (non-blocking) while scanning blocks
-  const currentGigaproofHeight = gigaproofHeight();
-  console.log(`[verify] gigaproofHeight=${currentGigaproofHeight}, start=${start}`);
+  const currentEpochProofHeight = epochProofHeight();
+  console.log(`[verify] epochProofHeight=${currentEpochProofHeight}, start=${start}`);
 
-  if (currentGigaproofHeight > start) {
-    const provenTo = Math.min(currentGigaproofHeight, end);
+  if (currentEpochProofHeight > start) {
+    const provenTo = Math.min(currentEpochProofHeight, end);
     setSecurityLayer('ligerito', 'active', 'fetching...');
 
     // Run verification in background - don't block block scanning
     (async () => {
       try {
-        console.log(`[verify] starting background verification: fetching proof 1->${currentGigaproofHeight}...`);
-        const headerProof = await fetchHeaderProof(1, currentGigaproofHeight);
+        console.log(`[verify] starting background verification: fetching proof 1->${currentEpochProofHeight}...`);
+        const headerProof = await fetchHeaderProof(1, currentEpochProofHeight);
         console.log(`[verify] fetchHeaderProof returned:`, headerProof ? `${headerProof.ligerito_proof?.length || 0} bytes` : 'null');
 
         if (headerProof && headerProof.ligerito_proof && headerProof.ligerito_proof.length > 0) {
@@ -1070,7 +1070,7 @@ $('sync-btn').onclick = async () => {
       }
     })();  // Fire and forget
   } else {
-    console.log(`[verify] skipping verification: gigaproofHeight(${currentGigaproofHeight}) <= start(${start})`);
+    console.log(`[verify] skipping verification: epochProofHeight(${currentEpochProofHeight}) <= start(${start})`);
     setSecurityLayer('ligerito', 'active', 'awaiting proof...');
   }
 
@@ -1155,11 +1155,11 @@ $('sync-btn').onclick = async () => {
   // Check if we were stopped
   const wasStopped = !scanning();
 
-  // At end, try to verify tip proof for blocks beyond gigaproof (if not stopped)
-  if (!wasStopped && walletHeight() > gigaproofHeight()) {
+  // At end, try to verify tip proof for blocks beyond epoch proof (if not stopped)
+  if (!wasStopped && walletHeight() > epochProofHeight()) {
     setSyncStatus('verifying tip proof...');
     try {
-      const proof = await fetchHeaderProof(gigaproofHeight() + 1, walletHeight());
+      const proof = await fetchHeaderProof(epochProofHeight() + 1, walletHeight());
       if (proof && proof.ligerito_proof?.length > 0) {
         const ok = await verifyHeaderProofAndUpdate(proof, walletHeight());
         if (ok) {
@@ -1212,14 +1212,14 @@ async function verifyHeaderProofAndUpdate(headerProof, fallbackHeight) {
     let actualProvenHeight = fallbackHeight;
     if (hasTip && continuityOk && headerProof.tip_proof_outputs.end_height > 0) {
       actualProvenHeight = headerProof.tip_proof_outputs.end_height;
-    } else if (headerProof.gigaproof_outputs?.end_height > 0) {
-      actualProvenHeight = headerProof.gigaproof_outputs.end_height;
+    } else if (headerProof.epoch_proof_outputs?.end_height > 0) {
+      actualProvenHeight = headerProof.epoch_proof_outputs.end_height;
     }
 
     // Log public outputs
-    if (headerProof.gigaproof_outputs) {
-      const go = headerProof.gigaproof_outputs;
-      console.log(`[verify] gigaproof: ${go.start_height} -> ${go.end_height}, ${go.num_headers} headers`);
+    if (headerProof.epoch_proof_outputs) {
+      const go = headerProof.epoch_proof_outputs;
+      console.log(`[verify] epoch proof: ${go.start_height} -> ${go.end_height}, ${go.num_headers} headers`);
     }
     if (headerProof.tip_proof_outputs) {
       const to = headerProof.tip_proof_outputs;
@@ -1237,7 +1237,7 @@ async function verifyHeaderProofAndUpdate(headerProof, fallbackHeight) {
         const nfRoot = bytesToHex(headerProof.nullifier_root);
         setServerNullifierRoot(nfRoot);
         setSecurityLayer('nomt', 'verified', `root: ${nfRoot.slice(0, 8)}...`);
-      } else if (headerProof.gigaproof_outputs?.final_state_commitment) {
+      } else if (headerProof.epoch_proof_outputs?.final_state_commitment) {
         setSecurityLayer('nomt', 'verified', 'state proven');
       }
     });
@@ -1263,15 +1263,15 @@ async function finishSync(wasStopped = false) {
   setSyncStatusClass(wasStopped ? 'active' : 'ok');
 
   // If verification hasn't completed yet, try once more
-  if (proofsVerified() === 0 && gigaproofHeight() > 0) {
+  if (proofsVerified() === 0 && epochProofHeight() > 0) {
     console.log('[finishSync] attempting proof verification...');
     setSecurityLayer('ligerito', 'active', 'verifying...');
 
     try {
-      const headerProof = await fetchHeaderProof(1, gigaproofHeight());
+      const headerProof = await fetchHeaderProof(1, epochProofHeight());
       if (headerProof && headerProof.ligerito_proof && headerProof.ligerito_proof.length > 0) {
         const startVerify = performance.now();
-        const ok = await verifyHeaderProofAndUpdate(headerProof, gigaproofHeight());
+        const ok = await verifyHeaderProofAndUpdate(headerProof, epochProofHeight());
         const elapsed = ((performance.now() - startVerify) / 1000).toFixed(1);
 
         if (ok) {
@@ -1314,12 +1314,12 @@ async function finishSync(wasStopped = false) {
 
 // Update proof details via signals - all reactive!
 function updateProofDetails(headerProof) {
-  const go = headerProof.gigaproof_outputs;
+  const go = headerProof.epoch_proof_outputs;
   const to = headerProof.tip_proof_outputs;
 
   setShowProofDetails(true);
 
-  // Full proven range (gigaproof + tip if available)
+  // Full proven range (epoch proof + tip if available)
   if (go) {
     const endHeight = (to && headerProof.continuity_verified) ? to.end_height : go.end_height;
     const totalHeaders = go.num_headers + (to?.num_headers || 0);
@@ -1327,7 +1327,7 @@ function updateProofDetails(headerProof) {
     setProofRange(`${go.start_height.toLocaleString()} → ${endHeight.toLocaleString()} (${totalHeaders.toLocaleString()} headers${rangeInfo})`);
   }
 
-  // Tip hash - use tip proof's tip_hash if available, else gigaproof's
+  // Tip hash - use tip proof's tip_hash if available, else epoch proof's
   const actualTipHash = (to && headerProof.continuity_verified && to.tip_hash) ? to.tip_hash : go?.tip_hash;
   if (actualTipHash) {
     const tipHashHex = bytesToHex(actualTipHash);
@@ -1348,7 +1348,7 @@ function updateProofDetails(headerProof) {
   // Continuity verification
   if (to) {
     if (headerProof.continuity_verified) {
-      setProofContinuity('✓ giga→tip linked');
+      setProofContinuity('✓ epoch→tip linked');
       setProofContinuityClass('value ok');
     } else {
       setProofContinuity('✗ chain break!');
@@ -1577,7 +1577,7 @@ function buildBinaryActions(actions) {
 }
 
 function parseSyncStatus(buf) {
-  const r = { currentHeight: 0, currentEpoch: 0, blocksInEpoch: 0, completeEpochs: 0, gigaproofStatus: 0, lastGigaproofHeight: 0 };
+  const r = { currentHeight: 0, currentEpoch: 0, blocksInEpoch: 0, completeEpochs: 0, epochProofStatus: 0, lastEpochProofHeight: 0 };
   let pos = 0;
 
   while (pos < buf.length) {
@@ -1597,8 +1597,8 @@ function parseSyncStatus(buf) {
     else if (field === 2) r.currentEpoch = v;
     else if (field === 3) r.blocksInEpoch = v;
     else if (field === 4) r.completeEpochs = v;
-    else if (field === 5) r.gigaproofStatus = v;
-    else if (field === 7) r.lastGigaproofHeight = v;
+    else if (field === 5) r.epochProofStatus = v;
+    else if (field === 7) r.lastEpochProofHeight = v;
   }
 
   return r;
@@ -1756,7 +1756,7 @@ function parseHeaderProof(buf) {
     from_height: 0,
     to_height: 0,
     tip_hash: null,
-    gigaproof_outputs: null,
+    epoch_proof_outputs: null,
     tip_proof_outputs: null,
     continuity_verified: false,
     nullifier_root: null  // field 9 - NOMT nullifier set root
@@ -1790,7 +1790,7 @@ function parseHeaderProof(buf) {
       const data = buf.slice(pos, pos + len);
       if (field === 1) proof.ligerito_proof = data;
       else if (field === 4) proof.tip_hash = data;
-      else if (field === 6) proof.gigaproof_outputs = parsePublicOutputs(data);
+      else if (field === 6) proof.epoch_proof_outputs = parsePublicOutputs(data);
       else if (field === 7) proof.tip_proof_outputs = parsePublicOutputs(data);
       else if (field === 9) proof.nullifier_root = data;  // NOMT root
       pos += len;
@@ -1875,7 +1875,7 @@ function parseSingleProof(bytes) {
   return { publicLen, logSize, proofBytes };
 }
 
-// Verify header proof using ligerito - verifies BOTH gigaproof and tip proof
+// Verify header proof using ligerito - verifies BOTH epoch proof and tip proof
 async function verifyHeaderProof(proof) {
   if (!proof || !proof.ligerito_proof || proof.ligerito_proof.length < 10) {
     console.warn('[verify] no proof to verify');
@@ -1883,20 +1883,20 @@ async function verifyHeaderProof(proof) {
   }
 
   try {
-    // Combined format: [gigaproof_size: u32][gigaproof_bytes][tip_bytes]
+    // Combined format: [epoch_proof_size: u32][epoch_proof_bytes][tip_bytes]
     const bytes = proof.ligerito_proof;
 
     // Parse combined proof format
-    const gigaproofSize = bytes[0] | (bytes[1] << 8) | (bytes[2] << 16) | (bytes[3] << 24);
-    const gigaproofBytes = bytes.slice(4, 4 + gigaproofSize);
-    const tipBytes = bytes.slice(4 + gigaproofSize);
+    const epochProofSize = bytes[0] | (bytes[1] << 8) | (bytes[2] << 16) | (bytes[3] << 24);
+    const epochProofBytes = bytes.slice(4, 4 + epochProofSize);
+    const tipBytes = bytes.slice(4 + epochProofSize);
 
-    console.log(`[verify] combined: gigaproofSize=${gigaproofSize}, tipSize=${tipBytes.length}, total=${bytes.length}`);
+    console.log(`[verify] combined: epochProofSize=${epochProofSize}, tipSize=${tipBytes.length}, total=${bytes.length}`);
 
-    // Parse gigaproof
-    const giga = parseSingleProof(gigaproofBytes);
-    if (!giga) {
-      console.warn('[verify] failed to parse gigaproof');
+    // Parse epoch proof
+    const epochParsed = parseSingleProof(epochProofBytes);
+    if (!epochParsed) {
+      console.warn('[verify] failed to parse epoch proof');
       return false;
     }
 
@@ -1909,7 +1909,7 @@ async function verifyHeaderProof(proof) {
       }
     }
 
-    console.log(`[verify] gigaproof: publicLen=${giga.publicLen}, logSize=${giga.logSize}, proofBytes=${giga.proofBytes.length}`);
+    console.log(`[verify] epoch proof: publicLen=${epochParsed.publicLen}, logSize=${epochParsed.logSize}, proofBytes=${epochParsed.proofBytes.length}`);
 
     // Supported config sizes in ligerito WASM
     const SUPPORTED_SIZES = new Set([12, 16, 20, 24, 26, 28, 30]);
@@ -1941,12 +1941,12 @@ async function verifyHeaderProof(proof) {
     // Verify BOTH proofs
     const results = [];
 
-    // 1. Verify gigaproof (covers genesis → epoch boundary)
-    const gigaResult = await verifySingle(giga, 'gigaproof');
-    results.push(gigaResult);
+    // 1. Verify epoch proof (covers genesis → epoch boundary)
+    const epochResult = await verifySingle(epochParsed, 'epoch proof');
+    results.push(epochResult);
 
-    if (!gigaResult.ok) {
-      setLigeritoDetail('gigaproof FAILED');
+    if (!epochResult.ok) {
+      setLigeritoDetail('epoch proof FAILED');
       return false;
     }
 
@@ -2033,16 +2033,16 @@ $('sec-ligerito').addEventListener('click', () => {
 $('sec-zanchor').addEventListener('click', () => openModal('zanchor'));
 $('sec-nomt').addEventListener('click', () => openModal('nomt'));
 
-// Helper: parse combined proof format into gigaproof and tip proof
+// Helper: parse combined proof format into epoch proof and tip proof
 function parseProofParts(combinedBytes) {
   if (!combinedBytes || combinedBytes.length < 8) return null;
 
-  const gigaproofSize = combinedBytes[0] | (combinedBytes[1] << 8) | (combinedBytes[2] << 16) | (combinedBytes[3] << 24);
-  const gigaproofBytes = combinedBytes.slice(4, 4 + gigaproofSize);
-  const tipBytes = combinedBytes.slice(4 + gigaproofSize);
+  const epochProofSize = combinedBytes[0] | (combinedBytes[1] << 8) | (combinedBytes[2] << 16) | (combinedBytes[3] << 24);
+  const epochProofBytes = combinedBytes.slice(4, 4 + epochProofSize);
+  const tipBytes = combinedBytes.slice(4 + epochProofSize);
 
   return {
-    gigaproof: gigaproofBytes,
+    epoch_proof: epochProofBytes,
     tipproof: tipBytes.length > 10 ? tipBytes : null
   };
 }
@@ -2064,7 +2064,7 @@ function downloadBlob(data, filename) {
 async function ensureProofData() {
   if (lastProofData && lastProofData.ligerito_proof) return lastProofData;
 
-  const gHeight = gigaproofHeight();
+  const gHeight = epochProofHeight();
   if (gHeight === 0) return null;
 
   lastProofData = await fetchHeaderProof(1, chainHeight());
@@ -2085,10 +2085,10 @@ function updateProofInfo() {
     return;
   }
 
-  const go = lastProofData.gigaproof_outputs;
+  const go = lastProofData.epoch_proof_outputs;
   const to = lastProofData.tip_proof_outputs;
 
-  let text = `Gigaproof: ${(parts.gigaproof.length / 1024).toFixed(1)} KB`;
+  let text = `Epoch proof: ${(parts.epoch_proof.length / 1024).toFixed(1)} KB`;
   if (go) text += ` (blocks 1→${go.end_height.toLocaleString()})`;
 
   if (parts.tipproof) {
@@ -2101,9 +2101,9 @@ function updateProofInfo() {
   info.innerHTML = text;
 }
 
-// Download gigaproof
-$('download-gigaproof').addEventListener('click', async () => {
-  const btn = $('download-gigaproof');
+// Download epoch proof
+$('download-epoch-proof').addEventListener('click', async () => {
+  const btn = $('download-epoch-proof');
   const originalText = btn.textContent;
 
   try {
@@ -2117,20 +2117,20 @@ $('download-gigaproof').addEventListener('click', async () => {
     }
 
     const parts = parseProofParts(proof.ligerito_proof);
-    if (!parts || !parts.gigaproof) {
+    if (!parts || !parts.epoch_proof) {
       alert('Failed to parse proof data.');
       return;
     }
 
-    const go = proof.gigaproof_outputs;
+    const go = proof.epoch_proof_outputs;
     const endHeight = go ? go.end_height : proof.to_height;
-    downloadBlob(parts.gigaproof, `gigaproof-1-${endHeight}.bin`);
+    downloadBlob(parts.epoch_proof, `epoch-proof-1-${endHeight}.bin`);
 
     btn.textContent = 'Downloaded!';
     setTimeout(() => { btn.textContent = originalText; }, 2000);
 
   } catch (e) {
-    console.error('[download] gigaproof error:', e);
+    console.error('[download] epoch proof error:', e);
     alert('Failed to download: ' + e.message);
     btn.textContent = originalText;
   } finally {
@@ -2165,7 +2165,7 @@ $('download-tipproof').addEventListener('click', async () => {
     }
 
     const to = proof.tip_proof_outputs;
-    const startHeight = to ? to.start_height : (proof.gigaproof_outputs?.end_height || 0) + 1;
+    const startHeight = to ? to.start_height : (proof.epoch_proof_outputs?.end_height || 0) + 1;
     const endHeight = to ? to.end_height : proof.to_height;
     downloadBlob(parts.tipproof, `tipproof-${startHeight}-${endHeight}.bin`);
 
@@ -2365,8 +2365,8 @@ $('download-nomt-root').addEventListener('click', async () => {
     let nomtRoot = serverNullifierRoot();
     let provenTo = provenHeight();
 
-    if (!nomtRoot && gigaproofHeight() > 0) {
-      const proof = await fetchHeaderProof(1, gigaproofHeight());
+    if (!nomtRoot && epochProofHeight() > 0) {
+      const proof = await fetchHeaderProof(1, epochProofHeight());
       if (proof && proof.nullifier_root) {
         nomtRoot = bytesToHex(proof.nullifier_root);
         provenTo = proof.to_height;

@@ -1,6 +1,6 @@
 [package]
 name = "zidecar"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2021"
 license = "MIT"
 description = "Ligerito-powered Zcash light server with real-time header chain proofs"
@@ -14,7 +14,7 @@ path = "src/main.rs"
 
 [dependencies]
 # zync core types
-zync-core = { version = "0.3.0", path = "../../crates/zync-core" }
+zync-core = { version = "0.4.0", path = "../../crates/zync-core" }
 
 # ligerito polynomial commitment scheme
 ligerito = { version = "0.4.0", path = "../../crates/ligerito", features = ["transcript-blake2b"] }

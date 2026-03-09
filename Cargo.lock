@@ -7026,7 +7026,7 @@ dependencies = [
 
 [[package]]
 name = "zecli"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "anyhow",
  "bip39",
@@ -7168,7 +7168,7 @@ dependencies = [
 
 [[package]]
 name = "zidecar"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "anyhow",
  "bincode",
@@ -7231,7 +7231,7 @@ checksum = "b8848ee67ecc8aedbaf3e4122217aff892639231befc6a1b58d29fff4c2cabaa"
 
 [[package]]
 name = "zync-core"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "bincode",

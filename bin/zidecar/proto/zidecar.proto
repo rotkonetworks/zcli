@@ -16,7 +16,7 @@ service Zidecar {
     // Subscribe to new blocks (live feed)
     rpc SubscribeBlocks(Empty) returns (stream BlockId);
 
-    // Get sync status (blockchain height, epoch progress, gigaproof status)
+    // Get sync status (blockchain height, epoch progress, epoch proof status)
     rpc GetSyncStatus(Empty) returns (SyncStatus);
 
     // Send raw transaction to the network
@@ -80,8 +80,8 @@ message ProofRequest {
 
 // Header chain proof with Ligerito
 message HeaderProof {
-    // Combined gigaproof + tip proof bytes
-    // Format: [gigaproof_size: u32][gigaproof_bytes][tip_bytes]
+    // Combined epoch proof + tip proof bytes
+    // Format: [epoch proof_size: u32][epoch proof_bytes][tip_bytes]
     bytes ligerito_proof = 1;
 
     // Height range covered
@@ -94,15 +94,15 @@ message HeaderProof {
     // Block headers for verification
     repeated BlockHeader headers = 5;
 
-    // Public outputs from gigaproof - what the proof commits to
-    ProofPublicOutputs gigaproof_outputs = 6;
+    // Public outputs from epoch proof - what the proof commits to
+    ProofPublicOutputs epoch_proof_outputs = 6;
 
     // Public outputs from tip proof - what the proof commits to
-    // Empty if gigaproof covers entire range
+    // Empty if epoch proof covers entire range
     ProofPublicOutputs tip_proof_outputs = 7;
 
     // Continuity verification status
-    // True if tip_proof.start_prev_hash == gigaproof.tip_hash
+    // True if tip_proof.start_prev_hash == epoch proof.tip_hash
     bool continuity_verified = 8;
 
     // Current nullifier set root from nomt
@@ -193,19 +193,19 @@ message SyncStatus {
     // Total complete epochs
     uint32 complete_epochs = 4;
 
-    // Gigaproof generation status
-    enum GigaproofStatus {
+    // Epoch proof generation status
+    enum EpochProofStatus {
         WAITING_FOR_EPOCH = 0;    // Need more blocks
         GENERATING = 1;            // Currently generating proof
-        READY = 2;                 // Gigaproof available
+        READY = 2;                 // Epoch proof available
     }
-    GigaproofStatus gigaproof_status = 5;
+    EpochProofStatus epoch_proof_status = 5;
 
-    // Blocks remaining until first gigaproof (0 if ready)
+    // Blocks remaining until first epoch proof (0 if ready)
     uint32 blocks_until_ready = 6;
 
-    // Last gigaproof height (0 if none)
-    uint32 last_gigaproof_height = 7;
+    // Last epoch proof height (0 if none)
+    uint32 last_epoch_proof_height = 7;
 }
 
 // Raw transaction for send/receive

@@ -519,19 +519,19 @@ impl Storage {
         }
     }
 
-    // ===== GIGAPROOF METADATA =====
+    // ===== EPOCH_PROOF METADATA =====
 
-    /// store the epoch that the current gigaproof covers up to
-    pub fn set_gigaproof_epoch(&self, epoch: u32) -> Result<()> {
+    /// store the epoch that the current epoch proof covers up to
+    pub fn set_epoch_proof_epoch(&self, epoch: u32) -> Result<()> {
         self.sled
-            .insert(b"gigaproof_epoch", &epoch.to_le_bytes())
+            .insert(b"epoch_proof_epoch", &epoch.to_le_bytes())
             .map_err(|e| ZidecarError::Storage(format!("sled: {}", e)))?;
         Ok(())
     }
 
-    /// get the epoch that the current gigaproof covers up to
-    pub fn get_gigaproof_epoch(&self) -> Result<Option<u32>> {
-        match self.sled.get(b"gigaproof_epoch") {
+    /// get the epoch that the current epoch proof covers up to
+    pub fn get_epoch_proof_epoch(&self) -> Result<Option<u32>> {
+        match self.sled.get(b"epoch_proof_epoch") {
             Ok(Some(bytes)) if bytes.len() == 4 => {
                 let epoch = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
                 Ok(Some(epoch))
@@ -541,17 +541,17 @@ impl Storage {
         }
     }
 
-    /// store the start height for gigaproof
-    pub fn set_gigaproof_start(&self, height: u32) -> Result<()> {
+    /// store the start height for epoch proof
+    pub fn set_epoch_proof_start(&self, height: u32) -> Result<()> {
         self.sled
-            .insert(b"gigaproof_start", &height.to_le_bytes())
+            .insert(b"epoch_proof_start", &height.to_le_bytes())
             .map_err(|e| ZidecarError::Storage(format!("sled: {}", e)))?;
         Ok(())
     }
 
-    /// get the start height for gigaproof
-    pub fn get_gigaproof_start(&self) -> Result<Option<u32>> {
-        match self.sled.get(b"gigaproof_start") {
+    /// get the start height for epoch proof
+    pub fn get_epoch_proof_start(&self) -> Result<Option<u32>> {
+        match self.sled.get(b"epoch_proof_start") {
             Ok(Some(bytes)) if bytes.len() == 4 => {
                 let height = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
                 Ok(Some(height))
@@ -567,7 +567,7 @@ impl Storage {
 
     /// store epoch boundary hashes (first block hash, last block hash)
     /// Used to verify:
-    /// 1. Gigaproof starts from known checkpoint
+    /// 1. Epoch proof starts from known checkpoint
     /// 2. Each epoch's last_hash.prev = this epoch's content
     /// 3. Next epoch's first_prev_hash = this epoch's last_hash
     pub fn store_epoch_boundary(

@@ -22,7 +22,7 @@ impl ZidecarClient {
         Ok(Self { client })
     }
 
-    /// get gigaproof + tip proof for full chain
+    /// get epoch proof + tip proof for full chain
     pub async fn get_header_proof(&mut self) -> Result<(Vec<u8>, u32, u32)> {
         let request = tonic::Request::new(ProofRequest {
             from_height: 0,
@@ -101,7 +101,7 @@ impl ZidecarClient {
         Ok(blocks)
     }
 
-    /// get sync status (blockchain height, epoch progress, gigaproof status)
+    /// get sync status (blockchain height, epoch progress, epoch proof status)
     pub async fn get_sync_status(&mut self) -> Result<SyncStatus> {
         let request = tonic::Request::new(Empty {});
         let response = self.client.get_sync_status(request).await?;
@@ -112,9 +112,9 @@ impl ZidecarClient {
             current_epoch: status.current_epoch,
             blocks_in_epoch: status.blocks_in_epoch,
             complete_epochs: status.complete_epochs,
-            gigaproof_ready: status.gigaproof_status == 2, // READY
+            epoch_proof_ready: status.epoch_proof_status == 2, // READY
             blocks_until_ready: status.blocks_until_ready,
-            last_gigaproof_height: status.last_gigaproof_height,
+            last_epoch_proof_height: status.last_epoch_proof_height,
         })
     }
 

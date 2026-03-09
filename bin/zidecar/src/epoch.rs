@@ -1,4 +1,4 @@
-//! epoch management and gigaproof generation
+//! epoch management and epoch proof generation
 
 use crate::{
     error::{Result, ZidecarError},
@@ -13,11 +13,11 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{error, info, warn};
 
-/// maximum epochs to cover with tip proof before regenerating gigaproof
+/// maximum epochs to cover with tip proof before regenerating epoch proof
 /// tip proof uses 2^20 config (1M elements max)
 /// 1M / 32 fields = ~32K headers = ~31 epochs
 /// threshold of 30 keeps tip proof within config bounds
-const GIGAPROOF_REGEN_THRESHOLD: u32 = 30;
+const EPOCH_PROOF_REGEN_THRESHOLD: u32 = 30;
 
 /// regenerate tip proof every N new blocks
 const TIP_PROOF_REGEN_BLOCKS: u32 = 1; // real-time: regenerate on every new block
@@ -33,11 +33,11 @@ struct CachedTipProof {
 pub struct EpochManager {
     zebrad: ZebradClient,
     storage: Arc<Storage>,
-    gigaproof_config: ProverConfig<BinaryElem32, BinaryElem128>,
+    epoch_proof_config: ProverConfig<BinaryElem32, BinaryElem128>,
     tip_config: ProverConfig<BinaryElem32, BinaryElem128>,
     start_height: u32,
-    /// last complete epoch that has a gigaproof (in-memory cache)
-    last_gigaproof_epoch: Arc<RwLock<Option<u32>>>,
+    /// last complete epoch that has a epoch proof (in-memory cache)
+    last_epoch_proof_epoch: Arc<RwLock<Option<u32>>>,
     /// cached tip proof (pre-generated)
     cached_tip_proof: Arc<RwLock<Option<CachedTipProof>>>,
 }
@@ -46,17 +46,17 @@ impl EpochManager {
     pub fn new(
         zebrad: ZebradClient,
         storage: Arc<Storage>,
-        gigaproof_config: ProverConfig<BinaryElem32, BinaryElem128>,
+        epoch_proof_config: ProverConfig<BinaryElem32, BinaryElem128>,
         tip_config: ProverConfig<BinaryElem32, BinaryElem128>,
         start_height: u32,
     ) -> Self {
         Self {
             zebrad,
             storage,
-            gigaproof_config,
+            epoch_proof_config,
             tip_config,
             start_height,
-            last_gigaproof_epoch: Arc::new(RwLock::new(None)),
+            last_epoch_proof_epoch: Arc::new(RwLock::new(None)),
             cached_tip_proof: Arc::new(RwLock::new(None)),
         }
     }
@@ -79,17 +79,17 @@ impl EpochManager {
         (start, end)
     }
 
-    /// check if gigaproof exists for epoch range
-    async fn has_gigaproof(&self, from_epoch: u32, to_epoch: u32) -> Result<bool> {
+    /// check if epoch proof exists for epoch range
+    async fn has_epoch_proof(&self, from_epoch: u32, to_epoch: u32) -> Result<bool> {
         let from_height = self.epoch_range(from_epoch).0;
         let to_height = self.epoch_range(to_epoch).1;
 
         Ok(self.storage.get_proof(from_height, to_height)?.is_some())
     }
 
-    /// generate gigaproof from start to last complete epoch
+    /// generate epoch proof from start to last complete epoch
     /// Uses incremental strategy: only regenerate when significantly behind
-    pub async fn generate_gigaproof(&self) -> Result<()> {
+    pub async fn generate_epoch_proof(&self) -> Result<()> {
         let current_height = self.get_current_height().await?;
         let current_epoch = self.epoch_for_height(current_height);
 
@@ -111,16 +111,16 @@ impl EpochManager {
             return Ok(());
         }
 
-        // load persisted gigaproof epoch from storage
-        let cached_epoch = self.storage.get_gigaproof_epoch()?;
+        // load persisted epoch proof epoch from storage
+        let cached_epoch = self.storage.get_epoch_proof_epoch()?;
 
-        // check if we already have the latest gigaproof
+        // check if we already have the latest epoch proof
         if let Some(cached) = cached_epoch {
             if cached >= last_complete_epoch {
                 // already up to date, ensure in-memory cache matches
-                *self.last_gigaproof_epoch.write().await = Some(cached);
+                *self.last_epoch_proof_epoch.write().await = Some(cached);
                 info!(
-                    "gigaproof already exists for epochs {} -> {} (cached)",
+                    "epoch proof already exists for epochs {} -> {} (cached)",
                     start_epoch, cached
                 );
                 return Ok(());
@@ -128,26 +128,26 @@ impl EpochManager {
 
             // check how many epochs behind we are
             let epochs_behind = last_complete_epoch - cached;
-            if epochs_behind < GIGAPROOF_REGEN_THRESHOLD {
+            if epochs_behind < EPOCH_PROOF_REGEN_THRESHOLD {
                 // not far enough behind - tip proof will cover the gap
                 info!(
-                    "gigaproof {} epochs behind (threshold {}), using tip proof for gap",
-                    epochs_behind, GIGAPROOF_REGEN_THRESHOLD
+                    "epoch proof {} epochs behind (threshold {}), using tip proof for gap",
+                    epochs_behind, EPOCH_PROOF_REGEN_THRESHOLD
                 );
-                *self.last_gigaproof_epoch.write().await = Some(cached);
+                *self.last_epoch_proof_epoch.write().await = Some(cached);
                 return Ok(());
             }
 
             info!(
-                "gigaproof {} epochs behind (>= threshold {}), regenerating",
-                epochs_behind, GIGAPROOF_REGEN_THRESHOLD
+                "epoch proof {} epochs behind (>= threshold {}), regenerating",
+                epochs_behind, EPOCH_PROOF_REGEN_THRESHOLD
             );
         }
 
         let (from_height, to_height) = (self.start_height, self.epoch_range(last_complete_epoch).1);
 
         info!(
-            "generating GIGAPROOF: height {} -> {} (epochs {} -> {})",
+            "generating EPOCH_PROOF: height {} -> {} (epochs {} -> {})",
             from_height, to_height, start_epoch, last_complete_epoch
         );
 
@@ -160,10 +160,10 @@ impl EpochManager {
             .await?;
 
         // pad trace to config size (2^26)
-        let required_size = 1 << zync_core::GIGAPROOF_TRACE_LOG_SIZE;
+        let required_size = 1 << zync_core::EPOCH_PROOF_TRACE_LOG_SIZE;
         if trace.trace.len() < required_size {
             info!(
-                "padding gigaproof trace from {} to {} elements",
+                "padding epoch proof trace from {} to {} elements",
                 trace.trace.len(),
                 required_size
             );
@@ -173,8 +173,8 @@ impl EpochManager {
                 .resize(required_size, ligerito_binary_fields::BinaryElem32::zero());
         }
 
-        // generate proof with explicit gigaproof config (2^26)
-        let proof = HeaderChainProof::prove(&self.gigaproof_config, &trace)?;
+        // generate proof with explicit epoch proof config (2^26)
+        let proof = HeaderChainProof::prove(&self.epoch_proof_config, &trace)?;
 
         // serialize full proof with public outputs
         let full_proof = proof.serialize_full()?;
@@ -183,34 +183,34 @@ impl EpochManager {
         self.storage
             .store_proof(from_height, to_height, &full_proof)?;
 
-        // persist gigaproof metadata
-        self.storage.set_gigaproof_epoch(last_complete_epoch)?;
-        self.storage.set_gigaproof_start(from_height)?;
+        // persist epoch proof metadata
+        self.storage.set_epoch_proof_epoch(last_complete_epoch)?;
+        self.storage.set_epoch_proof_start(from_height)?;
 
         info!(
-            "GIGAPROOF generated: {} blocks, {} KB (tip_hash: {})",
+            "EPOCH_PROOF generated: {} blocks, {} KB (tip_hash: {})",
             to_height - from_height + 1,
             full_proof.len() / 1024,
             hex::encode(&proof.public_outputs.tip_hash[..8])
         );
 
-        *self.last_gigaproof_epoch.write().await = Some(last_complete_epoch);
+        *self.last_epoch_proof_epoch.write().await = Some(last_complete_epoch);
 
         Ok(())
     }
 
-    /// background task: generate gigaproof every epoch
+    /// background task: generate epoch proof every epoch
     pub async fn run_background_prover(self: Arc<Self>) {
-        info!("starting background gigaproof generator");
+        info!("starting background epoch proof generator");
 
         loop {
             // check every 60 seconds for new complete epochs
             tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
 
-            match self.generate_gigaproof().await {
+            match self.generate_epoch_proof().await {
                 Ok(_) => {}
                 Err(e) => {
-                    error!("gigaproof generation failed: {}", e);
+                    error!("epoch proof generation failed: {}", e);
                 }
             }
         }
@@ -240,21 +240,21 @@ impl EpochManager {
                 continue; // not enough new blocks
             }
 
-            // get gigaproof endpoint
-            let gigaproof_epoch = {
-                let cached = self.last_gigaproof_epoch.read().await;
+            // get epoch proof endpoint
+            let epoch_proof_epoch = {
+                let cached = self.last_epoch_proof_epoch.read().await;
                 match *cached {
                     Some(e) => e,
-                    None => match self.storage.get_gigaproof_epoch() {
+                    None => match self.storage.get_epoch_proof_epoch() {
                         Ok(Some(e)) => e,
-                        _ => continue, // no gigaproof yet
+                        _ => continue, // no epoch proof yet
                     },
                 }
             };
 
-            let tip_from = self.epoch_range(gigaproof_epoch).1 + 1;
+            let tip_from = self.epoch_range(epoch_proof_epoch).1 + 1;
             if tip_from > current_height {
-                // gigaproof is fresh, no tip needed
+                // epoch proof is fresh, no tip needed
                 last_proven_height = current_height;
                 continue;
             }
@@ -310,26 +310,26 @@ impl EpochManager {
         }
     }
 
-    /// get gigaproof + tip proof for current chain state
+    /// get epoch proof + tip proof for current chain state
     pub async fn get_proofs(&self) -> Result<(Vec<u8>, Vec<u8>)> {
         let current_height = self.get_current_height().await?;
 
         // try in-memory cache first, then persistent storage
-        let gigaproof_epoch = {
-            let cached = self.last_gigaproof_epoch.read().await;
+        let epoch_proof_epoch = {
+            let cached = self.last_epoch_proof_epoch.read().await;
             match *cached {
                 Some(e) => e,
                 None => {
                     // try loading from persistent storage
-                    match self.storage.get_gigaproof_epoch()? {
+                    match self.storage.get_epoch_proof_epoch()? {
                         Some(e) => {
                             drop(cached);
-                            *self.last_gigaproof_epoch.write().await = Some(e);
+                            *self.last_epoch_proof_epoch.write().await = Some(e);
                             e
                         }
                         None => {
                             return Err(ZidecarError::ProofGeneration(
-                                "no gigaproof available yet".into(),
+                                "no epoch proof available yet".into(),
                             ))
                         }
                     }
@@ -337,34 +337,34 @@ impl EpochManager {
             }
         };
 
-        // get cached gigaproof
-        let gigaproof_to = self.epoch_range(gigaproof_epoch).1;
-        let gigaproof_start = self
+        // get cached epoch proof
+        let epoch_proof_to = self.epoch_range(epoch_proof_epoch).1;
+        let epoch_proof_start = self
             .storage
-            .get_gigaproof_start()?
+            .get_epoch_proof_start()?
             .unwrap_or(self.start_height);
 
-        let gigaproof = self
+        let epoch_proof = self
             .storage
-            .get_proof(gigaproof_start, gigaproof_to)?
-            .ok_or_else(|| ZidecarError::ProofGeneration("gigaproof not found in cache".into()))?;
+            .get_proof(epoch_proof_start, epoch_proof_to)?
+            .ok_or_else(|| ZidecarError::ProofGeneration("epoch proof not found in cache".into()))?;
 
-        // get tip proof (from last gigaproof to current tip)
-        let tip_from = gigaproof_to + 1;
+        // get tip proof (from last epoch proof to current tip)
+        let tip_from = epoch_proof_to + 1;
 
         if tip_from > current_height {
-            // no tip needed, gigaproof is fresh
-            info!("gigaproof is up to date, no tip proof needed");
-            return Ok((gigaproof, vec![]));
+            // no tip needed, epoch proof is fresh
+            info!("epoch proof is up to date, no tip proof needed");
+            return Ok((epoch_proof, vec![]));
         }
 
         // check if tip crosses epoch boundary - warn if > threshold
         let blocks_in_tip = current_height - tip_from + 1;
-        let max_tip_blocks = GIGAPROOF_REGEN_THRESHOLD * zync_core::EPOCH_SIZE;
+        let max_tip_blocks = EPOCH_PROOF_REGEN_THRESHOLD * zync_core::EPOCH_SIZE;
         if blocks_in_tip > max_tip_blocks {
             warn!(
-                "tip proof spans {} blocks (> {} epoch threshold), consider regenerating gigaproof",
-                blocks_in_tip, GIGAPROOF_REGEN_THRESHOLD
+                "tip proof spans {} blocks (> {} epoch threshold), consider regenerating epoch proof",
+                blocks_in_tip, EPOCH_PROOF_REGEN_THRESHOLD
             );
         }
 
@@ -383,7 +383,7 @@ impl EpochManager {
                         tip.to_height,
                         tip.proof.len() / 1024
                     );
-                    return Ok((gigaproof, tip.proof.clone()));
+                    return Ok((epoch_proof, tip.proof.clone()));
                 }
             }
         }
@@ -424,7 +424,7 @@ impl EpochManager {
             to_height: current_height,
         });
 
-        Ok((gigaproof, tip_proof_bytes))
+        Ok((epoch_proof, tip_proof_bytes))
     }
 
     /// get last complete epoch height
@@ -441,9 +441,9 @@ impl EpochManager {
         Ok(self.epoch_range(last_complete).1)
     }
 
-    /// check if any gigaproof is available
-    pub async fn is_gigaproof_ready(&self) -> Result<bool> {
-        Ok(self.last_gigaproof_epoch.read().await.is_some())
+    /// check if any epoch proof is available
+    pub async fn is_epoch_proof_ready(&self) -> Result<bool> {
+        Ok(self.last_epoch_proof_epoch.read().await.is_some())
     }
 
     /// background task: track state roots at epoch boundaries

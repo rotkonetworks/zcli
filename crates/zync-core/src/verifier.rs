@@ -1,7 +1,7 @@
 //! ligerito proof verification with continuity checking
 //!
 //! wire format (combined proof):
-//!   [giga_full_size: u32][giga_full][tip_full]
+//!   [epoch_full_size: u32][epoch_full][tip_full]
 //! where each full proof is:
 //!   [public_outputs_len: u32][public_outputs (bincode)][log_size: u8][ligerito_proof (bincode)]
 
@@ -38,10 +38,10 @@ pub struct ProofPublicOutputs {
 /// result of proof verification
 #[derive(Clone, Debug)]
 pub struct VerifyResult {
-    pub gigaproof_valid: bool,
+    pub epoch_proof_valid: bool,
     pub tip_valid: bool,
     pub continuous: bool,
-    pub giga_outputs: ProofPublicOutputs,
+    pub epoch_outputs: ProofPublicOutputs,
     pub tip_outputs: Option<ProofPublicOutputs>,
 }
 
@@ -82,19 +82,19 @@ fn verify_single(proof_bytes: &[u8]) -> Result<bool> {
         .map_err(|e| anyhow::anyhow!("verification error: {}", e))
 }
 
-/// verify combined gigaproof + tip proof with continuity checking
+/// verify combined epoch proof + tip proof with continuity checking
 ///
-/// format: [giga_full_size: u32][giga_full][tip_full]
+/// format: [epoch_full_size: u32][epoch_full][tip_full]
 /// each full proof: [public_outputs_len: u32][public_outputs][log_size: u8][proof]
 ///
 /// checks:
 /// 1. both proofs verify cryptographically
-/// 2. tip_proof.start_prev_hash == gigaproof.tip_hash (chain continuity)
+/// 2. tip_proof.start_prev_hash == epoch proof.tip_hash (chain continuity)
 #[cfg(not(target_arch = "wasm32"))]
 pub fn verify_proofs(combined_proof: &[u8]) -> Result<(bool, bool)> {
     let result = verify_proofs_full(combined_proof)?;
     Ok((
-        result.gigaproof_valid,
+        result.epoch_proof_valid,
         result.tip_valid && result.continuous,
     ))
 }
@@ -106,22 +106,22 @@ pub fn verify_proofs_full(combined_proof: &[u8]) -> Result<VerifyResult> {
         anyhow::bail!("proof too small");
     }
 
-    let giga_full_size = u32::from_le_bytes([
+    let epoch_full_size = u32::from_le_bytes([
         combined_proof[0],
         combined_proof[1],
         combined_proof[2],
         combined_proof[3],
     ]) as usize;
 
-    if combined_proof.len() < 4 + giga_full_size {
+    if combined_proof.len() < 4 + epoch_full_size {
         anyhow::bail!("invalid proof format");
     }
 
-    let giga_full = &combined_proof[4..4 + giga_full_size];
-    let tip_full = &combined_proof[4 + giga_full_size..];
+    let epoch_full = &combined_proof[4..4 + epoch_full_size];
+    let tip_full = &combined_proof[4 + epoch_full_size..];
 
     // parse public outputs from both proofs
-    let (giga_outputs, giga_raw) = split_full_proof(giga_full)?;
+    let (epoch_outputs, epoch_raw) = split_full_proof(epoch_full)?;
     let (tip_outputs, tip_raw) = if !tip_full.is_empty() {
         let (o, r) = split_full_proof(tip_full)?;
         (Some(o), r)
@@ -130,18 +130,18 @@ pub fn verify_proofs_full(combined_proof: &[u8]) -> Result<VerifyResult> {
     };
 
     // verify both proofs in parallel
-    let giga_raw_clone = giga_raw;
+    let epoch_raw_clone = epoch_raw;
     let tip_raw_clone = tip_raw;
-    let giga_handle = thread::spawn(move || verify_single(&giga_raw_clone));
+    let epoch_handle = thread::spawn(move || verify_single(&epoch_raw_clone));
     let tip_handle = if !tip_raw_clone.is_empty() {
         Some(thread::spawn(move || verify_single(&tip_raw_clone)))
     } else {
         None
     };
 
-    let gigaproof_valid = giga_handle
+    let epoch_proof_valid = epoch_handle
         .join()
-        .map_err(|_| anyhow::anyhow!("gigaproof thread panicked"))??;
+        .map_err(|_| anyhow::anyhow!("epoch proof thread panicked"))??;
     let tip_valid = match tip_handle {
         Some(h) => h
             .join()
@@ -149,17 +149,17 @@ pub fn verify_proofs_full(combined_proof: &[u8]) -> Result<VerifyResult> {
         None => true,
     };
 
-    // check continuity: tip starts where gigaproof ends
+    // check continuity: tip starts where epoch proof ends
     let continuous = match &tip_outputs {
-        Some(tip) => tip.start_prev_hash == giga_outputs.tip_hash,
-        None => true, // no tip = gigaproof covers everything
+        Some(tip) => tip.start_prev_hash == epoch_outputs.tip_hash,
+        None => true, // no tip = epoch proof covers everything
     };
 
     Ok(VerifyResult {
-        gigaproof_valid,
+        epoch_proof_valid,
         tip_valid,
         continuous,
-        giga_outputs,
+        epoch_outputs,
         tip_outputs,
     })
 }
@@ -169,7 +169,7 @@ pub fn verify_proofs_full(combined_proof: &[u8]) -> Result<VerifyResult> {
 pub fn verify_proofs(combined_proof: &[u8]) -> Result<(bool, bool)> {
     let result = verify_proofs_full(combined_proof)?;
     Ok((
-        result.gigaproof_valid,
+        result.epoch_proof_valid,
         result.tip_valid && result.continuous,
     ))
 }
@@ -180,21 +180,21 @@ pub fn verify_proofs_full(combined_proof: &[u8]) -> Result<VerifyResult> {
         anyhow::bail!("proof too small");
     }
 
-    let giga_full_size = u32::from_le_bytes([
+    let epoch_full_size = u32::from_le_bytes([
         combined_proof[0],
         combined_proof[1],
         combined_proof[2],
         combined_proof[3],
     ]) as usize;
 
-    if combined_proof.len() < 4 + giga_full_size {
+    if combined_proof.len() < 4 + epoch_full_size {
         anyhow::bail!("invalid proof format");
     }
 
-    let giga_full = &combined_proof[4..4 + giga_full_size];
-    let tip_full = &combined_proof[4 + giga_full_size..];
+    let epoch_full = &combined_proof[4..4 + epoch_full_size];
+    let tip_full = &combined_proof[4 + epoch_full_size..];
 
-    let (giga_outputs, giga_raw) = split_full_proof(giga_full)?;
+    let (epoch_outputs, epoch_raw) = split_full_proof(epoch_full)?;
     let (tip_outputs, tip_raw) = if !tip_full.is_empty() {
         let (o, r) = split_full_proof(tip_full)?;
         (Some(o), r)
@@ -202,7 +202,7 @@ pub fn verify_proofs_full(combined_proof: &[u8]) -> Result<VerifyResult> {
         (None, vec![])
     };
 
-    let gigaproof_valid = verify_single(&giga_raw)?;
+    let epoch_proof_valid = verify_single(&epoch_raw)?;
     let tip_valid = if !tip_raw.is_empty() {
         verify_single(&tip_raw)?
     } else {
@@ -210,15 +210,15 @@ pub fn verify_proofs_full(combined_proof: &[u8]) -> Result<VerifyResult> {
     };
 
     let continuous = match &tip_outputs {
-        Some(tip) => tip.start_prev_hash == giga_outputs.tip_hash,
+        Some(tip) => tip.start_prev_hash == epoch_outputs.tip_hash,
         None => true,
     };
 
     Ok(VerifyResult {
-        gigaproof_valid,
+        epoch_proof_valid,
         tip_valid,
         continuous,
-        giga_outputs,
+        epoch_outputs,
         tip_outputs,
     })
 }

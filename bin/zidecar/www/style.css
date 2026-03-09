@@ -527,17 +527,17 @@ select:focus {
   border-right: 2px solid var(--border-primary);
 }
 
-.proof-segment.gigaproof {
+.proof-segment.epoch-proof {
   flex: 8;
   background: linear-gradient(180deg, #2a3a2a 0%, #1a2a1a 100%);
 }
 
-.proof-segment.gigaproof[data-status="verified"] {
+.proof-segment.epoch-proof[data-status="verified"] {
   background: linear-gradient(180deg, #3a5a3a 0%, #2a4a2a 100%);
   box-shadow: inset 0 0 20px rgba(80, 200, 120, 0.2);
 }
 
-.proof-segment.gigaproof[data-status="pending"] {
+.proof-segment.epoch-proof[data-status="pending"] {
   background: linear-gradient(180deg, #3a3a2a 0%, #2a2a1a 100%);
 }
 
@@ -572,7 +572,7 @@ select:focus {
   animation: new-block-flash 0.5s ease-out;
 }
 
-.proof-segment.gigaproof[data-status="verifying"] {
+.proof-segment.epoch-proof[data-status="verifying"] {
   background: linear-gradient(180deg, #4a4a3a 0%, #3a3a2a 100%);
   animation: pulse-verifying 1s ease-in-out infinite;
 }
@@ -582,7 +582,7 @@ select:focus {
   50% { opacity: 0.6; }
 }
 
-.proof-segment.gigaproof[data-status="error"] {
+.proof-segment.epoch-proof[data-status="error"] {
   background: linear-gradient(180deg, #5a3a3a 0%, #4a2a2a 100%);
   border-color: var(--error);
 }

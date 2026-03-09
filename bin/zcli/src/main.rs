@@ -450,42 +450,42 @@ async fn cmd_verify(cli: &Cli, mainnet: bool) -> Result<(), Error> {
     let result = zync_core::verifier::verify_proofs_full(&proof_bytes)
         .map_err(|e| Error::Other(format!("proof verification failed: {}", e)))?;
 
-    if !result.gigaproof_valid {
-        return Err(Error::Other("gigaproof cryptographically INVALID".into()));
+    if !result.epoch_proof_valid {
+        return Err(Error::Other("epoch proof cryptographically INVALID".into()));
     }
     if !result.tip_valid {
         return Err(Error::Other("tip proof cryptographically INVALID".into()));
     }
     if !result.continuous {
-        return Err(Error::Other("proof chain DISCONTINUOUS — gap between gigaproof and tip".into()));
+        return Err(Error::Other("proof chain DISCONTINUOUS — gap between epoch proof and tip".into()));
     }
 
-    // verify gigaproof anchors to hardcoded activation hash
-    if mainnet && result.giga_outputs.start_hash != zync_core::ACTIVATION_HASH_MAINNET {
-        return Err(Error::Other("gigaproof start_hash doesn't match activation anchor".into()));
+    // verify epoch proof anchors to hardcoded activation hash
+    if mainnet && result.epoch_outputs.start_hash != zync_core::ACTIVATION_HASH_MAINNET {
+        return Err(Error::Other("epoch proof start_hash doesn't match activation anchor".into()));
     }
 
-    let giga = &result.giga_outputs;
+    let epoch = &result.epoch_outputs;
     let blocks_proven = proof_to - proof_from;
     if !cli.json {
-        eprintln!("   gigaproof: {} -> {} ({} headers, {} KB)",
-            giga.start_height, giga.end_height,
-            giga.num_headers,
+        eprintln!("   epoch proof: {} -> {} ({} headers, {} KB)",
+            epoch.start_height, epoch.end_height,
+            epoch.num_headers,
             proof_bytes.len() / 1024,
         );
-        eprintln!("   gigaproof anchored to activation hash: PASS");
-        eprintln!("   gigaproof cryptographic verification:  PASS");
+        eprintln!("   epoch proof anchored to activation hash: PASS");
+        eprintln!("   epoch proof cryptographic verification:  PASS");
         if let Some(ref tip_out) = result.tip_outputs {
             eprintln!("   tip proof: {} -> {} ({} headers)",
                 tip_out.start_height, tip_out.end_height, tip_out.num_headers);
             eprintln!("   tip proof cryptographic verification:  PASS");
         }
-        eprintln!("   chain continuity (tip chains to giga): PASS");
+        eprintln!("   chain continuity (tip chains to epoch proof): PASS");
         eprintln!("   total blocks proven: {}", blocks_proven);
     }
 
     // step 4: proven state roots
-    let outputs = result.tip_outputs.as_ref().unwrap_or(&result.giga_outputs);
+    let outputs = result.tip_outputs.as_ref().unwrap_or(&result.epoch_outputs);
     let staleness = tip.saturating_sub(outputs.end_height);
     if staleness > zync_core::EPOCH_SIZE {
         return Err(Error::Other(format!(
@@ -517,7 +517,7 @@ async fn cmd_verify(cli: &Cli, mainnet: bool) -> Result<(), Error> {
                 "proof_from": proof_from,
                 "proof_to": proof_to,
                 "blocks_proven": blocks_proven,
-                "gigaproof_valid": result.gigaproof_valid,
+                "epoch_proof_valid": result.epoch_proof_valid,
                 "tip_valid": result.tip_valid,
                 "continuous": result.continuous,
                 "tree_root": hex::encode(outputs.tip_tree_root),

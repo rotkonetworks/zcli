@@ -47,7 +47,7 @@
   the backend. indexes the zcash chain into
   <a href="https://github.com/thrumdev/nomt">nomt</a> and generates
   <a href="https://crates.io/crates/ligerito">ligerito</a> proofs over the header
-  chain (gigaproof + tip proof). serves compact blocks and proofs over
+  chain (epoch proof + tip proof). serves compact blocks and proofs over
   gRPC-web. default endpoint: <code>zcash.rotko.net</code>.
   </p>
 
@@ -85,12 +85,12 @@ tip:      3266078 (000000000075b2db)
    PASS
 
 3. header chain proof (ligerito)
-   gigaproof: 1687104 -> 3265535 (1578432 headers, 452 KB)
-   gigaproof anchored to activation hash: PASS
-   gigaproof cryptographic verification:  PASS
+   epoch proof: 1687104 -> 3265535 (1578432 headers, 452 KB)
+   epoch proof anchored to activation hash: PASS
+   epoch proof cryptographic verification:  PASS
    tip proof: 3265536 -> 3266078 (543 headers)
    tip proof cryptographic verification:  PASS
-   chain continuity (tip chains to giga): PASS
+   chain continuity (tip chains to epoch proof): PASS
    total blocks proven: 1578974
 
 4. cryptographically proven state roots
@@ -106,7 +106,7 @@ all checks passed</pre>
   <p>
   the orchard activation block hash (height 1,687,104) is hardcoded in the
   binary. every proof chain must start from this immutable anchor. the
-  gigaproof's <code>start_hash</code> is checked against it.
+  epoch proof's <code>start_hash</code> is checked against it.
   </p>
 
   <h3>cross-verification</h3>
@@ -119,7 +119,7 @@ all checks passed</pre>
 
   <h3>header chain proof (ligerito)</h3>
   <p>
-  the gigaproof (~300KB) covers the header chain from NU5 activation to the
+  the epoch proof (~300KB) covers the header chain from NU5 activation to the
   latest epoch boundary. the tip proof (~150KB) covers from there to the
   current tip, regenerated every block. both are verified cryptographically
   and must chain continuously.
