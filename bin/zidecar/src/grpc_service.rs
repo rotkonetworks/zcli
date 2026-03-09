@@ -7,7 +7,6 @@ use crate::{
     prover::HeaderChainProof,
     storage::Storage,
     zebrad::ZebradClient,
-    checkpoint::EpochCheckpoint,
     zidecar::{
         self, zidecar_server::Zidecar, BlockHeader as ProtoBlockHeader, BlockId, BlockRange,
         CompactAction as ProtoCompactAction, CompactBlock as ProtoCompactBlock, Empty,
@@ -616,22 +615,6 @@ impl Zidecar for ZidecarService {
     ) -> std::result::Result<Response<TrustlessStateProof>, Status> {
         info!("trustless state proof request");
 
-        // get latest checkpoint
-        let checkpoint_epoch = self.storage.get_latest_checkpoint_epoch()
-            .map_err(|e| Status::internal(e.to_string()))?
-            .unwrap_or(0);
-
-        let checkpoint_bytes = self.storage.get_checkpoint(checkpoint_epoch)
-            .map_err(|e| Status::internal(e.to_string()))?;
-
-        let checkpoint = if let Some(bytes) = checkpoint_bytes {
-            EpochCheckpoint::from_bytes(&bytes)
-                .map_err(|e| Status::internal(e.to_string()))?
-        } else {
-            // use genesis checkpoint if none stored
-            crate::checkpoint::mainnet_genesis_checkpoint()
-        };
-
         // get gigaproof + tip proof (state transition proof)
         let (gigaproof, _tip_proof) = match self.epoch_manager.get_proofs().await {
             Ok(p) => p,
@@ -655,8 +638,8 @@ impl Zidecar for ZidecarService {
             .unwrap_or(([0u8; 32], [0u8; 32]));
 
         info!(
-            "serving trustless proof: checkpoint epoch {} -> height {}",
-            checkpoint.epoch_index, tip_info.blocks
+            "serving trustless proof: height {}",
+            tip_info.blocks
         );
 
         // get total action count from storage
@@ -664,7 +647,7 @@ impl Zidecar for ZidecarService {
             .map_err(|e| Status::internal(e.to_string()))?;
 
         Ok(Response::new(TrustlessStateProof {
-            checkpoint: Some(checkpoint_to_proto(&checkpoint)),
+            checkpoint: None,
             state_transition_proof: gigaproof,
             current_height: tip_info.blocks,
             current_hash,
@@ -827,32 +810,8 @@ impl Zidecar for ZidecarService {
         &self,
         request: Request<EpochRequest>,
     ) -> std::result::Result<Response<ProtoFrostCheckpoint>, Status> {
-        let req = request.into_inner();
-
-        let epoch = if req.epoch_index == 0 {
-            // get latest
-            self.storage.get_latest_checkpoint_epoch()
-                .map_err(|e| Status::internal(e.to_string()))?
-                .unwrap_or(0)
-        } else {
-            req.epoch_index
-        };
-
-        info!("checkpoint request for epoch {}", epoch);
-
-        let checkpoint_bytes = self.storage.get_checkpoint(epoch)
-            .map_err(|e| Status::internal(e.to_string()))?;
-
-        let checkpoint = if let Some(bytes) = checkpoint_bytes {
-            EpochCheckpoint::from_bytes(&bytes)
-                .map_err(|e| Status::internal(e.to_string()))?
-        } else if epoch == 0 {
-            crate::checkpoint::mainnet_genesis_checkpoint()
-        } else {
-            return Err(Status::not_found(format!("checkpoint {} not found", epoch)));
-        };
-
-        Ok(Response::new(checkpoint_to_proto(&checkpoint)))
+        // FROST checkpoints removed — ligerito proofs replace this
+        Err(Status::unimplemented("FROST checkpoints removed, use get_header_proof"))
     }
 
     async fn get_epoch_boundary(
@@ -931,23 +890,6 @@ impl Zidecar for ZidecarService {
         info!("returning {} epoch boundaries", boundaries.len());
 
         Ok(Response::new(EpochBoundaryList { boundaries }))
-    }
-}
-
-// helper: convert EpochCheckpoint to proto
-fn checkpoint_to_proto(cp: &EpochCheckpoint) -> ProtoFrostCheckpoint {
-    ProtoFrostCheckpoint {
-        epoch_index: cp.epoch_index,
-        height: cp.height,
-        block_hash: cp.block_hash.to_vec(),
-        tree_root: cp.tree_root.to_vec(),
-        nullifier_root: cp.nullifier_root.to_vec(),
-        timestamp: cp.timestamp,
-        signature: Some(ProtoFrostSignature {
-            r: cp.signature.r.to_vec(),
-            s: cp.signature.s.to_vec(),
-        }),
-        signer_set_id: cp.signer_set_id.to_vec(),
     }
 }
 

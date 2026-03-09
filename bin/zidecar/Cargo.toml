@@ -4,7 +4,7 @@ version = "0.3.0"
 edition = "2021"
 license = "MIT"
 description = "Ligerito-powered Zcash light server with real-time header chain proofs"
-repository = "https://github.com/rotkonetworks/zeratul"
+repository = "https://github.com/rotkonetworks/zcash-lc"
 keywords = ["zcash", "ligerito", "light-server", "zk-proofs"]
 categories = ["cryptography"]
 
@@ -14,11 +14,11 @@ path = "src/main.rs"
 
 [dependencies]
 # zync core types
-zync-core = "0.2"
+zync-core = { path = "../../crates/zync-core" }
 
 # ligerito polynomial commitment scheme
-ligerito = { version = "0.3", features = ["transcript-blake2b"] }
-ligerito-binary-fields = "0.3"
+ligerito = { path = "../../crates/ligerito", features = ["transcript-blake2b"] }
+ligerito-binary-fields = { path = "../../crates/ligerito-binary-fields" }
 
 # async runtime
 tokio = { version = "1", features = ["full"] }
@@ -47,11 +47,6 @@ sled = "0.34"  # for simple proof cache
 # crypto
 blake2 = "0.10"
 sha2 = "0.10"
-
-# substrate client (for zanchor parachain integration)
-subxt = { version = "0.37", features = ["substrate-compat"] }
-sp-core = { version = "34", default-features = false, features = ["std"] }
-sp-runtime = { version = "39", default-features = false, features = ["std"] }
 
 # utilities
 thiserror = "1.0"
