@@ -27,7 +27,7 @@ jobs:
           target: /home/${{ secrets.DEPLOY_USER }}/zcli-staging/
           strip_components: 0
 
-      - name: deploy container
+      - name: deploy files
         uses: appleboy/ssh-action@v1.0.0
         with:
           host: ${{ secrets.DEPLOY_HOST }}
@@ -41,60 +41,6 @@ jobs:
             cp zcli-staging/www/*.html ${{ env.PROJECT_DIR }}/
             cp zcli-staging/www/*.css ${{ env.PROJECT_DIR }}/
             cp zcli-staging/www/memos.json ${{ env.PROJECT_DIR }}/ 2>/dev/null || true
-
-            # if container is running, just reload nginx (files are bind-mounted)
-            if podman ps --format '{{.Names}}' | grep -q '^${{ env.CONTAINER_NAME }}$'; then
-              podman exec ${{ env.CONTAINER_NAME }} nginx -s reload
-            else
-              # remove broken/stopped container if it exists
-              podman rm -f ${{ env.CONTAINER_NAME }} 2>/dev/null || true
-              # wait for pasta network namespace cleanup
-              for i in $(seq 1 10); do
-                ss -tlnp | grep -q ':${{ env.CONTAINER_PORT }}' || break
-                sleep 2
-              done
-
-              cat > nginx-zcli.conf << 'NGINX_EOF'
-            server {
-                listen 80;
-                server_name localhost;
-                root /usr/share/nginx/html;
-                index index.html;
-
-                gzip on;
-                gzip_vary on;
-                gzip_min_length 256;
-                gzip_types text/plain text/css application/json application/javascript text/xml;
-
-                location = /memos.json {
-                    add_header Cache-Control "no-cache";
-                }
-
-                location / {
-                    try_files $uri $uri/ =404;
-                }
-
-                add_header X-Frame-Options "SAMEORIGIN" always;
-                add_header X-Content-Type-Options "nosniff" always;
-                add_header Referrer-Policy "strict-origin-when-cross-origin" always;
-            }
-            NGINX_EOF
-
-              podman run -d \
-                --name ${{ env.CONTAINER_NAME }} \
-                -p 127.0.0.1:${{ env.CONTAINER_PORT }}:80 \
-                -v /home/${{ secrets.DEPLOY_USER }}/${{ env.PROJECT_DIR }}:/usr/share/nginx/html:ro,Z \
-                -v /home/${{ secrets.DEPLOY_USER }}/nginx-zcli.conf:/etc/nginx/conf.d/default.conf:ro,Z \
-                --restart unless-stopped \
-                nginx:alpine
-            fi
-
-            sleep 2
-            curl -f http://127.0.0.1:${{ env.CONTAINER_PORT }}/ > /dev/null || {
-              echo "site not responding"
-              podman logs ${{ env.CONTAINER_NAME }}
-              exit 1
-            }
 
             rm -rf zcli-staging/
             echo "deployed zcli.rotko.net"
