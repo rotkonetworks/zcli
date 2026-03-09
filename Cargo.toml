@@ -14,7 +14,7 @@ members = [
 authors = ["rotko networks"]
 edition = "2021"
 license = "MIT"
-repository = "https://github.com/rotkonetworks/zcash-lc"
+repository = "https://github.com/rotkonetworks/zcli"
 
 [workspace.dependencies]
 ligerito = { path = "crates/ligerito" }

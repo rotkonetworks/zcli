@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>zcli - docs</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav>
+  <a href="index.html" class="nav-brand">zcli</a>
+  <div class="nav-links">
+    <a href="index.html">home</a>
+    <a href="docs.html">docs</a>
+    <a href="board.html">board</a>
+    <a href="https://github.com/rotkonetworks/zcli">source</a>
+  </div>
+</nav>
+
+<div class="section">
+  <h1>documentation</h1>
+</div>
+
+<div class="section">
+  <h2>architecture</h2>
+
+  <h3><a href="https://github.com/rotkonetworks/zcli/tree/master/bin/zcli">zcli</a></h3>
+  <p>
+  the wallet. derives orchard spending keys and transparent keys from an ssh
+  ed25519 seed via <code>BLAKE2b-512("ZcliWalletSeed" || ed25519_seed)</code>.
+  trial-decrypts compact blocks locally — the server never learns which
+  addresses belong to you. builds and proves orchard transactions with halo2
+  locally.
+  </p>
+
+  <h3><a href="https://github.com/rotkonetworks/zcli/tree/master/bin/zidecar">zidecar</a></h3>
+  <p>
+  the backend. indexes the zcash chain into
+  <a href="https://github.com/thrumdev/nomt">nomt</a> and generates
+  <a href="https://crates.io/crates/ligerito">ligerito</a> proofs over the header
+  chain (gigaproof + tip proof). serves compact blocks and proofs over
+  gRPC-web. default endpoint: <code>zcash.rotko.net</code>.
+  </p>
+
+  <h3><a href="https://github.com/rotkonetworks/zcli/tree/master/crates/zync-core">zync-core</a></h3>
+  <p>
+  shared verification library. ligerito proof verification, nomt merkle proof
+  verification, actions commitment chain, trial decryption. used by both zcli
+  and <a href="https://github.com/rotkonetworks/zafu">zafu</a>.
+  </p>
+</div>
+
+<div class="section" id="verification">
+  <h2>client-side verification</h2>
+  <p>
+  zcli verifies chain data before trusting it. nothing from the server is
+  accepted without cryptographic proof. run <code>zcli verify</code> to see
+  the full chain:
+  </p>
+
+  <pre><span class="prompt">$ zcli verify</span>
+zcli verify - trustless verification chain
+network:  mainnet
+endpoint: https://zcash.rotko.net
+tip:      3266078 (000000000075b2db)
+
+1. trust anchor
+   hardcoded orchard activation hash at height 1687104
+   server returned: 0000000000d72315
+   expected:        0000000000d72315
+   PASS
+
+2. cross-verification (1 independent node)
+   https://zec.rocks - tip matches
+   consensus: 1/1 agree (threshold: >2/3)
+   PASS
+
+3. header chain proof (ligerito)
+   gigaproof: 1687104 -> 3265535 (1578432 headers, 452 KB)
+   gigaproof anchored to activation hash: PASS
+   gigaproof cryptographic verification:  PASS
+   tip proof: 3265536 -> 3266078 (543 headers)
+   tip proof cryptographic verification:  PASS
+   chain continuity (tip chains to giga): PASS
+   total blocks proven: 1578974
+
+4. cryptographically proven state roots
+   (extracted from ligerito polynomial trace sentinel row)
+   tree_root:          b375422028a896ed...
+   nullifier_root:     512ab0f1f95c751e...
+   actions_commitment: 18001392bc7a253b...
+   proof freshness: 0 blocks behind tip
+
+all checks passed</pre>
+
+  <h3>trust anchor</h3>
+  <p>
+  the orchard activation block hash (height 1,687,104) is hardcoded in the
+  binary. every proof chain must start from this immutable anchor. the
+  gigaproof's <code>start_hash</code> is checked against it.
+  </p>
+
+  <h3>cross-verification</h3>
+  <p>
+  tip block hash is compared against independent lightwalletd nodes
+  (default: <code>zec.rocks</code>, configurable via <code>--verify-endpoints</code>).
+  requires BFT majority (&gt;2/3 agreement). hard-fails on mismatch or
+  when no nodes respond.
+  </p>
+
+  <h3>header chain proof (ligerito)</h3>
+  <p>
+  the gigaproof (~300KB) covers the header chain from NU5 activation to the
+  latest epoch boundary. the tip proof (~150KB) covers from there to the
+  current tip, regenerated every block. both are verified cryptographically
+  and must chain continuously.
+  </p>
+  <p>
+  the ligerito proof commits to a polynomial trace containing a sentinel row
+  with three state roots. these are cryptographically bound to the proven
+  header chain — the server cannot forge them.
+  </p>
+
+  <h3>proven state roots</h3>
+  <p>
+  the sentinel row in the ligerito trace contains:
+  </p>
+  <pre>tree_root          orchard commitment tree root (nomt)
+nullifier_root     nullifier set root (nomt)
+actions_commitment running chain of per-block action merkle trees</pre>
+
+  <h3>what happens during sync</h3>
+  <p>
+  during <code>zcli sync</code>, each received note gets a nomt merkle proof
+  verified against the proven <code>tree_root</code>. each unspent nullifier
+  gets a nomt proof against the proven <code>nullifier_root</code>. the
+  client recomputes per-block action merkle trees and chains them — the
+  result must match the proven <code>actions_commitment</code>. after trial
+  decryption, cmx is recomputed from the decrypted note and compared to the
+  server-provided value. notes are only stored after all proofs pass.
+  </p>
+  <p>
+  all verification hard-fails. no soft-fails, no warnings-instead-of-errors.
+  </p>
+
+  <h3>remaining trust assumption</h3>
+  <p>
+  at least one of your cross-verification endpoints must be honest about the
+  chain tip. if all endpoints collude and serve a forked chain, no light
+  client can detect this. this is fundamental to all light clients.
+  </p>
+</div>
+
+<div class="section">
+  <h2>usage reference</h2>
+  <pre><span class="prompt">zcli -i ~/.ssh/id_ed25519 address</span>          <span class="dim"># show addresses</span>
+<span class="prompt">zcli sync</span>                                   <span class="dim"># scan chain</span>
+<span class="prompt">zcli balance</span>                                <span class="dim"># check funds</span>
+<span class="prompt">zcli send 0.01 u1...</span>                        <span class="dim"># send shielded</span>
+<span class="prompt">zcli shield</span>                                 <span class="dim"># t-addr → shielded</span>
+<span class="prompt">zcli receive</span>                                <span class="dim"># QR code</span>
+<span class="prompt">zcli notes --json</span>                           <span class="dim"># list received notes</span>
+<span class="prompt">zcli export</span>                                 <span class="dim"># export viewing key</span>
+<span class="prompt">zcli board --port 3333</span>                      <span class="dim"># sync loop + JSON API</span></pre>
+  <p class="dim">all commands accept <code>--json</code> for machine-readable output.
+  set <code>ZCLI_IDENTITY</code>, <code>ZCLI_ENDPOINT</code> as env vars for headless operation.</p>
+
+  <h3>air-gapped signing (with zigner)</h3>
+  <pre><span class="prompt">zcli import-fvk --cam</span>                      <span class="dim"># scan FVK QR from zigner</span>
+<span class="prompt">zcli sync --wallet zigner</span>                  <span class="dim"># sync watch-only wallet</span>
+<span class="prompt">zcli balance --wallet zigner</span>               <span class="dim"># check balance</span>
+<span class="prompt">zcli send 1.0 u1... --wallet zigner --cam</span> <span class="dim"># build unsigned tx, scan signed QR</span></pre>
+  <p class="dim">see <a href="https://zigner.rotko.net">zigner.rotko.net</a> for the hardware signer.</p>
+</div>
+
+<div class="section">
+  <h2>environment variables</h2>
+  <pre>ZCLI_IDENTITY    <span class="dim">path to ed25519 ssh key (default: ~/.ssh/id_ed25519)</span>
+ZCLI_ENDPOINT    <span class="dim">gRPC-web endpoint (default: zcash.rotko.net)</span>
+SSH_PASSPHRASE   <span class="dim">key passphrase for non-interactive use</span></pre>
+</div>
+
+<footer>
+  <a href="https://github.com/rotkonetworks/zcli">source</a>
+  <span class="dim"> · </span>
+  <a href="https://zigner.rotko.net">zigner</a>
+  <span class="dim"> · </span>
+  <a href="board.html">donation board</a>
+  <span class="dim"> · rotko networks</span>
+</footer>
+
+</body>
+</html>
