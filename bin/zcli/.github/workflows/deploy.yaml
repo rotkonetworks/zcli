@@ -42,7 +42,11 @@ jobs:
             cp zcli-staging/www/*.css ${{ env.PROJECT_DIR }}/
             cp zcli-staging/www/memos.json ${{ env.PROJECT_DIR }}/ 2>/dev/null || true
 
-            cat > nginx-zcli.conf << 'NGINX_EOF'
+            # if container exists, just reload nginx (files are bind-mounted)
+            if podman ps -a --format '{{.Names}}' | grep -q '^${{ env.CONTAINER_NAME }}$'; then
+              podman exec ${{ env.CONTAINER_NAME }} nginx -s reload
+            else
+              cat > nginx-zcli.conf << 'NGINX_EOF'
             server {
                 listen 80;
                 server_name localhost;
@@ -59,7 +63,7 @@ jobs:
                 }
 
                 location / {
-                    try_files $uri $uri/ /index.html;
+                    try_files $uri $uri/ =404;
                 }
 
                 add_header X-Frame-Options "SAMEORIGIN" always;
@@ -68,25 +72,16 @@ jobs:
             }
             NGINX_EOF
 
-            podman stop -t 5 ${{ env.CONTAINER_NAME }} 2>/dev/null || true
-            podman rm -f ${{ env.CONTAINER_NAME }} 2>/dev/null || true
-            sleep 3
-
-            podman run -d \
-              --name ${{ env.CONTAINER_NAME }} \
-              -p 127.0.0.1:${{ env.CONTAINER_PORT }}:80 \
-              -v /home/${{ secrets.DEPLOY_USER }}/${{ env.PROJECT_DIR }}:/usr/share/nginx/html:ro,Z \
-              -v /home/${{ secrets.DEPLOY_USER }}/nginx-zcli.conf:/etc/nginx/conf.d/default.conf:ro,Z \
-              --restart unless-stopped \
-              nginx:alpine
-
-            sleep 2
-            if ! podman ps | grep -q ${{ env.CONTAINER_NAME }}; then
-              echo "container failed to start"
-              podman logs ${{ env.CONTAINER_NAME }}
-              exit 1
+              podman run -d \
+                --name ${{ env.CONTAINER_NAME }} \
+                -p 127.0.0.1:${{ env.CONTAINER_PORT }}:80 \
+                -v /home/${{ secrets.DEPLOY_USER }}/${{ env.PROJECT_DIR }}:/usr/share/nginx/html:ro,Z \
+                -v /home/${{ secrets.DEPLOY_USER }}/nginx-zcli.conf:/etc/nginx/conf.d/default.conf:ro,Z \
+                --restart unless-stopped \
+                nginx:alpine
             fi
 
+            sleep 2
             curl -f http://127.0.0.1:${{ env.CONTAINER_PORT }}/ > /dev/null || {
               echo "site not responding"
               podman logs ${{ env.CONTAINER_NAME }}
