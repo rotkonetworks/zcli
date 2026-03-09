@@ -38,8 +38,9 @@ jobs:
             cd /home/${{ secrets.DEPLOY_USER }}
 
             mkdir -p ${{ env.PROJECT_DIR }}
-            cp zcli-staging/www/index.html ${{ env.PROJECT_DIR }}/
-            cp zcli-staging/www/memos.json ${{ env.PROJECT_DIR }}/
+            cp zcli-staging/www/*.html ${{ env.PROJECT_DIR }}/
+            cp zcli-staging/www/*.css ${{ env.PROJECT_DIR }}/
+            cp zcli-staging/www/memos.json ${{ env.PROJECT_DIR }}/ 2>/dev/null || true
 
             cat > nginx-zcli.conf << 'NGINX_EOF'
             server {
@@ -67,8 +68,9 @@ jobs:
             }
             NGINX_EOF
 
-            podman stop ${{ env.CONTAINER_NAME }} 2>/dev/null || true
-            podman rm ${{ env.CONTAINER_NAME }} 2>/dev/null || true
+            podman stop -t 5 ${{ env.CONTAINER_NAME }} 2>/dev/null || true
+            podman rm -f ${{ env.CONTAINER_NAME }} 2>/dev/null || true
+            sleep 3
 
             podman run -d \
               --name ${{ env.CONTAINER_NAME }} \
