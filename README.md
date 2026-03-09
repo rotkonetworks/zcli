@@ -76,9 +76,9 @@ Include a memo and it shows up on the [donation board](https://zcli.rotko.net/bo
 
 ## acknowledgments
 
-- [Guillermo Angeris](https://github.com/angeris) — whose work on polynomial commitments and proof systems directly inspired ligerito
-- [Rob Habermeier](https://github.com/rphmeier) — for NOMT (New Ordered Merkle Tree), which we use for commitment and nullifier proofs
-- [Penumbra Labs](https://github.com/penumbra-zone) — for pushing the boundary on what private proof-of-stake chains can do, and for open-sourcing the primitives that make it possible
+- [Bain Capital Crypto / ligerito.jl](https://github.com/BainCapitalCrypto/ligerito.jl) — the original polynomial commitment scheme we ported to Rust
+- [thrumdev/nomt](https://github.com/thrumdev/nomt) — New Ordered Merkle Tree, used for commitment and nullifier proofs
+- [Penumbra Labs](https://github.com/penumbra-zone) — client-side sync model we build on
 
 ## license
 
