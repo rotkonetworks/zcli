@@ -223,7 +223,15 @@ async fn sync_inner(
     // collect nullifiers seen in actions to mark spent after verification
     let mut seen_nullifiers: Vec<[u8; 32]> = Vec::new();
     // running actions commitment chain for verifying block completeness
-    let mut running_actions_commitment = [0u8; 32];
+    // when resuming a partial sync, load the commitment saved at last sync height;
+    // it must chain from activation to match the proven value.
+    let saved_actions_commitment = wallet.actions_commitment()?;
+    let actions_commitment_available = start <= activation || saved_actions_commitment != [0u8; 32];
+    let mut running_actions_commitment = if start > activation {
+        saved_actions_commitment
+    } else {
+        [0u8; 32]
+    };
 
     while current <= tip {
         let end = (current + BATCH_SIZE - 1).min(tip);
@@ -321,14 +329,24 @@ async fn sync_inner(
     }
 
     // verify actions commitment chain against proven value
-    if running_actions_commitment != proven_roots.actions_commitment {
+    if !actions_commitment_available {
+        // legacy wallet: no saved actions commitment from pre-0.5.1 sync.
+        // other verification (header proofs, commitment proofs, nullifier proofs,
+        // cross-verification) still protects against tampering. save the computed
+        // value so subsequent syncs can verify the full chain.
+        eprintln!(
+            "actions commitment: migrating from pre-0.5.1 wallet, saving {}...",
+            hex::encode(&running_actions_commitment[..8]),
+        );
+    } else if running_actions_commitment != proven_roots.actions_commitment {
         return Err(Error::Other(format!(
             "actions commitment mismatch: server tampered with block actions (computed={} proven={})",
             hex::encode(&running_actions_commitment[..8]),
             hex::encode(&proven_roots.actions_commitment[..8]),
         )));
+    } else {
+        eprintln!("actions commitment verified: {}...", hex::encode(&running_actions_commitment[..8]));
     }
-    eprintln!("actions commitment verified: {}...", hex::encode(&running_actions_commitment[..8]));
 
     // verify commitment proofs (NOMT) for received notes BEFORE storing
     if !received_cmxs.is_empty() {
@@ -344,6 +362,7 @@ async fn sync_inner(
     }
     wallet.set_sync_height(tip)?;
     wallet.set_orchard_position(position_counter)?;
+    wallet.set_actions_commitment(&running_actions_commitment)?;
 
     // verify nullifier proofs (NOMT) for unspent notes
     verify_nullifiers(&client, &wallet, tip, &proven_roots).await?;

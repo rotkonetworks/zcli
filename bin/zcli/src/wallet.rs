@@ -16,6 +16,7 @@ const SENT_TXS_TREE: &str = "sent_txs";
 const PAYMENT_REQUESTS_TREE: &str = "payment_requests";
 const WITHDRAWAL_REQUESTS_TREE: &str = "withdrawal_requests";
 const NEXT_WITHDRAWAL_ID_KEY: &[u8] = b"next_withdrawal_id";
+const ACTIONS_COMMITMENT_KEY: &[u8] = b"actions_commitment";
 const FVK_KEY: &[u8] = b"full_viewing_key";
 const WALLET_MODE_KEY: &[u8] = b"wallet_mode";
 
@@ -447,6 +448,35 @@ impl Wallet {
         }
     }
 
+    // -- actions commitment --
+
+    /// get the running actions commitment (for resuming sync)
+    pub fn actions_commitment(&self) -> Result<[u8; 32], Error> {
+        match self
+            .db
+            .get(ACTIONS_COMMITMENT_KEY)
+            .map_err(|e| Error::Wallet(format!("read actions_commitment: {}", e)))?
+        {
+            Some(bytes) => {
+                if bytes.len() == 32 {
+                    let mut ac = [0u8; 32];
+                    ac.copy_from_slice(&bytes);
+                    Ok(ac)
+                } else {
+                    Ok([0u8; 32])
+                }
+            }
+            None => Ok([0u8; 32]),
+        }
+    }
+
+    pub fn set_actions_commitment(&self, commitment: &[u8; 32]) -> Result<(), Error> {
+        self.db
+            .insert(ACTIONS_COMMITMENT_KEY, commitment.as_ref())
+            .map_err(|e| Error::Wallet(format!("write actions_commitment: {}", e)))?;
+        Ok(())
+    }
+
     // -- FVK / watch-only methods --
 
     /// store a 96-byte orchard full viewing key (enables watch-only mode)
@@ -574,5 +604,96 @@ impl Wallet {
             reqs.push(req);
         }
         Ok(reqs)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_wallet() -> Wallet {
+        let dir = tempfile::tempdir().unwrap();
+        Wallet::open(dir.path().join("wallet").to_str().unwrap()).unwrap()
+    }
+
+    #[test]
+    fn test_actions_commitment_default_zero() {
+        let w = temp_wallet();
+        assert_eq!(w.actions_commitment().unwrap(), [0u8; 32]);
+    }
+
+    #[test]
+    fn test_actions_commitment_roundtrip() {
+        let w = temp_wallet();
+        let commitment = [0xab; 32];
+        w.set_actions_commitment(&commitment).unwrap();
+        assert_eq!(w.actions_commitment().unwrap(), commitment);
+    }
+
+    #[test]
+    fn test_actions_commitment_persists_across_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("wallet");
+        let path_str = path.to_str().unwrap();
+
+        let commitment = [0xcd; 32];
+        {
+            let w = Wallet::open(path_str).unwrap();
+            w.set_actions_commitment(&commitment).unwrap();
+        }
+        {
+            let w = Wallet::open(path_str).unwrap();
+            assert_eq!(w.actions_commitment().unwrap(), commitment);
+        }
+    }
+
+    #[test]
+    fn test_sync_height_and_position_roundtrip() {
+        let w = temp_wallet();
+        assert_eq!(w.sync_height().unwrap(), 0);
+        assert_eq!(w.orchard_position().unwrap(), 0);
+
+        w.set_sync_height(123456).unwrap();
+        w.set_orchard_position(789).unwrap();
+
+        assert_eq!(w.sync_height().unwrap(), 123456);
+        assert_eq!(w.orchard_position().unwrap(), 789);
+    }
+
+    #[test]
+    fn test_actions_commitment_chains_correctly() {
+        let w = temp_wallet();
+
+        // simulate syncing blocks 100..103 and saving commitment
+        let mut ac = [0u8; 32];
+        for height in 100..103 {
+            let root = zync_core::actions::compute_actions_root(&[
+                ([height as u8; 32], [0u8; 32], [0u8; 32]),
+            ]);
+            ac = zync_core::actions::update_actions_commitment(&ac, &root, height);
+        }
+        w.set_actions_commitment(&ac).unwrap();
+        w.set_sync_height(102).unwrap();
+
+        // simulate resuming from 103 and continuing
+        let mut resumed_ac = w.actions_commitment().unwrap();
+        assert_eq!(resumed_ac, ac);
+        for height in 103..106 {
+            let root = zync_core::actions::compute_actions_root(&[
+                ([height as u8; 32], [0u8; 32], [0u8; 32]),
+            ]);
+            resumed_ac = zync_core::actions::update_actions_commitment(&resumed_ac, &root, height);
+        }
+
+        // compute the full chain from scratch for comparison
+        let mut full_ac = [0u8; 32];
+        for height in 100..106 {
+            let root = zync_core::actions::compute_actions_root(&[
+                ([height as u8; 32], [0u8; 32], [0u8; 32]),
+            ]);
+            full_ac = zync_core::actions::update_actions_commitment(&full_ac, &root, height);
+        }
+
+        assert_eq!(resumed_ac, full_ac, "resumed chain must match full chain");
     }
 }
