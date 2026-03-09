@@ -64,6 +64,22 @@ Reed-Solomon encoding and Merkle-based verification.
 4. **actions commitment** — BLAKE2b chain over per-block action roots, verified against proven value
 5. **cross-verification** — block hashes checked against independent lightwalletd nodes
 
+## donate
+
+If you find this useful, send some shielded ZEC:
+
+```
+u153khs43zxz6hcnlwnut77knyqmursnutmungxjxd7khruunhj77ea6tmpzxct9wzlgen66jxwc93ea053j22afkktu7hrs9rmsz003h3
+```
+
+Include a memo and it shows up on the [donation board](https://zcli.rotko.net/board.html).
+
+## acknowledgments
+
+- [Guillermo Angeris](https://github.com/angeris) — whose work on polynomial commitments and proof systems directly inspired ligerito
+- [Rob Habermeier](https://github.com/rphmeier) — for NOMT (New Ordered Merkle Tree), which we use for commitment and nullifier proofs
+- [Penumbra Labs](https://github.com/penumbra-zone) — for pushing the boundary on what private proof-of-stake chains can do, and for open-sourcing the primitives that make it possible
+
 ## license
 
 MIT
