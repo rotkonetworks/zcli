@@ -11,10 +11,10 @@
 #![cfg(feature = "polkavm-integration")]
 
 use ligerito::pcvm::memory_merkle::{MemoryMerkleTree, MerkleProof};
+use ligerito::pcvm::polkavm_adapter::{MemoryAccessSize, PolkaVMRegisters};
 use ligerito::pcvm::polkavm_constraints_v2::{
-    ProvenTransition, MemoryProof as PolkaVMMemoryProof, generate_transition_constraints,
+    generate_transition_constraints, MemoryProof as PolkaVMMemoryProof, ProvenTransition,
 };
-use ligerito::pcvm::polkavm_adapter::{PolkaVMRegisters, MemoryAccessSize};
 use ligerito_binary_fields::{BinaryElem32, BinaryFieldElement};
 
 use polkavm::program::Instruction;
@@ -40,18 +40,15 @@ fn test_memory_load_with_merkle_proof() {
     assert!(merkle_proof.verify(), "Proof should verify");
 
     // Create PolkaVM memory proof
-    let proof_size = merkle_proof.size();  // Get size before move
-    let polkavm_proof = PolkaVMMemoryProof::for_load(
-        merkle_proof,
-        MemoryAccessSize::Word,
-    );
+    let proof_size = merkle_proof.size(); // Get size before move
+    let polkavm_proof = PolkaVMMemoryProof::for_load(merkle_proof, MemoryAccessSize::Word);
 
     // Create transition for: load a0, [sp + offset]
     let mut regs_before = [0u32; 13];
-    regs_before[1] = 100;  // SP points to address 100
+    regs_before[1] = 100; // SP points to address 100
 
     let mut regs_after = regs_before;
-    regs_after[7] = 0xDEADBEEF;  // a0 = loaded value
+    regs_after[7] = 0xDEADBEEF; // a0 = loaded value
 
     // Convert root to bytes
     let root_bytes = binary_elem_to_bytes(memory_root);
@@ -63,7 +60,7 @@ fn test_memory_load_with_merkle_proof() {
         regs_before: PolkaVMRegisters::from_array(regs_before),
         regs_after: PolkaVMRegisters::from_array(regs_after),
         memory_root_before: root_bytes,
-        memory_root_after: root_bytes,  // Unchanged for loads
+        memory_root_after: root_bytes, // Unchanged for loads
         memory_proof: Some(polkavm_proof),
         instruction_proof: ligerito::pcvm::polkavm_constraints_v2::InstructionProof {
             merkle_path: vec![],
@@ -73,11 +70,7 @@ fn test_memory_load_with_merkle_proof() {
         },
     };
 
-    let instruction = Instruction::load_indirect_u32(
-        raw_reg(Reg::A0),
-        raw_reg(Reg::SP),
-        0,
-    );
+    let instruction = Instruction::load_indirect_u32(raw_reg(Reg::A0), raw_reg(Reg::SP), 0);
 
     // Generate and verify constraints
     let constraints = generate_transition_constraints(&transition, &instruction)
@@ -88,7 +81,8 @@ fn test_memory_load_with_merkle_proof() {
         assert_eq!(
             *constraint,
             BinaryElem32::zero(),
-            "Constraint {} should be satisfied", i
+            "Constraint {} should be satisfied",
+            i
         );
     }
 
@@ -112,17 +106,14 @@ fn test_reject_forged_memory_value() {
     let merkle_proof = tree.prove_read(50).expect("Failed to generate proof");
 
     // Create PolkaVM proof
-    let polkavm_proof = PolkaVMMemoryProof::for_load(
-        merkle_proof.clone(),
-        MemoryAccessSize::Word,
-    );
+    let polkavm_proof = PolkaVMMemoryProof::for_load(merkle_proof.clone(), MemoryAccessSize::Word);
 
     // Create transition claiming WRONG value was loaded
     let mut regs_before = [0u32; 13];
-    regs_before[1] = 50;  // SP = 50
+    regs_before[1] = 50; // SP = 50
 
     let mut regs_after = regs_before;
-    regs_after[7] = 999;  // a0 = 999 (WRONG! Should be 42)
+    regs_after[7] = 999; // a0 = 999 (WRONG! Should be 42)
 
     let root_bytes = binary_elem_to_bytes(tree.root());
 
@@ -143,11 +134,7 @@ fn test_reject_forged_memory_value() {
         },
     };
 
-    let instruction = Instruction::load_indirect_u32(
-        raw_reg(Reg::A0),
-        raw_reg(Reg::SP),
-        0,
-    );
+    let instruction = Instruction::load_indirect_u32(raw_reg(Reg::A0), raw_reg(Reg::SP), 0);
 
     // Constraints should be generated
     let constraints = generate_transition_constraints(&transition, &instruction)
@@ -158,7 +145,7 @@ fn test_reject_forged_memory_value() {
     //
     // This will show up as a non-zero constraint for the register update
 
-    let load_constraint_index = 0;  // First constraint is the load correctness
+    let load_constraint_index = 0; // First constraint is the load correctness
     let load_constraint = constraints.get(load_constraint_index);
 
     // We expect the constraint system to catch the mismatch
@@ -188,14 +175,11 @@ fn test_memory_store_updates_root() {
 
     // Generate proof BEFORE the write
     let merkle_proof_before = tree.prove_read(75).expect("Failed to generate proof");
-    assert_eq!(merkle_proof_before.value, 0);  // Was zero before store
+    assert_eq!(merkle_proof_before.value, 0); // Was zero before store
 
     // Create PolkaVM proof for the store
-    let polkavm_proof = PolkaVMMemoryProof::for_store(
-        merkle_proof_before,
-        MemoryAccessSize::Word,
-        root_after,
-    );
+    let polkavm_proof =
+        PolkaVMMemoryProof::for_store(merkle_proof_before, MemoryAccessSize::Word, root_after);
 
     assert!(polkavm_proof.verify(), "Store proof should verify");
 

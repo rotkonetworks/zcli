@@ -210,8 +210,8 @@ pub fn config_info_for_log_size(log_size: u32) -> ConfigInfo {
     // - Plus Merkle proofs (~32 bytes × depth × queries)
     // - Plus sumcheck transcripts
     let num_queries = 148;
-    let base_field_bytes = 4;  // BinaryElem32
-    let ext_field_bytes = 16;  // BinaryElem128
+    let base_field_bytes = 4; // BinaryElem32
+    let ext_field_bytes = 16; // BinaryElem128
 
     // Initial round: 148 queries × 2^initial_k elements × 4 bytes
     let initial_row_size = 1 << initial_k;
@@ -247,8 +247,10 @@ pub fn config_info_for_log_size(log_size: u32) -> ConfigInfo {
 pub fn print_config_summary() {
     println!("Ligerito Configuration Summary");
     println!("==============================");
-    println!("{:>6} {:>12} {:>8} {:>10} {:>12}",
-             "Log", "Poly Size", "Steps", "k values", "Est. Proof");
+    println!(
+        "{:>6} {:>12} {:>8} {:>10} {:>12}",
+        "Log", "Poly Size", "Steps", "k values", "Est. Proof"
+    );
     println!("{:-<6} {:-<12} {:-<8} {:-<10} {:-<12}", "", "", "", "", "");
 
     for log_size in MIN_LOG_SIZE..=MAX_LOG_SIZE {
@@ -259,12 +261,14 @@ pub fn print_config_summary() {
             .collect::<Vec<_>>()
             .join(",");
 
-        println!("{:>6} {:>12} {:>8} {:>10} {:>10} KB",
-                 log_size,
-                 format_size(info.poly_size),
-                 info.recursive_steps,
-                 ks_str,
-                 info.estimated_proof_bytes / 1024);
+        println!(
+            "{:>6} {:>12} {:>8} {:>10} {:>10} KB",
+            log_size,
+            format_size(info.poly_size),
+            info.recursive_steps,
+            ks_str,
+            info.estimated_proof_bytes / 1024
+        );
     }
 }
 
@@ -310,15 +314,18 @@ mod tests {
 
             // Verify dimensions make sense
             let initial_total = config.initial_dim + config.initial_k;
-            assert_eq!(initial_total as u32, log_size,
-                "initial_dim + initial_k should equal log_size for config {}", log_size);
+            assert_eq!(
+                initial_total as u32, log_size,
+                "initial_dim + initial_k should equal log_size for config {}",
+                log_size
+            );
         }
     }
 
     #[test]
     #[cfg(feature = "prover")]
     fn test_prover_config_consistency() {
-        use ligerito_binary_fields::{BinaryElem32, BinaryElem128};
+        use ligerito_binary_fields::{BinaryElem128, BinaryElem32};
 
         // Only test smaller sizes in debug builds (RS code generation is slow)
         #[cfg(debug_assertions)]
@@ -331,8 +338,12 @@ mod tests {
 
             // Verify dimensions multiply correctly
             let initial_size = config.initial_dims.0 * config.initial_dims.1;
-            assert_eq!(initial_size, 1 << log_size,
-                "initial dims should multiply to 2^{}", log_size);
+            assert_eq!(
+                initial_size,
+                1 << log_size,
+                "initial dims should multiply to 2^{}",
+                log_size
+            );
 
             // Verify recursive steps match
             assert_eq!(config.recursive_steps, config.dims.len());

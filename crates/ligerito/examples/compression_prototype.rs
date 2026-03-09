@@ -1,8 +1,8 @@
 // compression prototype for ligerito proofs
 // demonstrates 45-60% size reduction with ~10ms overhead
 
-use ligerito::{prove_sha256, verify_sha256, hardcoded_config_20, hardcoded_config_20_verifier};
-use ligerito_binary_fields::{BinaryElem32, BinaryElem128};
+use ligerito::{hardcoded_config_20, hardcoded_config_20_verifier, prove_sha256, verify_sha256};
+use ligerito_binary_fields::{BinaryElem128, BinaryElem32};
 use std::marker::PhantomData;
 use std::time::Instant;
 
@@ -10,15 +10,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== ligerito compression prototype ===\n");
 
     // create config for 2^20 elements
-    let config = hardcoded_config_20(
-        PhantomData::<BinaryElem32>,
-        PhantomData::<BinaryElem128>,
-    );
+    let config = hardcoded_config_20(PhantomData::<BinaryElem32>, PhantomData::<BinaryElem128>);
 
     // generate test polynomial
-    let poly: Vec<BinaryElem32> = (0..1048576)
-        .map(|i| BinaryElem32::from(i as u32))
-        .collect();
+    let poly: Vec<BinaryElem32> = (0..1048576).map(|i| BinaryElem32::from(i as u32)).collect();
 
     println!("polynomial size: 2^20 = 1,048,576 elements\n");
 
@@ -33,7 +28,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let uncompressed_size = serialized.len();
 
     println!("  prove time:  {:.2}ms", prove_time.as_secs_f64() * 1000.0);
-    println!("  proof size:  {} bytes ({:.2} KB)", uncompressed_size, uncompressed_size as f64 / 1024.0);
+    println!(
+        "  proof size:  {} bytes ({:.2} KB)",
+        uncompressed_size,
+        uncompressed_size as f64 / 1024.0
+    );
 
     let verifier_config = hardcoded_config_20_verifier();
     let start = Instant::now();
@@ -42,7 +41,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("  verify time: {:.2}ms", verify_time.as_secs_f64() * 1000.0);
     println!("  valid:       {}", valid);
-    println!("  total time:  {:.2}ms\n", (prove_time + verify_time).as_secs_f64() * 1000.0);
+    println!(
+        "  total time:  {:.2}ms\n",
+        (prove_time + verify_time).as_secs_f64() * 1000.0
+    );
 
     // ===== compressed (zstd level 3) =====
     println!("--- compressed proof (zstd level 3) ---");
@@ -53,16 +55,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let compress_time = start.elapsed();
     let compressed_size = compressed.len();
 
-    println!("  compress time: {:.2}ms", compress_time.as_secs_f64() * 1000.0);
-    println!("  compressed size: {} bytes ({:.2} KB)", compressed_size, compressed_size as f64 / 1024.0);
-    println!("  compression ratio: {:.1}%", (1.0 - compressed_size as f64 / uncompressed_size as f64) * 100.0);
+    println!(
+        "  compress time: {:.2}ms",
+        compress_time.as_secs_f64() * 1000.0
+    );
+    println!(
+        "  compressed size: {} bytes ({:.2} KB)",
+        compressed_size,
+        compressed_size as f64 / 1024.0
+    );
+    println!(
+        "  compression ratio: {:.1}%",
+        (1.0 - compressed_size as f64 / uncompressed_size as f64) * 100.0
+    );
 
     // decompress
     let start = Instant::now();
     let decompressed = zstd::decode_all(&compressed[..])?;
     let decompress_time = start.elapsed();
 
-    println!("  decompress time: {:.2}ms", decompress_time.as_secs_f64() * 1000.0);
+    println!(
+        "  decompress time: {:.2}ms",
+        decompress_time.as_secs_f64() * 1000.0
+    );
 
     // verify decompressed proof
     let proof_decompressed: ligerito::FinalizedLigeritoProof<BinaryElem32, BinaryElem128> =
@@ -72,11 +87,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let valid_compressed = verify_sha256(&verifier_config, &proof_decompressed)?;
     let verify_time_compressed = start.elapsed();
 
-    println!("  verify time: {:.2}ms", verify_time_compressed.as_secs_f64() * 1000.0);
+    println!(
+        "  verify time: {:.2}ms",
+        verify_time_compressed.as_secs_f64() * 1000.0
+    );
     println!("  valid:       {}", valid_compressed);
 
     let total_compressed = prove_time + compress_time + decompress_time + verify_time_compressed;
-    println!("  total time:  {:.2}ms\n", total_compressed.as_secs_f64() * 1000.0);
+    println!(
+        "  total time:  {:.2}ms\n",
+        total_compressed.as_secs_f64() * 1000.0
+    );
 
     // ===== comparison =====
     println!("--- comparison ---");
@@ -85,13 +106,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let time_overhead = (compress_time + decompress_time).as_secs_f64() * 1000.0;
     let total_overhead = (total_compressed - (prove_time + verify_time)).as_secs_f64() * 1000.0;
 
-    println!("  size reduction:    {} bytes ({:.2} KB, {:.1}%)",
+    println!(
+        "  size reduction:    {} bytes ({:.2} KB, {:.1}%)",
         size_saved,
         size_saved as f64 / 1024.0,
         (1.0 - compressed_size as f64 / uncompressed_size as f64) * 100.0
     );
     println!("  compression overhead: {:.2}ms", time_overhead);
-    println!("  total time overhead:  {:.2}ms ({:.1}%)",
+    println!(
+        "  total time overhead:  {:.2}ms ({:.1}%)",
         total_overhead,
         (total_overhead / ((prove_time + verify_time).as_secs_f64() * 1000.0)) * 100.0
     );
@@ -128,7 +151,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let _ = zstd::decode_all(&compressed_level[..])?;
         let decompress_time_level = start.elapsed();
 
-        println!("  level {}: size={:.2} KB ({:.1}%), compress={:.2}ms, decompress={:.2}ms",
+        println!(
+            "  level {}: size={:.2} KB ({:.1}%), compress={:.2}ms, decompress={:.2}ms",
             level,
             size_level as f64 / 1024.0,
             (1.0 - size_level as f64 / uncompressed_size as f64) * 100.0,

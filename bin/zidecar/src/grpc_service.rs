@@ -8,25 +8,49 @@ use crate::{
     storage::Storage,
     zebrad::ZebradClient,
     zidecar::{
-        self, zidecar_server::Zidecar, BlockHeader as ProtoBlockHeader, BlockId, BlockRange,
-        CompactAction as ProtoCompactAction, CompactBlock as ProtoCompactBlock, Empty,
-        HeaderProof, ProofRequest, SyncStatus, RawTransaction, SendResponse, TxFilter, TreeState,
-        TransparentAddressFilter, UtxoList, Utxo, TxidList, BlockTransactions,
+        self,
         sync_status::GigaproofStatus,
-        // trustless v2 types
-        TrustlessStateProof, FrostCheckpoint as ProtoFrostCheckpoint,
-        FrostSignature as ProtoFrostSignature, EpochRequest, CommitmentQuery, CommitmentProof,
-        NullifierQuery, NullifierProof, VerifiedBlock,
+        zidecar_server::Zidecar,
+        BlockHeader as ProtoBlockHeader,
+        BlockId,
+        BlockRange,
+        BlockTransactions,
+        CommitmentProof,
+        CommitmentQuery,
+        CompactAction as ProtoCompactAction,
+        CompactBlock as ProtoCompactBlock,
+        Empty,
         // epoch boundary types
-        EpochBoundary as ProtoEpochBoundary, EpochRangeRequest, EpochBoundaryList,
+        EpochBoundary as ProtoEpochBoundary,
+        EpochBoundaryList,
+        EpochRangeRequest,
+        EpochRequest,
+        FrostCheckpoint as ProtoFrostCheckpoint,
+        FrostSignature as ProtoFrostSignature,
+        HeaderProof,
+        NullifierProof,
+        NullifierQuery,
         // public outputs
         ProofPublicOutputs as ProtoPublicOutputs,
+        ProofRequest,
+        RawTransaction,
+        SendResponse,
+        SyncStatus,
+        TransparentAddressFilter,
+        TreeState,
+        // trustless v2 types
+        TrustlessStateProof,
+        TxFilter,
+        TxidList,
+        Utxo,
+        UtxoList,
+        VerifiedBlock,
     },
 };
 use std::sync::Arc;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
-use tracing::{info, warn, error};
+use tracing::{error, info, warn};
 
 pub struct ZidecarService {
     zebrad: ZebradClient,
@@ -139,8 +163,8 @@ impl Zidecar for ZidecarService {
             }
         };
 
-        let tip_hash = hex::decode(&tip_info.bestblockhash)
-            .map_err(|e| Status::internal(e.to_string()))?;
+        let tip_hash =
+            hex::decode(&tip_info.bestblockhash).map_err(|e| Status::internal(e.to_string()))?;
 
         // Skip header fetching - proof contains verified data
         // The public outputs contain the verified tip hash which is sufficient
@@ -338,24 +362,28 @@ impl Zidecar for ZidecarService {
         };
 
         // check gigaproof status
-        let (gigaproof_status, last_gigaproof_height) = match self.epoch_manager.is_gigaproof_ready().await {
-            Ok(true) => {
-                let last_height = self.epoch_manager.last_complete_epoch_height().await
-                    .unwrap_or(0);
-                (GigaproofStatus::Ready as i32, last_height)
-            }
-            Ok(false) => {
-                if complete_epochs == 0 {
-                    (GigaproofStatus::WaitingForEpoch as i32, 0)
-                } else {
-                    (GigaproofStatus::Generating as i32, 0)
+        let (gigaproof_status, last_gigaproof_height) =
+            match self.epoch_manager.is_gigaproof_ready().await {
+                Ok(true) => {
+                    let last_height = self
+                        .epoch_manager
+                        .last_complete_epoch_height()
+                        .await
+                        .unwrap_or(0);
+                    (GigaproofStatus::Ready as i32, last_height)
                 }
-            }
-            Err(e) => {
-                warn!("failed to check gigaproof status: {}", e);
-                (GigaproofStatus::WaitingForEpoch as i32, 0)
-            }
-        };
+                Ok(false) => {
+                    if complete_epochs == 0 {
+                        (GigaproofStatus::WaitingForEpoch as i32, 0)
+                    } else {
+                        (GigaproofStatus::Generating as i32, 0)
+                    }
+                }
+                Err(e) => {
+                    warn!("failed to check gigaproof status: {}", e);
+                    (GigaproofStatus::WaitingForEpoch as i32, 0)
+                }
+            };
 
         // calculate blocks until ready
         let blocks_until_ready = if complete_epochs == 0 {
@@ -366,7 +394,10 @@ impl Zidecar for ZidecarService {
 
         info!(
             "sync status: height={} epoch={}/{} gigaproof={:?}",
-            current_height, blocks_in_epoch, zync_core::EPOCH_SIZE, gigaproof_status
+            current_height,
+            blocks_in_epoch,
+            zync_core::EPOCH_SIZE,
+            gigaproof_status
         );
 
         Ok(Response::new(SyncStatus {
@@ -470,10 +501,7 @@ impl Zidecar for ZidecarService {
             match self.zebrad.get_raw_transaction(txid).await {
                 Ok(tx) => {
                     let data = hex::decode(&tx.hex).unwrap_or_default();
-                    txs.push(RawTransaction {
-                        data,
-                        height,
-                    });
+                    txs.push(RawTransaction { data, height });
                 }
                 Err(e) => {
                     warn!("failed to get tx {}: {}", txid, e);
@@ -486,11 +514,7 @@ impl Zidecar for ZidecarService {
 
         info!("returning {} transactions for block {}", txs.len(), height);
 
-        Ok(Response::new(BlockTransactions {
-            height,
-            hash,
-            txs,
-        }))
+        Ok(Response::new(BlockTransactions { height, hash, txs }))
     }
 
     async fn get_tree_state(
@@ -536,15 +560,13 @@ impl Zidecar for ZidecarService {
             Ok(utxos) => {
                 let proto_utxos: Vec<Utxo> = utxos
                     .into_iter()
-                    .map(|u| {
-                        Utxo {
-                            address: u.address,
-                            txid: hex::decode(&u.txid).unwrap_or_default(),
-                            output_index: u.output_index,
-                            script: hex::decode(&u.script).unwrap_or_default(),
-                            value_zat: u.satoshis,
-                            height: u.height,
-                        }
+                    .map(|u| Utxo {
+                        address: u.address,
+                        txid: hex::decode(&u.txid).unwrap_or_default(),
+                        output_index: u.output_index,
+                        script: hex::decode(&u.script).unwrap_or_default(),
+                        value_zat: u.satoshis,
+                        height: u.height,
                     })
                     .collect();
 
@@ -625,25 +647,28 @@ impl Zidecar for ZidecarService {
         };
 
         // get current state
-        let tip_info = self.zebrad.get_blockchain_info().await
+        let tip_info = self
+            .zebrad
+            .get_blockchain_info()
+            .await
             .map_err(|e| Status::internal(e.to_string()))?;
 
-        let current_hash = hex::decode(&tip_info.bestblockhash)
-            .map_err(|e| Status::internal(e.to_string()))?;
+        let current_hash =
+            hex::decode(&tip_info.bestblockhash).map_err(|e| Status::internal(e.to_string()))?;
 
         // get state roots (from storage or compute)
-        let (tree_root, nullifier_root) = self.storage
+        let (tree_root, nullifier_root) = self
+            .storage
             .get_state_roots(tip_info.blocks)
             .map_err(|e| Status::internal(e.to_string()))?
             .unwrap_or(([0u8; 32], [0u8; 32]));
 
-        info!(
-            "serving trustless proof: height {}",
-            tip_info.blocks
-        );
+        info!("serving trustless proof: height {}", tip_info.blocks);
 
         // get total action count from storage
-        let num_actions = self.storage.get_action_count()
+        let num_actions = self
+            .storage
+            .get_action_count()
             .map_err(|e| Status::internal(e.to_string()))?;
 
         Ok(Response::new(TrustlessStateProof {
@@ -654,7 +679,7 @@ impl Zidecar for ZidecarService {
             tree_root: tree_root.to_vec(),
             nullifier_root: nullifier_root.to_vec(),
             num_actions,
-            proof_log_size: 20,  // 2^20 default
+            proof_log_size: 20, // 2^20 default
         }))
     }
 
@@ -673,17 +698,22 @@ impl Zidecar for ZidecarService {
 
         info!("commitment proof request: {}", hex::encode(&cmx[..8]));
 
-        let proof = self.storage.generate_commitment_proof(&cmx)
+        let proof = self
+            .storage
+            .generate_commitment_proof(&cmx)
             .map_err(|e| Status::internal(e.to_string()))?;
 
         let height = query.at_height.max(
-            self.storage.get_latest_state_height()
+            self.storage
+                .get_latest_state_height()
                 .map_err(|e| Status::internal(e.to_string()))?
-                .unwrap_or(0)
+                .unwrap_or(0),
         );
 
         // get commitment position from storage (if tracked)
-        let position = self.storage.get_commitment_position(&cmx)
+        let position = self
+            .storage
+            .get_commitment_position(&cmx)
             .map_err(|e| Status::internal(e.to_string()))?
             .unwrap_or(0);
 
@@ -713,13 +743,16 @@ impl Zidecar for ZidecarService {
 
         info!("nullifier proof request: {}", hex::encode(&nullifier[..8]));
 
-        let proof = self.storage.generate_nullifier_proof(&nullifier)
+        let proof = self
+            .storage
+            .generate_nullifier_proof(&nullifier)
             .map_err(|e| Status::internal(e.to_string()))?;
 
         let height = query.at_height.max(
-            self.storage.get_latest_state_height()
+            self.storage
+                .get_latest_state_height()
                 .map_err(|e| Status::internal(e.to_string()))?
-                .unwrap_or(0)
+                .unwrap_or(0),
         );
 
         Ok(Response::new(NullifierProof {
@@ -811,7 +844,9 @@ impl Zidecar for ZidecarService {
         request: Request<EpochRequest>,
     ) -> std::result::Result<Response<ProtoFrostCheckpoint>, Status> {
         // FROST checkpoints removed — ligerito proofs replace this
-        Err(Status::unimplemented("FROST checkpoints removed, use get_header_proof"))
+        Err(Status::unimplemented(
+            "FROST checkpoints removed, use get_header_proof",
+        ))
     }
 
     async fn get_epoch_boundary(
@@ -822,7 +857,10 @@ impl Zidecar for ZidecarService {
 
         let epoch = if req.epoch_index == 0 {
             // get latest complete epoch
-            let info = self.zebrad.get_blockchain_info().await
+            let info = self
+                .zebrad
+                .get_blockchain_info()
+                .await
                 .map_err(|e| Status::internal(e.to_string()))?;
             let current_epoch = info.blocks / zync_core::EPOCH_SIZE;
             if info.blocks % zync_core::EPOCH_SIZE == 0 {
@@ -836,7 +874,9 @@ impl Zidecar for ZidecarService {
 
         info!("epoch boundary request for epoch {}", epoch);
 
-        let boundary = self.storage.get_epoch_boundary(epoch)
+        let boundary = self
+            .storage
+            .get_epoch_boundary(epoch)
             .map_err(|e| Status::internal(e.to_string()))?
             .ok_or_else(|| Status::not_found(format!("epoch {} boundary not found", epoch)))?;
 
@@ -858,7 +898,10 @@ impl Zidecar for ZidecarService {
 
         let to_epoch = if req.to_epoch == 0 {
             // get latest complete epoch
-            let info = self.zebrad.get_blockchain_info().await
+            let info = self
+                .zebrad
+                .get_blockchain_info()
+                .await
                 .map_err(|e| Status::internal(e.to_string()))?;
             let current_epoch = info.blocks / zync_core::EPOCH_SIZE;
             if info.blocks % zync_core::EPOCH_SIZE == 0 {
@@ -870,7 +913,10 @@ impl Zidecar for ZidecarService {
             req.to_epoch
         };
 
-        info!("epoch boundaries request: epochs {} -> {}", req.from_epoch, to_epoch);
+        info!(
+            "epoch boundaries request: epochs {} -> {}",
+            req.from_epoch, to_epoch
+        );
 
         let mut boundaries = Vec::new();
 

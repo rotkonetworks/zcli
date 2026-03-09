@@ -1,13 +1,13 @@
 //! GPU-accelerated additive FFT over binary extension fields
 
-use binary_fields::BinaryFieldElement;
 use super::device::GpuDevice;
 use super::shaders;
-use wgpu::{
-    Buffer, BufferUsages, CommandEncoder, ComputePipeline, BindGroup,
-    BindGroupLayout, PipelineLayout, ShaderModule,
-};
+use binary_fields::BinaryFieldElement;
 use bytemuck::{Pod, Zeroable};
+use wgpu::{
+    BindGroup, BindGroupLayout, Buffer, BufferUsages, CommandEncoder, ComputePipeline,
+    PipelineLayout, ShaderModule,
+};
 
 /// FFT parameters passed to GPU shader
 #[repr(C)]
@@ -46,55 +46,67 @@ impl GpuFft {
 
         // Load and compile shader
         let shader_source = shaders::get_fft_shader_source();
-        let shader_module = self.device.device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("FFT Butterfly Shader"),
-            source: wgpu::ShaderSource::Wgsl(shader_source.into()),
-        });
+        let shader_module = self
+            .device
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("FFT Butterfly Shader"),
+                source: wgpu::ShaderSource::Wgsl(shader_source.into()),
+            });
 
         // Create bind group layout
-        let bind_group_layout = self.device.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("FFT Bind Group Layout"),
-            entries: &[
-                // Storage buffer (read-write data)
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: false },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                // Uniform buffer (params)
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-            ],
-        });
+        let bind_group_layout =
+            self.device
+                .device
+                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: Some("FFT Bind Group Layout"),
+                    entries: &[
+                        // Storage buffer (read-write data)
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 0,
+                            visibility: wgpu::ShaderStages::COMPUTE,
+                            ty: wgpu::BindingType::Buffer {
+                                ty: wgpu::BufferBindingType::Storage { read_only: false },
+                                has_dynamic_offset: false,
+                                min_binding_size: None,
+                            },
+                            count: None,
+                        },
+                        // Uniform buffer (params)
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 1,
+                            visibility: wgpu::ShaderStages::COMPUTE,
+                            ty: wgpu::BindingType::Buffer {
+                                ty: wgpu::BufferBindingType::Uniform,
+                                has_dynamic_offset: false,
+                                min_binding_size: None,
+                            },
+                            count: None,
+                        },
+                    ],
+                });
 
         // Create pipeline layout
-        let pipeline_layout = self.device.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("FFT Pipeline Layout"),
-            bind_group_layouts: &[&bind_group_layout],
-            push_constant_ranges: &[],
-        });
+        let pipeline_layout =
+            self.device
+                .device
+                .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                    label: Some("FFT Pipeline Layout"),
+                    bind_group_layouts: &[&bind_group_layout],
+                    push_constant_ranges: &[],
+                });
 
         // Create compute pipeline
-        let pipeline = self.device.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("FFT Butterfly Pipeline"),
-            layout: Some(&pipeline_layout),
-            module: &shader_module,
-            entry_point: "fft_butterfly",
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
-        });
+        let pipeline =
+            self.device
+                .device
+                .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                    label: Some("FFT Butterfly Pipeline"),
+                    layout: Some(&pipeline_layout),
+                    module: &shader_module,
+                    entry_point: "fft_butterfly",
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                });
 
         self.bind_group_layout = Some(bind_group_layout);
         self.pipeline = Some(pipeline);
@@ -151,55 +163,74 @@ impl GpuFft {
 
     /// Create storage buffer and upload data
     fn create_storage_buffer(&self, data: &[u32], label: &str) -> Buffer {
-        use wgpu::util::{DeviceExt, BufferInitDescriptor};
+        use wgpu::util::{BufferInitDescriptor, DeviceExt};
 
-        self.device.device.create_buffer_init(&BufferInitDescriptor {
-            label: Some(label),
-            contents: bytemuck::cast_slice(data),
-            usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC | BufferUsages::COPY_DST,
-        })
+        self.device
+            .device
+            .create_buffer_init(&BufferInitDescriptor {
+                label: Some(label),
+                contents: bytemuck::cast_slice(data),
+                usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC | BufferUsages::COPY_DST,
+            })
     }
 
     /// Create uniform buffer
     fn create_uniform_buffer<T: Pod>(&self, data: &[T], label: &str) -> Buffer {
-        use wgpu::util::{DeviceExt, BufferInitDescriptor};
+        use wgpu::util::{BufferInitDescriptor, DeviceExt};
 
-        self.device.device.create_buffer_init(&BufferInitDescriptor {
-            label: Some(label),
-            contents: bytemuck::cast_slice(data),
-            usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
-        })
+        self.device
+            .device
+            .create_buffer_init(&BufferInitDescriptor {
+                label: Some(label),
+                contents: bytemuck::cast_slice(data),
+                usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+            })
     }
 
     /// Create bind group
-    fn create_bind_group(&self, data_buffer: &Buffer, params_buffer: &Buffer) -> Result<BindGroup, String> {
-        let layout = self.bind_group_layout.as_ref()
+    fn create_bind_group(
+        &self,
+        data_buffer: &Buffer,
+        params_buffer: &Buffer,
+    ) -> Result<BindGroup, String> {
+        let layout = self
+            .bind_group_layout
+            .as_ref()
             .ok_or("Bind group layout not initialized")?;
 
-        Ok(self.device.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("FFT Bind Group"),
-            layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: data_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: params_buffer.as_entire_binding(),
-                },
-            ],
-        }))
+        Ok(self
+            .device
+            .device
+            .create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("FFT Bind Group"),
+                layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: data_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: params_buffer.as_entire_binding(),
+                    },
+                ],
+            }))
     }
 
     /// Execute one butterfly pass
-    fn execute_butterfly_pass(&self, bind_group: &BindGroup, workgroup_count: u32) -> Result<(), String> {
-        let pipeline = self.pipeline.as_ref()
-            .ok_or("Pipeline not initialized")?;
+    fn execute_butterfly_pass(
+        &self,
+        bind_group: &BindGroup,
+        workgroup_count: u32,
+    ) -> Result<(), String> {
+        let pipeline = self.pipeline.as_ref().ok_or("Pipeline not initialized")?;
 
-        let mut encoder = self.device.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("FFT Command Encoder"),
-        });
+        let mut encoder =
+            self.device
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("FFT Command Encoder"),
+                });
 
         {
             let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -270,9 +301,12 @@ impl GpuFft {
         });
 
         // Copy from storage to staging
-        let mut encoder = self.device.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("FFT Copy Encoder"),
-        });
+        let mut encoder =
+            self.device
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("FFT Copy Encoder"),
+                });
         encoder.copy_buffer_to_buffer(buffer, 0, &staging_buffer, 0, buffer.size());
         self.device.queue.submit(Some(encoder.finish()));
 
@@ -286,7 +320,10 @@ impl GpuFft {
 
         self.device.device.poll(wgpu::Maintain::Wait);
 
-        receiver.await.map_err(|_| "Failed to map buffer")?.map_err(|e| format!("Buffer mapping error: {:?}", e))?;
+        receiver
+            .await
+            .map_err(|_| "Failed to map buffer")?
+            .map_err(|e| format!("Buffer mapping error: {:?}", e))?;
 
         {
             let data = buffer_slice.get_mapped_range();

@@ -87,7 +87,9 @@ pub fn get_physical_cores() -> Vec<usize> {
 pub fn pin_to_physical_core() -> bool {
     let physical_cores = get_physical_cores();
     if !physical_cores.is_empty() {
-        core_affinity::set_for_current(CoreId { id: physical_cores[0] })
+        core_affinity::set_for_current(CoreId {
+            id: physical_cores[0],
+        })
     } else {
         false
     }
@@ -97,7 +99,9 @@ pub fn pin_to_physical_core() -> bool {
 pub fn pin_to_core(core_idx: usize) -> bool {
     let physical_cores = get_physical_cores();
     if core_idx < physical_cores.len() {
-        core_affinity::set_for_current(CoreId { id: physical_cores[core_idx] })
+        core_affinity::set_for_current(CoreId {
+            id: physical_cores[core_idx],
+        })
     } else {
         false
     }

@@ -82,30 +82,27 @@ fn field_to_index<F: BinaryFieldElement>(elem: F) -> usize {
     if elem == F::zero() {
         return 0;
     }
-    
+
     // Strategy 2: Try small integers first (most common case)
     for i in 0..256 {
         if F::from_bits(i as u64) == elem {
             return i;
         }
     }
-    
+
     // Strategy 3: For larger elements, extract lower bits
     // Convert to raw bytes and interpret as little-endian integer
     let elem_bytes = unsafe {
-        core::slice::from_raw_parts(
-            &elem as *const F as *const u8,
-            core::mem::size_of::<F>()
-        )
+        core::slice::from_raw_parts(&elem as *const F as *const u8, core::mem::size_of::<F>())
     };
-    
+
     let mut result = 0usize;
     let bytes_to_use = core::cmp::min(elem_bytes.len(), 8); // Use up to 64 bits
-    
+
     for i in 0..bytes_to_use {
         result |= (elem_bytes[i] as usize) << (i * 8);
     }
-    
+
     // Ensure result is reasonable for our polynomial sizes
     result % 4096 // This should be larger than any polynomial size we're using
 }
@@ -156,10 +153,7 @@ fn extract_index_from_field<F: BinaryFieldElement>(elem: &F, max_n: usize) -> us
     // For binary field elements, from_bits(i) creates an element whose
     // polynomial representation has value i. Extract that value directly.
     let elem_bytes = unsafe {
-        core::slice::from_raw_parts(
-            elem as *const F as *const u8,
-            core::mem::size_of::<F>()
-        )
+        core::slice::from_raw_parts(elem as *const F as *const u8, core::mem::size_of::<F>())
     };
 
     // Read as little-endian usize (first 8 bytes max)
@@ -186,10 +180,10 @@ pub fn evaluate_multilinear_extension<F: BinaryFieldElement, U: BinaryFieldEleme
     if !n.is_power_of_two() {
         panic!("Basis length must be power of 2");
     }
-    
+
     // For simplicity and reliability, let's use the same approach as the main function
     // This ensures consistency between the two implementations
-    evaluate_scaled_basis_inplace(&mut vec![], basis, &vec![], qf, scale);
+    evaluate_scaled_basis_inplace(&mut [], basis, &[], qf, scale);
 }
 
 /// Check if a number is a power of 2
@@ -208,10 +202,7 @@ pub fn encode_non_systematic<F: BinaryFieldElement + 'static>(
 }
 
 /// Multilinear polynomial partial evaluation
-pub fn partial_eval_multilinear<F: BinaryFieldElement>(
-    poly: &mut Vec<F>,
-    evals: &[F]
-) {
+pub fn partial_eval_multilinear<F: BinaryFieldElement>(poly: &mut Vec<F>, evals: &[F]) {
     let mut n = poly.len();
 
     for &e in evals {
@@ -230,27 +221,32 @@ pub fn partial_eval_multilinear<F: BinaryFieldElement>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use binary_fields::{BinaryElem16, BinaryElem32, BinaryElem128};
+    use binary_fields::{BinaryElem128, BinaryElem16, BinaryElem32};
 
     #[test]
     fn test_field_element_conversion() {
         println!("Testing field element conversions:");
-        
+
         // Test that zero maps to zero
         let zero = BinaryElem32::zero();
         let zero_index = field_to_index(zero);
         assert_eq!(zero_index, 0, "Zero should map to index 0");
-        
+
         // Test small values
         for i in 0..10 {
             let elem = BinaryElem32::from_bits(i);
             let converted_index = field_to_index(elem);
-            println!("from_bits({}) -> field_to_index() -> {}", i, converted_index);
-            
+            println!(
+                "from_bits({}) -> field_to_index() -> {}",
+                i, converted_index
+            );
+
             // For small values, it should be exact or at least consistent
             if i < 256 {
-                assert_eq!(converted_index, i as usize, 
-                    "Small values should convert exactly");
+                assert_eq!(
+                    converted_index, i as usize,
+                    "Small values should convert exactly"
+                );
             }
         }
     }
@@ -300,24 +296,35 @@ mod tests {
         let mut basis = vec![BinaryElem128::zero(); 8]; // 2^3
         let mut sks_x = vec![BinaryElem32::zero(); 4];
         let sks_vks = vec![BinaryElem32::one(); 4];
-        
-        let qf = BinaryElem32::from_bits(5); 
+
+        let qf = BinaryElem32::from_bits(5);
         let scale = BinaryElem128::from_bits(42);
 
         evaluate_scaled_basis_inplace(&mut sks_x, &mut basis, &sks_vks, qf, scale);
 
         // Check that we have exactly one non-zero entry
-        let non_zero_count = basis.iter().filter(|&&x| x != BinaryElem128::zero()).count();
+        let non_zero_count = basis
+            .iter()
+            .filter(|&&x| x != BinaryElem128::zero())
+            .count();
         assert_eq!(non_zero_count, 1, "Should have exactly one non-zero entry");
 
         // Check that the sum equals the scale
-        let sum = basis.iter().fold(BinaryElem128::zero(), |acc, &x| acc.add(&x));
+        let sum = basis
+            .iter()
+            .fold(BinaryElem128::zero(), |acc, &x| acc.add(&x));
         assert_eq!(sum, scale, "Sum should equal scale");
 
         // Find which index is non-zero
-        let non_zero_index = basis.iter().position(|&x| x != BinaryElem128::zero()).unwrap();
+        let non_zero_index = basis
+            .iter()
+            .position(|&x| x != BinaryElem128::zero())
+            .unwrap();
         println!("Non-zero entry at index: {}", non_zero_index);
-        assert_eq!(basis[non_zero_index], scale, "Non-zero entry should equal scale");
+        assert_eq!(
+            basis[non_zero_index], scale,
+            "Non-zero entry should equal scale"
+        );
     }
 
     #[test]
@@ -329,13 +336,18 @@ mod tests {
         evaluate_multilinear_extension(&mut basis, qf, scale);
 
         // The sum should equal scale (since it's a delta function)
-        let sum = basis.iter().fold(BinaryElem128::zero(), |acc, &x| acc.add(&x));
+        let sum = basis
+            .iter()
+            .fold(BinaryElem128::zero(), |acc, &x| acc.add(&x));
         assert_eq!(sum, scale, "Sum should equal scale");
 
         // Should have exactly one non-zero entry
-        let non_zero_count = basis.iter().filter(|&&x| x != BinaryElem128::zero()).count();
+        let non_zero_count = basis
+            .iter()
+            .filter(|&&x| x != BinaryElem128::zero())
+            .count();
         assert_eq!(non_zero_count, 1, "Should have exactly one non-zero entry");
-        
+
         println!("Multilinear extension for qf=2: {:?}", basis);
     }
 
@@ -367,7 +379,7 @@ mod tests {
 
         let original_len = poly.len();
         let evals = vec![BinaryElem32::from_bits(2)];
-        
+
         partial_eval_multilinear(&mut poly, &evals);
 
         // Should halve the size
@@ -378,9 +390,9 @@ mod tests {
     fn test_delta_function_properties() {
         // Test that the delta function works correctly for different field elements
         let test_cases = vec![
-            (BinaryElem32::zero(), 8),      // Zero element
+            (BinaryElem32::zero(), 8),         // Zero element
             (BinaryElem32::from_bits(1), 8),   // One
-            (BinaryElem32::from_bits(7), 8),   // Max value for 2^3 
+            (BinaryElem32::from_bits(7), 8),   // Max value for 2^3
             (BinaryElem32::from_bits(15), 16), // Max value for 2^4
         ];
 
@@ -393,11 +405,20 @@ mod tests {
             evaluate_scaled_basis_inplace(&mut sks_x, &mut basis, &sks_vks, qf, scale);
 
             // Should have exactly one non-zero entry
-            let non_zero_count = basis.iter().filter(|&&x| x != BinaryElem128::zero()).count();
-            assert_eq!(non_zero_count, 1, "Should have exactly one non-zero entry for qf={:?}", qf);
+            let non_zero_count = basis
+                .iter()
+                .filter(|&&x| x != BinaryElem128::zero())
+                .count();
+            assert_eq!(
+                non_zero_count, 1,
+                "Should have exactly one non-zero entry for qf={:?}",
+                qf
+            );
 
             // Sum should equal scale
-            let sum = basis.iter().fold(BinaryElem128::zero(), |acc, &x| acc.add(&x));
+            let sum = basis
+                .iter()
+                .fold(BinaryElem128::zero(), |acc, &x| acc.add(&x));
             assert_eq!(sum, scale, "Sum should equal scale for qf={:?}", qf);
         }
     }
@@ -406,22 +427,18 @@ mod tests {
 /// Hash a row for Merkle tree commitment
 /// Used by both prover and verifier
 pub fn hash_row<F: BinaryFieldElement>(row: &[F]) -> merkle_tree::Hash {
-    use sha2::{Sha256, Digest};
+    use sha2::{Digest, Sha256};
 
     let mut hasher = Sha256::new();
 
     // Hash row length for domain separation
-    hasher.update(&(row.len() as u32).to_le_bytes());
+    hasher.update((row.len() as u32).to_le_bytes());
 
     // Hash each element
     let elem_size = core::mem::size_of::<F>();
     for elem in row.iter() {
-        let bytes = unsafe {
-            core::slice::from_raw_parts(
-                elem as *const F as *const u8,
-                elem_size
-            )
-        };
+        let bytes =
+            unsafe { core::slice::from_raw_parts(elem as *const F as *const u8, elem_size) };
         hasher.update(bytes);
     }
 
@@ -429,12 +446,8 @@ pub fn hash_row<F: BinaryFieldElement>(row: &[F]) -> merkle_tree::Hash {
 }
 
 /// Verify Ligero opening consistency (used by verifier)
-pub fn verify_ligero<T, U>(
-    queries: &[usize],
-    opened_rows: &[Vec<T>],
-    yr: &[T],
-    challenges: &[U],
-) where
+pub fn verify_ligero<T, U>(queries: &[usize], opened_rows: &[Vec<T>], yr: &[T], challenges: &[U])
+where
     T: BinaryFieldElement,
     U: BinaryFieldElement + From<T>,
 {

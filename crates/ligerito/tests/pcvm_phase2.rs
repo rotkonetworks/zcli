@@ -1,8 +1,8 @@
 //! Phase 2 integration tests: Read-only memory support
 
 use ligerito::pcvm::{
-    trace::{Program, Instruction, Opcode, execute_and_trace_with_memory},
     memory::ReadOnlyMemory,
+    trace::{execute_and_trace_with_memory, Instruction, Opcode, Program},
 };
 
 #[test]
@@ -13,8 +13,8 @@ fn test_simple_load() {
 
     // Program: Load value from memory
     let program = vec![
-        Instruction::new_imm(1, 0x1000),     // a1 = 0x1000 (address)
-        Instruction::new_load(0, 1, 0),      // a0 = mem[a1 + 0] = mem[0x1000] = 42
+        Instruction::new_imm(1, 0x1000), // a1 = 0x1000 (address)
+        Instruction::new_load(0, 1, 0),  // a0 = mem[a1 + 0] = mem[0x1000] = 42
         Instruction::halt(),
     ];
 
@@ -37,10 +37,10 @@ fn test_load_with_offset() {
 
     // Program: Load with offset
     let program = vec![
-        Instruction::new_imm(1, 0x1000),     // a1 = 0x1000 (base address)
-        Instruction::new_load(0, 1, 0),      // a0 = mem[0x1000] = 10
-        Instruction::new_load(2, 1, 4),      // a2 = mem[0x1004] = 20
-        Instruction::new_load(3, 1, 8),      // a3 = mem[0x1008] = 30
+        Instruction::new_imm(1, 0x1000), // a1 = 0x1000 (base address)
+        Instruction::new_load(0, 1, 0),  // a0 = mem[0x1000] = 10
+        Instruction::new_load(2, 1, 4),  // a2 = mem[0x1004] = 20
+        Instruction::new_load(3, 1, 8),  // a3 = mem[0x1008] = 30
         Instruction::halt(),
     ];
 
@@ -64,9 +64,9 @@ fn test_load_and_compute() {
 
     // Program: Load and add
     let program = vec![
-        Instruction::new_imm(1, 0x1000),          // a1 = 0x1000
-        Instruction::new_load(0, 1, 0),           // a0 = mem[0x1000] = 15
-        Instruction::new_load(2, 1, 4),           // a2 = mem[0x1004] = 25
+        Instruction::new_imm(1, 0x1000),            // a1 = 0x1000
+        Instruction::new_load(0, 1, 0),             // a0 = mem[0x1000] = 15
+        Instruction::new_load(2, 1, 4),             // a2 = mem[0x1004] = 25
         Instruction::new_rrr(Opcode::ADD, 3, 0, 2), // a3 = a0 + a2 = 40
         Instruction::halt(),
     ];
@@ -123,8 +123,8 @@ fn test_load_out_of_bounds() {
     let memory = ReadOnlyMemory::with_size(100);
 
     let program = vec![
-        Instruction::new_imm(1, 1000),       // a1 = 1000 (out of bounds)
-        Instruction::new_load(0, 1, 0),      // a0 = mem[1000] = 0 (default)
+        Instruction::new_imm(1, 1000),  // a1 = 1000 (out of bounds)
+        Instruction::new_load(0, 1, 0), // a0 = mem[1000] = 0 (default)
         Instruction::halt(),
     ];
 

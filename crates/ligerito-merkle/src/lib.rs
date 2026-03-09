@@ -15,7 +15,7 @@ use alloc::vec::Vec;
 extern crate alloc as alloc_crate;
 
 pub mod batch;
-pub use batch::{BatchedMerkleProof, prove_batch, verify_batch};
+pub use batch::{prove_batch, verify_batch, BatchedMerkleProof};
 
 use blake3::Hasher;
 use bytemuck::Pod;
@@ -31,7 +31,10 @@ pub struct CompleteMerkleTree {
 
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "scale", derive(codec::Encode, codec::Decode, scale_info::TypeInfo))]
+#[cfg_attr(
+    feature = "scale",
+    derive(codec::Encode, codec::Decode, scale_info::TypeInfo)
+)]
 pub struct MerkleRoot {
     pub root: Option<Hash>,
 }
@@ -74,20 +77,14 @@ pub fn build_merkle_tree<T: Pod + Send + Sync>(leaves: &[T]) -> CompleteMerkleTr
         #[cfg(feature = "parallel")]
         {
             if leaves.len() >= 64 {
-                leaves.par_iter()
-                    .map(|leaf| hash_leaf(leaf))
-                    .collect()
+                leaves.par_iter().map(|leaf| hash_leaf(leaf)).collect()
             } else {
-                leaves.iter()
-                    .map(|leaf| hash_leaf(leaf))
-                    .collect()
+                leaves.iter().map(|leaf| hash_leaf(leaf)).collect()
             }
         }
         #[cfg(not(feature = "parallel"))]
         {
-            leaves.iter()
-                .map(|leaf| hash_leaf(leaf))
-                .collect()
+            leaves.iter().map(|leaf| hash_leaf(leaf)).collect()
         }
     };
 
@@ -129,9 +126,7 @@ pub fn build_merkle_tree<T: Pod + Send + Sync>(leaves: &[T]) -> CompleteMerkleTr
 impl CompleteMerkleTree {
     pub fn get_root(&self) -> MerkleRoot {
         MerkleRoot {
-            root: self.layers.last()
-                .and_then(|layer| layer.first())
-                .copied(),
+            root: self.layers.last().and_then(|layer| layer.first()).copied(),
         }
     }
 
@@ -180,7 +175,10 @@ impl CompleteMerkleTree {
 
         let num_leaves = self.layers[0].len();
         if index >= num_leaves {
-            panic!("Index {} out of range (tree has {} leaves)", index, num_leaves);
+            panic!(
+                "Index {} out of range (tree has {} leaves)",
+                index, num_leaves
+            );
         }
 
         if num_leaves == 1 {
@@ -197,7 +195,7 @@ impl CompleteMerkleTree {
             let layer = &self.layers[layer_idx];
 
             // Find sibling index (if index is even, sibling is index+1, else index-1)
-            let sibling_index = if current_index % 2 == 0 {
+            let sibling_index = if current_index.is_multiple_of(2) {
                 current_index + 1
             } else {
                 current_index - 1
@@ -232,7 +230,7 @@ pub fn verify<T: Pod + Send + Sync>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rand::{thread_rng, seq::SliceRandom};
+    use rand::{seq::SliceRandom, thread_rng};
 
     #[test]
     fn test_empty_tree() {
@@ -256,9 +254,7 @@ mod tests {
 
     #[test]
     fn test_merkle_tree_basic() {
-        let leaves: Vec<[u16; 4]> = (0..16)
-            .map(|i| [i, i+1, i+2, i+3])
-            .collect();
+        let leaves: Vec<[u16; 4]> = (0..16).map(|i| [i, i + 1, i + 2, i + 3]).collect();
 
         let tree = build_merkle_tree(&leaves);
         let root = tree.get_root();
@@ -277,9 +273,7 @@ mod tests {
         let queries = vec![0, 2, 6, 9];
         let proof = tree.prove(&queries);
 
-        let queried_leaves: Vec<u64> = queries.iter()
-            .map(|&i| leaves[i])
-            .collect();
+        let queried_leaves: Vec<u64> = queries.iter().map(|&i| leaves[i]).collect();
 
         assert!(verify(
             &root,
@@ -338,9 +332,7 @@ mod tests {
 
         let proof = tree.prove(&queries);
 
-        let queried_leaves: Vec<[u16; 4]> = queries.iter()
-            .map(|&q| leaves[q])
-            .collect();
+        let queried_leaves: Vec<[u16; 4]> = queries.iter().map(|&q| leaves[q]).collect();
 
         assert!(verify(
             &root,
@@ -373,9 +365,7 @@ mod tests {
 
         println!("Proof size: {} siblings", proof.siblings.len());
 
-        let queried_leaves: Vec<u64> = queries.iter()
-            .map(|&i| leaves[i])
-            .collect();
+        let queried_leaves: Vec<u64> = queries.iter().map(|&i| leaves[i]).collect();
 
         println!("Verifying with:");
         println!("  Queries (0-based): {:?}", queries);
@@ -387,7 +377,7 @@ mod tests {
             &proof,
             tree.get_depth(),
             &queried_leaves,
-            &queries
+            &queries,
         );
 
         println!("Verification result: {}", is_valid);
@@ -411,7 +401,7 @@ mod tests {
             &proof,
             tree.get_depth(),
             &queried_leaves,
-            &queries
+            &queries,
         );
 
         assert!(is_valid, "Single query verification failed");
@@ -420,16 +410,14 @@ mod tests {
         let queries = vec![0, 2]; // First and third leaves (0-based)
         let proof = tree.prove(&queries);
 
-        let queried_leaves: Vec<u64> = queries.iter()
-            .map(|&i| leaves[i])
-            .collect();
+        let queried_leaves: Vec<u64> = queries.iter().map(|&i| leaves[i]).collect();
 
         let is_valid = verify(
             &tree.get_root(),
             &proof,
             tree.get_depth(),
             &queried_leaves,
-            &queries
+            &queries,
         );
 
         assert!(is_valid, "Multiple query verification failed");
@@ -511,7 +499,11 @@ mod tests {
                 current_index /= 2;
             }
 
-            assert_eq!(current_hash, root, "Trace verification failed for index {}", index);
+            assert_eq!(
+                current_hash, root,
+                "Trace verification failed for index {}",
+                index
+            );
         }
     }
 

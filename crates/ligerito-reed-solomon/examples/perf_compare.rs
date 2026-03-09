@@ -1,6 +1,6 @@
-use std::time::Instant;
 use ligerito_binary_fields::BinaryElem32;
-use ligerito_reed_solomon::{reed_solomon, fft_gf32, ReedSolomon};
+use ligerito_reed_solomon::{fft_gf32, reed_solomon, ReedSolomon};
+use std::time::Instant;
 
 fn bench_fft(log_n: usize, iterations: usize) {
     let n = 1 << log_n;
@@ -31,8 +31,10 @@ fn bench_fft(log_n: usize, iterations: usize) {
     let avg_multi = total_multi / iterations as u32;
 
     let speedup = avg_single.as_secs_f64() / avg_multi.as_secs_f64();
-    println!("FFT 2^{}: single={:?} multi={:?} speedup={:.2}x",
-             log_n, avg_single, avg_multi, speedup);
+    println!(
+        "FFT 2^{}: single={:?} multi={:?} speedup={:.2}x",
+        log_n, avg_single, avg_multi, speedup
+    );
 }
 
 fn main() {

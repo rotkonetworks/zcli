@@ -12,12 +12,12 @@
 
 use crate::error::{Result, ZidecarError};
 use crate::header_chain::HeaderChainTrace;
-use ligerito::{prove_with_transcript, ProverConfig, data_structures::FinalizedLigeritoProof};
 use ligerito::transcript::FiatShamir;
-use ligerito_binary_fields::{BinaryElem32, BinaryElem128, BinaryFieldElement};
-use serde::{Serialize, Deserialize};
-use tracing::{info, debug};
+use ligerito::{data_structures::FinalizedLigeritoProof, prove_with_transcript, ProverConfig};
+use ligerito_binary_fields::{BinaryElem128, BinaryElem32, BinaryFieldElement};
+use serde::{Deserialize, Serialize};
 use std::time::Instant;
+use tracing::{debug, info};
 
 /// Public outputs that the proof commits to
 /// These are values the verifier can check against external sources (like Zanchor)
@@ -106,7 +106,11 @@ impl HeaderChainProof {
         // serialize proof with config size prefix
         let trace_log_size = (trace.trace.len() as f64).log2().ceil() as u32;
         let proof_bytes = Self::serialize_proof_with_config(&proof, trace_log_size as u8)?;
-        debug!("proof size: {} bytes (config 2^{})", proof_bytes.len(), trace_log_size);
+        debug!(
+            "proof size: {} bytes (config 2^{})",
+            proof_bytes.len(),
+            trace_log_size
+        );
 
         Ok(Self {
             proof_bytes,
@@ -184,7 +188,11 @@ impl HeaderChainProof {
 
         // pad trace if needed
         if trace.trace.len() < required_size {
-            info!("padding trace from {} to {} elements", trace.trace.len(), required_size);
+            info!(
+                "padding trace from {} to {} elements",
+                trace.trace.len(),
+                required_size
+            );
             trace.trace.resize(required_size, BinaryElem32::zero());
         }
 
@@ -219,14 +227,21 @@ impl HeaderChainProof {
             .map_err(|e| ZidecarError::Serialization(format!("bincode public outputs: {}", e)))?;
 
         let proof_bytes = bytes[4 + public_len..].to_vec();
-        let log_size = if !proof_bytes.is_empty() { proof_bytes[0] } else { 0 };
+        let log_size = if !proof_bytes.is_empty() {
+            proof_bytes[0]
+        } else {
+            0
+        };
 
         Ok((public_outputs, proof_bytes, log_size))
     }
 
     /// serialize proof to bytes with config size prefix (internal)
     /// format: [log_size: u8][proof_bytes...]
-    fn serialize_proof_with_config(proof: &FinalizedLigeritoProof<BinaryElem32, BinaryElem128>, log_size: u8) -> Result<Vec<u8>> {
+    fn serialize_proof_with_config(
+        proof: &FinalizedLigeritoProof<BinaryElem32, BinaryElem128>,
+        log_size: u8,
+    ) -> Result<Vec<u8>> {
         let proof_bytes = bincode::serialize(proof)
             .map_err(|e| ZidecarError::Serialization(format!("bincode serialize failed: {}", e)))?;
 
@@ -238,13 +253,16 @@ impl HeaderChainProof {
 
     /// deserialize proof from bytes (reads config prefix if present)
     /// returns (proof, log_size)
-    pub fn deserialize_proof_with_config(bytes: &[u8]) -> Result<(FinalizedLigeritoProof<BinaryElem32, BinaryElem128>, u8)> {
+    pub fn deserialize_proof_with_config(
+        bytes: &[u8],
+    ) -> Result<(FinalizedLigeritoProof<BinaryElem32, BinaryElem128>, u8)> {
         if bytes.is_empty() {
             return Err(ZidecarError::Serialization("empty proof bytes".into()));
         }
         let log_size = bytes[0];
-        let proof = bincode::deserialize(&bytes[1..])
-            .map_err(|e| ZidecarError::Serialization(format!("bincode deserialize failed: {}", e)))?;
+        let proof = bincode::deserialize(&bytes[1..]).map_err(|e| {
+            ZidecarError::Serialization(format!("bincode deserialize failed: {}", e))
+        })?;
         Ok((proof, log_size))
     }
 }

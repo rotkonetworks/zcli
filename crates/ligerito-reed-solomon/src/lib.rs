@@ -11,9 +11,9 @@ use alloc::vec::Vec;
 #[macro_use]
 extern crate alloc as alloc_crate;
 
+mod encode;
 mod fft;
 mod fft_gf32;
-mod encode;
 
 pub use encode::{encode, encode_in_place, encode_in_place_with_parallel, encode_non_systematic};
 pub use fft::{compute_twiddles, fft, ifft};
@@ -112,8 +112,8 @@ pub fn compute_pis<F: BinaryFieldElement>(n: usize, sks_vks: &[F]) -> Vec<F> {
     pis[0] = F::one();
 
     for i in 1..sks_vks.len() {
-        let sk_vk = sks_vks[i-1];
-        let current_len = 1 << (i-1);
+        let sk_vk = sks_vks[i - 1];
+        let current_len = 1 << (i - 1);
 
         // Expand pis by multiplying with sk_vk
         for j in 0..current_len {
@@ -128,7 +128,7 @@ pub fn compute_pis<F: BinaryFieldElement>(n: usize, sks_vks: &[F]) -> Vec<F> {
 pub fn short_from_long_twiddles<F: BinaryFieldElement>(
     long_twiddles: &[F],
     log_n: usize,
-    log_k: usize
+    log_k: usize,
 ) -> Vec<F> {
     let k = 1 << log_k;
     let mut short_twiddles = vec![F::zero(); k - 1];
@@ -157,7 +157,7 @@ pub fn short_from_long_twiddles<F: BinaryFieldElement>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ligerito_binary_fields::{BinaryElem16, BinaryElem32, BinaryElem128};
+    use ligerito_binary_fields::{BinaryElem128, BinaryElem16, BinaryElem32};
 
     #[test]
     fn test_eval_sk_at_vks() {
@@ -183,9 +183,9 @@ mod tests {
 
         // Check that pis form the correct pattern
         for i in 1..sks_vks.len() {
-            let current_len = 1 << (i-1);
+            let current_len = 1 << (i - 1);
             for j in 0..current_len {
-                assert_eq!(pis[current_len + j], pis[j].mul(&sks_vks[i-1]));
+                assert_eq!(pis[current_len + j], pis[j].mul(&sks_vks[i - 1]));
             }
         }
     }
@@ -209,9 +209,12 @@ mod tests {
         let beta = BinaryElem16::from(0x1234);
         let twiddles_beta = compute_twiddles(4, beta);
         assert_eq!(twiddles_beta.len(), 15);
-        
+
         // Twiddles should be non-zero (except possibly with specific bad beta values)
-        let non_zero_count = twiddles.iter().filter(|&&t| t != BinaryElem16::zero()).count();
+        let non_zero_count = twiddles
+            .iter()
+            .filter(|&&t| t != BinaryElem16::zero())
+            .count();
         assert!(non_zero_count > 10, "Most twiddles should be non-zero");
     }
 
@@ -219,29 +222,29 @@ mod tests {
     fn test_fft_ifft_roundtrip() {
         // Test for various sizes
         let test_sizes = vec![4u32, 8, 16, 32];
-        
+
         for size in test_sizes {
             let log_size = size.trailing_zeros() as usize;
-            
+
             // Generate random data
             let mut data: Vec<BinaryElem16> = (0..size)
                 .map(|i| BinaryElem16::from((i + 1) as u16))
                 .collect();
-            
+
             let original = data.clone();
-            
+
             // Compute twiddles for this size
             let twiddles = compute_twiddles::<BinaryElem16>(log_size, BinaryElem16::zero());
-            
+
             // Apply FFT
             fft(&mut data, &twiddles, false);
-            
+
             // Data should be transformed (not equal to original)
             assert_ne!(data, original, "FFT should transform the data");
-            
+
             // Apply IFFT
             ifft(&mut data, &twiddles);
-            
+
             // Should get back the original
             assert_eq!(data, original, "FFT followed by IFFT should give identity");
         }
@@ -261,22 +264,26 @@ mod tests {
         let encoded = encode(&rs, &message);
 
         assert_eq!(encoded.len(), 16);
-        
+
         // For systematic encoding with beta=0, the message appears in the codeword
         // but not necessarily in the first k positions due to the FFT transform
-        
+
         // The encoding process:
         // 1. IFFT on message coefficients
         // 2. Pad with zeros
         // 3. FFT on the full block
         // This creates a Reed-Solomon codeword where the message can be recovered
-        
+
         // Verify the codeword is non-trivial (has parity symbols)
         let parity_symbols = &encoded[4..];
-        let non_zero_parity = parity_symbols.iter()
+        let non_zero_parity = parity_symbols
+            .iter()
             .filter(|&&x| x != BinaryElem16::zero())
             .count();
-        assert!(non_zero_parity > 0, "Reed-Solomon encoding should produce non-zero parity symbols");
+        assert!(
+            non_zero_parity > 0,
+            "Reed-Solomon encoding should produce non-zero parity symbols"
+        );
     }
 
     #[test]
@@ -294,13 +301,19 @@ mod tests {
 
         // Non-systematic encoding scales by pis then applies FFT
         // So the result should be different from the original
-        assert_ne!(data, original, "Non-systematic encoding should transform data");
-        
+        assert_ne!(
+            data, original,
+            "Non-systematic encoding should transform data"
+        );
+
         // The first 4 elements should be scaled by pis before FFT
         // After the full encoding, they will be further transformed
         // Just verify the encoding produced non-zero values
         let non_zero_count = data.iter().filter(|&&x| x != BinaryElem16::zero()).count();
-        assert!(non_zero_count >= 4, "Encoding should produce multiple non-zero values");
+        assert!(
+            non_zero_count >= 4,
+            "Encoding should produce multiple non-zero values"
+        );
     }
 
     #[test]
@@ -316,7 +329,7 @@ mod tests {
         // The pattern follows a specific tree structure for subspace polynomials
         let jump_0 = 1 << (6 - 4); // 4
         assert_eq!(short_twiddles[0], rs.twiddles[jump_0 - 1]);
-        
+
         // Verify more elements follow the pattern
         let jump_1 = jump_0 * 2; // 8
         assert_eq!(short_twiddles[1], rs.twiddles[jump_1 - 1]);
@@ -334,15 +347,16 @@ mod tests {
             assert_eq!(rs.block_length(), block_len);
 
             // Test encoding
-            let message: Vec<_> = (0..msg_len)
-                .map(|i| BinaryElem16::from(i as u16))
-                .collect();
+            let message: Vec<_> = (0..msg_len).map(|i| BinaryElem16::from(i as u16)).collect();
 
             let encoded = encode(&rs, &message);
             assert_eq!(encoded.len(), block_len);
-            
+
             // Verify non-trivial encoding
-            let non_zero = encoded.iter().filter(|&&x| x != BinaryElem16::zero()).count();
+            let non_zero = encoded
+                .iter()
+                .filter(|&&x| x != BinaryElem16::zero())
+                .count();
             assert!(non_zero >= msg_len, "Encoding should preserve information");
         }
     }
@@ -391,17 +405,29 @@ mod tests {
         assert_eq!(enc16.len(), 32);
         assert_eq!(enc32.len(), 32);
         assert_eq!(enc128.len(), 32);
-        
+
         // Verify encodings are non-trivial
         // Create separate assertions for each type
         let non_zero16 = enc16.iter().filter(|&&x| x != BinaryElem16::zero()).count();
-        assert!(non_zero16 >= 8, "BinaryElem16 encoding should preserve message information");
-        
+        assert!(
+            non_zero16 >= 8,
+            "BinaryElem16 encoding should preserve message information"
+        );
+
         let non_zero32 = enc32.iter().filter(|&&x| x != BinaryElem32::zero()).count();
-        assert!(non_zero32 >= 8, "BinaryElem32 encoding should preserve message information");
-        
-        let non_zero128 = enc128.iter().filter(|&&x| x != BinaryElem128::zero()).count();
-        assert!(non_zero128 >= 8, "BinaryElem128 encoding should preserve message information");
+        assert!(
+            non_zero32 >= 8,
+            "BinaryElem32 encoding should preserve message information"
+        );
+
+        let non_zero128 = enc128
+            .iter()
+            .filter(|&&x| x != BinaryElem128::zero())
+            .count();
+        assert!(
+            non_zero128 >= 8,
+            "BinaryElem128 encoding should preserve message information"
+        );
     }
 
     #[test]
@@ -413,10 +439,10 @@ mod tests {
             BinaryElem16::from(0x1234),
             BinaryElem16::from(0xABCD),
         ];
-        
+
         for beta in betas {
             let twiddles = compute_twiddles::<BinaryElem16>(4, beta);
-            
+
             let mut data = vec![
                 BinaryElem16::from(1),
                 BinaryElem16::from(2),
@@ -435,56 +461,65 @@ mod tests {
                 BinaryElem16::from(15),
                 BinaryElem16::from(0),
             ];
-            
+
             let original = data.clone();
-            
+
             // FFT then IFFT should give identity
             fft(&mut data, &twiddles, false);
             ifft(&mut data, &twiddles);
-            
-            assert_eq!(data, original, "FFT-IFFT should be identity for beta={:?}", beta);
+
+            assert_eq!(
+                data, original,
+                "FFT-IFFT should be identity for beta={:?}",
+                beta
+            );
         }
     }
-    
+
     #[test]
     fn test_encoding_decoding_correctness() {
         // Test that we can recover the message from systematic encoding
         let rs = reed_solomon::<BinaryElem16>(4, 16);
-        
+
         let message = vec![
             BinaryElem16::from(0x1234),
             BinaryElem16::from(0x5678),
             BinaryElem16::from(0x9ABC),
             BinaryElem16::from(0xDEF0),
         ];
-        
+
         let encoded = encode(&rs, &message);
-        
+
         // For systematic encoding, we should be able to recover the message
         // by applying IFFT to the codeword and taking the first k coefficients
         let mut recovery = encoded.clone();
-        
+
         // Apply IFFT to get back to coefficient form
         ifft(&mut recovery, &rs.twiddles);
-        
-        // Extract message coefficients 
-        let short_twiddles = short_from_long_twiddles(&rs.twiddles, 
-            rs.log_block_length as usize, 
-            rs.log_message_length as usize);
-        
+
+        // Extract message coefficients
+        let short_twiddles = short_from_long_twiddles(
+            &rs.twiddles,
+            rs.log_block_length as usize,
+            rs.log_message_length as usize,
+        );
+
         let mut recovered_message = recovery[..4].to_vec();
-        
+
         // Apply FFT to get back the original message
         fft(&mut recovered_message, &short_twiddles, false);
-        
-        assert_eq!(recovered_message, message, "Should recover original message");
+
+        assert_eq!(
+            recovered_message, message,
+            "Should recover original message"
+        );
     }
 
     #[test]
     fn test_sage_comparison() {
         // This test verifies our implementation against the Julia reference
         // using the exact same test case from BinaryReedSolomon/test/runtests.jl
-        
+
         // These are the expected twiddle values from Julia
         let expected_twiddles = vec![
             BinaryElem128::from(261638842414339399087820898299661203057u128),
@@ -503,16 +538,20 @@ mod tests {
             BinaryElem128::from(12427004391475801277045897380390817377u128),
             BinaryElem128::from(12427004391475801277045897380390817379u128),
         ];
-        
+
         // Compute twiddles with our implementation
         let computed_twiddles = compute_twiddles::<BinaryElem128>(4, BinaryElem128::zero());
-        
+
         // Verify they match
         assert_eq!(computed_twiddles.len(), expected_twiddles.len());
-        for (i, (computed, expected)) in computed_twiddles.iter().zip(expected_twiddles.iter()).enumerate() {
+        for (i, (computed, expected)) in computed_twiddles
+            .iter()
+            .zip(expected_twiddles.iter())
+            .enumerate()
+        {
             assert_eq!(computed, expected, "Twiddle {} mismatch", i);
         }
-        
+
         // Test vector from Julia
         let mut v = vec![
             BinaryElem128::from(48843935073701397021918627474152975110u128),
@@ -532,10 +571,10 @@ mod tests {
             BinaryElem128::from(109428368893056851194159753059340120844u128),
             BinaryElem128::from(197947890894953343492199130314470631788u128),
         ];
-        
+
         // Apply FFT
         fft(&mut v, &computed_twiddles, false);
-        
+
         // Expected output from Julia
         let expected_output = vec![
             BinaryElem128::from(158767388301301679479875672416174428978u128),
@@ -555,7 +594,7 @@ mod tests {
             BinaryElem128::from(228881976351733870473775839456225427817u128),
             BinaryElem128::from(41896060989421038344777134899638496709u128),
         ];
-        
+
         // Verify the output matches
         assert_eq!(v.len(), expected_output.len());
         for (i, (computed, expected)) in v.iter().zip(expected_output.iter()).enumerate() {
@@ -568,22 +607,22 @@ mod tests {
         // Test a small example we can verify by hand
         let twiddles = compute_twiddles::<BinaryElem16>(2, BinaryElem16::zero());
         assert_eq!(twiddles.len(), 3); // 2^2 - 1
-        
+
         let mut data = vec![
             BinaryElem16::from(1),
             BinaryElem16::from(2),
             BinaryElem16::from(3),
             BinaryElem16::from(4),
         ];
-        
+
         let original = data.clone();
-        
+
         // Apply FFT
         fft(&mut data, &twiddles, false);
-        
+
         // Apply IFFT
         ifft(&mut data, &twiddles);
-        
+
         // Should get back original
         assert_eq!(data, original);
     }
@@ -591,21 +630,21 @@ mod tests {
     #[test]
     fn debug_twiddle_computation() {
         use ligerito_binary_fields::BinaryElem128;
-        
+
         // Helper function
         fn next_s<F: BinaryFieldElement>(s_prev: F, s_prev_at_root: F) -> F {
             s_prev.mul(&s_prev).add(&s_prev_at_root.mul(&s_prev))
         }
-        
+
         // Test with log_n = 4 (n = 16) to match Julia test
         let log_n = 4;
         let beta = BinaryElem128::zero();
-        
+
         println!("Computing twiddles for log_n={}, beta=0", log_n);
-        
+
         let n = 1 << log_n;
         let mut layer = vec![BinaryElem128::zero(); 1 << (log_n - 1)];
-        
+
         // Layer 0
         println!("\nLayer 0:");
         for i in 0..layer.len() {
@@ -613,16 +652,18 @@ mod tests {
             println!("  layer[{}] = {}", i, (i as u64) << 1);
         }
         let mut s_prev_at_root = BinaryElem128::one();
-        
+
         // First iteration
         println!("\nFirst iteration:");
         let root_point = layer[0].add(&layer[1]);
         println!("  root_point = layer[0] + layer[1] = 0 + 2 = 2");
-        
+
         // This is where the issue might be
         // next_s(2, 1) = 2^2 + 1*2 = 4 + 2 = 6
         let computed = next_s(BinaryElem128::from_bits(2), BinaryElem128::one());
-        println!("  next_s(2, 1) should give 6, got: {}", 
-                 computed == BinaryElem128::from_bits(6));
+        println!(
+            "  next_s(2, 1) should give 6, got: {}",
+            computed == BinaryElem128::from_bits(6)
+        );
     }
 }

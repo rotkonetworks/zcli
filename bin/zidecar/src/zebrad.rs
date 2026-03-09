@@ -53,20 +53,19 @@ impl ZebradClient {
 
     pub async fn get_blockchain_info(&self) -> Result<BlockchainInfo> {
         let result = self.call("getblockchaininfo", vec![]).await?;
-        serde_json::from_value(result)
-            .map_err(|e| ZidecarError::ZebradRpc(e.to_string()))
+        serde_json::from_value(result).map_err(|e| ZidecarError::ZebradRpc(e.to_string()))
     }
 
     pub async fn get_block_hash(&self, height: u32) -> Result<String> {
         let result = self.call("getblockhash", vec![json!(height)]).await?;
-        serde_json::from_value(result)
-            .map_err(|e| ZidecarError::ZebradRpc(e.to_string()))
+        serde_json::from_value(result).map_err(|e| ZidecarError::ZebradRpc(e.to_string()))
     }
 
     pub async fn get_block(&self, hash: &str, verbosity: u8) -> Result<Block> {
-        let result = self.call("getblock", vec![json!(hash), json!(verbosity)]).await?;
-        serde_json::from_value(result)
-            .map_err(|e| ZidecarError::ZebradRpc(e.to_string()))
+        let result = self
+            .call("getblock", vec![json!(hash), json!(verbosity)])
+            .await?;
+        serde_json::from_value(result).map_err(|e| ZidecarError::ZebradRpc(e.to_string()))
     }
 
     pub async fn get_block_header(&self, hash: &str) -> Result<BlockHeader> {
@@ -83,53 +82,68 @@ impl ZebradClient {
     }
 
     pub async fn get_raw_transaction(&self, txid: &str) -> Result<RawTransaction> {
-        let result = self.call("getrawtransaction", vec![json!(txid), json!(1)]).await?;
-        serde_json::from_value(result)
-            .map_err(|e| ZidecarError::ZebradRpc(e.to_string()))
+        let result = self
+            .call("getrawtransaction", vec![json!(txid), json!(1)])
+            .await?;
+        serde_json::from_value(result).map_err(|e| ZidecarError::ZebradRpc(e.to_string()))
     }
 
     /// send raw transaction hex to the network
     pub async fn send_raw_transaction(&self, tx_hex: &str) -> Result<String> {
         let result = self.call("sendrawtransaction", vec![json!(tx_hex)]).await?;
-        serde_json::from_value(result)
-            .map_err(|e| ZidecarError::ZebradRpc(e.to_string()))
+        serde_json::from_value(result).map_err(|e| ZidecarError::ZebradRpc(e.to_string()))
     }
 
     /// get tree state at a given block height or hash
     pub async fn get_tree_state(&self, height_or_hash: &str) -> Result<TreeState> {
-        let result = self.call("z_gettreestate", vec![json!(height_or_hash)]).await?;
-        serde_json::from_value(result)
-            .map_err(|e| ZidecarError::ZebradRpc(e.to_string()))
+        let result = self
+            .call("z_gettreestate", vec![json!(height_or_hash)])
+            .await?;
+        serde_json::from_value(result).map_err(|e| ZidecarError::ZebradRpc(e.to_string()))
     }
 
     /// get transparent UTXOs for addresses
     pub async fn get_address_utxos(&self, addresses: &[String]) -> Result<Vec<AddressUtxo>> {
-        let result = self.call("getaddressutxos", vec![json!({"addresses": addresses})]).await?;
-        serde_json::from_value(result)
-            .map_err(|e| ZidecarError::ZebradRpc(e.to_string()))
+        let result = self
+            .call("getaddressutxos", vec![json!({"addresses": addresses})])
+            .await?;
+        serde_json::from_value(result).map_err(|e| ZidecarError::ZebradRpc(e.to_string()))
     }
 
     /// get transaction IDs for transparent addresses
-    pub async fn get_address_txids(&self, addresses: &[String], start: u32, end: u32) -> Result<Vec<String>> {
-        let result = self.call("getaddresstxids", vec![json!({
-            "addresses": addresses,
-            "start": start,
-            "end": end
-        })]).await?;
-        serde_json::from_value(result)
-            .map_err(|e| ZidecarError::ZebradRpc(e.to_string()))
+    pub async fn get_address_txids(
+        &self,
+        addresses: &[String],
+        start: u32,
+        end: u32,
+    ) -> Result<Vec<String>> {
+        let result = self
+            .call(
+                "getaddresstxids",
+                vec![json!({
+                    "addresses": addresses,
+                    "start": start,
+                    "end": end
+                })],
+            )
+            .await?;
+        serde_json::from_value(result).map_err(|e| ZidecarError::ZebradRpc(e.to_string()))
     }
 
     /// get subtrees by index for sapling/orchard commitment trees
     /// returns precomputed subtree roots for efficient witness reconstruction
-    pub async fn get_subtrees_by_index(&self, pool: &str, start_index: u32, limit: Option<u32>) -> Result<SubtreeResponse> {
+    pub async fn get_subtrees_by_index(
+        &self,
+        pool: &str,
+        start_index: u32,
+        limit: Option<u32>,
+    ) -> Result<SubtreeResponse> {
         let mut params = vec![json!(pool), json!(start_index)];
         if let Some(l) = limit {
             params.push(json!(l));
         }
         let result = self.call("z_getsubtreesbyindex", params).await?;
-        serde_json::from_value(result)
-            .map_err(|e| ZidecarError::ZebradRpc(e.to_string()))
+        serde_json::from_value(result).map_err(|e| ZidecarError::ZebradRpc(e.to_string()))
     }
 }
 
@@ -254,9 +268,7 @@ impl OrchardAction {
 
     /// Parse cmx hex string to bytes
     pub fn cmx_bytes(&self) -> Option<[u8; 32]> {
-        hex::decode(&self.cmx)
-            .ok()
-            .and_then(|b| b.try_into().ok())
+        hex::decode(&self.cmx).ok().and_then(|b| b.try_into().ok())
     }
 }
 

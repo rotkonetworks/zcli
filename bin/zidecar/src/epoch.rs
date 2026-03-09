@@ -8,10 +8,10 @@ use crate::{
     zebrad::ZebradClient,
 };
 use ligerito::ProverConfig;
-use ligerito_binary_fields::{BinaryElem32, BinaryElem128};
+use ligerito_binary_fields::{BinaryElem128, BinaryElem32};
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{info, warn, error};
+use tracing::{error, info, warn};
 
 /// maximum epochs to cover with tip proof before regenerating gigaproof
 /// tip proof uses 2^20 config (1M elements max)
@@ -103,7 +103,11 @@ impl EpochManager {
         // check if we're still in epoch 0 and haven't completed it
         let start_epoch = self.epoch_for_height(self.start_height);
         if last_complete_epoch < start_epoch {
-            info!("no complete epochs yet (at block {} / {})", current_height, zync_core::EPOCH_SIZE);
+            info!(
+                "no complete epochs yet (at block {} / {})",
+                current_height,
+                zync_core::EPOCH_SIZE
+            );
             return Ok(());
         }
 
@@ -115,7 +119,10 @@ impl EpochManager {
             if cached >= last_complete_epoch {
                 // already up to date, ensure in-memory cache matches
                 *self.last_gigaproof_epoch.write().await = Some(cached);
-                info!("gigaproof already exists for epochs {} -> {} (cached)", start_epoch, cached);
+                info!(
+                    "gigaproof already exists for epochs {} -> {} (cached)",
+                    start_epoch, cached
+                );
                 return Ok(());
             }
 
@@ -137,10 +144,7 @@ impl EpochManager {
             );
         }
 
-        let (from_height, to_height) = (
-            self.start_height,
-            self.epoch_range(last_complete_epoch).1,
-        );
+        let (from_height, to_height) = (self.start_height, self.epoch_range(last_complete_epoch).1);
 
         info!(
             "generating GIGAPROOF: height {} -> {} (epochs {} -> {})",
@@ -148,17 +152,25 @@ impl EpochManager {
         );
 
         // build trace (with caching - headers already fetched won't be refetched)
-        let mut trace = HeaderChainTrace::build(&self.zebrad, &self.storage, from_height, to_height).await?;
+        let mut trace =
+            HeaderChainTrace::build(&self.zebrad, &self.storage, from_height, to_height).await?;
 
         // Store epoch boundary hashes for chain continuity verification
-        self.store_epoch_boundaries(start_epoch, last_complete_epoch).await?;
+        self.store_epoch_boundaries(start_epoch, last_complete_epoch)
+            .await?;
 
         // pad trace to config size (2^26)
         let required_size = 1 << zync_core::GIGAPROOF_TRACE_LOG_SIZE;
         if trace.trace.len() < required_size {
-            info!("padding gigaproof trace from {} to {} elements", trace.trace.len(), required_size);
+            info!(
+                "padding gigaproof trace from {} to {} elements",
+                trace.trace.len(),
+                required_size
+            );
             use ligerito_binary_fields::BinaryFieldElement;
-            trace.trace.resize(required_size, ligerito_binary_fields::BinaryElem32::zero());
+            trace
+                .trace
+                .resize(required_size, ligerito_binary_fields::BinaryElem32::zero());
         }
 
         // generate proof with explicit gigaproof config (2^26)
@@ -236,7 +248,7 @@ impl EpochManager {
                     None => match self.storage.get_gigaproof_epoch() {
                         Ok(Some(e)) => e,
                         _ => continue, // no gigaproof yet
-                    }
+                    },
                 }
             };
 
@@ -254,13 +266,17 @@ impl EpochManager {
             );
 
             // build and generate tip proof
-            match HeaderChainTrace::build(&self.zebrad, &self.storage, tip_from, current_height).await {
+            match HeaderChainTrace::build(&self.zebrad, &self.storage, tip_from, current_height)
+                .await
+            {
                 Ok(mut tip_trace) => {
                     // pad trace to tip config size (2^20)
                     let required_size = 1 << zync_core::TIP_TRACE_LOG_SIZE;
                     if tip_trace.trace.len() < required_size {
                         use ligerito_binary_fields::BinaryFieldElement;
-                        tip_trace.trace.resize(required_size, ligerito_binary_fields::BinaryElem32::zero());
+                        tip_trace
+                            .trace
+                            .resize(required_size, ligerito_binary_fields::BinaryElem32::zero());
                     }
                     match HeaderChainProof::prove(&self.tip_config, &tip_trace) {
                         Ok(tip_proof) => {
@@ -323,14 +339,15 @@ impl EpochManager {
 
         // get cached gigaproof
         let gigaproof_to = self.epoch_range(gigaproof_epoch).1;
-        let gigaproof_start = self.storage.get_gigaproof_start()?.unwrap_or(self.start_height);
+        let gigaproof_start = self
+            .storage
+            .get_gigaproof_start()?
+            .unwrap_or(self.start_height);
 
         let gigaproof = self
             .storage
             .get_proof(gigaproof_start, gigaproof_to)?
-            .ok_or_else(|| {
-                ZidecarError::ProofGeneration("gigaproof not found in cache".into())
-            })?;
+            .ok_or_else(|| ZidecarError::ProofGeneration("gigaproof not found in cache".into()))?;
 
         // get tip proof (from last gigaproof to current tip)
         let tip_from = gigaproof_to + 1;
@@ -357,11 +374,14 @@ impl EpochManager {
             if let Some(ref tip) = *cached {
                 // use cached if it starts from the right place and is reasonably fresh
                 // (within TIP_PROOF_REGEN_BLOCKS of current height)
-                if tip.from_height == tip_from &&
-                   current_height.saturating_sub(tip.to_height) < TIP_PROOF_REGEN_BLOCKS * 2 {
+                if tip.from_height == tip_from
+                    && current_height.saturating_sub(tip.to_height) < TIP_PROOF_REGEN_BLOCKS * 2
+                {
                     info!(
                         "using cached tip proof: {} -> {} ({} KB)",
-                        tip.from_height, tip.to_height, tip.proof.len() / 1024
+                        tip.from_height,
+                        tip.to_height,
+                        tip.proof.len() / 1024
                     );
                     return Ok((gigaproof, tip.proof.clone()));
                 }
@@ -371,19 +391,20 @@ impl EpochManager {
         // fallback: generate on-demand (should be rare with background prover)
         info!(
             "generating tip proof on-demand: {} -> {} ({} blocks)",
-            tip_from,
-            current_height,
-            blocks_in_tip
+            tip_from, current_height, blocks_in_tip
         );
 
         // build tip trace (with caching)
-        let mut tip_trace = HeaderChainTrace::build(&self.zebrad, &self.storage, tip_from, current_height).await?;
+        let mut tip_trace =
+            HeaderChainTrace::build(&self.zebrad, &self.storage, tip_from, current_height).await?;
 
         // pad trace to tip config size (2^20)
         let required_size = 1 << zync_core::TIP_TRACE_LOG_SIZE;
         if tip_trace.trace.len() < required_size {
             use ligerito_binary_fields::BinaryFieldElement;
-            tip_trace.trace.resize(required_size, ligerito_binary_fields::BinaryElem32::zero());
+            tip_trace
+                .trace
+                .resize(required_size, ligerito_binary_fields::BinaryElem32::zero());
         }
 
         // generate tip proof with explicit config (2^20)
@@ -455,11 +476,14 @@ impl EpochManager {
 
     /// store epoch boundary hashes for chain continuity verification
     async fn store_epoch_boundaries(&self, from_epoch: u32, to_epoch: u32) -> Result<()> {
-        info!("storing epoch boundary hashes for epochs {} -> {}", from_epoch, to_epoch);
+        info!(
+            "storing epoch boundary hashes for epochs {} -> {}",
+            from_epoch, to_epoch
+        );
 
         // Calculate first epoch that we have complete data for
         // (first epoch may be partial if start_height isn't at epoch boundary)
-        let first_full_epoch = if self.start_height % zync_core::EPOCH_SIZE == 0 {
+        let first_full_epoch = if self.start_height.is_multiple_of(zync_core::EPOCH_SIZE) {
             from_epoch
         } else {
             from_epoch + 1 // skip partial first epoch
@@ -475,13 +499,18 @@ impl EpochManager {
 
             // Skip if first block is before our start height (partial epoch)
             if first_height < self.start_height {
-                info!("skipping partial epoch {} (starts at {} < start {})", epoch, first_height, self.start_height);
+                info!(
+                    "skipping partial epoch {} (starts at {} < start {})",
+                    epoch, first_height, self.start_height
+                );
                 continue;
             }
 
             // Get first block of epoch
-            let first_header = self.storage.get_header(first_height)?
-                .ok_or_else(|| ZidecarError::BlockNotFound(first_height))?;
+            let first_header = self
+                .storage
+                .get_header(first_height)?
+                .ok_or(ZidecarError::BlockNotFound(first_height))?;
             let first_hash = hex_to_bytes32(&first_header.0)?;
             let first_prev_hash = if first_header.1.is_empty() {
                 [0u8; 32] // genesis
@@ -490,8 +519,10 @@ impl EpochManager {
             };
 
             // Get last block of epoch
-            let last_header = self.storage.get_header(last_height)?
-                .ok_or_else(|| ZidecarError::BlockNotFound(last_height))?;
+            let last_header = self
+                .storage
+                .get_header(last_height)?
+                .ok_or(ZidecarError::BlockNotFound(last_height))?;
             let last_hash = hex_to_bytes32(&last_header.0)?;
 
             // Store boundary
@@ -562,7 +593,8 @@ impl EpochManager {
                     let nullifier_root = self.storage.get_nullifier_root();
 
                     // store roots
-                    self.storage.store_state_roots(epoch_end, &tree_root, &nullifier_root)?;
+                    self.storage
+                        .store_state_roots(epoch_end, &tree_root, &nullifier_root)?;
 
                     info!(
                         "stored state roots at height {}: tree={} nullifier={}",
@@ -585,8 +617,8 @@ impl EpochManager {
 
 /// convert hex string to [u8; 32]
 fn hex_to_bytes32(hex: &str) -> Result<[u8; 32]> {
-    let bytes = hex::decode(hex)
-        .map_err(|e| ZidecarError::Serialization(format!("invalid hex: {}", e)))?;
+    let bytes =
+        hex::decode(hex).map_err(|e| ZidecarError::Serialization(format!("invalid hex: {}", e)))?;
     if bytes.len() != 32 {
         return Err(ZidecarError::Serialization(format!(
             "expected 32 bytes, got {}",
@@ -628,7 +660,10 @@ impl EpochManager {
     /// Extract all nullifiers from a block.
     /// Uses verbosity=1 (txid list) + per-tx fetch to avoid zebrad response size limits
     /// on blocks with many shielded transactions.
-    pub async fn extract_nullifiers_from_block(&self, height: u32) -> Result<Vec<ExtractedNullifier>> {
+    pub async fn extract_nullifiers_from_block(
+        &self,
+        height: u32,
+    ) -> Result<Vec<ExtractedNullifier>> {
         let hash = self.zebrad.get_block_hash(height).await?;
         let block = self.zebrad.get_block(&hash, 1).await?;
 
@@ -696,7 +731,9 @@ impl EpochManager {
         info!("starting background nullifier sync");
 
         // Get current sync progress
-        let mut last_synced = self.storage.get_nullifier_sync_height()
+        let mut last_synced = self
+            .storage
+            .get_nullifier_sync_height()
             .unwrap_or(None)
             .unwrap_or(self.start_height.saturating_sub(1));
 
@@ -722,7 +759,9 @@ impl EpochManager {
                         if count > 0 {
                             info!(
                                 "synced {} nullifiers for blocks {} -> {} (root: {})",
-                                count, last_synced + 1, batch_end,
+                                count,
+                                last_synced + 1,
+                                batch_end,
                                 hex::encode(&self.storage.get_nullifier_root()[..8])
                             );
                         }

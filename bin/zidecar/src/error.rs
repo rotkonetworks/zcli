@@ -38,9 +38,7 @@ impl From<ZidecarError> for tonic::Status {
             ZidecarError::BlockNotFound(h) => {
                 tonic::Status::not_found(format!("block not found: {}", h))
             }
-            ZidecarError::InvalidRange(msg) => {
-                tonic::Status::invalid_argument(msg)
-            }
+            ZidecarError::InvalidRange(msg) => tonic::Status::invalid_argument(msg),
             _ => tonic::Status::internal(err.to_string()),
         }
     }

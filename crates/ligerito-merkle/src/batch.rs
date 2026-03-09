@@ -2,15 +2,18 @@
 #[cfg(not(feature = "std"))]
 use alloc::vec::Vec;
 
+use crate::{hash_leaf, hash_siblings, CompleteMerkleTree, Hash, MerkleRoot};
 use bytemuck::Pod;
-use crate::{CompleteMerkleTree, MerkleRoot, Hash, hash_leaf, hash_siblings};
 
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
 
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "scale", derive(codec::Encode, codec::Decode, scale_info::TypeInfo))]
+#[cfg_attr(
+    feature = "scale",
+    derive(codec::Encode, codec::Decode, scale_info::TypeInfo)
+)]
 pub struct BatchedMerkleProof {
     pub siblings: Vec<Hash>,
 }
@@ -72,15 +75,11 @@ pub fn verify_batch<T: Pod + Send + Sync>(
     let mut layer: Vec<Hash> = {
         #[cfg(feature = "parallel")]
         {
-            leaves.par_iter()
-                .map(hash_leaf)
-                .collect()
+            leaves.par_iter().map(hash_leaf).collect()
         }
         #[cfg(not(feature = "parallel"))]
         {
-            leaves.iter()
-                .map(hash_leaf)
-                .collect()
+            leaves.iter().map(hash_leaf).collect()
         }
     };
 
@@ -129,16 +128,14 @@ fn ith_layer(
             break;
         }
 
-        if query % 2 != 0 {
+        if !query.is_multiple_of(2) {
+            proof.push(current_layer[sibling]);
+            i += 1;
+        } else if queries[i + 1] != sibling {
             proof.push(current_layer[sibling]);
             i += 1;
         } else {
-            if queries[i + 1] != sibling {
-                proof.push(current_layer[sibling]);
-                i += 1;
-            } else {
-                i += 2;
-            }
+            i += 2;
         }
     }
 
@@ -165,7 +162,7 @@ fn verify_ith_layer(
         if i == curr_cnt - 1 {
             proof_cnt += 1;
             let pp = proof.get(proof_cnt - 1).copied().unwrap_or_default();
-            layer[next_cnt - 1] = if query % 2 != 0 {
+            layer[next_cnt - 1] = if !query.is_multiple_of(2) {
                 hash_siblings(&pp, &layer[i])
             } else {
                 hash_siblings(&layer[i], &pp)
@@ -173,21 +170,19 @@ fn verify_ith_layer(
             break;
         }
 
-        if query % 2 != 0 {
+        if !query.is_multiple_of(2) {
             proof_cnt += 1;
             let pp = proof.get(proof_cnt - 1).copied().unwrap_or_default();
             layer[next_cnt - 1] = hash_siblings(&pp, &layer[i]);
             i += 1;
+        } else if queries[i + 1] != sibling {
+            proof_cnt += 1;
+            let pp = proof.get(proof_cnt - 1).copied().unwrap_or_default();
+            layer[next_cnt - 1] = hash_siblings(&layer[i], &pp);
+            i += 1;
         } else {
-            if queries[i + 1] != sibling {
-                proof_cnt += 1;
-                let pp = proof.get(proof_cnt - 1).copied().unwrap_or_default();
-                layer[next_cnt - 1] = hash_siblings(&layer[i], &pp);
-                i += 1;
-            } else {
-                layer[next_cnt - 1] = hash_siblings(&layer[i], &layer[i + 1]);
-                i += 2;
-            }
+            layer[next_cnt - 1] = hash_siblings(&layer[i], &layer[i + 1]);
+            i += 2;
         }
     }
 

@@ -5,11 +5,11 @@
 //! where each full proof is:
 //!   [public_outputs_len: u32][public_outputs (bincode)][log_size: u8][ligerito_proof (bincode)]
 
-use anyhow::Result;
-use ligerito::{FinalizedLigeritoProof, verify_with_transcript, transcript::FiatShamir};
-use ligerito_binary_fields::{BinaryElem32, BinaryElem128};
-use serde::{Serialize, Deserialize};
 use crate::verifier_config_for_log_size;
+use anyhow::Result;
+use ligerito::{transcript::FiatShamir, verify_with_transcript, FinalizedLigeritoProof};
+use ligerito_binary_fields::{BinaryElem128, BinaryElem32};
+use serde::{Deserialize, Serialize};
 
 #[cfg(not(target_arch = "wasm32"))]
 use std::thread;
@@ -59,7 +59,9 @@ fn split_full_proof(full: &[u8]) -> Result<(ProofPublicOutputs, Vec<u8>)> {
 }
 
 /// deserialize raw proof: [log_size: u8][proof_bytes...]
-fn deserialize_proof(bytes: &[u8]) -> Result<(FinalizedLigeritoProof<BinaryElem32, BinaryElem128>, u8)> {
+fn deserialize_proof(
+    bytes: &[u8],
+) -> Result<(FinalizedLigeritoProof<BinaryElem32, BinaryElem128>, u8)> {
     if bytes.is_empty() {
         anyhow::bail!("empty proof bytes");
     }
@@ -89,7 +91,10 @@ fn verify_single(proof_bytes: &[u8]) -> Result<bool> {
 #[cfg(not(target_arch = "wasm32"))]
 pub fn verify_proofs(combined_proof: &[u8]) -> Result<(bool, bool)> {
     let result = verify_proofs_full(combined_proof)?;
-    Ok((result.gigaproof_valid, result.tip_valid && result.continuous))
+    Ok((
+        result.gigaproof_valid,
+        result.tip_valid && result.continuous,
+    ))
 }
 
 /// full verification with detailed result
@@ -100,8 +105,10 @@ pub fn verify_proofs_full(combined_proof: &[u8]) -> Result<VerifyResult> {
     }
 
     let giga_full_size = u32::from_le_bytes([
-        combined_proof[0], combined_proof[1],
-        combined_proof[2], combined_proof[3],
+        combined_proof[0],
+        combined_proof[1],
+        combined_proof[2],
+        combined_proof[3],
     ]) as usize;
 
     if combined_proof.len() < 4 + giga_full_size {
@@ -130,10 +137,13 @@ pub fn verify_proofs_full(combined_proof: &[u8]) -> Result<VerifyResult> {
         None
     };
 
-    let gigaproof_valid = giga_handle.join()
+    let gigaproof_valid = giga_handle
+        .join()
         .map_err(|_| anyhow::anyhow!("gigaproof thread panicked"))??;
     let tip_valid = match tip_handle {
-        Some(h) => h.join().map_err(|_| anyhow::anyhow!("tip thread panicked"))??,
+        Some(h) => h
+            .join()
+            .map_err(|_| anyhow::anyhow!("tip thread panicked"))??,
         None => true,
     };
 
@@ -156,7 +166,10 @@ pub fn verify_proofs_full(combined_proof: &[u8]) -> Result<VerifyResult> {
 #[cfg(target_arch = "wasm32")]
 pub fn verify_proofs(combined_proof: &[u8]) -> Result<(bool, bool)> {
     let result = verify_proofs_full(combined_proof)?;
-    Ok((result.gigaproof_valid, result.tip_valid && result.continuous))
+    Ok((
+        result.gigaproof_valid,
+        result.tip_valid && result.continuous,
+    ))
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -166,8 +179,10 @@ pub fn verify_proofs_full(combined_proof: &[u8]) -> Result<VerifyResult> {
     }
 
     let giga_full_size = u32::from_le_bytes([
-        combined_proof[0], combined_proof[1],
-        combined_proof[2], combined_proof[3],
+        combined_proof[0],
+        combined_proof[1],
+        combined_proof[2],
+        combined_proof[3],
     ]) as usize;
 
     if combined_proof.len() < 4 + giga_full_size {

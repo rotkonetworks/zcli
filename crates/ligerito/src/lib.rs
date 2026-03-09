@@ -88,7 +88,7 @@ extern crate alloc;
 extern crate alloc as alloc_crate;
 
 #[cfg(not(feature = "std"))]
-use alloc::{vec::Vec, string::String, boxed::Box, format};
+use alloc::{boxed::Box, format, string::String, vec::Vec};
 
 // Re-export with shorter names for internal use
 extern crate ligerito_binary_fields as binary_fields;
@@ -101,10 +101,10 @@ extern crate ligerito_reed_solomon as reed_solomon;
 pub mod autosizer;
 pub mod configs;
 pub mod data_structures;
-pub mod transcript;
-pub mod utils;
 pub mod sumcheck_polys;
 pub mod sumcheck_verifier;
+pub mod transcript;
+pub mod utils;
 pub mod verifier;
 
 // Prover-only modules
@@ -140,7 +140,7 @@ pub mod cpu_affinity;
 // To use PolkaVM constraints, add: polkavm-pcvm = { version = "0.1", features = ["polkavm-integration"] }
 
 // Always export data structures (verifier-only)
-pub use data_structures::{VerifierConfig, FinalizedLigeritoProof};
+pub use data_structures::{FinalizedLigeritoProof, VerifierConfig};
 
 // Export ProverConfig only when prover feature is enabled
 #[cfg(feature = "prover")]
@@ -148,44 +148,27 @@ pub use data_structures::ProverConfig;
 
 // Always export verifier configs
 pub use configs::{
-    hardcoded_config_12_verifier,
-    hardcoded_config_16_verifier,
-    hardcoded_config_20_verifier,
-    hardcoded_config_24_verifier,
-    hardcoded_config_26_verifier,
-    hardcoded_config_28_verifier,
+    hardcoded_config_12_verifier, hardcoded_config_16_verifier, hardcoded_config_20_verifier,
+    hardcoded_config_24_verifier, hardcoded_config_26_verifier, hardcoded_config_28_verifier,
     hardcoded_config_30_verifier,
 };
 
 // Export prover configs only when prover feature is enabled
 #[cfg(feature = "prover")]
 pub use configs::{
-    hardcoded_config_12,
-    hardcoded_config_16,
-    hardcoded_config_20,
-    hardcoded_config_24,
-    hardcoded_config_26,
-    hardcoded_config_28,
-    hardcoded_config_30,
+    hardcoded_config_12, hardcoded_config_16, hardcoded_config_20, hardcoded_config_24,
+    hardcoded_config_26, hardcoded_config_28, hardcoded_config_30,
 };
 
 // Re-export autosizer functions for convenience (requires std)
 #[cfg(feature = "std")]
 pub use autosizer::{
-    verifier_config_for_size,
-    verifier_config_for_log_size,
-    config_info,
-    config_info_for_log_size,
-    ConfigInfo,
-    MIN_LOG_SIZE,
-    MAX_LOG_SIZE,
+    config_info, config_info_for_log_size, verifier_config_for_log_size, verifier_config_for_size,
+    ConfigInfo, MAX_LOG_SIZE, MIN_LOG_SIZE,
 };
 
 #[cfg(all(feature = "std", feature = "prover"))]
-pub use autosizer::{
-    prover_config_for_size,
-    prover_config_for_log_size,
-};
+pub use autosizer::{prover_config_for_log_size, prover_config_for_size};
 
 pub use data_structures::*;
 
@@ -194,9 +177,12 @@ pub use data_structures::*;
 pub use prover::{prove, prove_sha256, prove_with_transcript};
 
 // Verifier exports (always available)
-pub use verifier::{verify, verify_sha256, verify_with_transcript, verify_debug, verify_complete, verify_complete_sha256};
 pub use sumcheck_verifier::SumcheckError;
-pub use transcript::{FiatShamir, TranscriptType, Transcript, Sha256Transcript};
+pub use transcript::{FiatShamir, Sha256Transcript, Transcript, TranscriptType};
+pub use verifier::{
+    verify, verify_complete, verify_complete_sha256, verify_debug, verify_sha256,
+    verify_with_transcript,
+};
 
 #[cfg(feature = "transcript-merlin")]
 pub use transcript::MerlinTranscript;
@@ -260,10 +246,7 @@ pub type Result<T> = core::result::Result<T, LigeritoError>;
 /// Main prover function (uses Merlin transcript by default)
 /// Only available with the `prover` feature
 #[cfg(feature = "prover")]
-pub fn prover<T, U>(
-    config: &ProverConfig<T, U>,
-    poly: &[T],
-) -> Result<FinalizedLigeritoProof<T, U>>
+pub fn prover<T, U>(config: &ProverConfig<T, U>, poly: &[T]) -> Result<FinalizedLigeritoProof<T, U>>
 where
     T: BinaryFieldElement + Send + Sync + bytemuck::Pod + 'static,
     U: BinaryFieldElement + Send + Sync + From<T> + bytemuck::Pod + 'static,
@@ -273,10 +256,7 @@ where
 
 /// Main verifier function (uses Merlin transcript by default)
 /// Always available
-pub fn verifier<T, U>(
-    config: &VerifierConfig,
-    proof: &FinalizedLigeritoProof<T, U>,
-) -> Result<bool>
+pub fn verifier<T, U>(config: &VerifierConfig, proof: &FinalizedLigeritoProof<T, U>) -> Result<bool>
 where
     T: BinaryFieldElement + Send + Sync,
     U: BinaryFieldElement + Send + Sync + From<T>,
@@ -287,7 +267,7 @@ where
 #[cfg(all(test, feature = "std", feature = "prover"))]
 mod tests {
     use super::*;
-    use ligerito_binary_fields::{BinaryElem32, BinaryElem128};
+    use ligerito_binary_fields::{BinaryElem128, BinaryElem32};
 
     #[test]
     fn test_basic_prove_verify_merlin() {
@@ -353,7 +333,7 @@ mod tests {
     #[test]
     fn test_random_polynomial() {
         use rand::{thread_rng, Rng};
-        
+
         let config = hardcoded_config_12(
             std::marker::PhantomData::<BinaryElem32>,
             std::marker::PhantomData::<BinaryElem128>,
@@ -404,7 +384,7 @@ mod tests {
 
         let proof = prover(&config, &poly).unwrap();
         let verifier_config = hardcoded_config_12_verifier();
-        
+
         // Test debug verification
         let result = verify_debug(&verifier_config, &proof).unwrap();
         assert!(result);
@@ -426,7 +406,10 @@ mod tests {
         // for small polynomials (2^12), proof is ~2x the polynomial size
         // for larger polynomials (2^20+), proof becomes much smaller relative to data
         let poly_size = poly.len() * std::mem::size_of::<BinaryElem32>();
-        assert!(proof_size < poly_size * 3, "proof should be reasonable size (< 3x polynomial)");
+        assert!(
+            proof_size < poly_size * 3,
+            "proof should be reasonable size (< 3x polynomial)"
+        );
 
         // proof should be at least somewhat compact (not trivially large)
         assert!(proof_size < 100_000, "proof for 2^12 should be under 100KB");
@@ -450,7 +433,7 @@ mod tests {
         }
     }
 
-    #[test] 
+    #[test]
     fn test_pattern_polynomials() {
         let config = hardcoded_config_12(
             std::marker::PhantomData::<BinaryElem32>,
@@ -461,9 +444,19 @@ mod tests {
         // Test various patterns
         let patterns = vec![
             // Alternating pattern
-            (0..1 << 12).map(|i| if i % 2 == 0 { BinaryElem32::zero() } else { BinaryElem32::one() }).collect(),
+            (0..1 << 12)
+                .map(|i| {
+                    if i % 2 == 0 {
+                        BinaryElem32::zero()
+                    } else {
+                        BinaryElem32::one()
+                    }
+                })
+                .collect(),
             // Powers of 2 pattern
-            (0..1 << 12).map(|i| BinaryElem32::from((i & 0xFF) as u32)).collect(),
+            (0..1 << 12)
+                .map(|i| BinaryElem32::from((i & 0xFF) as u32))
+                .collect(),
             // Sparse pattern (mostly zeros with few ones)
             {
                 let mut poly = vec![BinaryElem32::zero(); 1 << 12];

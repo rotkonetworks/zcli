@@ -1,8 +1,8 @@
 #[cfg(not(feature = "std"))]
 use alloc::vec::Vec;
 
-use binary_fields::BinaryFieldElement;
 use crate::utils::partial_eval_multilinear;
+use binary_fields::BinaryFieldElement;
 
 /// Error type for sumcheck verifier operations
 #[derive(Debug, Clone, PartialEq)]
@@ -90,11 +90,7 @@ pub fn quadratic_from_evals<F: BinaryFieldElement>(at0: F, at1: F, atx: F) -> Qu
     // b = at1 + at0 + a
     let b = at1.add(&at0).add(&a);
 
-    QuadraticPoly {
-        a,
-        b,
-        c: at0,
-    }
+    QuadraticPoly { a, b, c: at0 }
 }
 
 /// fold two linear polynomials with separation challenge
@@ -104,10 +100,7 @@ pub fn fold_linear<F: BinaryFieldElement>(
     p2: LinearPoly<F>,
     alpha: F,
 ) -> LinearPoly<F> {
-    LinearPoly::new(
-        p1.b.add(&alpha.mul(&p2.b)),
-        p1.c.add(&alpha.mul(&p2.c)),
-    )
+    LinearPoly::new(p1.b.add(&alpha.mul(&p2.b)), p1.c.add(&alpha.mul(&p2.c)))
 }
 
 /// fold two quadratic polynomials with separation challenge
@@ -148,11 +141,7 @@ pub struct SumcheckVerifierInstance<F: BinaryFieldElement> {
 impl<F: BinaryFieldElement> SumcheckVerifierInstance<F> {
     /// create new verifier instance with first basis polynomial and initial sum
     /// the first fold() call will read the first transcript entry
-    pub fn new(
-        b1: Vec<F>,
-        h1: F,
-        transcript: Vec<(F, F, F)>,
-    ) -> Self {
+    pub fn new(b1: Vec<F>, h1: F, transcript: Vec<(F, F, F)>) -> Self {
         Self {
             basis_polys: vec![b1],
             separation_challenges: vec![F::one()],
@@ -307,7 +296,7 @@ impl<F: BinaryFieldElement> SumcheckVerifierInstance<F> {
 
             // take the last (n - k) evaluation points for this basis polynomial
             // this leaves k variables unevaluated
-            let eval_len = if n >= k { n - k } else { 0 };
+            let eval_len = n.saturating_sub(k);
             let eval_len = eval_len.min(num_rs);
 
             let eval_pts = if eval_len > 0 {
@@ -361,9 +350,7 @@ impl<F: BinaryFieldElement> SumcheckVerifierInstance<F> {
         let dot_product = f_partial_eval
             .iter()
             .zip(basis_evals.iter())
-            .fold(F::zero(), |acc, (&f_i, &b_i)| {
-                acc.add(&f_i.mul(&b_i))
-            });
+            .fold(F::zero(), |acc, (&f_i, &b_i)| acc.add(&f_i.mul(&b_i)));
 
         Ok(dot_product == self.sum)
     }

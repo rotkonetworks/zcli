@@ -2,10 +2,10 @@
 use alloc::vec::Vec;
 
 use binary_fields::BinaryFieldElement;
-use merkle_tree::{CompleteMerkleTree, MerkleRoot, BatchedMerkleProof};
+use merkle_tree::{BatchedMerkleProof, CompleteMerkleTree, MerkleRoot};
 
 #[cfg(feature = "serde")]
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "prover")]
 use reed_solomon::ReedSolomon;
@@ -44,9 +44,10 @@ impl<T: BinaryFieldElement, U: BinaryFieldElement> ProverConfig<T, U> {
     pub fn validate(&self) -> crate::Result<()> {
         if self.num_queries < 148 {
             #[cfg(feature = "std")]
-            return Err(crate::LigeritoError::InvalidConfig(
-                format!("num_queries must be >= 148 for 100-bit security, got {}", self.num_queries)
-            ));
+            return Err(crate::LigeritoError::InvalidConfig(format!(
+                "num_queries must be >= 148 for 100-bit security, got {}",
+                self.num_queries
+            )));
             #[cfg(not(feature = "std"))]
             return Err(crate::LigeritoError::InvalidConfig);
         }
@@ -69,14 +70,17 @@ pub struct VerifierConfig {
 /// Recursive Ligero witness (prover side only)
 #[cfg(feature = "prover")]
 pub struct RecursiveLigeroWitness<T: BinaryFieldElement> {
-    pub mat: Vec<Vec<T>>,  // Row-major matrix
+    pub mat: Vec<Vec<T>>, // Row-major matrix
     pub tree: CompleteMerkleTree,
 }
 
 /// Recursive Ligero commitment
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[cfg_attr(feature = "scale", derive(codec::Encode, codec::Decode, scale_info::TypeInfo))]
+#[cfg_attr(
+    feature = "scale",
+    derive(codec::Encode, codec::Decode, scale_info::TypeInfo)
+)]
 pub struct RecursiveLigeroCommitment {
     pub root: MerkleRoot,
 }
@@ -90,7 +94,10 @@ impl RecursiveLigeroCommitment {
 /// Recursive Ligero proof
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[cfg_attr(feature = "scale", derive(codec::Encode, codec::Decode, scale_info::TypeInfo))]
+#[cfg_attr(
+    feature = "scale",
+    derive(codec::Encode, codec::Decode, scale_info::TypeInfo)
+)]
 pub struct RecursiveLigeroProof<T: BinaryFieldElement> {
     pub opened_rows: Vec<Vec<T>>,
     pub merkle_proof: BatchedMerkleProof,
@@ -98,7 +105,8 @@ pub struct RecursiveLigeroProof<T: BinaryFieldElement> {
 
 impl<T: BinaryFieldElement> RecursiveLigeroProof<T> {
     pub fn size_of(&self) -> usize {
-        self.opened_rows.iter()
+        self.opened_rows
+            .iter()
             .map(|row| row.len() * core::mem::size_of::<T>())
             .sum::<usize>()
             + self.merkle_proof.size_of()
@@ -108,7 +116,10 @@ impl<T: BinaryFieldElement> RecursiveLigeroProof<T> {
 /// Final Ligero proof
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[cfg_attr(feature = "scale", derive(codec::Encode, codec::Decode, scale_info::TypeInfo))]
+#[cfg_attr(
+    feature = "scale",
+    derive(codec::Encode, codec::Decode, scale_info::TypeInfo)
+)]
 pub struct FinalLigeroProof<T: BinaryFieldElement> {
     pub yr: Vec<T>,
     pub opened_rows: Vec<Vec<T>>,
@@ -118,7 +129,9 @@ pub struct FinalLigeroProof<T: BinaryFieldElement> {
 impl<T: BinaryFieldElement> FinalLigeroProof<T> {
     pub fn size_of(&self) -> usize {
         self.yr.len() * core::mem::size_of::<T>()
-            + self.opened_rows.iter()
+            + self
+                .opened_rows
+                .iter()
                 .map(|row| row.len() * core::mem::size_of::<T>())
                 .sum::<usize>()
             + self.merkle_proof.size_of()
@@ -128,9 +141,12 @@ impl<T: BinaryFieldElement> FinalLigeroProof<T> {
 /// Sumcheck transcript
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[cfg_attr(feature = "scale", derive(codec::Encode, codec::Decode, scale_info::TypeInfo))]
+#[cfg_attr(
+    feature = "scale",
+    derive(codec::Encode, codec::Decode, scale_info::TypeInfo)
+)]
 pub struct SumcheckTranscript<T: BinaryFieldElement> {
-    pub transcript: Vec<(T, T, T)>,  // Quadratic polynomial coefficients
+    pub transcript: Vec<(T, T, T)>, // Quadratic polynomial coefficients
 }
 
 impl<T: BinaryFieldElement> SumcheckTranscript<T> {
@@ -149,6 +165,12 @@ pub struct LigeritoProof<T: BinaryFieldElement, U: BinaryFieldElement> {
     pub sumcheck_transcript: Option<SumcheckTranscript<U>>,
 }
 
+impl<T: BinaryFieldElement, U: BinaryFieldElement> Default for LigeritoProof<T, U> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<T: BinaryFieldElement, U: BinaryFieldElement> LigeritoProof<T, U> {
     pub fn new() -> Self {
         Self {
@@ -165,7 +187,10 @@ impl<T: BinaryFieldElement, U: BinaryFieldElement> LigeritoProof<T, U> {
 /// Finalized Ligerito proof
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[cfg_attr(feature = "scale", derive(codec::Encode, codec::Decode, scale_info::TypeInfo))]
+#[cfg_attr(
+    feature = "scale",
+    derive(codec::Encode, codec::Decode, scale_info::TypeInfo)
+)]
 pub struct FinalizedLigeritoProof<T: BinaryFieldElement, U: BinaryFieldElement> {
     pub initial_ligero_cm: RecursiveLigeroCommitment,
     pub initial_ligero_proof: RecursiveLigeroProof<T>,
@@ -179,10 +204,14 @@ impl<T: BinaryFieldElement, U: BinaryFieldElement> FinalizedLigeritoProof<T, U> 
     pub fn size_of(&self) -> usize {
         self.initial_ligero_cm.size_of()
             + self.initial_ligero_proof.size_of()
-            + self.recursive_commitments.iter()
+            + self
+                .recursive_commitments
+                .iter()
                 .map(|c| c.size_of())
                 .sum::<usize>()
-            + self.recursive_proofs.iter()
+            + self
+                .recursive_proofs
+                .iter()
                 .map(|p| p.size_of())
                 .sum::<usize>()
             + self.final_ligero_proof.size_of()
@@ -195,15 +224,19 @@ pub fn finalize<T: BinaryFieldElement, U: BinaryFieldElement>(
     proof: LigeritoProof<T, U>,
 ) -> crate::Result<FinalizedLigeritoProof<T, U>> {
     Ok(FinalizedLigeritoProof {
-        initial_ligero_cm: proof.initial_ligero_cm
+        initial_ligero_cm: proof
+            .initial_ligero_cm
             .ok_or(crate::LigeritoError::InvalidProof)?,
-        initial_ligero_proof: proof.initial_ligero_proof
+        initial_ligero_proof: proof
+            .initial_ligero_proof
             .ok_or(crate::LigeritoError::InvalidProof)?,
         recursive_commitments: proof.recursive_commitments,
         recursive_proofs: proof.recursive_proofs,
-        final_ligero_proof: proof.final_ligero_proof
+        final_ligero_proof: proof
+            .final_ligero_proof
             .ok_or(crate::LigeritoError::InvalidProof)?,
-        sumcheck_transcript: proof.sumcheck_transcript
+        sumcheck_transcript: proof
+            .sumcheck_transcript
             .ok_or(crate::LigeritoError::InvalidProof)?,
     })
 }

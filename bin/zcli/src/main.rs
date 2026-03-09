@@ -546,8 +546,8 @@ fn cmd_history(cli: &Cli) -> Result<(), Error> {
     }
 
     println!(
-        "{:<6} {:<10} {:>14} {:>8} {}",
-        "dir", "height", "ZEC", "txid", "info"
+        "{:<6} {:<10} {:>14} {:>8} info",
+        "dir", "height", "ZEC", "txid"
     );
     for e in &entries {
         let txid_short = if e.txid.len() >= 8 {
@@ -810,8 +810,8 @@ async fn cmd_merchant(cli: &Cli, mainnet: bool, action: &MerchantAction) -> Resu
                     return Ok(());
                 }
                 println!(
-                    "{:<4} {:>14} {:<12} {:<24} {}",
-                    "id", "ZEC", "status", "address", "label"
+                    "{:<4} {:>14} {:<12} {:<24} label",
+                    "id", "ZEC", "status", "address"
                 );
                 for r in &reqs {
                     let addr_short = if r.address.len() > 20 {
@@ -1130,8 +1130,8 @@ async fn cmd_merchant(cli: &Cli, mainnet: bool, action: &MerchantAction) -> Resu
                     return Ok(());
                 }
                 println!(
-                    "{:<4} {:>14} {:<12} {:>10} {}",
-                    "id", "ZEC", "status", "txid", "label"
+                    "{:<4} {:>14} {:<12} {:>10} label",
+                    "id", "ZEC", "status", "txid"
                 );
                 for r in &reqs {
                     let txid_short = r
@@ -1313,7 +1313,7 @@ fn cmd_import_fvk(cli: &Cli, mainnet: bool, hex_input: Option<&str>) -> Result<(
                 "label": label,
                 "mainnet": is_mainnet,
                 "address": uaddr,
-                "fvk_hex": hex::encode(&fvk_bytes),
+                "fvk_hex": hex::encode(fvk_bytes),
             })
         );
     } else {

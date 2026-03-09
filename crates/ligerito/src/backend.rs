@@ -27,14 +27,14 @@
 //! The RAA backend would avoid field multiplications entirely, providing 5-10x
 //! speedup in WASM at the cost of larger proofs (1060 queries vs 148 for round 1).
 
-use binary_fields::BinaryFieldElement;
 use crate::reed_solomon::ReedSolomon;
+use binary_fields::BinaryFieldElement;
 
 #[cfg(feature = "webgpu")]
 use std::sync::{Arc, Mutex};
 
 #[cfg(feature = "webgpu")]
-use crate::gpu::{GpuDevice, fft::GpuFft};
+use crate::gpu::{fft::GpuFft, GpuDevice};
 
 /// Compute backend selection strategy
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,7 +67,12 @@ pub trait Backend: Send + Sync {
         F: BinaryFieldElement + Send + Sync + bytemuck::Pod + 'static;
 
     /// Encode columns of a polynomial matrix using Reed-Solomon
-    fn encode_cols<F>(&self, poly_mat: &mut Vec<Vec<F>>, rs: &ReedSolomon<F>, parallel: bool) -> crate::Result<()>
+    fn encode_cols<F>(
+        &self,
+        poly_mat: &mut Vec<Vec<F>>,
+        rs: &ReedSolomon<F>,
+        parallel: bool,
+    ) -> crate::Result<()>
     where
         F: BinaryFieldElement + Send + Sync + bytemuck::Pod + 'static;
 
@@ -87,7 +92,12 @@ impl Backend for CpuBackend {
         Ok(())
     }
 
-    fn encode_cols<F>(&self, poly_mat: &mut Vec<Vec<F>>, rs: &ReedSolomon<F>, parallel: bool) -> crate::Result<()>
+    fn encode_cols<F>(
+        &self,
+        poly_mat: &mut Vec<Vec<F>>,
+        rs: &ReedSolomon<F>,
+        parallel: bool,
+    ) -> crate::Result<()>
     where
         F: BinaryFieldElement + Send + Sync + bytemuck::Pod + 'static,
     {
@@ -159,7 +169,12 @@ impl Backend for GpuBackend {
         }
     }
 
-    fn encode_cols<F>(&self, poly_mat: &mut Vec<Vec<F>>, rs: &ReedSolomon<F>, parallel: bool) -> crate::Result<()>
+    fn encode_cols<F>(
+        &self,
+        poly_mat: &mut Vec<Vec<F>>,
+        rs: &ReedSolomon<F>,
+        parallel: bool,
+    ) -> crate::Result<()>
     where
         F: BinaryFieldElement + Send + Sync + bytemuck::Pod + 'static,
     {
@@ -196,7 +211,12 @@ impl Backend for BackendImpl {
         }
     }
 
-    fn encode_cols<F>(&self, poly_mat: &mut Vec<Vec<F>>, rs: &ReedSolomon<F>, parallel: bool) -> crate::Result<()>
+    fn encode_cols<F>(
+        &self,
+        poly_mat: &mut Vec<Vec<F>>,
+        rs: &ReedSolomon<F>,
+        parallel: bool,
+    ) -> crate::Result<()>
     where
         F: BinaryFieldElement + Send + Sync + bytemuck::Pod + 'static,
     {
@@ -227,10 +247,7 @@ impl BackendSelector {
     pub fn new(hint: BackendHint) -> Self {
         let backend = Self::select_backend(hint);
 
-        Self {
-            backend,
-            hint,
-        }
+        Self { backend, hint }
     }
 
     /// Create with auto-detection (respects LIGERITO_BACKEND env var)
@@ -245,9 +262,7 @@ impl BackendSelector {
 
     fn select_backend(hint: BackendHint) -> BackendImpl {
         match hint {
-            BackendHint::Cpu => {
-                BackendImpl::Cpu(CpuBackend)
-            }
+            BackendHint::Cpu => BackendImpl::Cpu(CpuBackend),
             BackendHint::Gpu => {
                 #[cfg(feature = "webgpu")]
                 {

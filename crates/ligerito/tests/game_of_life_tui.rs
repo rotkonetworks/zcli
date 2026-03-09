@@ -9,13 +9,13 @@
 
 #![cfg(feature = "polkavm-integration")]
 
-use polkavm_pcvm::polkavm_constraints_v2::{ProvenTransition, InstructionProof};
-use polkavm_pcvm::polkavm_adapter::PolkaVMRegisters;
-use polkavm_pcvm::polkavm_prover::{prove_polkavm_execution, verify_polkavm_proof};
 use ligerito::configs::{hardcoded_config_20, hardcoded_config_20_verifier};
-use ligerito_binary_fields::{BinaryElem32, BinaryElem128};
-use ligerito::transcript::{Sha256Transcript, Transcript};
 use ligerito::data_structures::{ProverConfig, VerifierConfig};
+use ligerito::transcript::{Sha256Transcript, Transcript};
+use ligerito_binary_fields::{BinaryElem128, BinaryElem32};
+use polkavm_pcvm::polkavm_adapter::PolkaVMRegisters;
+use polkavm_pcvm::polkavm_constraints_v2::{InstructionProof, ProvenTransition};
+use polkavm_pcvm::polkavm_prover::{prove_polkavm_execution, verify_polkavm_proof};
 use std::marker::PhantomData;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -247,13 +247,8 @@ impl App {
     fn execute_step(&mut self) {
         let grid_next = self.grid.step();
 
-        let (gen_trace, final_regs) = simulate_generation(
-            &self.grid,
-            &grid_next,
-            self.pc,
-            self.regs,
-            self.memory_root,
-        );
+        let (gen_trace, final_regs) =
+            simulate_generation(&self.grid, &grid_next, self.pc, self.regs, self.memory_root);
 
         self.pc += (gen_trace.len() * 2) as u32;
         self.trace.extend(gen_trace);
@@ -351,8 +346,8 @@ fn ui(f: &mut Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Min(10),     // Game grid
-            Constraint::Length(12),  // Stats panel
+            Constraint::Min(10),    // Game grid
+            Constraint::Length(12), // Stats panel
         ])
         .split(f.area());
 
@@ -395,9 +390,19 @@ fn render_grid(f: &mut Frame, area: Rect, app: &App) {
 
             let (symbol, style) = if is_cursor {
                 if is_alive {
-                    ("██", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD))
+                    (
+                        "██",
+                        Style::default()
+                            .fg(Color::Green)
+                            .add_modifier(Modifier::BOLD),
+                    )
                 } else {
-                    ("··", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
+                    (
+                        "··",
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD),
+                    )
                 }
             } else if is_alive {
                 ("██", Style::default().fg(Color::Cyan))
@@ -429,16 +434,18 @@ fn render_stats(f: &mut Frame, area: Rect, app: &App) {
         .title_alignment(Alignment::Center);
 
     let proving_status = if stats.proving_in_progress {
-        Span::styled(" [PROVING...] ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
+        Span::styled(
+            " [PROVING...] ",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )
     } else {
         Span::styled(" [READY] ", Style::default().fg(Color::Green))
     };
 
     let text = vec![
-        Line::from(vec![
-            Span::raw("Status: "),
-            proving_status,
-        ]),
+        Line::from(vec![Span::raw("Status: "), proving_status]),
         Line::from(format!("Total Proofs: {}", stats.total_proofs)),
         Line::from(format!("Total Generations: {}", stats.total_generations)),
         Line::from(format!("Total Steps: {}", stats.total_steps)),
@@ -477,7 +484,10 @@ fn run_tui(mut app: App) -> io::Result<()> {
         terminal.draw(|f| ui(f, &app))?;
 
         // Auto-step if enabled and not paused
-        if app.auto_step && !app.paused && app.last_step_time.elapsed() > Duration::from_millis(app.step_delay_ms) {
+        if app.auto_step
+            && !app.paused
+            && app.last_step_time.elapsed() > Duration::from_millis(app.step_delay_ms)
+        {
             app.execute_step();
             app.last_step_time = Instant::now();
         }

@@ -1,16 +1,15 @@
 //! lightwalletd gRPC client (public endpoint fallback)
 
-use anyhow::Result;
 use super::{
     lightwalletd_proto::{
-        compact_tx_streamer_client::CompactTxStreamerClient as GrpcClient,
-        ChainSpec, BlockId, BlockRange, TxFilter, GetAddressUtxosArg,
-        RawTransaction, Empty,
+        compact_tx_streamer_client::CompactTxStreamerClient as GrpcClient, BlockId, BlockRange,
+        ChainSpec, Empty, GetAddressUtxosArg, RawTransaction, TxFilter,
     },
-    TreeState, Utxo, SendResult, CompactBlock, CompactAction,
+    CompactAction, CompactBlock, SendResult, TreeState, Utxo,
 };
+use anyhow::Result;
 use tonic::transport::Channel;
-use tracing::{info, debug, warn};
+use tracing::{debug, info, warn};
 
 pub struct LightwalletdClient {
     client: GrpcClient<Channel>,
@@ -63,8 +62,14 @@ impl LightwalletdClient {
         end_height: u64,
     ) -> Result<Vec<CompactBlock>> {
         let request = tonic::Request::new(BlockRange {
-            start: Some(BlockId { height: start_height, hash: vec![] }),
-            end: Some(BlockId { height: end_height, hash: vec![] }),
+            start: Some(BlockId {
+                height: start_height,
+                hash: vec![],
+            }),
+            end: Some(BlockId {
+                height: end_height,
+                hash: vec![],
+            }),
         });
 
         let mut stream = self.client.get_block_range(request).await?.into_inner();
@@ -79,9 +84,15 @@ impl LightwalletdClient {
                     let mut cmx = [0u8; 32];
                     let mut ek = [0u8; 32];
                     let mut nf = [0u8; 32];
-                    if action.cmx.len() == 32 { cmx.copy_from_slice(&action.cmx); }
-                    if action.ephemeral_key.len() == 32 { ek.copy_from_slice(&action.ephemeral_key); }
-                    if action.nullifier.len() == 32 { nf.copy_from_slice(&action.nullifier); }
+                    if action.cmx.len() == 32 {
+                        cmx.copy_from_slice(&action.cmx);
+                    }
+                    if action.ephemeral_key.len() == 32 {
+                        ek.copy_from_slice(&action.ephemeral_key);
+                    }
+                    if action.nullifier.len() == 32 {
+                        nf.copy_from_slice(&action.nullifier);
+                    }
                     actions.push(CompactAction {
                         cmx,
                         ephemeral_key: ek,
@@ -156,18 +167,23 @@ impl LightwalletdClient {
         let response = self.client.get_address_utxos(request).await?;
         let utxos = response.into_inner().address_utxos;
 
-        Ok(utxos.into_iter().map(|u| {
-            let mut txid = [0u8; 32];
-            if u.txid.len() == 32 { txid.copy_from_slice(&u.txid); }
-            Utxo {
-                address: u.address,
-                txid,
-                output_index: u.index as u32,
-                script: u.script,
-                value_zat: u.value_zat as u64,
-                height: u.height as u32,
-            }
-        }).collect())
+        Ok(utxos
+            .into_iter()
+            .map(|u| {
+                let mut txid = [0u8; 32];
+                if u.txid.len() == 32 {
+                    txid.copy_from_slice(&u.txid);
+                }
+                Utxo {
+                    address: u.address,
+                    txid,
+                    output_index: u.index as u32,
+                    script: u.script,
+                    value_zat: u.value_zat as u64,
+                    height: u.height as u32,
+                }
+            })
+            .collect())
     }
 }
 

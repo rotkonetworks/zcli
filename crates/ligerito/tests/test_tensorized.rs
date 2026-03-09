@@ -1,4 +1,4 @@
-use ligerito_binary_fields::{BinaryElem32, BinaryElem128, BinaryFieldElement};
+use ligerito_binary_fields::{BinaryElem128, BinaryElem32, BinaryFieldElement};
 
 // Copy of tensorized dot product for testing
 fn tensorized_dot_product<T, U>(row: &[T], challenges: &[U]) -> U
@@ -27,8 +27,9 @@ where
 
         for i in 0..half {
             // Contract using Lagrange basis structure: (1-r)*left + r*right
-            current[i] = current[2*i].mul(&one_minus_r)
-                        .add(&current[2*i+1].mul(&r));
+            current[i] = current[2 * i]
+                .mul(&one_minus_r)
+                .add(&current[2 * i + 1].mul(&r));
         }
         current.truncate(half);
     }
@@ -64,9 +65,7 @@ fn evaluate_lagrange_basis<F: BinaryFieldElement>(rs: &[F]) -> Vec<F> {
 #[test]
 fn test_tensorized_matches_naive() {
     // Test with k=3 (8 elements)
-    let row: Vec<BinaryElem32> = (0..8)
-        .map(|i| BinaryElem32::from_bits(i as u64))
-        .collect();
+    let row: Vec<BinaryElem32> = (0..8).map(|i| BinaryElem32::from_bits(i as u64)).collect();
 
     let challenges: Vec<BinaryElem128> = vec![
         BinaryElem128::from_bits(3),
@@ -76,7 +75,8 @@ fn test_tensorized_matches_naive() {
 
     // Naive method
     let basis = evaluate_lagrange_basis(&challenges);
-    let naive_result: BinaryElem128 = row.iter()
+    let naive_result: BinaryElem128 = row
+        .iter()
         .zip(basis.iter())
         .fold(BinaryElem128::zero(), |acc, (&r, &b)| {
             acc.add(&BinaryElem128::from(r).mul(&b))
@@ -88,15 +88,16 @@ fn test_tensorized_matches_naive() {
     println!("Naive:      {:?}", naive_result);
     println!("Tensorized: {:?}", tensorized_result);
 
-    assert_eq!(naive_result, tensorized_result, "Tensorized and naive methods should match");
+    assert_eq!(
+        naive_result, tensorized_result,
+        "Tensorized and naive methods should match"
+    );
 }
 
 #[test]
 fn test_lagrange_basis_structure() {
-    let challenges: Vec<BinaryElem128> = vec![
-        BinaryElem128::from_bits(3),
-        BinaryElem128::from_bits(7),
-    ];
+    let challenges: Vec<BinaryElem128> =
+        vec![BinaryElem128::from_bits(3), BinaryElem128::from_bits(7)];
 
     let basis = evaluate_lagrange_basis(&challenges);
 
@@ -118,7 +119,13 @@ fn test_lagrange_basis_structure() {
     ];
 
     for (i, (&b, &e)) in basis.iter().zip(expected.iter()).enumerate() {
-        println!("  basis[{}] = {:?}, expected = {:?}, match = {}", i, b, e, b == e);
+        println!(
+            "  basis[{}] = {:?}, expected = {:?}, match = {}",
+            i,
+            b,
+            e,
+            b == e
+        );
         assert_eq!(b, e, "Basis element {} mismatch", i);
     }
 }

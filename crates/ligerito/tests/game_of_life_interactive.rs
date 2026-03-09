@@ -8,15 +8,15 @@
 
 #![cfg(feature = "polkavm-integration")]
 
-use polkavm_pcvm::polkavm_constraints_v2::{ProvenTransition, InstructionProof};
-use polkavm_pcvm::polkavm_adapter::PolkaVMRegisters;
-use polkavm_pcvm::polkavm_prover::{prove_polkavm_execution, verify_polkavm_proof};
 use ligerito::configs::{hardcoded_config_20, hardcoded_config_20_verifier};
-use ligerito_binary_fields::{BinaryElem32, BinaryElem128};
-use ligerito::transcript::{Sha256Transcript, Transcript};
 use ligerito::data_structures::{ProverConfig, VerifierConfig};
-use std::marker::PhantomData;
+use ligerito::transcript::{Sha256Transcript, Transcript};
+use ligerito_binary_fields::{BinaryElem128, BinaryElem32};
+use polkavm_pcvm::polkavm_adapter::PolkaVMRegisters;
+use polkavm_pcvm::polkavm_constraints_v2::{InstructionProof, ProvenTransition};
+use polkavm_pcvm::polkavm_prover::{prove_polkavm_execution, verify_polkavm_proof};
 use std::io::{self, Write};
+use std::marker::PhantomData;
 
 use polkavm::program::Instruction;
 use polkavm_common::program::{RawReg, Reg};
@@ -33,7 +33,9 @@ struct Grid {
 
 impl Grid {
     fn new() -> Self {
-        Self { cells: vec![0u32; 64] }
+        Self {
+            cells: vec![0u32; 64],
+        }
     }
 
     fn get(&self, x: usize, y: usize) -> u32 {
@@ -107,7 +109,10 @@ impl Grid {
             for x in 0..8 {
                 if x == cursor_x && y == cursor_y {
                     // Highlight cursor position
-                    print!("\x1b[7m{}\x1b[0m", if self.get(x, y) == 1 { "█" } else { "·" });
+                    print!(
+                        "\x1b[7m{}\x1b[0m",
+                        if self.get(x, y) == 1 { "█" } else { "·" }
+                    );
                 } else {
                     print!("{}", if self.get(x, y) == 1 { "█" } else { "·" });
                 }
@@ -122,7 +127,7 @@ fn simulate_generation(
     grid_before: &Grid,
     _grid_after: &Grid,
     pc_start: u32,
-    regs_start: [u32; 13],  // Pass in register state for continuity!
+    regs_start: [u32; 13], // Pass in register state for continuity!
     memory_root: [u8; 32],
 ) -> (Vec<(ProvenTransition, Instruction)>, [u32; 13]) {
     let mut trace = Vec::new();
@@ -158,7 +163,7 @@ fn simulate_generation(
         pc += 2;
     }
 
-    (trace, regs)  // Return final register state
+    (trace, regs) // Return final register state
 }
 
 /// Interactive Game of Life session
@@ -167,7 +172,7 @@ struct InteractiveSession {
     generation: usize,
     trace: Vec<(ProvenTransition, Instruction)>,
     pc: u32,
-    regs: [u32; 13],  // Track register state across generations
+    regs: [u32; 13], // Track register state across generations
     memory_root: [u8; 32],
     prover_config: ProverConfig<BinaryElem32, BinaryElem32>,
     verifier_config: VerifierConfig,
@@ -180,7 +185,7 @@ impl InteractiveSession {
             generation: 0,
             trace: Vec::new(),
             pc: 0x1000,
-            regs: [0u32; 13],  // Initialize registers
+            regs: [0u32; 13], // Initialize registers
             memory_root: [0u8; 32],
             prover_config: hardcoded_config_20(PhantomData, PhantomData),
             verifier_config: hardcoded_config_20_verifier(),
@@ -195,13 +200,13 @@ impl InteractiveSession {
             &self.grid,
             &grid_next,
             self.pc,
-            self.regs,  // Pass current register state
-            self.memory_root
+            self.regs, // Pass current register state
+            self.memory_root,
         );
 
         self.pc += (gen_trace.len() * 2) as u32;
         self.trace.extend(gen_trace);
-        self.regs = final_regs;  // Update register state for next generation
+        self.regs = final_regs; // Update register state for next generation
 
         self.grid = grid_next;
         self.generation += 1;
@@ -212,8 +217,11 @@ impl InteractiveSession {
             return Err("No execution to prove!".to_string());
         }
 
-        println!("\n⚡ Generating proof for {} generations ({} steps)...",
-                 self.generation, self.trace.len());
+        println!(
+            "\n⚡ Generating proof for {} generations ({} steps)...",
+            self.generation,
+            self.trace.len()
+        );
 
         // Generate challenge
         let program_commitment = [0x47u8; 32];
@@ -240,7 +248,8 @@ impl InteractiveSession {
             batching_challenge,
             &self.prover_config,
             transcript,
-        ).map_err(|e| format!("Proof generation failed: {}", e))?;
+        )
+        .map_err(|e| format!("Proof generation failed: {}", e))?;
         let prove_time = start.elapsed();
 
         println!("✓ Proof generated in {:?}", prove_time);
@@ -261,7 +270,10 @@ impl InteractiveSession {
         }
 
         println!("✓ Proof verified in {:?}", verify_time);
-        println!("  Constraint accumulator: {:?}", proof.constraint_accumulator);
+        println!(
+            "  Constraint accumulator: {:?}",
+            proof.constraint_accumulator
+        );
 
         // Clear trace (it's now proven)
         self.trace.clear();
@@ -275,7 +287,10 @@ impl InteractiveSession {
 
     fn display_menu(&self) {
         println!("\n╔════════════════════════════════════════╗");
-        println!("║   Interactive Game of Life (Gen {})    ║", self.generation);
+        println!(
+            "║   Interactive Game of Life (Gen {})    ║",
+            self.generation
+        );
         println!("╚════════════════════════════════════════╝");
         println!();
         self.grid.print();
@@ -425,19 +440,17 @@ fn test_manual_interactive() {
                     std::thread::sleep(std::time::Duration::from_millis(500));
                 }
             }
-            "p" => {
-                match session.prove_and_verify() {
-                    Ok(_) => {
-                        println!("\nPress Enter to continue...");
-                        let mut _dummy = String::new();
-                        stdin.read_line(&mut _dummy).unwrap();
-                    }
-                    Err(e) => {
-                        println!("Error: {}", e);
-                        std::thread::sleep(std::time::Duration::from_secs(2));
-                    }
+            "p" => match session.prove_and_verify() {
+                Ok(_) => {
+                    println!("\nPress Enter to continue...");
+                    let mut _dummy = String::new();
+                    stdin.read_line(&mut _dummy).unwrap();
                 }
-            }
+                Err(e) => {
+                    println!("Error: {}", e);
+                    std::thread::sleep(std::time::Duration::from_secs(2));
+                }
+            },
             _ => {
                 // Try to parse as coordinates
                 if parts.len() == 2 {

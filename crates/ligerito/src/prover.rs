@@ -1,13 +1,13 @@
-use binary_fields::BinaryFieldElement;
 use crate::{
-    ProverConfig, LigeritoProof, FinalizedLigeritoProof, RecursiveLigeroCommitment,
-    RecursiveLigeroProof, FinalLigeroProof, SumcheckTranscript,
-    transcript::{FiatShamir, Transcript},
+    data_structures::finalize,
     ligero::ligero_commit,
     sumcheck_polys::induce_sumcheck_poly,
+    transcript::{FiatShamir, Transcript},
     utils::{eval_sk_at_vks, partial_eval_multilinear},
-    data_structures::finalize,
+    FinalLigeroProof, FinalizedLigeritoProof, LigeritoProof, ProverConfig,
+    RecursiveLigeroCommitment, RecursiveLigeroProof, SumcheckTranscript,
 };
+use binary_fields::BinaryFieldElement;
 
 #[cfg(feature = "parallel")]
 use crate::sumcheck_polys::induce_sumcheck_poly_parallel;
@@ -65,7 +65,12 @@ where
     let mut proof = LigeritoProof::<T, U>::new();
 
     // Initial commitment
-    let wtns_0 = ligero_commit(poly, config.initial_dims.0, config.initial_dims.1, &config.initial_reed_solomon);
+    let wtns_0 = ligero_commit(
+        poly,
+        config.initial_dims.0,
+        config.initial_dims.1,
+        &config.initial_reed_solomon,
+    );
     let cm_0 = RecursiveLigeroCommitment {
         root: wtns_0.tree.get_root(),
     };
@@ -73,9 +78,7 @@ where
     fs.absorb_root(&cm_0.root);
 
     // Get initial challenges - get them as T type (base field)
-    let partial_evals_0: Vec<T> = (0..config.initial_k)
-        .map(|_| fs.get_challenge())
-        .collect();
+    let partial_evals_0: Vec<T> = (0..config.initial_k).map(|_| fs.get_challenge()).collect();
 
     // Partial evaluation of multilinear polynomial
     let mut f_evals = poly.to_vec();
@@ -86,7 +89,12 @@ where
 
     // First recursive step - convert to U type
     let f_evals_u: Vec<U> = f_evals.iter().map(|&x| U::from(x)).collect();
-    let wtns_1 = ligero_commit(&f_evals_u, config.dims[0].0, config.dims[0].1, &config.reed_solomon_codes[0]);
+    let wtns_1 = ligero_commit(
+        &f_evals_u,
+        config.dims[0].0,
+        config.dims[0].1,
+        &config.reed_solomon_codes[0],
+    );
     let cm_1 = RecursiveLigeroCommitment {
         root: wtns_1.tree.get_root(),
     };
@@ -95,7 +103,7 @@ where
 
     // Query selection
     let rows = wtns_0.mat.len();
-    let queries = fs.get_distinct_queries(rows, config.num_queries);  // Returns 0-based indices
+    let queries = fs.get_distinct_queries(rows, config.num_queries); // Returns 0-based indices
     let alpha = fs.get_challenge::<U>();
 
     // Prepare for sumcheck
@@ -103,11 +111,9 @@ where
     let sks_vks: Vec<T> = eval_sk_at_vks(1 << n);
 
     // Use 0-based queries directly for array access
-    let opened_rows: Vec<Vec<T>> = queries.iter()
-        .map(|&q| wtns_0.mat[q].clone())
-        .collect();
+    let opened_rows: Vec<Vec<T>> = queries.iter().map(|&q| wtns_0.mat[q].clone()).collect();
 
-    let mtree_proof = wtns_0.tree.prove(&queries);  // prove() expects 0-based
+    let mtree_proof = wtns_0.tree.prove(&queries); // prove() expects 0-based
     proof.initial_ligero_proof = Some(RecursiveLigeroProof {
         opened_rows: opened_rows.clone(),
         merkle_proof: mtree_proof,
@@ -159,14 +165,13 @@ where
             fs.absorb_elems(&current_poly);
 
             let rows = wtns_prev.mat.len();
-            let queries = fs.get_distinct_queries(rows, config.num_queries);  // 0-based
+            let queries = fs.get_distinct_queries(rows, config.num_queries); // 0-based
 
             // Use 0-based queries directly for array access
-            let opened_rows: Vec<Vec<U>> = queries.iter()
-                .map(|&q| wtns_prev.mat[q].clone())
-                .collect();
+            let opened_rows: Vec<Vec<U>> =
+                queries.iter().map(|&q| wtns_prev.mat[q].clone()).collect();
 
-            let mtree_proof = wtns_prev.tree.prove(&queries);  // 0-based
+            let mtree_proof = wtns_prev.tree.prove(&queries); // 0-based
 
             proof.final_ligero_proof = Some(FinalLigeroProof {
                 yr: current_poly.clone(),
@@ -174,7 +179,9 @@ where
                 merkle_proof: mtree_proof,
             });
 
-            proof.sumcheck_transcript = Some(SumcheckTranscript { transcript: sumcheck_transcript });
+            proof.sumcheck_transcript = Some(SumcheckTranscript {
+                transcript: sumcheck_transcript,
+            });
 
             return finalize(proof);
         }
@@ -194,15 +201,13 @@ where
         fs.absorb_root(&cm_next.root);
 
         let rows = wtns_prev.mat.len();
-        let queries = fs.get_distinct_queries(rows, config.num_queries);  // 0-based
+        let queries = fs.get_distinct_queries(rows, config.num_queries); // 0-based
         let alpha = fs.get_challenge::<U>();
 
         // Use 0-based queries directly for array access
-        let opened_rows: Vec<Vec<U>> = queries.iter()
-            .map(|&q| wtns_prev.mat[q].clone())
-            .collect();
+        let opened_rows: Vec<Vec<U>> = queries.iter().map(|&q| wtns_prev.mat[q].clone()).collect();
 
-        let mtree_proof = wtns_prev.tree.prove(&queries);  // 0-based
+        let mtree_proof = wtns_prev.tree.prove(&queries); // 0-based
         proof.recursive_proofs.push(RecursiveLigeroProof {
             opened_rows: opened_rows.clone(),
             merkle_proof: mtree_proof,
@@ -213,14 +218,8 @@ where
         let sks_vks: Vec<U> = eval_sk_at_vks(1 << n);
 
         // Use parallel version when available for performance
-        let (basis_poly, enforced_sum) = induce_sumcheck_poly_auto::<U, U>(
-            n,
-            &sks_vks,
-            &opened_rows,
-            &rs,
-            &queries,
-            alpha,
-        );
+        let (basis_poly, enforced_sum) =
+            induce_sumcheck_poly_auto::<U, U>(n, &sks_vks, &opened_rows, &rs, &queries, alpha);
 
         // Glue sumcheck absorb
         let glue_sum = current_sum.add(&enforced_sum);
@@ -309,7 +308,12 @@ where
 
     // Initial commitment
     println!("Creating initial commitment...");
-    let wtns_0 = ligero_commit(poly, config.initial_dims.0, config.initial_dims.1, &config.initial_reed_solomon);
+    let wtns_0 = ligero_commit(
+        poly,
+        config.initial_dims.0,
+        config.initial_dims.1,
+        &config.initial_reed_solomon,
+    );
     let cm_0 = RecursiveLigeroCommitment {
         root: wtns_0.tree.get_root(),
     };
@@ -338,7 +342,12 @@ where
 
     // First recursive step
     println!("\nFirst recursive step...");
-    let wtns_1 = ligero_commit(&f_evals_u, config.dims[0].0, config.dims[0].1, &config.reed_solomon_codes[0]);
+    let wtns_1 = ligero_commit(
+        &f_evals_u,
+        config.dims[0].0,
+        config.dims[0].1,
+        &config.reed_solomon_codes[0],
+    );
     let cm_1 = RecursiveLigeroCommitment {
         root: wtns_1.tree.get_root(),
     };
@@ -349,7 +358,10 @@ where
     let rows = wtns_0.mat.len();
     println!("\nSelecting queries from {} rows...", rows);
     let queries = fs.get_distinct_queries(rows, config.num_queries);
-    println!("Selected queries (0-based): {:?}", &queries[..queries.len().min(5)]);
+    println!(
+        "Selected queries (0-based): {:?}",
+        &queries[..queries.len().min(5)]
+    );
 
     let alpha = fs.get_challenge::<U>();
     println!("Alpha challenge: {:?}", alpha);
@@ -359,9 +371,7 @@ where
     println!("\nPreparing sumcheck, n = {}", n);
     let sks_vks: Vec<T> = eval_sk_at_vks(1 << n);
 
-    let opened_rows: Vec<Vec<T>> = queries.iter()
-        .map(|&q| wtns_0.mat[q].clone())
-        .collect();
+    let opened_rows: Vec<Vec<T>> = queries.iter().map(|&q| wtns_0.mat[q].clone()).collect();
 
     let mtree_proof = wtns_0.tree.prove(&queries);
     proof.initial_ligero_proof = Some(RecursiveLigeroProof {
@@ -391,7 +401,11 @@ where
     let mut wtns_prev = wtns_1;
 
     for i in 0..config.recursive_steps {
-        println!("\n--- Recursive step {}/{} ---", i+1, config.recursive_steps);
+        println!(
+            "\n--- Recursive step {}/{} ---",
+            i + 1,
+            config.recursive_steps
+        );
         let mut rs = Vec::new();
 
         // Sumcheck rounds
@@ -423,9 +437,8 @@ where
             let rows = wtns_prev.mat.len();
             let queries = fs.get_distinct_queries(rows, config.num_queries);
 
-            let opened_rows: Vec<Vec<U>> = queries.iter()
-                .map(|&q| wtns_prev.mat[q].clone())
-                .collect();
+            let opened_rows: Vec<Vec<U>> =
+                queries.iter().map(|&q| wtns_prev.mat[q].clone()).collect();
 
             let mtree_proof = wtns_prev.tree.prove(&queries);
 
@@ -435,7 +448,9 @@ where
                 merkle_proof: mtree_proof,
             });
 
-            proof.sumcheck_transcript = Some(SumcheckTranscript { transcript: sumcheck_transcript });
+            proof.sumcheck_transcript = Some(SumcheckTranscript {
+                transcript: sumcheck_transcript,
+            });
 
             println!("Proof generation complete!");
             return finalize(proof);
@@ -460,9 +475,7 @@ where
         let queries = fs.get_distinct_queries(rows, config.num_queries);
         let alpha = fs.get_challenge::<U>();
 
-        let opened_rows: Vec<Vec<U>> = queries.iter()
-            .map(|&q| wtns_prev.mat[q].clone())
-            .collect();
+        let opened_rows: Vec<Vec<U>> = queries.iter().map(|&q| wtns_prev.mat[q].clone()).collect();
 
         let mtree_proof = wtns_prev.tree.prove(&queries);
         proof.recursive_proofs.push(RecursiveLigeroProof {
@@ -475,14 +488,8 @@ where
         let sks_vks: Vec<U> = eval_sk_at_vks(1 << n);
 
         println!("\nInducing next sumcheck polynomial...");
-        let (basis_poly, enforced_sum) = induce_sumcheck_poly(
-            n,
-            &sks_vks,
-            &opened_rows,
-            &rs,
-            &queries,
-            alpha,
-        );
+        let (basis_poly, enforced_sum) =
+            induce_sumcheck_poly(n, &sks_vks, &opened_rows, &rs, &queries, alpha);
         println!("Next enforced sum: {:?}", enforced_sum);
 
         // Glue sumcheck
@@ -570,8 +577,8 @@ fn glue_sums<F: BinaryFieldElement>(sum_f: F, sum_g: F, beta: F) -> F {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ligerito_binary_fields::{BinaryElem32, BinaryElem128};
     use crate::configs::hardcoded_config_12;
+    use ligerito_binary_fields::{BinaryElem128, BinaryElem32};
     use std::marker::PhantomData;
 
     #[test]
@@ -579,9 +586,9 @@ mod tests {
         // for binary field sumcheck, we use linear polynomials: f(x) = s0 + s1*x
         // where s1 = s0 + s2, so f(0) = s0 and f(1) = s0 + s1 = s2
         let coeffs = (
-            BinaryElem32::from(1),  // s0
-            BinaryElem32::from(3),  // s1 = s0 + s2
-            BinaryElem32::from(2),  // s2
+            BinaryElem32::from(1), // s0
+            BinaryElem32::from(3), // s1 = s0 + s2
+            BinaryElem32::from(2), // s2
         );
 
         // test at x = 0: f(0) = s0
@@ -603,16 +610,19 @@ mod tests {
         let result = glue_polynomials(&f, &g, beta);
 
         assert_eq!(result.len(), 2);
-        assert_eq!(result[0], BinaryElem32::from(1).add(&beta.mul(&BinaryElem32::from(3))));
-        assert_eq!(result[1], BinaryElem32::from(2).add(&beta.mul(&BinaryElem32::from(4))));
+        assert_eq!(
+            result[0],
+            BinaryElem32::from(1).add(&beta.mul(&BinaryElem32::from(3)))
+        );
+        assert_eq!(
+            result[1],
+            BinaryElem32::from(2).add(&beta.mul(&BinaryElem32::from(4)))
+        );
     }
 
     #[test]
     fn test_simple_prove() {
-        let config = hardcoded_config_12(
-            PhantomData::<BinaryElem32>,
-            PhantomData::<BinaryElem128>,
-        );
+        let config = hardcoded_config_12(PhantomData::<BinaryElem32>, PhantomData::<BinaryElem128>);
 
         // Test with all ones polynomial
         let poly = vec![BinaryElem32::one(); 1 << 12];
@@ -625,10 +635,7 @@ mod tests {
     #[test]
     fn test_sumcheck_consistency_in_prover() {
         // This is tested indirectly through the debug assertions in the prover
-        let config = hardcoded_config_12(
-            PhantomData::<BinaryElem32>,
-            PhantomData::<BinaryElem128>,
-        );
+        let config = hardcoded_config_12(PhantomData::<BinaryElem32>, PhantomData::<BinaryElem128>);
 
         // Test with zero polynomial
         let poly = vec![BinaryElem32::zero(); 1 << 12];

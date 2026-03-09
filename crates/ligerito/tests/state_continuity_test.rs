@@ -12,10 +12,10 @@
 
 #![cfg(feature = "polkavm-integration")]
 
-use ligerito::pcvm::polkavm_constraints_v2::{ProvenTransition, InstructionProof};
 use ligerito::pcvm::polkavm_adapter::PolkaVMRegisters;
 use ligerito::pcvm::polkavm_arithmetization::arithmetize_polkavm_trace;
-use ligerito_binary_fields::{BinaryElem32, BinaryElem128, BinaryFieldElement};
+use ligerito::pcvm::polkavm_constraints_v2::{InstructionProof, ProvenTransition};
+use ligerito_binary_fields::{BinaryElem128, BinaryElem32, BinaryFieldElement};
 
 use polkavm::program::Instruction;
 use polkavm_common::program::{RawReg, Reg};
@@ -30,7 +30,7 @@ fn test_reject_forged_register_continuity() {
     // Step 1: load_imm a0, 42
     let mut regs_0 = [0u32; 13];
     let mut regs_1 = regs_0;
-    regs_1[7] = 42;  // a0 = 42
+    regs_1[7] = 42; // a0 = 42
 
     let step1 = (
         ProvenTransition {
@@ -55,17 +55,17 @@ fn test_reject_forged_register_continuity() {
     // Step 2: FORGED initial state
     // Instead of starting with a0=42 (from step 1), we claim a0=999
     let mut forged_regs_before = [0u32; 13];
-    forged_regs_before[7] = 999;  // WRONG! Should be 42
+    forged_regs_before[7] = 999; // WRONG! Should be 42
 
     let mut regs_2 = forged_regs_before;
-    regs_2[8] = 100;  // a1 = 100
+    regs_2[8] = 100; // a1 = 100
 
     let step2 = (
         ProvenTransition {
             pc: 0x1002,
             next_pc: 0x1004,
             instruction_size: 2,
-            regs_before: PolkaVMRegisters::from_array(forged_regs_before),  // FORGED!
+            regs_before: PolkaVMRegisters::from_array(forged_regs_before), // FORGED!
             regs_after: PolkaVMRegisters::from_array(regs_2),
             memory_root_before: [0u8; 32],
             memory_root_after: [0u8; 32],
@@ -98,7 +98,10 @@ fn test_reject_forged_register_continuity() {
     println!("✓ Forged register continuity correctly rejected");
     println!("  - Step 1 ends with: a0 = 42");
     println!("  - Step 2 claims to start with: a0 = 999");
-    println!("  - Constraint accumulator: {:?} (non-zero)", arith.constraint_accumulator);
+    println!(
+        "  - Constraint accumulator: {:?} (non-zero)",
+        arith.constraint_accumulator
+    );
 }
 
 /// Test: Forged memory root continuity is rejected
@@ -119,7 +122,7 @@ fn test_reject_forged_memory_continuity() {
             regs_before: PolkaVMRegisters::from_array(regs),
             regs_after: PolkaVMRegisters::from_array(regs),
             memory_root_before: [0u8; 32],
-            memory_root_after: memory_root_1,  // Final state: [1, 2, 0, 0, ...]
+            memory_root_after: memory_root_1, // Final state: [1, 2, 0, 0, ...]
             memory_proof: None,
             instruction_proof: InstructionProof {
                 merkle_path: vec![],
@@ -134,8 +137,8 @@ fn test_reject_forged_memory_continuity() {
     // Step 2: FORGED memory root
     // Claims to start with [99, 88, ...] instead of [1, 2, ...]
     let mut forged_memory_root = [0u8; 32];
-    forged_memory_root[0] = 99;  // WRONG! Should be 1
-    forged_memory_root[1] = 88;  // WRONG! Should be 2
+    forged_memory_root[0] = 99; // WRONG! Should be 1
+    forged_memory_root[1] = 88; // WRONG! Should be 2
 
     let step2 = (
         ProvenTransition {
@@ -144,7 +147,7 @@ fn test_reject_forged_memory_continuity() {
             instruction_size: 2,
             regs_before: PolkaVMRegisters::from_array(regs),
             regs_after: PolkaVMRegisters::from_array(regs),
-            memory_root_before: forged_memory_root,  // FORGED!
+            memory_root_before: forged_memory_root, // FORGED!
             memory_root_after: forged_memory_root,
             memory_proof: None,
             instruction_proof: InstructionProof {
@@ -173,7 +176,10 @@ fn test_reject_forged_memory_continuity() {
     println!("✓ Forged memory root continuity correctly rejected");
     println!("  - Step 1 ends with memory_root: [1, 2, 0, ...]");
     println!("  - Step 2 claims to start with: [99, 88, 0, ...]");
-    println!("  - Constraint accumulator: {:?} (non-zero)", arith.constraint_accumulator);
+    println!(
+        "  - Constraint accumulator: {:?} (non-zero)",
+        arith.constraint_accumulator
+    );
 }
 
 /// Test: Forged PC continuity is rejected
@@ -185,7 +191,7 @@ fn test_reject_forged_pc_continuity() {
     let step1 = (
         ProvenTransition {
             pc: 0x1000,
-            next_pc: 0x1002,  // Step 1 says "next is 0x1002"
+            next_pc: 0x1002, // Step 1 says "next is 0x1002"
             instruction_size: 2,
             regs_before: PolkaVMRegisters::from_array(regs),
             regs_after: PolkaVMRegisters::from_array(regs),
@@ -206,7 +212,7 @@ fn test_reject_forged_pc_continuity() {
     // Claims to start at 0x9999 instead of 0x1002
     let step2 = (
         ProvenTransition {
-            pc: 0x9999,  // WRONG! Should be 0x1002
+            pc: 0x9999, // WRONG! Should be 0x1002
             next_pc: 0x999B,
             instruction_size: 2,
             regs_before: PolkaVMRegisters::from_array(regs),
@@ -240,7 +246,10 @@ fn test_reject_forged_pc_continuity() {
     println!("✓ Forged PC continuity correctly rejected");
     println!("  - Step 1 next_pc: 0x1002");
     println!("  - Step 2 pc: 0x9999 (control flow forgery!)");
-    println!("  - Constraint accumulator: {:?} (non-zero)", arith.constraint_accumulator);
+    println!(
+        "  - Constraint accumulator: {:?} (non-zero)",
+        arith.constraint_accumulator
+    );
 }
 
 /// Test: Valid continuity passes
@@ -259,7 +268,7 @@ fn test_valid_state_continuity_passes() {
             next_pc: 0x1002,
             instruction_size: 2,
             regs_before: PolkaVMRegisters::from_array(regs_0),
-            regs_after: PolkaVMRegisters::from_array(regs_1),  // Final: a0=10
+            regs_after: PolkaVMRegisters::from_array(regs_1), // Final: a0=10
             memory_root_before: [0u8; 32],
             memory_root_after: [0u8; 32],
             memory_proof: None,
@@ -280,12 +289,12 @@ fn test_valid_state_continuity_passes() {
 
     let step2 = (
         ProvenTransition {
-            pc: 0x1002,  // CORRECT: matches step1.next_pc
+            pc: 0x1002, // CORRECT: matches step1.next_pc
             next_pc: 0x1004,
             instruction_size: 2,
-            regs_before: PolkaVMRegisters::from_array(regs_1),  // CORRECT: chains from step 1
+            regs_before: PolkaVMRegisters::from_array(regs_1), // CORRECT: chains from step 1
             regs_after: PolkaVMRegisters::from_array(regs_2),
-            memory_root_before: [0u8; 32],  // CORRECT: matches step1.memory_root_after
+            memory_root_before: [0u8; 32], // CORRECT: matches step1.memory_root_after
             memory_root_after: [0u8; 32],
             memory_proof: None,
             instruction_proof: InstructionProof {

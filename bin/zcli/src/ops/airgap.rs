@@ -834,14 +834,14 @@ async fn send_airgap_shielded_fvk(
             serde_json::json!({
                 "action": "sign_request",
                 "qr_hex": hex::encode(&qr_data),
-                "sighash": hex::encode(&pczt_state.sighash),
+                "sighash": hex::encode(pczt_state.sighash),
                 "actions": pczt_state.alphas.len(),
             })
         );
     } else {
         eprintln!("scan this QR with zigner:");
         display_qr(&qr_data);
-        eprintln!("sighash: {}", hex::encode(&pczt_state.sighash));
+        eprintln!("sighash: {}", hex::encode(pczt_state.sighash));
         eprintln!("{} action(s) require signing", pczt_state.alphas.len());
     }
 
@@ -1013,14 +1013,14 @@ async fn send_airgap_to_transparent_fvk(
             serde_json::json!({
                 "action": "sign_request",
                 "qr_hex": hex::encode(&qr_data),
-                "sighash": hex::encode(&pczt_state.sighash),
+                "sighash": hex::encode(pczt_state.sighash),
                 "actions": pczt_state.alphas.len(),
             })
         );
     } else {
         eprintln!("scan this QR with zigner:");
         display_qr(&qr_data);
-        eprintln!("sighash: {}", hex::encode(&pczt_state.sighash));
+        eprintln!("sighash: {}", hex::encode(pczt_state.sighash));
         eprintln!("{} action(s) require signing", pczt_state.alphas.len());
     }
 
@@ -1125,7 +1125,7 @@ fn build_pczt_and_qr(
     anchor_height: u32,
     mainnet: bool,
 ) -> Result<(Vec<u8>, PcztState), Error> {
-    let fvk: FullViewingKey = Option::from(FullViewingKey::from_bytes(fvk_bytes))
+    let fvk: FullViewingKey = FullViewingKey::from_bytes(fvk_bytes)
         .ok_or_else(|| Error::Transaction("invalid FVK bytes".into()))?;
 
     // build orchard bundle
@@ -1228,13 +1228,13 @@ fn build_pczt_and_qr(
 
     // finalize IO (computes bsk, signs dummy spends)
     pczt_bundle
-        .finalize_io(sighash, &mut rng)
+        .finalize_io(sighash, rng)
         .map_err(|e| Error::Transaction(format!("finalize_io: {}", e)))?;
 
     // create ZK proof
     let pk = orchard::circuit::ProvingKey::build();
     pczt_bundle
-        .create_proof(&pk, &mut rng)
+        .create_proof(&pk, rng)
         .map_err(|e| Error::Transaction(format!("create_proof: {}", e)))?;
 
     // extract alphas for non-dummy actions (those still needing signatures)

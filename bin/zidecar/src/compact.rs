@@ -1,17 +1,17 @@
 //! compact block builder from full zcash blocks
 
 use crate::error::{Result, ZidecarError};
-use crate::zebrad::{ZebradClient, BlockHeader};
+use crate::zebrad::{BlockHeader, ZebradClient};
 use tracing::debug;
 
 /// compact action for trial decryption
 #[derive(Debug, Clone)]
 pub struct CompactAction {
-    pub cmx: Vec<u8>,              // 32 bytes
-    pub ephemeral_key: Vec<u8>,    // 32 bytes
-    pub ciphertext: Vec<u8>,       // 52 bytes (compact)
-    pub nullifier: Vec<u8>,        // 32 bytes
-    pub txid: Vec<u8>,             // 32 bytes - for memo retrieval
+    pub cmx: Vec<u8>,           // 32 bytes
+    pub ephemeral_key: Vec<u8>, // 32 bytes
+    pub ciphertext: Vec<u8>,    // 52 bytes (compact)
+    pub nullifier: Vec<u8>,     // 32 bytes
+    pub txid: Vec<u8>,          // 32 bytes - for memo retrieval
 }
 
 /// compact block with only scanning data
@@ -24,10 +24,7 @@ pub struct CompactBlock {
 
 impl CompactBlock {
     /// build compact block from zebrad
-    pub async fn from_zebrad(
-        zebrad: &ZebradClient,
-        height: u32,
-    ) -> Result<Self> {
+    pub async fn from_zebrad(zebrad: &ZebradClient, height: u32) -> Result<Self> {
         let hash_str = zebrad.get_block_hash(height).await?;
         let block = zebrad.get_block(&hash_str, 1).await?;
 

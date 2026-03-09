@@ -1,6 +1,6 @@
 //! WebGPU device initialization and management
 
-use wgpu::{Adapter, Device, Queue, Instance, DeviceDescriptor, Features, Limits};
+use wgpu::{Adapter, Device, DeviceDescriptor, Features, Instance, Limits, Queue};
 
 /// GPU device with queue for command submission
 pub struct GpuDevice {
@@ -90,15 +90,26 @@ impl GpuDevice {
 
         #[cfg(target_arch = "wasm32")]
         {
-            web_sys::console::log_1(&format!("WebGPU device initialized: {} MB max buffer",
-                capabilities.max_buffer_size / (1024 * 1024)).into());
+            web_sys::console::log_1(
+                &format!(
+                    "WebGPU device initialized: {} MB max buffer",
+                    capabilities.max_buffer_size / (1024 * 1024)
+                )
+                .into(),
+            );
         }
 
         #[cfg(not(target_arch = "wasm32"))]
         {
             println!("WebGPU device initialized:");
-            println!("  Max buffer size: {} MB", capabilities.max_buffer_size / (1024 * 1024));
-            println!("  Max workgroup size: {}", capabilities.max_compute_workgroup_size_x);
+            println!(
+                "  Max buffer size: {} MB",
+                capabilities.max_buffer_size / (1024 * 1024)
+            );
+            println!(
+                "  Max workgroup size: {}",
+                capabilities.max_compute_workgroup_size_x
+            );
         }
 
         Ok(Self {

@@ -1,4 +1,4 @@
-use ligerito_binary_fields::{BinaryElem32, BinaryElem128, BinaryFieldElement};
+use ligerito_binary_fields::{BinaryElem128, BinaryElem32, BinaryFieldElement};
 
 fn tensorized_dot_product_debug<T, U>(row: &[T], challenges: &[U]) -> U
 where
@@ -18,7 +18,13 @@ where
     }
 
     let mut current: Vec<U> = row.iter().map(|&x| U::from(x)).collect();
-    println!("  Initial: {:?}", current.iter().map(|x| format!("{:?}", x)).collect::<Vec<_>>());
+    println!(
+        "  Initial: {:?}",
+        current
+            .iter()
+            .map(|x| format!("{:?}", x))
+            .collect::<Vec<_>>()
+    );
 
     // REVERSED: iterate from LAST challenge to FIRST
     for (dim, &r) in challenges.iter().enumerate().rev() {
@@ -28,11 +34,13 @@ where
         println!("  Dimension {} (r={:?}, 1+r={:?}):", dim, r, one_minus_r);
 
         for i in 0..half {
-            let left = current[2*i];
-            let right = current[2*i+1];
+            let left = current[2 * i];
+            let right = current[2 * i + 1];
             current[i] = left.mul(&one_minus_r).add(&right.mul(&r));
-            println!("    new[{}] = (1+r)*{:?} + r*{:?} = {:?}",
-                     i, left, right, current[i]);
+            println!(
+                "    new[{}] = (1+r)*{:?} + r*{:?} = {:?}",
+                i, left, right, current[i]
+            );
         }
         current.truncate(half);
     }
@@ -45,15 +53,15 @@ where
 fn test_simple_case() {
     // Test k=2 with simple row
     let row: Vec<BinaryElem32> = vec![
-        BinaryElem32::from_bits(1),  // row[0]
-        BinaryElem32::from_bits(2),  // row[1]
-        BinaryElem32::from_bits(4),  // row[2]
-        BinaryElem32::from_bits(8),  // row[3]
+        BinaryElem32::from_bits(1), // row[0]
+        BinaryElem32::from_bits(2), // row[1]
+        BinaryElem32::from_bits(4), // row[2]
+        BinaryElem32::from_bits(8), // row[3]
     ];
 
     let challenges: Vec<BinaryElem128> = vec![
-        BinaryElem128::from_bits(3),  // r0
-        BinaryElem128::from_bits(5),  // r1
+        BinaryElem128::from_bits(3), // r0
+        BinaryElem128::from_bits(5), // r1
     ];
 
     println!("\n=== Manual calculation ===");
@@ -86,7 +94,8 @@ fn test_simple_case() {
     println!("  basis[2] = {:?}", basis2);
     println!("  basis[3] = {:?}", basis3);
 
-    let manual_result = BinaryElem128::from(row[0]).mul(&basis0)
+    let manual_result = BinaryElem128::from(row[0])
+        .mul(&basis0)
         .add(&BinaryElem128::from(row[1]).mul(&basis1))
         .add(&BinaryElem128::from(row[2]).mul(&basis2))
         .add(&BinaryElem128::from(row[3]).mul(&basis3));

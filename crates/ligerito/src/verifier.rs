@@ -1,12 +1,12 @@
 #[cfg(not(feature = "std"))]
 use alloc::vec::Vec;
 
-use binary_fields::BinaryFieldElement;
 use crate::{
-    VerifierConfig, FinalizedLigeritoProof,
     transcript::{FiatShamir, Transcript},
-    utils::{eval_sk_at_vks, evaluate_lagrange_basis, verify_ligero, hash_row},
+    utils::{eval_sk_at_vks, evaluate_lagrange_basis, hash_row, verify_ligero},
+    FinalizedLigeritoProof, VerifierConfig,
 };
+use binary_fields::BinaryFieldElement;
 
 // Debug printing macros - only enabled in debug builds with std
 #[cfg(all(feature = "std", debug_assertions))]
@@ -16,7 +16,7 @@ macro_rules! debug_println {
 
 #[cfg(not(all(feature = "std", debug_assertions)))]
 macro_rules! debug_println {
-    ($($arg:tt)*) => { }
+    ($($arg:tt)*) => {};
 }
 
 use merkle_tree::{self, Hash};
@@ -39,7 +39,14 @@ where
     T: BinaryFieldElement + Send + Sync,
     U: BinaryFieldElement + Send + Sync + From<T>,
 {
-    crate::sumcheck_polys::induce_sumcheck_poly_parallel(n, sks_vks, opened_rows, v_challenges, sorted_queries, alpha)
+    crate::sumcheck_polys::induce_sumcheck_poly_parallel(
+        n,
+        sks_vks,
+        opened_rows,
+        v_challenges,
+        sorted_queries,
+        alpha,
+    )
 }
 
 #[cfg(not(feature = "parallel"))]
@@ -56,7 +63,14 @@ where
     T: BinaryFieldElement,
     U: BinaryFieldElement + From<T>,
 {
-    crate::sumcheck_polys::induce_sumcheck_poly(n, sks_vks, opened_rows, v_challenges, sorted_queries, alpha)
+    crate::sumcheck_polys::induce_sumcheck_poly(
+        n,
+        sks_vks,
+        opened_rows,
+        v_challenges,
+        sorted_queries,
+        alpha,
+    )
 }
 
 /// Verify a Ligerito proof - FIXED VERSION
@@ -77,7 +91,8 @@ where
     let cached_initial_sks: Vec<T> = eval_sk_at_vks(1 << config.initial_dim);
 
     // Cache recursive basis evaluations (type U) for all rounds
-    let cached_recursive_sks: Vec<Vec<U>> = config.log_dims
+    let cached_recursive_sks: Vec<Vec<U>> = config
+        .log_dims
         .iter()
         .map(|&dim| eval_sk_at_vks(1 << dim))
         .collect();
@@ -93,15 +108,10 @@ where
     fs.absorb_root(&proof.initial_ligero_cm.root);
 
     // Get initial challenges in base field to match prover
-    let partial_evals_0_t: Vec<T> = (0..config.initial_k)
-        .map(|_| fs.get_challenge())
-        .collect();
+    let partial_evals_0_t: Vec<T> = (0..config.initial_k).map(|_| fs.get_challenge()).collect();
 
     // Convert to extension field for computations
-    let partial_evals_0: Vec<U> = partial_evals_0_t
-        .iter()
-        .map(|&x| U::from(x))
-        .collect();
+    let partial_evals_0: Vec<U> = partial_evals_0_t.iter().map(|&x| U::from(x)).collect();
 
     // Absorb first recursive commitment
     if proof.recursive_commitments.is_empty() {
@@ -114,7 +124,9 @@ where
     let queries = fs.get_distinct_queries(1 << depth, S);
 
     // Hash opened rows for Merkle verification
-    let hashed_leaves: Vec<Hash> = proof.initial_ligero_proof.opened_rows
+    let hashed_leaves: Vec<Hash> = proof
+        .initial_ligero_proof
+        .opened_rows
         .iter()
         .map(|row| hash_row(row))
         .collect();
@@ -135,7 +147,7 @@ where
     let sks_vks = &cached_initial_sks;
     let (_basis_poly, enforced_sum) = induce_sumcheck_poly_auto(
         config.initial_dim,
-        &sks_vks,
+        sks_vks,
         &proof.initial_ligero_proof.opened_rows,
         &partial_evals_0,
         &queries,
@@ -162,8 +174,8 @@ where
             }
 
             let coeffs = proof.sumcheck_transcript.transcript[transcript_idx];
-            let claimed_sum = evaluate_quadratic(coeffs, U::zero())
-                .add(&evaluate_quadratic(coeffs, U::one()));
+            let claimed_sum =
+                evaluate_quadratic(coeffs, U::zero()).add(&evaluate_quadratic(coeffs, U::one()));
 
             if claimed_sum != current_sum {
                 return Ok(false);
@@ -192,7 +204,9 @@ where
             let queries = fs.get_distinct_queries(1 << depth, S);
 
             // Hash final opened rows
-            let hashed_final: Vec<Hash> = proof.final_ligero_proof.opened_rows
+            let hashed_final: Vec<Hash> = proof
+                .final_ligero_proof
+                .opened_rows
                 .iter()
                 .map(|row| hash_row(row))
                 .collect();
@@ -237,7 +251,8 @@ where
         let queries = fs.get_distinct_queries(1 << depth, S);
 
         // Hash recursive opened rows
-        let hashed_rec: Vec<Hash> = ligero_proof.opened_rows
+        let hashed_rec: Vec<Hash> = ligero_proof
+            .opened_rows
             .iter()
             .map(|row| hash_row(row))
             .collect();
@@ -293,7 +308,8 @@ where
 {
     // OPTIMIZATION: Precompute basis evaluations once
     let cached_initial_sks: Vec<T> = eval_sk_at_vks(1 << config.initial_dim);
-    let cached_recursive_sks: Vec<Vec<U>> = config.log_dims
+    let cached_recursive_sks: Vec<Vec<U>> = config
+        .log_dims
         .iter()
         .map(|&dim| eval_sk_at_vks(1 << dim))
         .collect();
@@ -302,15 +318,10 @@ where
     fs.absorb_root(&proof.initial_ligero_cm.root);
 
     // Get initial challenges in base field
-    let partial_evals_0_t: Vec<T> = (0..config.initial_k)
-        .map(|_| fs.get_challenge())
-        .collect();
+    let partial_evals_0_t: Vec<T> = (0..config.initial_k).map(|_| fs.get_challenge()).collect();
     debug_println!("Verifier: Got initial challenges: {:?}", partial_evals_0_t);
 
-    let partial_evals_0: Vec<U> = partial_evals_0_t
-        .iter()
-        .map(|&x| U::from(x))
-        .collect();
+    let partial_evals_0: Vec<U> = partial_evals_0_t.iter().map(|&x| U::from(x)).collect();
 
     // First recursive commitment
     fs.absorb_root(&proof.recursive_commitments[0].root);
@@ -319,7 +330,9 @@ where
     let depth = config.initial_dim + LOG_INV_RATE;
     let queries = fs.get_distinct_queries(1 << depth, S);
 
-    let hashed_leaves: Vec<Hash> = proof.initial_ligero_proof.opened_rows
+    let hashed_leaves: Vec<Hash> = proof
+        .initial_ligero_proof
+        .opened_rows
         .iter()
         .map(|row| hash_row(row))
         .collect();
@@ -340,7 +353,7 @@ where
     let sks_vks = &cached_initial_sks;
     let (_, enforced_sum) = induce_sumcheck_poly_auto(
         config.initial_dim,
-        &sks_vks,
+        sks_vks,
         &proof.initial_ligero_proof.opened_rows,
         &partial_evals_0,
         &queries,
@@ -363,8 +376,8 @@ where
             }
 
             let coeffs = proof.sumcheck_transcript.transcript[transcript_idx];
-            let claimed_sum = evaluate_quadratic(coeffs, U::zero())
-                .add(&evaluate_quadratic(coeffs, U::one()));
+            let claimed_sum =
+                evaluate_quadratic(coeffs, U::zero()).add(&evaluate_quadratic(coeffs, U::one()));
 
             if claimed_sum != current_sum {
                 return Ok(false);
@@ -391,7 +404,9 @@ where
             let depth = config.log_dims[i] + LOG_INV_RATE;
             let queries = fs.get_distinct_queries(1 << depth, S);
 
-            let hashed_final: Vec<Hash> = proof.final_ligero_proof.opened_rows
+            let hashed_final: Vec<Hash> = proof
+                .final_ligero_proof
+                .opened_rows
                 .iter()
                 .map(|row| hash_row(row))
                 .collect();
@@ -428,7 +443,8 @@ where
         let ligero_proof = &proof.recursive_proofs[i];
         let queries = fs.get_distinct_queries(1 << depth, S);
 
-        let hashed_rec: Vec<Hash> = ligero_proof.opened_rows
+        let hashed_rec: Vec<Hash> = ligero_proof
+            .opened_rows
             .iter()
             .map(|row| hash_row(row))
             .collect();
@@ -522,7 +538,8 @@ where
 
     // OPTIMIZATION: Precompute basis evaluations once
     let cached_initial_sks: Vec<T> = eval_sk_at_vks(1 << config.initial_dim);
-    let cached_recursive_sks: Vec<Vec<U>> = config.log_dims
+    let cached_recursive_sks: Vec<Vec<U>> = config
+        .log_dims
         .iter()
         .map(|&dim| eval_sk_at_vks(1 << dim))
         .collect();
@@ -539,31 +556,38 @@ where
     debug_println!("Absorbed initial root: {:?}", proof.initial_ligero_cm.root);
 
     // Get initial challenges in base field to match prover
-    let partial_evals_0_t: Vec<T> = (0..config.initial_k)
-        .map(|_| fs.get_challenge())
-        .collect();
+    let partial_evals_0_t: Vec<T> = (0..config.initial_k).map(|_| fs.get_challenge()).collect();
     debug_println!("Got {} base field challenges", partial_evals_0_t.len());
-    debug_println!("Verifier debug: Got initial challenges: {:?}", partial_evals_0_t);
+    debug_println!(
+        "Verifier debug: Got initial challenges: {:?}",
+        partial_evals_0_t
+    );
 
     // Convert to extension field for computations
-    let partial_evals_0: Vec<U> = partial_evals_0_t
-        .iter()
-        .map(|&x| U::from(x))
-        .collect();
+    let partial_evals_0: Vec<U> = partial_evals_0_t.iter().map(|&x| U::from(x)).collect();
 
-    debug_println!("Partial evaluations (extension field): {:?}", partial_evals_0);
+    debug_println!(
+        "Partial evaluations (extension field): {:?}",
+        partial_evals_0
+    );
 
     // Test Lagrange basis computation
     let gr = evaluate_lagrange_basis(&partial_evals_0);
-    debug_println!("Lagrange basis length: {}, first few values: {:?}",
-             gr.len(), &gr[..gr.len().min(4)]);
+    debug_println!(
+        "Lagrange basis length: {}, first few values: {:?}",
+        gr.len(),
+        &gr[..gr.len().min(4)]
+    );
 
     // Absorb first recursive commitment
     if proof.recursive_commitments.is_empty() {
         debug_println!("ERROR: No recursive commitments!");
         return Ok(false);
     }
-    debug_println!("Verifier: Absorbing recursive commitment root: {:?}", proof.recursive_commitments[0].root.root);
+    debug_println!(
+        "Verifier: Absorbing recursive commitment root: {:?}",
+        proof.recursive_commitments[0].root.root
+    );
     fs.absorb_root(&proof.recursive_commitments[0].root);
     debug_println!("Absorbed recursive commitment 0");
 
@@ -571,21 +595,37 @@ where
     let depth = config.initial_dim + LOG_INV_RATE;
     debug_println!("Verifier: About to get queries after absorbing recursive commitment");
     let queries = fs.get_distinct_queries(1 << depth, S);
-    debug_println!("Initial proof: depth={}, num_leaves={}, queries={:?}",
-             depth, 1 << depth, &queries[..queries.len().min(5)]);
+    debug_println!(
+        "Initial proof: depth={}, num_leaves={}, queries={:?}",
+        depth,
+        1 << depth,
+        &queries[..queries.len().min(5)]
+    );
 
     // Hash opened rows for Merkle verification
-    let hashed_leaves: Vec<Hash> = proof.initial_ligero_proof.opened_rows
+    let hashed_leaves: Vec<Hash> = proof
+        .initial_ligero_proof
+        .opened_rows
         .iter()
         .map(|row| hash_row(row))
         .collect();
     debug_println!("Hashed {} opened rows", hashed_leaves.len());
-    debug_println!("Opened rows per query match: {}", hashed_leaves.len() == queries.len());
+    debug_println!(
+        "Opened rows per query match: {}",
+        hashed_leaves.len() == queries.len()
+    );
 
     // Debug: Print first few hashes and queries
     debug_println!("First 3 queries: {:?}", &queries[..3.min(queries.len())]);
-    debug_println!("First 3 opened rows: {:?}", &proof.initial_ligero_proof.opened_rows[..3.min(proof.initial_ligero_proof.opened_rows.len())]);
-    debug_println!("First 3 row hashes: {:?}", &hashed_leaves[..3.min(hashed_leaves.len())]);
+    debug_println!(
+        "First 3 opened rows: {:?}",
+        &proof.initial_ligero_proof.opened_rows
+            [..3.min(proof.initial_ligero_proof.opened_rows.len())]
+    );
+    debug_println!(
+        "First 3 row hashes: {:?}",
+        &hashed_leaves[..3.min(hashed_leaves.len())]
+    );
     debug_println!("Tree root: {:?}", proof.initial_ligero_cm.root);
 
     let merkle_result = ligerito_merkle::verify(
@@ -601,7 +641,10 @@ where
         debug_println!("FAILED: Initial Merkle proof verification");
 
         // Additional debug info
-        debug_println!("Proof siblings: {}", proof.initial_ligero_proof.merkle_proof.siblings.len());
+        debug_println!(
+            "Proof siblings: {}",
+            proof.initial_ligero_proof.merkle_proof.siblings.len()
+        );
         debug_println!("Expected depth: {}", depth);
         debug_println!("Number of queries: {}", queries.len());
         debug_println!("First few queries: {:?}", &queries[..queries.len().min(10)]);
@@ -647,15 +690,18 @@ where
     let mut transcript_idx = 0;
 
     for i in 0..config.recursive_steps {
-        debug_println!("\nRecursive step {}/{}", i+1, config.recursive_steps);
+        debug_println!("\nRecursive step {}/{}", i + 1, config.recursive_steps);
         let mut rs = Vec::with_capacity(config.ks[i]);
 
         // Verify sumcheck rounds
         for j in 0..config.ks[i] {
             // Bounds check for transcript access
             if transcript_idx >= proof.sumcheck_transcript.transcript.len() {
-                debug_println!("ERROR: Transcript index {} >= transcript length {}",
-                         transcript_idx, proof.sumcheck_transcript.transcript.len());
+                debug_println!(
+                    "ERROR: Transcript index {} >= transcript length {}",
+                    transcript_idx,
+                    proof.sumcheck_transcript.transcript.len()
+                );
                 return Ok(false);
             }
 
@@ -686,8 +732,11 @@ where
 
         // Bounds check for recursive commitments
         if i >= proof.recursive_commitments.len() {
-            debug_println!("ERROR: Recursive commitment index {} >= length {}",
-                     i, proof.recursive_commitments.len());
+            debug_println!(
+                "ERROR: Recursive commitment index {} >= length {}",
+                i,
+                proof.recursive_commitments.len()
+            );
             return Ok(false);
         }
 
@@ -701,10 +750,16 @@ where
 
             let depth = config.log_dims[i] + LOG_INV_RATE;
             let queries = fs.get_distinct_queries(1 << depth, S);
-            debug_println!("Final: depth={}, queries={:?}", depth, &queries[..queries.len().min(5)]);
+            debug_println!(
+                "Final: depth={}, queries={:?}",
+                depth,
+                &queries[..queries.len().min(5)]
+            );
 
             // Hash final opened rows
-            let hashed_final: Vec<Hash> = proof.final_ligero_proof.opened_rows
+            let hashed_final: Vec<Hash> = proof
+                .final_ligero_proof
+                .opened_rows
                 .iter()
                 .map(|row| hash_row(row))
                 .collect();
@@ -755,10 +810,16 @@ where
 
         let ligero_proof = &proof.recursive_proofs[i];
         let queries = fs.get_distinct_queries(1 << depth, S);
-        debug_println!("Recursive {}: depth={}, queries={:?}", i, depth, &queries[..queries.len().min(5)]);
+        debug_println!(
+            "Recursive {}: depth={}, queries={:?}",
+            i,
+            depth,
+            &queries[..queries.len().min(5)]
+        );
 
         // Hash recursive opened rows
-        let hashed_rec: Vec<Hash> = ligero_proof.opened_rows
+        let hashed_rec: Vec<Hash> = ligero_proof
+            .opened_rows
             .iter()
             .map(|row| hash_row(row))
             .collect();
@@ -798,9 +859,14 @@ where
         );
 
         // Check consistency for recursive round too
-        let basis_sum_next = basis_poly_next.iter().fold(U::zero(), |acc, &x| acc.add(&x));
+        let basis_sum_next = basis_poly_next
+            .iter()
+            .fold(U::zero(), |acc, &x| acc.add(&x));
         if basis_sum_next != enforced_sum_next {
-            debug_println!("VERIFICATION FAILED: Recursive basis polynomial sum mismatch at round {}", i);
+            debug_println!(
+                "VERIFICATION FAILED: Recursive basis polynomial sum mismatch at round {}",
+                i
+            );
             debug_println!("  Expected (enforced_sum): {:?}", enforced_sum_next);
             debug_println!("  Actual (basis_sum): {:?}", basis_sum_next);
             return Ok(false);
@@ -845,7 +911,8 @@ where
 
     // OPTIMIZATION: Precompute basis evaluations once
     let cached_initial_sks: Vec<T> = eval_sk_at_vks(1 << config.initial_dim);
-    let cached_recursive_sks: Vec<Vec<U>> = config.log_dims
+    let cached_recursive_sks: Vec<Vec<U>> = config
+        .log_dims
         .iter()
         .map(|&dim| eval_sk_at_vks(1 << dim))
         .collect();
@@ -854,15 +921,10 @@ where
     fs.absorb_root(&proof.initial_ligero_cm.root);
 
     // get initial challenges in base field
-    let partial_evals_0_t: Vec<T> = (0..config.initial_k)
-        .map(|_| fs.get_challenge())
-        .collect();
+    let partial_evals_0_t: Vec<T> = (0..config.initial_k).map(|_| fs.get_challenge()).collect();
 
     // convert to extension field
-    let partial_evals_0: Vec<U> = partial_evals_0_t
-        .iter()
-        .map(|&x| U::from(x))
-        .collect();
+    let partial_evals_0: Vec<U> = partial_evals_0_t.iter().map(|&x| U::from(x)).collect();
 
     // absorb first recursive commitment
     if proof.recursive_commitments.is_empty() {
@@ -874,7 +936,9 @@ where
     let depth = config.initial_dim + LOG_INV_RATE;
     let queries = fs.get_distinct_queries(1 << depth, S);
 
-    let hashed_leaves: Vec<Hash> = proof.initial_ligero_proof.opened_rows
+    let hashed_leaves: Vec<Hash> = proof
+        .initial_ligero_proof
+        .opened_rows
         .iter()
         .map(|row| hash_row(row))
         .collect();
@@ -926,9 +990,13 @@ where
         for _ in 0..config.ks[i] {
             let ri = fs.get_challenge::<U>();
             #[cfg(feature = "std")]
-            sumcheck_verifier.fold(ri).map_err(|e| crate::LigeritoError::SumcheckError(format!("{:?}", e)))?;
+            sumcheck_verifier
+                .fold(ri)
+                .map_err(|e| crate::LigeritoError::SumcheckError(format!("{:?}", e)))?;
             #[cfg(not(feature = "std"))]
-            sumcheck_verifier.fold(ri).map_err(|_| crate::LigeritoError::SumcheckError)?;
+            sumcheck_verifier
+                .fold(ri)
+                .map_err(|_| crate::LigeritoError::SumcheckError)?;
             // absorb the new sum after folding
             fs.absorb_elem(sumcheck_verifier.sum);
             rs.push(ri);
@@ -947,7 +1015,9 @@ where
             let depth = config.log_dims[i] + LOG_INV_RATE;
             let queries = fs.get_distinct_queries(1 << depth, S);
 
-            let hashed_final: Vec<Hash> = proof.final_ligero_proof.opened_rows
+            let hashed_final: Vec<Hash> = proof
+                .final_ligero_proof
+                .opened_rows
                 .iter()
                 .map(|row| hash_row(row))
                 .collect();
@@ -989,7 +1059,8 @@ where
         let ligero_proof = &proof.recursive_proofs[i];
         let queries = fs.get_distinct_queries(1 << depth, S);
 
-        let hashed_rec: Vec<Hash> = ligero_proof.opened_rows
+        let hashed_rec: Vec<Hash> = ligero_proof
+            .opened_rows
             .iter()
             .map(|row| hash_row(row))
             .collect();
@@ -1022,7 +1093,9 @@ where
         );
 
         // verify consistency
-        let basis_sum_next = basis_poly_next.iter().fold(U::zero(), |acc, &x| acc.add(&x));
+        let basis_sum_next = basis_poly_next
+            .iter()
+            .fold(U::zero(), |acc, &x| acc.add(&x));
         if basis_sum_next != enforced_sum_next {
             return Ok(false);
         }
@@ -1033,17 +1106,23 @@ where
 
         // introduce new basis polynomial
         #[cfg(feature = "std")]
-        sumcheck_verifier.introduce_new(basis_poly_next, enforced_sum_next)
+        sumcheck_verifier
+            .introduce_new(basis_poly_next, enforced_sum_next)
             .map_err(|e| crate::LigeritoError::SumcheckError(format!("{:?}", e)))?;
         #[cfg(not(feature = "std"))]
-        sumcheck_verifier.introduce_new(basis_poly_next, enforced_sum_next)
+        sumcheck_verifier
+            .introduce_new(basis_poly_next, enforced_sum_next)
             .map_err(|_| crate::LigeritoError::SumcheckError)?;
 
         let beta = fs.get_challenge::<U>();
         #[cfg(feature = "std")]
-        sumcheck_verifier.glue(beta).map_err(|e| crate::LigeritoError::SumcheckError(format!("{:?}", e)))?;
+        sumcheck_verifier
+            .glue(beta)
+            .map_err(|e| crate::LigeritoError::SumcheckError(format!("{:?}", e)))?;
         #[cfg(not(feature = "std"))]
-        sumcheck_verifier.glue(beta).map_err(|_| crate::LigeritoError::SumcheckError)?;
+        sumcheck_verifier
+            .glue(beta)
+            .map_err(|_| crate::LigeritoError::SumcheckError)?;
     }
 
     Ok(true)
@@ -1124,17 +1203,15 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ligerito_binary_fields::{BinaryElem32, BinaryElem128};
     use crate::configs::{hardcoded_config_12, hardcoded_config_12_verifier};
     use crate::prover::prove;
+    use ligerito_binary_fields::{BinaryElem128, BinaryElem32};
     use std::marker::PhantomData;
 
     #[test]
     fn test_verify_simple_proof() {
-        let prover_config = hardcoded_config_12(
-            PhantomData::<BinaryElem32>,
-            PhantomData::<BinaryElem128>,
-        );
+        let prover_config =
+            hardcoded_config_12(PhantomData::<BinaryElem32>, PhantomData::<BinaryElem128>);
         let verifier_config = hardcoded_config_12_verifier();
 
         // Test with simple polynomial
@@ -1148,10 +1225,8 @@ mod tests {
 
     #[test]
     fn test_verify_zero_polynomial() {
-        let prover_config = hardcoded_config_12(
-            PhantomData::<BinaryElem32>,
-            PhantomData::<BinaryElem128>,
-        );
+        let prover_config =
+            hardcoded_config_12(PhantomData::<BinaryElem32>, PhantomData::<BinaryElem128>);
         let verifier_config = hardcoded_config_12_verifier();
 
         // Test with zero polynomial
@@ -1165,10 +1240,8 @@ mod tests {
 
     #[test]
     fn test_verify_with_sha256() {
-        let prover_config = hardcoded_config_12(
-            PhantomData::<BinaryElem32>,
-            PhantomData::<BinaryElem128>,
-        );
+        let prover_config =
+            hardcoded_config_12(PhantomData::<BinaryElem32>, PhantomData::<BinaryElem128>);
         let verifier_config = hardcoded_config_12_verifier();
 
         // Test with patterned polynomial
@@ -1178,18 +1251,15 @@ mod tests {
 
         let proof = crate::prover::prove_sha256(&prover_config, &poly)
             .expect("SHA256 proof generation failed");
-        let result = verify_sha256(&verifier_config, &proof)
-            .expect("SHA256 verification failed");
+        let result = verify_sha256(&verifier_config, &proof).expect("SHA256 verification failed");
 
         assert!(result, "SHA256 verification should succeed");
     }
 
     #[test]
     fn test_debug_verification() {
-        let prover_config = hardcoded_config_12(
-            PhantomData::<BinaryElem32>,
-            PhantomData::<BinaryElem128>,
-        );
+        let prover_config =
+            hardcoded_config_12(PhantomData::<BinaryElem32>, PhantomData::<BinaryElem128>);
         let verifier_config = hardcoded_config_12_verifier();
 
         // Use a non-constant polynomial to avoid degenerate case
@@ -1208,9 +1278,9 @@ mod tests {
         // test evaluate_quadratic (actually linear for binary sumcheck)
         // f(x) = s0 + s1*x where s1 = s0 + s2
         let coeffs = (
-            BinaryElem128::from(1),  // s0
-            BinaryElem128::from(3),  // s1 = s0 + s2
-            BinaryElem128::from(2),  // s2
+            BinaryElem128::from(1), // s0
+            BinaryElem128::from(3), // s1 = s0 + s2
+            BinaryElem128::from(2), // s2
         );
 
         let val0 = evaluate_quadratic(coeffs, BinaryElem128::zero());
@@ -1235,10 +1305,8 @@ mod tests {
     fn test_blake2b_transcript_compatibility() {
         use crate::prover::prove_blake2b;
 
-        let prover_config = hardcoded_config_12(
-            PhantomData::<BinaryElem32>,
-            PhantomData::<BinaryElem128>,
-        );
+        let prover_config =
+            hardcoded_config_12(PhantomData::<BinaryElem32>, PhantomData::<BinaryElem128>);
         let verifier_config = hardcoded_config_12_verifier();
 
         // Test with patterned polynomial
@@ -1247,18 +1315,18 @@ mod tests {
             .collect();
 
         // Prove with Blake2b
-        let proof = prove_blake2b(&prover_config, &poly)
-            .expect("Blake2b proof generation failed");
+        let proof = prove_blake2b(&prover_config, &poly).expect("Blake2b proof generation failed");
 
         // Verify with Blake2b
-        let result = verify_blake2b(&verifier_config, &proof)
-            .expect("Blake2b verification failed");
+        let result = verify_blake2b(&verifier_config, &proof).expect("Blake2b verification failed");
 
-        assert!(result, "Blake2b verification should succeed for valid proof");
+        assert!(
+            result,
+            "Blake2b verification should succeed for valid proof"
+        );
 
         // Also test complete verifier
-        let proof2 = prove_blake2b(&prover_config, &poly)
-            .expect("Blake2b proof generation failed");
+        let proof2 = prove_blake2b(&prover_config, &poly).expect("Blake2b proof generation failed");
         let result2 = verify_complete_blake2b(&verifier_config, &proof2)
             .expect("Blake2b complete verification failed");
 
@@ -1272,10 +1340,8 @@ mod tests {
         // (and vice versa) - they are NOT compatible
         use crate::prover::prove_sha256;
 
-        let prover_config = hardcoded_config_12(
-            PhantomData::<BinaryElem32>,
-            PhantomData::<BinaryElem128>,
-        );
+        let prover_config =
+            hardcoded_config_12(PhantomData::<BinaryElem32>, PhantomData::<BinaryElem128>);
         let verifier_config = hardcoded_config_12_verifier();
 
         let poly: Vec<BinaryElem32> = (0..(1 << 12))
@@ -1283,13 +1349,16 @@ mod tests {
             .collect();
 
         // Prove with SHA256
-        let sha_proof = prove_sha256(&prover_config, &poly)
-            .expect("SHA256 proof generation failed");
+        let sha_proof =
+            prove_sha256(&prover_config, &poly).expect("SHA256 proof generation failed");
 
         // Trying to verify SHA256 proof with Blake2b should fail
         let result = verify_blake2b(&verifier_config, &sha_proof)
             .expect("Verification call should not panic");
 
-        assert!(!result, "SHA256 proof should NOT verify with Blake2b transcript");
+        assert!(
+            !result,
+            "SHA256 proof should NOT verify with Blake2b transcript"
+        );
     }
 }

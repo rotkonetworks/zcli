@@ -3,9 +3,9 @@
 //! Verifies that a note commitment exists in the Orchard commitment tree
 //! by checking a Merkle path against a committed root.
 
-use crate::constants::{ORCHARD_TREE_DEPTH, SUBTREE_DEPTH, LEAVES_PER_SUBTREE};
+use crate::constants::{LEAVES_PER_SUBTREE, ORCHARD_TREE_DEPTH, SUBTREE_DEPTH};
 use crate::error::{Result, ZidecarError};
-use crate::zebrad::{ZebradClient, Subtree};
+use crate::zebrad::{Subtree, ZebradClient};
 use blake2::{Blake2b512, Digest};
 
 /// A witness proving a note commitment exists at a specific position
@@ -99,9 +99,9 @@ impl WitnessBuilder {
 
     /// Get subtree root at index
     pub fn get_subtree_root(&self, index: u32) -> Option<[u8; 32]> {
-        self.subtrees.get(index as usize).and_then(|s| {
-            hex::decode(&s.root).ok().and_then(|b| b.try_into().ok())
-        })
+        self.subtrees
+            .get(index as usize)
+            .and_then(|s| hex::decode(&s.root).ok().and_then(|b| b.try_into().ok()))
     }
 
     /// Check if a position is within a completed subtree

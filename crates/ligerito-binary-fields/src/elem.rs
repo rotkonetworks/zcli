@@ -1,16 +1,19 @@
+use crate::poly::{BinaryPoly128, BinaryPoly16, BinaryPoly32, BinaryPoly64};
 use crate::{BinaryFieldElement, BinaryPolynomial};
-use crate::poly::{BinaryPoly16, BinaryPoly32, BinaryPoly64, BinaryPoly128};
 
 // Irreducible polynomials (matching Julia implementation)
-const IRREDUCIBLE_16: u32 = 0x1002D;  // x^16 + x^5 + x^3 + x^2 + 1 (need to store in larger type)
-const IRREDUCIBLE_32: u64 = (1u64 << 32) | 0b11001 | (1 << 7) | (1 << 9) | (1 << 15);  // x^32 + Conway polynomial
+const IRREDUCIBLE_16: u32 = 0x1002D; // x^16 + x^5 + x^3 + x^2 + 1 (need to store in larger type)
+const IRREDUCIBLE_32: u64 = (1u64 << 32) | 0b11001 | (1 << 7) | (1 << 9) | (1 << 15); // x^32 + Conway polynomial
 
 macro_rules! impl_binary_elem {
     ($name:ident, $poly_type:ident, $poly_double:ident, $value_type:ty, $value_double:ty, $irreducible:expr, $bitsize:expr) => {
         #[repr(transparent)]
         #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
         #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-        #[cfg_attr(feature = "scale", derive(codec::Encode, codec::Decode, scale_info::TypeInfo))]
+        #[cfg_attr(
+            feature = "scale",
+            derive(codec::Encode, codec::Decode, scale_info::TypeInfo)
+        )]
         pub struct $name($poly_type);
 
         // SAFETY: $name is repr(transparent) over $poly_type which wraps $value_type (a primitive)
@@ -33,7 +36,7 @@ macro_rules! impl_binary_elem {
 
                 loop {
                     if p == 0 {
-                        break;  // avoid underflow when p is zero
+                        break; // avoid underflow when p is zero
                     }
 
                     let lz = p.leading_zeros() as usize;
@@ -147,14 +150,33 @@ macro_rules! impl_binary_elem {
     };
 }
 
-impl_binary_elem!(BinaryElem16, BinaryPoly16, BinaryPoly32, u16, u32, IRREDUCIBLE_16, 16);
-impl_binary_elem!(BinaryElem32, BinaryPoly32, BinaryPoly64, u32, u64, IRREDUCIBLE_32, 32);
+impl_binary_elem!(
+    BinaryElem16,
+    BinaryPoly16,
+    BinaryPoly32,
+    u16,
+    u32,
+    IRREDUCIBLE_16,
+    16
+);
+impl_binary_elem!(
+    BinaryElem32,
+    BinaryPoly32,
+    BinaryPoly64,
+    u32,
+    u64,
+    IRREDUCIBLE_32,
+    32
+);
 
 // BinaryElem128 needs special handling since we don't have BinaryPoly256
 #[repr(transparent)]
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "scale", derive(codec::Encode, codec::Decode, scale_info::TypeInfo))]
+#[cfg_attr(
+    feature = "scale",
+    derive(codec::Encode, codec::Decode, scale_info::TypeInfo)
+)]
 pub struct BinaryElem128(BinaryPoly128);
 
 // SAFETY: BinaryElem128 is repr(transparent) over BinaryPoly128 which wraps u128 (a primitive)
@@ -269,7 +291,10 @@ impl rand::distributions::Distribution<BinaryElem128> for rand::distributions::S
 #[repr(transparent)]
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "scale", derive(codec::Encode, codec::Decode, scale_info::TypeInfo))]
+#[cfg_attr(
+    feature = "scale",
+    derive(codec::Encode, codec::Decode, scale_info::TypeInfo)
+)]
 pub struct BinaryElem64(BinaryPoly64);
 
 // SAFETY: BinaryElem64 is repr(transparent) over BinaryPoly64 which wraps u64 (a primitive)

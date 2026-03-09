@@ -8,13 +8,13 @@
 
 #![cfg(feature = "polkavm-integration")]
 
-use ligerito::pcvm::polkavm_constraints_v2::{ProvenTransition, InstructionProof};
-use ligerito::pcvm::polkavm_adapter::PolkaVMRegisters;
-use ligerito::pcvm::polkavm_prover::{prove_polkavm_execution, verify_polkavm_proof};
 use ligerito::configs::{hardcoded_config_20, hardcoded_config_20_verifier};
 use ligerito::pcvm::memory_merkle::MemoryMerkleTree;
-use ligerito_binary_fields::{BinaryElem32, BinaryElem128, BinaryFieldElement};
+use ligerito::pcvm::polkavm_adapter::PolkaVMRegisters;
+use ligerito::pcvm::polkavm_constraints_v2::{InstructionProof, ProvenTransition};
+use ligerito::pcvm::polkavm_prover::{prove_polkavm_execution, verify_polkavm_proof};
 use ligerito::transcript::{Sha256Transcript, Transcript};
+use ligerito_binary_fields::{BinaryElem128, BinaryElem32, BinaryFieldElement};
 use std::marker::PhantomData;
 
 use polkavm::program::Instruction;
@@ -27,12 +27,14 @@ fn raw_reg(r: Reg) -> RawReg {
 /// Game of Life grid (8x8 = 64 cells)
 #[derive(Debug, Clone)]
 struct Grid {
-    cells: Vec<u32>,  // 0 = dead, 1 = alive
+    cells: Vec<u32>, // 0 = dead, 1 = alive
 }
 
 impl Grid {
     fn new() -> Self {
-        Self { cells: vec![0u32; 64] }
+        Self {
+            cells: vec![0u32; 64],
+        }
     }
 
     fn from_pattern(pattern: &str) -> Self {
@@ -132,7 +134,7 @@ fn simulate_generation(
     grid_before: &Grid,
     _grid_after: &Grid,
     pc_start: u32,
-    memory_root: [u8; 32],  // Use consistent memory root across all generations
+    memory_root: [u8; 32], // Use consistent memory root across all generations
 ) -> Vec<(ProvenTransition, Instruction)> {
     let mut trace = Vec::new();
     let mut pc = pc_start;
@@ -146,7 +148,7 @@ fn simulate_generation(
     for cell_idx in 0..64 {
         // Read cell value
         let mut regs_after = regs;
-        regs_after[7] = grid_before.cells[cell_idx];  // a0 = current cell
+        regs_after[7] = grid_before.cells[cell_idx]; // a0 = current cell
 
         let step = (
             ProvenTransition {
@@ -252,16 +254,20 @@ fn test_prove_continuous_game_of_life() {
         grid = grid_next;
     }
 
-    println!("Generated trace: {} steps for 10 generations", all_trace.len());
+    println!(
+        "Generated trace: {} steps for 10 generations",
+        all_trace.len()
+    );
     println!("  ~{} steps per generation", all_trace.len() / 10);
 
     // Create configs
-    let prover_config = hardcoded_config_20(PhantomData::<BinaryElem32>, PhantomData::<BinaryElem32>);
+    let prover_config =
+        hardcoded_config_20(PhantomData::<BinaryElem32>, PhantomData::<BinaryElem32>);
     let verifier_config = hardcoded_config_20_verifier();
 
     // Get batching challenge
     let mut challenge_transcript = Sha256Transcript::new(42);
-    let program_commitment = [0x47u8; 32];  // 'G' for Game of Life
+    let program_commitment = [0x47u8; 32]; // 'G' for Game of Life
     let program_elems: Vec<BinaryElem32> = program_commitment
         .chunks(4)
         .map(|chunk| {
@@ -285,14 +291,18 @@ fn test_prove_continuous_game_of_life() {
         batching_challenge,
         &prover_config,
         transcript,
-    ).expect("Failed to generate proof");
+    )
+    .expect("Failed to generate proof");
 
     let prove_time = start.elapsed();
 
     println!("✓ Proof generated in {:?}", prove_time);
     println!("  - Generations: 10");
     println!("  - Steps: {}", proof.num_steps);
-    println!("  - Constraint accumulator: {:?}", proof.constraint_accumulator);
+    println!(
+        "  - Constraint accumulator: {:?}",
+        proof.constraint_accumulator
+    );
 
     // Verify proof
     // Use same constant memory root as in the trace
@@ -336,7 +346,8 @@ fn test_game_of_life_with_visualization() {
     let mut grid = Grid::from_pattern(pattern);
     let constant_memory_root = [0u8; 32];
 
-    let prover_config = hardcoded_config_20(PhantomData::<BinaryElem32>, PhantomData::<BinaryElem32>);
+    let prover_config =
+        hardcoded_config_20(PhantomData::<BinaryElem32>, PhantomData::<BinaryElem32>);
     let verifier_config = hardcoded_config_20_verifier();
 
     let program_commitment = [0x47u8; 32];
@@ -366,7 +377,11 @@ fn test_game_of_life_with_visualization() {
 
         // Prove execution so far every 5 generations
         if gen % 5 == 0 {
-            println!("⚡ Proving generations 0-{} ({} steps)...", gen, all_trace.len());
+            println!(
+                "⚡ Proving generations 0-{} ({} steps)...",
+                gen,
+                all_trace.len()
+            );
 
             let mut challenge_transcript = Sha256Transcript::new(42);
             let program_elems: Vec<BinaryElem32> = program_commitment
@@ -390,7 +405,8 @@ fn test_game_of_life_with_visualization() {
                 batching_challenge,
                 &prover_config,
                 transcript,
-            ).expect("Failed to generate proof");
+            )
+            .expect("Failed to generate proof");
             let prove_time = start.elapsed();
 
             // Verify
@@ -408,7 +424,10 @@ fn test_game_of_life_with_visualization() {
 
             println!("✓ Proof generated in {:?}", prove_time);
             println!("✓ Proof verified in {:?}", verify_time);
-            println!("  Constraint accumulator: {:?}", proof.constraint_accumulator);
+            println!(
+                "  Constraint accumulator: {:?}",
+                proof.constraint_accumulator
+            );
             println!();
         }
 
@@ -426,7 +445,8 @@ fn test_blockchain_latency_benchmark() {
     println!("================================\n");
 
     let constant_memory_root = [0u8; 32];
-    let prover_config = hardcoded_config_20(PhantomData::<BinaryElem32>, PhantomData::<BinaryElem32>);
+    let prover_config =
+        hardcoded_config_20(PhantomData::<BinaryElem32>, PhantomData::<BinaryElem32>);
     let verifier_config = hardcoded_config_20_verifier();
     let program_commitment = [0x42u8; 32];
 
@@ -501,7 +521,8 @@ fn test_blockchain_latency_benchmark() {
             batching_challenge,
             &prover_config,
             transcript,
-        ).expect("Failed to generate proof");
+        )
+        .expect("Failed to generate proof");
         let prove_time = prove_start.elapsed();
 
         // Verify proof
@@ -520,7 +541,8 @@ fn test_blockchain_latency_benchmark() {
         let ms_per_step = prove_time.as_secs_f64() * 1000.0 / num_steps as f64;
         let blocks_per_sec = 1000.0 / (prove_time.as_millis() as f64);
 
-        println!("│ {:6} │ {:9.2}ms │ {:10.2}μs │ {:8.3} │ {:8.2} │  {}",
+        println!(
+            "│ {:6} │ {:9.2}ms │ {:10.2}μs │ {:8.3} │ {:8.2} │  {}",
             num_steps,
             prove_time.as_secs_f64() * 1000.0,
             verify_time.as_secs_f64() * 1_000_000.0,
@@ -541,4 +563,3 @@ fn test_blockchain_latency_benchmark() {
     println!("            With GPU: 150-200ms is realistic target.");
     println!("            With pipelining: Can sustain 2 blocks/second throughput.");
 }
-

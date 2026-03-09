@@ -7,7 +7,10 @@ macro_rules! impl_binary_poly {
         #[repr(transparent)]
         #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
         #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-        #[cfg_attr(feature = "scale", derive(codec::Encode, codec::Decode, scale_info::TypeInfo))]
+        #[cfg_attr(
+            feature = "scale",
+            derive(codec::Encode, codec::Decode, scale_info::TypeInfo)
+        )]
         pub struct $name($value_type);
 
         // SAFETY: $name is repr(transparent) over $value_type (a primitive integer type)
@@ -94,14 +97,17 @@ macro_rules! impl_binary_poly {
                     return (quotient, remainder);
                 }
 
-                let divisor_bits = (core::mem::size_of::<$value_type>() * 8) as u32 - divisor.leading_zeros();
-                let mut remainder_bits = (core::mem::size_of::<$value_type>() * 8) as u32 - remainder.leading_zeros();
+                let divisor_bits =
+                    (core::mem::size_of::<$value_type>() * 8) as u32 - divisor.leading_zeros();
+                let mut remainder_bits =
+                    (core::mem::size_of::<$value_type>() * 8) as u32 - remainder.leading_zeros();
 
                 while remainder_bits >= divisor_bits && remainder.0 != 0 {
                     let shift = remainder_bits - divisor_bits;
                     quotient.0 |= 1 << shift;
                     remainder.0 ^= divisor.0 << shift;
-                    remainder_bits = (core::mem::size_of::<$value_type>() * 8) as u32 - remainder.leading_zeros();
+                    remainder_bits = (core::mem::size_of::<$value_type>() * 8) as u32
+                        - remainder.leading_zeros();
                 }
 
                 (quotient, remainder)
@@ -124,7 +130,10 @@ impl_binary_poly!(BinaryPoly32, u32, BinaryPoly64);
 #[repr(transparent)]
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "scale", derive(codec::Encode, codec::Decode, scale_info::TypeInfo))]
+#[cfg_attr(
+    feature = "scale",
+    derive(codec::Encode, codec::Decode, scale_info::TypeInfo)
+)]
 pub struct BinaryPoly64(u64);
 
 // SAFETY: BinaryPoly64 is repr(transparent) over u64 (a primitive)
@@ -221,7 +230,10 @@ impl From<u64> for BinaryPoly64 {
 #[repr(transparent)]
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "scale", derive(codec::Encode, codec::Decode, scale_info::TypeInfo))]
+#[cfg_attr(
+    feature = "scale",
+    derive(codec::Encode, codec::Decode, scale_info::TypeInfo)
+)]
 pub struct BinaryPoly128(u128);
 
 // SAFETY: BinaryPoly128 is repr(transparent) over u128 (a primitive)
@@ -319,7 +331,10 @@ impl From<u128> for BinaryPoly128 {
 // BinaryPoly256 for intermediate calculations
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(feature = "scale", derive(codec::Encode, codec::Decode, scale_info::TypeInfo))]
+#[cfg_attr(
+    feature = "scale",
+    derive(codec::Encode, codec::Decode, scale_info::TypeInfo)
+)]
 pub struct BinaryPoly256 {
     hi: u128,
     lo: u128,
@@ -348,10 +363,8 @@ impl BinaryPoly256 {
             // reduce 128 bits at a time
             while high != 0 {
                 // x^128 = x^7 + x^2 + x + 1
-                let feedback = high.wrapping_shl(7)
-                    ^ high.wrapping_shl(2)
-                    ^ high.wrapping_shl(1)
-                    ^ high;
+                let feedback =
+                    high.wrapping_shl(7) ^ high.wrapping_shl(2) ^ high.wrapping_shl(1) ^ high;
 
                 result ^= feedback;
                 high >>= 121; // process remaining bits

@@ -15,19 +15,45 @@ fn main() {
     // Warn if building without SIMD on x86_64
     if target_arch == "x86_64" && !has_pclmulqdq && is_release {
         println!("cargo:warning=");
-        println!("cargo:warning=╔═══════════════════════════════════════════════════════════════════╗");
-        println!("cargo:warning=║  PERFORMANCE WARNING: SIMD instructions not enabled!             ║");
-        println!("cargo:warning=║                                                                   ║");
-        println!("cargo:warning=║  This build will be 5-6x slower than optimized builds.           ║");
-        println!("cargo:warning=║                                                                   ║");
-        println!("cargo:warning=║  For optimal performance, rebuild with:                          ║");
-        println!("cargo:warning=║    RUSTFLAGS=\"-C target-cpu=native\" cargo install ligerito      ║");
-        println!("cargo:warning=║                                                                   ║");
-        println!("cargo:warning=║  Or install from source:                                         ║");
-        println!("cargo:warning=║    git clone https://github.com/rotkonetworks/zeratul            ║");
-        println!("cargo:warning=║    cd zeratul                                                     ║");
-        println!("cargo:warning=║    cargo install --path crates/ligerito                          ║");
-        println!("cargo:warning=╚═══════════════════════════════════════════════════════════════════╝");
+        println!(
+            "cargo:warning=╔═══════════════════════════════════════════════════════════════════╗"
+        );
+        println!(
+            "cargo:warning=║  PERFORMANCE WARNING: SIMD instructions not enabled!             ║"
+        );
+        println!(
+            "cargo:warning=║                                                                   ║"
+        );
+        println!(
+            "cargo:warning=║  This build will be 5-6x slower than optimized builds.           ║"
+        );
+        println!(
+            "cargo:warning=║                                                                   ║"
+        );
+        println!(
+            "cargo:warning=║  For optimal performance, rebuild with:                          ║"
+        );
+        println!(
+            "cargo:warning=║    RUSTFLAGS=\"-C target-cpu=native\" cargo install ligerito      ║"
+        );
+        println!(
+            "cargo:warning=║                                                                   ║"
+        );
+        println!(
+            "cargo:warning=║  Or install from source:                                         ║"
+        );
+        println!(
+            "cargo:warning=║    git clone https://github.com/rotkonetworks/zeratul            ║"
+        );
+        println!(
+            "cargo:warning=║    cd zeratul                                                     ║"
+        );
+        println!(
+            "cargo:warning=║    cargo install --path crates/ligerito                          ║"
+        );
+        println!(
+            "cargo:warning=╚═══════════════════════════════════════════════════════════════════╝"
+        );
         println!("cargo:warning=");
     }
 

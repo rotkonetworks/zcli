@@ -5,19 +5,19 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 
 mod elem;
+pub mod fast_inverse;
 mod poly;
 pub mod simd;
-pub mod fast_inverse;
 
-pub use elem::{BinaryElem16, BinaryElem32, BinaryElem64, BinaryElem128};
-pub use poly::{BinaryPoly16, BinaryPoly32, BinaryPoly64, BinaryPoly128, BinaryPoly256};
-pub use simd::{batch_mul_gf128, batch_add_gf128};
-pub use fast_inverse::{invert_gf128, batch_invert_gf128, batch_invert_gf128_in_place};
+pub use elem::{BinaryElem128, BinaryElem16, BinaryElem32, BinaryElem64};
+pub use fast_inverse::{batch_invert_gf128, batch_invert_gf128_in_place, invert_gf128};
+pub use poly::{BinaryPoly128, BinaryPoly16, BinaryPoly256, BinaryPoly32, BinaryPoly64};
+pub use simd::{batch_add_gf128, batch_mul_gf128};
 
 // Re-export traits with conditional Send + Sync
 #[cfg(feature = "std")]
-pub trait BinaryFieldElement: Send + Sync +
-    Sized + Copy + Clone + Default + PartialEq + Eq + core::fmt::Debug
+pub trait BinaryFieldElement:
+    Send + Sync + Sized + Copy + Clone + Default + PartialEq + Eq + core::fmt::Debug
 {
     type Poly: BinaryPolynomial;
 
@@ -113,7 +113,7 @@ mod tests {
 
         // polynomial division
         let a = BinaryPoly16::from_value(0x15); // x^4 + x^2 + 1
-        let b = BinaryPoly16::from_value(0x3);  // x + 1
+        let b = BinaryPoly16::from_value(0x3); // x + 1
         let (q, r) = a.div_rem(&b);
         assert_eq!(a, q.mul(&b).add(&r));
     }
@@ -152,8 +152,12 @@ mod tests {
 
         test_field!(BinaryElem16, 0x1234, 0x5678, 0x9ABC);
         test_field!(BinaryElem32, 0x12345678, 0x9ABCDEF0, 0x11111111);
-        test_field!(BinaryElem128, 0x123456789ABCDEF0123456789ABCDEF0, 
-                    0xFEDCBA9876543210FEDCBA9876543210, 0x1111111111111111111111111111111);
+        test_field!(
+            BinaryElem128,
+            0x123456789ABCDEF0123456789ABCDEF0,
+            0xFEDCBA9876543210FEDCBA9876543210,
+            0x1111111111111111111111111111111
+        );
     }
 
     #[test]
@@ -213,7 +217,8 @@ mod julia_compatibility_tests {
             197947890894953343492199130314470631788,
         ];
 
-        let v: Vec<BinaryElem128> = v_values.iter()
+        let v: Vec<BinaryElem128> = v_values
+            .iter()
             .map(|&val| BinaryElem128::from_value(val))
             .collect();
 
@@ -231,11 +236,11 @@ mod julia_compatibility_tests {
         // verify beta^16 generates distinct elements
         let mut bs16 = vec![BinaryElem128::one()];
         for i in 1..16 {
-            bs16.push(bs16[i-1].mul(&beta16));
+            bs16.push(bs16[i - 1].mul(&beta16));
         }
 
         for i in 0..16 {
-            for j in (i+1)..16 {
+            for j in (i + 1)..16 {
                 assert_ne!(bs16[i], bs16[j]);
             }
         }
@@ -245,17 +250,23 @@ mod julia_compatibility_tests {
     fn test_large_multiplication() {
         // test 128-bit multiplication edge cases
         let cases = vec![
-            (0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF0u128, 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF0u128),
+            (
+                0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF0u128,
+                0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF0u128,
+            ),
             (u128::MAX, u128::MAX),
-            (0x8000000000000000_0000000000000000u128, 0x8000000000000000_0000000000000000u128),
+            (
+                0x8000000000000000_0000000000000000u128,
+                0x8000000000000000_0000000000000000u128,
+            ),
         ];
 
         for (a_val, b_val) in cases {
             let a = BinaryElem128::from(a_val);
             let b = BinaryElem128::from(b_val);
-            
+
             let _c = a.mul(&b);
-            
+
             // verify inverse works
             if a != BinaryElem128::zero() {
                 let a_inv = a.inv();

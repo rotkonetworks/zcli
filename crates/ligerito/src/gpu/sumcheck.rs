@@ -10,11 +10,11 @@
 //! - n=20: 2.4 KB instead of 2.4 GB
 //! - n=24: 2.4 KB instead of 38 GB
 
-use binary_fields::BinaryFieldElement;
 use super::device::GpuDevice;
 use super::shaders;
-use wgpu::{Buffer, BufferUsages, ComputePipeline, BindGroup, BindGroupLayout};
+use binary_fields::BinaryFieldElement;
 use bytemuck::{Pod, Zeroable};
+use wgpu::{BindGroup, BindGroupLayout, Buffer, BufferUsages, ComputePipeline};
 
 /// Sumcheck parameters
 #[repr(C)]
@@ -57,97 +57,109 @@ impl GpuSumcheck {
             include_str!("shaders/sumcheck.wgsl")
         );
 
-        let shader_module = self.device.device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Sumcheck Shader"),
-            source: wgpu::ShaderSource::Wgsl(shader_source.into()),
-        });
+        let shader_module = self
+            .device
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("Sumcheck Shader"),
+                source: wgpu::ShaderSource::Wgsl(shader_source.into()),
+            });
 
         // Create bind group layout
-        let bind_group_layout = self.device.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Sumcheck Bind Group Layout"),
-            entries: &[
-                // 0: opened_rows (read)
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                // 1: v_challenges (read)
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                // 2: alpha_pows (read)
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                // 3: sorted_queries (read)
-                wgpu::BindGroupLayoutEntry {
-                    binding: 3,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                // 4: contributions (write) - SMALL BUFFER!
-                wgpu::BindGroupLayoutEntry {
-                    binding: 4,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: false },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                // 5: params (uniform)
-                wgpu::BindGroupLayoutEntry {
-                    binding: 5,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-            ],
-        });
+        let bind_group_layout =
+            self.device
+                .device
+                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: Some("Sumcheck Bind Group Layout"),
+                    entries: &[
+                        // 0: opened_rows (read)
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 0,
+                            visibility: wgpu::ShaderStages::COMPUTE,
+                            ty: wgpu::BindingType::Buffer {
+                                ty: wgpu::BufferBindingType::Storage { read_only: true },
+                                has_dynamic_offset: false,
+                                min_binding_size: None,
+                            },
+                            count: None,
+                        },
+                        // 1: v_challenges (read)
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 1,
+                            visibility: wgpu::ShaderStages::COMPUTE,
+                            ty: wgpu::BindingType::Buffer {
+                                ty: wgpu::BufferBindingType::Storage { read_only: true },
+                                has_dynamic_offset: false,
+                                min_binding_size: None,
+                            },
+                            count: None,
+                        },
+                        // 2: alpha_pows (read)
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 2,
+                            visibility: wgpu::ShaderStages::COMPUTE,
+                            ty: wgpu::BindingType::Buffer {
+                                ty: wgpu::BufferBindingType::Storage { read_only: true },
+                                has_dynamic_offset: false,
+                                min_binding_size: None,
+                            },
+                            count: None,
+                        },
+                        // 3: sorted_queries (read)
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 3,
+                            visibility: wgpu::ShaderStages::COMPUTE,
+                            ty: wgpu::BindingType::Buffer {
+                                ty: wgpu::BufferBindingType::Storage { read_only: true },
+                                has_dynamic_offset: false,
+                                min_binding_size: None,
+                            },
+                            count: None,
+                        },
+                        // 4: contributions (write) - SMALL BUFFER!
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 4,
+                            visibility: wgpu::ShaderStages::COMPUTE,
+                            ty: wgpu::BindingType::Buffer {
+                                ty: wgpu::BufferBindingType::Storage { read_only: false },
+                                has_dynamic_offset: false,
+                                min_binding_size: None,
+                            },
+                            count: None,
+                        },
+                        // 5: params (uniform)
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 5,
+                            visibility: wgpu::ShaderStages::COMPUTE,
+                            ty: wgpu::BindingType::Buffer {
+                                ty: wgpu::BufferBindingType::Uniform,
+                                has_dynamic_offset: false,
+                                min_binding_size: None,
+                            },
+                            count: None,
+                        },
+                    ],
+                });
 
-        let pipeline_layout = self.device.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Sumcheck V2 Pipeline Layout"),
-            bind_group_layouts: &[&bind_group_layout],
-            push_constant_ranges: &[],
-        });
+        let pipeline_layout =
+            self.device
+                .device
+                .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                    label: Some("Sumcheck V2 Pipeline Layout"),
+                    bind_group_layouts: &[&bind_group_layout],
+                    push_constant_ranges: &[],
+                });
 
-        let contribution_pipeline = self.device.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("Sumcheck Contribution Pipeline"),
-            layout: Some(&pipeline_layout),
-            module: &shader_module,
-            entry_point: "sumcheck_contribution",
-            compilation_options: Default::default(),
-        });
+        let contribution_pipeline =
+            self.device
+                .device
+                .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                    label: Some("Sumcheck Contribution Pipeline"),
+                    layout: Some(&pipeline_layout),
+                    module: &shader_module,
+                    entry_point: "sumcheck_contribution",
+                    compilation_options: Default::default(),
+                });
 
         self.contribution_pipeline = Some(contribution_pipeline);
         self.bind_group_layout = Some(bind_group_layout);
@@ -186,28 +198,27 @@ impl GpuSumcheck {
             );
 
             use crate::sumcheck_polys::induce_sumcheck_poly as cpu_induce;
-            return Ok(cpu_induce(n, sks_vks, opened_rows, v_challenges, sorted_queries, alpha));
+            return Ok(cpu_induce(
+                n,
+                sks_vks,
+                opened_rows,
+                v_challenges,
+                sorted_queries,
+                alpha,
+            ));
         }
 
         self.init_pipelines().await?;
 
         // Step 1: GPU computes contributions in parallel
-        let contributions = self.compute_contributions_gpu(
-            n,
-            opened_rows,
-            v_challenges,
-            sorted_queries,
-            alpha,
-        ).await?;
+        let contributions = self
+            .compute_contributions_gpu(n, opened_rows, v_challenges, sorted_queries, alpha)
+            .await?;
 
         // Step 2: CPU accumulates contributions into basis_poly
         // This matches the CPU implementation's efficient memory pattern
-        let (basis_poly, enforced_sum) = self.accumulate_contributions_cpu(
-            n,
-            sks_vks,
-            &contributions,
-            sorted_queries,
-        );
+        let (basis_poly, enforced_sum) =
+            self.accumulate_contributions_cpu(n, sks_vks, &contributions, sorted_queries);
 
         Ok((basis_poly, enforced_sum))
     }
@@ -241,32 +252,44 @@ impl GpuSumcheck {
         let alpha_pows = crate::sumcheck_polys::precompute_alpha_powers(alpha, num_queries);
 
         // Create GPU buffers
-        use wgpu::util::{DeviceExt, BufferInitDescriptor};
+        use wgpu::util::{BufferInitDescriptor, DeviceExt};
 
-        let opened_rows_buffer = self.device.device.create_buffer_init(&BufferInitDescriptor {
-            label: Some("Opened Rows"),
-            contents: bytemuck::cast_slice(&flattened_rows),
-            usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC,
-        });
+        let opened_rows_buffer = self
+            .device
+            .device
+            .create_buffer_init(&BufferInitDescriptor {
+                label: Some("Opened Rows"),
+                contents: bytemuck::cast_slice(&flattened_rows),
+                usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC,
+            });
 
-        let v_challenges_buffer = self.device.device.create_buffer_init(&BufferInitDescriptor {
-            label: Some("V Challenges"),
-            contents: bytemuck::cast_slice(v_challenges),
-            usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC,
-        });
+        let v_challenges_buffer = self
+            .device
+            .device
+            .create_buffer_init(&BufferInitDescriptor {
+                label: Some("V Challenges"),
+                contents: bytemuck::cast_slice(v_challenges),
+                usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC,
+            });
 
-        let alpha_pows_buffer = self.device.device.create_buffer_init(&BufferInitDescriptor {
-            label: Some("Alpha Powers"),
-            contents: bytemuck::cast_slice(&alpha_pows),
-            usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC,
-        });
+        let alpha_pows_buffer = self
+            .device
+            .device
+            .create_buffer_init(&BufferInitDescriptor {
+                label: Some("Alpha Powers"),
+                contents: bytemuck::cast_slice(&alpha_pows),
+                usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC,
+            });
 
         let sorted_queries_u32: Vec<u32> = sorted_queries.iter().map(|&q| q as u32).collect();
-        let sorted_queries_buffer = self.device.device.create_buffer_init(&BufferInitDescriptor {
-            label: Some("Sorted Queries"),
-            contents: bytemuck::cast_slice(&sorted_queries_u32),
-            usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC,
-        });
+        let sorted_queries_buffer = self
+            .device
+            .device
+            .create_buffer_init(&BufferInitDescriptor {
+                label: Some("Sorted Queries"),
+                contents: bytemuck::cast_slice(&sorted_queries_u32),
+                usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC,
+            });
 
         // Output buffer: SMALL! Only num_queries contributions
         let contributions_buffer = self.device.device.create_buffer(&wgpu::BufferDescriptor {
@@ -283,48 +306,57 @@ impl GpuSumcheck {
             row_size: row_size as u32,
         };
 
-        let params_buffer = self.device.device.create_buffer_init(&BufferInitDescriptor {
-            label: Some("Params"),
-            contents: bytemuck::bytes_of(&params),
-            usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
-        });
+        let params_buffer = self
+            .device
+            .device
+            .create_buffer_init(&BufferInitDescriptor {
+                label: Some("Params"),
+                contents: bytemuck::bytes_of(&params),
+                usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+            });
 
         // Create bind group
-        let bind_group = self.device.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Sumcheck V2 Bind Group"),
-            layout: self.bind_group_layout.as_ref().unwrap(),
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: opened_rows_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: v_challenges_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: alpha_pows_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: sorted_queries_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 4,
-                    resource: contributions_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 5,
-                    resource: params_buffer.as_entire_binding(),
-                },
-            ],
-        });
+        let bind_group = self
+            .device
+            .device
+            .create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Sumcheck V2 Bind Group"),
+                layout: self.bind_group_layout.as_ref().unwrap(),
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: opened_rows_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: v_challenges_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: alpha_pows_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: sorted_queries_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: contributions_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 5,
+                        resource: params_buffer.as_entire_binding(),
+                    },
+                ],
+            });
 
         // Dispatch compute shader
-        let mut encoder = self.device.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("Sumcheck V2 Encoder"),
-        });
+        let mut encoder =
+            self.device
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("Sumcheck V2 Encoder"),
+                });
 
         {
             let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -362,7 +394,9 @@ impl GpuSumcheck {
         });
 
         self.device.device.poll(wgpu::Maintain::Wait);
-        receiver.await.map_err(|_| "Failed to receive mapping".to_string())?
+        receiver
+            .await
+            .map_err(|_| "Failed to receive mapping".to_string())?
             .map_err(|e| format!("Buffer mapping failed: {:?}", e))?;
 
         let data = buffer_slice.get_mapped_range();
@@ -395,14 +429,22 @@ impl GpuSumcheck {
         let mut local_sks_x = vec![T::zero(); sks_vks.len()];
         let mut local_basis = vec![U::zero(); basis_size];
 
-        for (i, (&contribution, &query)) in contributions.iter().zip(sorted_queries.iter()).enumerate() {
+        for (i, (&contribution, &query)) in
+            contributions.iter().zip(sorted_queries.iter()).enumerate()
+        {
             enforced_sum = enforced_sum.add(&contribution);
 
             let query_mod = query % basis_size;
             let qf = T::from_bits(query_mod as u64);
 
             // Compute scaled basis (reuses buffers!)
-            evaluate_scaled_basis_inplace(&mut local_sks_x, &mut local_basis, sks_vks, qf, contribution);
+            evaluate_scaled_basis_inplace(
+                &mut local_sks_x,
+                &mut local_basis,
+                sks_vks,
+                qf,
+                contribution,
+            );
 
             // Accumulate into basis_poly
             for (j, &val) in local_basis.iter().enumerate() {

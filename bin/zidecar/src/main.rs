@@ -5,21 +5,21 @@
 use anyhow::Result;
 use clap::Parser;
 use std::net::SocketAddr;
-use tracing::{info, error, warn};
 use tonic::transport::Server;
+use tracing::{error, info, warn};
 
-mod zebrad;
+mod compact;
+mod constants;
+mod epoch;
+mod error;
+mod grpc_service;
 mod header_chain;
 mod prover;
-mod grpc_service;
 mod storage;
-mod compact;
-mod error;
-mod epoch;
-mod constants;
 mod witness;
+mod zebrad;
 
-use crate::{grpc_service::ZidecarService, epoch::EpochManager};
+use crate::{epoch::EpochManager, grpc_service::ZidecarService};
 use std::sync::Arc;
 
 #[derive(Parser, Debug)]
@@ -45,7 +45,6 @@ struct Args {
     /// Enable testnet mode
     #[arg(long)]
     testnet: bool,
-
 }
 
 #[tokio::main]
@@ -91,7 +90,10 @@ async fn main() -> Result<()> {
     // initialize prover configs
     info!("initialized ligerito prover configs");
     info!("  tip proof: 2^{} config", zync_core::TIP_TRACE_LOG_SIZE);
-    info!("  gigaproof: 2^{} config", zync_core::GIGAPROOF_TRACE_LOG_SIZE);
+    info!(
+        "  gigaproof: 2^{} config",
+        zync_core::GIGAPROOF_TRACE_LOG_SIZE
+    );
 
     // initialize epoch manager
     let storage_arc = Arc::new(storage);
@@ -109,8 +111,10 @@ async fn main() -> Result<()> {
         let from_height = args.start_height;
         let to_height = cached_epoch * zync_core::EPOCH_SIZE + zync_core::EPOCH_SIZE - 1;
         let num_blocks = to_height - from_height + 1;
-        info!("existing gigaproof: epochs {} -> {} ({} blocks, height {} -> {})",
-              start_epoch, cached_epoch, num_blocks, from_height, to_height);
+        info!(
+            "existing gigaproof: epochs {} -> {} ({} blocks, height {} -> {})",
+            start_epoch, cached_epoch, num_blocks, from_height, to_height
+        );
     } else {
         info!("no existing gigaproof found, will generate...");
     }
@@ -155,12 +159,7 @@ async fn main() -> Result<()> {
     info!("  nullifier sync: running (indexes shielded spends)");
 
     // create gRPC service
-    let service = ZidecarService::new(
-        zebrad,
-        storage_arc,
-        epoch_manager,
-        args.start_height,
-    );
+    let service = ZidecarService::new(zebrad, storage_arc, epoch_manager, args.start_height);
 
     info!("starting gRPC server on {}", args.listen);
     info!("gRPC-web enabled for browser clients");

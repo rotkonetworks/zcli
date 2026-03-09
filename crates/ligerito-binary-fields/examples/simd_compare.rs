@@ -1,10 +1,8 @@
 //! Compare AVX-512 vs AVX2 vs SSE for FFT butterfly at different sizes
-use ligerito_binary_fields::BinaryElem32;
 use ligerito_binary_fields::simd::{
-    fft_butterfly_gf32_avx512_only,
-    fft_butterfly_gf32_avx2_only,
-    fft_butterfly_gf32_sse
+    fft_butterfly_gf32_avx2_only, fft_butterfly_gf32_avx512_only, fft_butterfly_gf32_sse,
 };
+use ligerito_binary_fields::BinaryElem32;
 use std::time::Instant;
 
 fn main() {
@@ -28,7 +26,13 @@ fn main() {
         let mut w: Vec<BinaryElem32> = (0..n).map(|i| BinaryElem32::from((i * 7) as u32)).collect();
         let lambda = BinaryElem32::from(0x12345678u32);
 
-        let iterations = if log_n >= 26 { 3 } else if log_n >= 24 { 10 } else { 50 };
+        let iterations = if log_n >= 26 {
+            3
+        } else if log_n >= 24 {
+            10
+        } else {
+            50
+        };
 
         println!("2^{} ({} elements, {} iterations):", log_n, n, iterations);
 
@@ -43,7 +47,11 @@ fn main() {
             }
             let time = start.elapsed();
             let ns = time.as_nanos() as f64 / iterations as f64;
-            println!("  AVX-512 (8 elem/iter): {:.2} ms ({:.2} ns/elem)", ns / 1_000_000.0, ns / n as f64);
+            println!(
+                "  AVX-512 (8 elem/iter): {:.2} ms ({:.2} ns/elem)",
+                ns / 1_000_000.0,
+                ns / n as f64
+            );
         }
 
         // AVX2
@@ -54,7 +62,11 @@ fn main() {
             }
             let time = start.elapsed();
             let ns = time.as_nanos() as f64 / iterations as f64;
-            println!("  AVX2 (4 elem/iter):    {:.2} ms ({:.2} ns/elem)", ns / 1_000_000.0, ns / n as f64);
+            println!(
+                "  AVX2 (4 elem/iter):    {:.2} ms ({:.2} ns/elem)",
+                ns / 1_000_000.0,
+                ns / n as f64
+            );
         }
 
         // SSE
@@ -65,7 +77,11 @@ fn main() {
             }
             let time = start.elapsed();
             let ns = time.as_nanos() as f64 / iterations as f64;
-            println!("  SSE (2 elem/iter):     {:.2} ms ({:.2} ns/elem)", ns / 1_000_000.0, ns / n as f64);
+            println!(
+                "  SSE (2 elem/iter):     {:.2} ms ({:.2} ns/elem)",
+                ns / 1_000_000.0,
+                ns / n as f64
+            );
         }
 
         println!();

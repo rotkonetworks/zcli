@@ -1,16 +1,15 @@
 //! zidecar gRPC client
 
-use anyhow::Result;
 use super::{
     zidecar_proto::{
-        zidecar_client::ZidecarClient as GrpcClient,
-        Empty, ProofRequest, BlockRange, BlockId, TxFilter,
-        TransparentAddressFilter, RawTransaction,
+        zidecar_client::ZidecarClient as GrpcClient, BlockId, BlockRange, Empty, ProofRequest,
+        RawTransaction, TransparentAddressFilter, TxFilter,
     },
-    SyncStatus, TreeState, Utxo, SendResult, CompactBlock, CompactAction,
+    CompactAction, CompactBlock, SendResult, SyncStatus, TreeState, Utxo,
 };
+use anyhow::Result;
 use tonic::transport::Channel;
-use tracing::{info, debug};
+use tracing::{debug, info};
 
 pub struct ZidecarClient {
     client: GrpcClient<Channel>,
@@ -67,20 +66,30 @@ impl ZidecarClient {
         let mut blocks = Vec::new();
 
         while let Some(block) = stream.message().await? {
-            let actions: Vec<CompactAction> = block.actions.into_iter().map(|a| {
-                let mut cmx = [0u8; 32];
-                let mut ek = [0u8; 32];
-                let mut nf = [0u8; 32];
-                if a.cmx.len() == 32 { cmx.copy_from_slice(&a.cmx); }
-                if a.ephemeral_key.len() == 32 { ek.copy_from_slice(&a.ephemeral_key); }
-                if a.nullifier.len() == 32 { nf.copy_from_slice(&a.nullifier); }
-                CompactAction {
-                    cmx,
-                    ephemeral_key: ek,
-                    ciphertext: a.ciphertext,
-                    nullifier: nf,
-                }
-            }).collect();
+            let actions: Vec<CompactAction> = block
+                .actions
+                .into_iter()
+                .map(|a| {
+                    let mut cmx = [0u8; 32];
+                    let mut ek = [0u8; 32];
+                    let mut nf = [0u8; 32];
+                    if a.cmx.len() == 32 {
+                        cmx.copy_from_slice(&a.cmx);
+                    }
+                    if a.ephemeral_key.len() == 32 {
+                        ek.copy_from_slice(&a.ephemeral_key);
+                    }
+                    if a.nullifier.len() == 32 {
+                        nf.copy_from_slice(&a.nullifier);
+                    }
+                    CompactAction {
+                        cmx,
+                        ephemeral_key: ek,
+                        ciphertext: a.ciphertext,
+                        nullifier: nf,
+                    }
+                })
+                .collect();
 
             blocks.push(CompactBlock {
                 height: block.height,
@@ -160,22 +169,31 @@ impl ZidecarClient {
         let response = self.client.get_address_utxos(request).await?;
         let utxos = response.into_inner().utxos;
 
-        Ok(utxos.into_iter().map(|u| {
-            let mut txid = [0u8; 32];
-            if u.txid.len() == 32 { txid.copy_from_slice(&u.txid); }
-            Utxo {
-                address: u.address,
-                txid,
-                output_index: u.output_index,
-                script: u.script,
-                value_zat: u.value_zat,
-                height: u.height,
-            }
-        }).collect())
+        Ok(utxos
+            .into_iter()
+            .map(|u| {
+                let mut txid = [0u8; 32];
+                if u.txid.len() == 32 {
+                    txid.copy_from_slice(&u.txid);
+                }
+                Utxo {
+                    address: u.address,
+                    txid,
+                    output_index: u.output_index,
+                    script: u.script,
+                    value_zat: u.value_zat,
+                    height: u.height,
+                }
+            })
+            .collect())
     }
 
     /// get transparent transaction IDs for addresses
-    pub async fn get_taddress_txids(&mut self, addresses: Vec<String>, start_height: u32) -> Result<Vec<[u8; 32]>> {
+    pub async fn get_taddress_txids(
+        &mut self,
+        addresses: Vec<String>,
+        start_height: u32,
+    ) -> Result<Vec<[u8; 32]>> {
         let request = tonic::Request::new(TransparentAddressFilter {
             addresses,
             start_height,
@@ -184,14 +202,17 @@ impl ZidecarClient {
         let response = self.client.get_taddress_txids(request).await?;
         let txids = response.into_inner().txids;
 
-        Ok(txids.into_iter().filter_map(|t| {
-            if t.len() == 32 {
-                let mut arr = [0u8; 32];
-                arr.copy_from_slice(&t);
-                Some(arr)
-            } else {
-                None
-            }
-        }).collect())
+        Ok(txids
+            .into_iter()
+            .filter_map(|t| {
+                if t.len() == 32 {
+                    let mut arr = [0u8; 32];
+                    arr.copy_from_slice(&t);
+                    Some(arr)
+                } else {
+                    None
+                }
+            })
+            .collect())
     }
 }

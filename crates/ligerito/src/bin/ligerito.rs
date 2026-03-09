@@ -16,16 +16,15 @@
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use ligerito::transcript::{FiatShamir, MerlinTranscript};
 use ligerito::{
-    prove_with_transcript, verify_with_transcript,
-    prover_config_for_log_size, verifier_config_for_log_size,
-    config_info_for_log_size, MIN_LOG_SIZE, MAX_LOG_SIZE,
-    VerifierConfig, FinalizedLigeritoProof,
+    config_info_for_log_size, prove_with_transcript, prover_config_for_log_size,
+    verifier_config_for_log_size, verify_with_transcript, FinalizedLigeritoProof, VerifierConfig,
+    MAX_LOG_SIZE, MIN_LOG_SIZE,
 };
-use ligerito::transcript::{MerlinTranscript, FiatShamir};
-use ligerito_binary_fields::{BinaryElem32, BinaryElem128};
-use std::io::{self, Read, Write};
+use ligerito_binary_fields::{BinaryElem128, BinaryElem32};
 use std::fs::File;
+use std::io::{self, Read, Write};
 use std::time::Instant;
 
 #[derive(Parser)]
@@ -145,19 +144,44 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Prove { size, config, format, transcript, input } => {
+        Commands::Prove {
+            size,
+            config,
+            format,
+            transcript,
+            input,
+        } => {
             prove_command(size, config, &format, &transcript, input)?;
         }
-        Commands::Verify { size, config, format, transcript, verbose, input } => {
+        Commands::Verify {
+            size,
+            config,
+            format,
+            transcript,
+            verbose,
+            input,
+        } => {
             verify_command(size, config, &format, &transcript, verbose, input)?;
         }
-        Commands::Config { size, generate, output_format } => {
+        Commands::Config {
+            size,
+            generate,
+            output_format,
+        } => {
             config_command(size, generate, &output_format)?;
         }
-        Commands::Generate { size, pattern, output } => {
+        Commands::Generate {
+            size,
+            pattern,
+            output,
+        } => {
             generate_command(size, &pattern, output)?;
         }
-        Commands::Bench { size, iterations, verify } => {
+        Commands::Bench {
+            size,
+            iterations,
+            verify,
+        } => {
             bench_command(size, iterations, verify)?;
         }
     }
@@ -165,7 +189,13 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn prove_command(size: Option<u32>, config_path: Option<String>, format: &str, transcript_type: &str, input: Option<String>) -> Result<()> {
+fn prove_command(
+    size: Option<u32>,
+    config_path: Option<String>,
+    format: &str,
+    transcript_type: &str,
+    input: Option<String>,
+) -> Result<()> {
     // TODO: Implement custom config loading for BYOC
     if config_path.is_some() {
         anyhow::bail!("Custom config loading not yet implemented. Use --size for now.");
@@ -175,8 +205,8 @@ fn prove_command(size: Option<u32>, config_path: Option<String>, format: &str, t
     let mut buffer = Vec::new();
     match input {
         Some(path) => {
-            let mut file = File::open(&path)
-                .context(format!("Failed to open input file: {}", path))?;
+            let mut file =
+                File::open(&path).context(format!("Failed to open input file: {}", path))?;
             file.read_to_end(&mut buffer)
                 .context("Failed to read polynomial from file")?;
         }
@@ -194,8 +224,13 @@ fn prove_command(size: Option<u32>, config_path: Option<String>, format: &str, t
     let size = match size {
         Some(s) => {
             // Validate provided size
-            if s < MIN_LOG_SIZE || s > MAX_LOG_SIZE {
-                anyhow::bail!("Size must be between {} and {}, got {}", MIN_LOG_SIZE, MAX_LOG_SIZE, s);
+            if !(MIN_LOG_SIZE..=MAX_LOG_SIZE).contains(&s) {
+                anyhow::bail!(
+                    "Size must be between {} and {}, got {}",
+                    MIN_LOG_SIZE,
+                    MAX_LOG_SIZE,
+                    s
+                );
             }
             let expected_len = 1usize << s;
             if num_elements != expected_len {
@@ -219,10 +254,12 @@ fn prove_command(size: Option<u32>, config_path: Option<String>, format: &str, t
                 );
             }
             let detected_size = num_elements.trailing_zeros();
-            if detected_size < MIN_LOG_SIZE || detected_size > MAX_LOG_SIZE {
+            if !(MIN_LOG_SIZE..=MAX_LOG_SIZE).contains(&detected_size) {
                 anyhow::bail!(
                     "Auto-detected size 2^{} is out of range ({}-{})",
-                    detected_size, MIN_LOG_SIZE, MAX_LOG_SIZE
+                    detected_size,
+                    MIN_LOG_SIZE,
+                    MAX_LOG_SIZE
                 );
             }
             eprintln!("auto-detected size: 2^{}", detected_size);
@@ -254,7 +291,12 @@ fn prove_command(size: Option<u32>, config_path: Option<String>, format: &str, t
     #[cfg(not(all(target_arch = "x86_64", target_feature = "pclmulqdq")))]
     build_info.push("no-SIMD");
 
-    eprintln!("prove: 2^{} GF(2^32), {} [{}]", size, transcript_type, build_info.join(" "));
+    eprintln!(
+        "prove: 2^{} GF(2^32), {} [{}]",
+        size,
+        transcript_type,
+        build_info.join(" ")
+    );
 
     // Get config using autosizer
     let config = prover_config_for_log_size::<BinaryElem32, BinaryElem128>(size);
@@ -274,21 +316,31 @@ fn prove_command(size: Option<u32>, config_path: Option<String>, format: &str, t
             }
             #[cfg(not(feature = "transcript-merlin"))]
             {
-                anyhow::bail!("Merlin transcript not available. Rebuild with --features transcript-merlin")
+                anyhow::bail!(
+                    "Merlin transcript not available. Rebuild with --features transcript-merlin"
+                )
             }
         }
-        _ => anyhow::bail!("Unknown transcript backend: {}. Use sha256 or merlin", transcript_type),
-    }.context("Proving failed")?;
+        _ => anyhow::bail!(
+            "Unknown transcript backend: {}. Use sha256 or merlin",
+            transcript_type
+        ),
+    }
+    .context("Proving failed")?;
     let elapsed = start.elapsed();
 
     // Serialize for size calculation
-    let encoded = bincode::serialize(&proof)
-        .context("Failed to serialize proof")?;
+    let encoded = bincode::serialize(&proof).context("Failed to serialize proof")?;
 
     let prove_ms = elapsed.as_secs_f64() * 1000.0;
     let throughput = (poly.len() as f64) / elapsed.as_secs_f64();
 
-    eprintln!("result: {:.2}ms, {:.2e} elem/s, {} bytes", prove_ms, throughput, encoded.len());
+    eprintln!(
+        "result: {:.2}ms, {:.2e} elem/s, {} bytes",
+        prove_ms,
+        throughput,
+        encoded.len()
+    );
 
     // Output proof
     match format {
@@ -307,7 +359,14 @@ fn prove_command(size: Option<u32>, config_path: Option<String>, format: &str, t
     Ok(())
 }
 
-fn verify_command(size: Option<u32>, config_path: Option<String>, format: &str, transcript_type: &str, verbose: bool, input: Option<String>) -> Result<()> {
+fn verify_command(
+    size: Option<u32>,
+    config_path: Option<String>,
+    format: &str,
+    transcript_type: &str,
+    verbose: bool,
+    input: Option<String>,
+) -> Result<()> {
     // TODO: Implement custom config loading for BYOC
     if config_path.is_some() {
         anyhow::bail!("Custom config loading not yet implemented. Use --size for now.");
@@ -317,8 +376,8 @@ fn verify_command(size: Option<u32>, config_path: Option<String>, format: &str, 
     let mut buffer = Vec::new();
     match input {
         Some(path) => {
-            let mut file = File::open(&path)
-                .context(format!("Failed to open input file: {}", path))?;
+            let mut file =
+                File::open(&path).context(format!("Failed to open input file: {}", path))?;
             file.read_to_end(&mut buffer)
                 .context("Failed to read proof from file")?;
         }
@@ -333,24 +392,26 @@ fn verify_command(size: Option<u32>, config_path: Option<String>, format: &str, 
     let proof_bytes = match format {
         "bincode" => buffer,
         "hex" => {
-            let hex_str = String::from_utf8(buffer)
-                .context("Invalid UTF-8 in hex input")?;
-            hex::decode(hex_str.trim())
-                .context("Failed to decode hex")?
+            let hex_str = String::from_utf8(buffer).context("Invalid UTF-8 in hex input")?;
+            hex::decode(hex_str.trim()).context("Failed to decode hex")?
         }
         _ => anyhow::bail!("Unknown format: {}. Use 'bincode' or 'hex'", format),
     };
 
     // Deserialize proof
     let proof: FinalizedLigeritoProof<BinaryElem32, BinaryElem128> =
-        bincode::deserialize(&proof_bytes)
-            .context("Failed to deserialize proof")?;
+        bincode::deserialize(&proof_bytes).context("Failed to deserialize proof")?;
 
     // Determine size: use provided size or infer from proof structure
     let size = match size {
         Some(s) => {
-            if s < MIN_LOG_SIZE || s > MAX_LOG_SIZE {
-                anyhow::bail!("Size must be between {} and {}, got {}", MIN_LOG_SIZE, MAX_LOG_SIZE, s);
+            if !(MIN_LOG_SIZE..=MAX_LOG_SIZE).contains(&s) {
+                anyhow::bail!(
+                    "Size must be between {} and {}, got {}",
+                    MIN_LOG_SIZE,
+                    MAX_LOG_SIZE,
+                    s
+                );
             }
             s
         }
@@ -367,7 +428,12 @@ fn verify_command(size: Option<u32>, config_path: Option<String>, format: &str, 
         }
     };
 
-    eprintln!("verify: 2^{} GF(2^32), {} bytes, {} transcript", size, proof_bytes.len(), transcript_type);
+    eprintln!(
+        "verify: 2^{} GF(2^32), {} bytes, {} transcript",
+        size,
+        proof_bytes.len(),
+        transcript_type
+    );
     if verbose {
         eprintln!("  proof structure: {} bytes", proof.size_of());
     }
@@ -390,11 +456,17 @@ fn verify_command(size: Option<u32>, config_path: Option<String>, format: &str, 
             }
             #[cfg(not(feature = "transcript-merlin"))]
             {
-                anyhow::bail!("Merlin transcript not available. Rebuild with --features transcript-merlin")
+                anyhow::bail!(
+                    "Merlin transcript not available. Rebuild with --features transcript-merlin"
+                )
             }
         }
-        _ => anyhow::bail!("Unknown transcript backend: {}. Use sha256 or merlin", transcript_type),
-    }.context("Verification failed")?;
+        _ => anyhow::bail!(
+            "Unknown transcript backend: {}. Use sha256 or merlin",
+            transcript_type
+        ),
+    }
+    .context("Verification failed")?;
     let elapsed = start.elapsed();
     let verify_ms = elapsed.as_secs_f64() * 1000.0;
 
@@ -412,12 +484,14 @@ fn verify_command(size: Option<u32>, config_path: Option<String>, format: &str, 
 fn config_command(size: Option<u32>, generate: bool, _output_format: &str) -> Result<()> {
     if generate {
         // TODO: Implement config generation for BYOC
-        anyhow::bail!("Config generation not yet implemented. This will allow creating custom config files.");
+        anyhow::bail!(
+            "Config generation not yet implemented. This will allow creating custom config files."
+        );
     }
 
     match size {
         Some(s) => {
-            if s < MIN_LOG_SIZE || s > MAX_LOG_SIZE {
+            if !(MIN_LOG_SIZE..=MAX_LOG_SIZE).contains(&s) {
                 anyhow::bail!("Size must be between {} and {}", MIN_LOG_SIZE, MAX_LOG_SIZE);
             }
             println!("Ligerito Configuration for 2^{}", s);
@@ -437,7 +511,10 @@ fn config_command(size: Option<u32>, generate: bool, _output_format: &str) -> Re
 fn print_config_info(config: &VerifierConfig, log_size: u32) {
     let info = config_info_for_log_size(log_size);
 
-    println!("Polynomial size: 2^{} = {} elements", log_size, info.poly_size);
+    println!(
+        "Polynomial size: 2^{} = {} elements",
+        log_size, info.poly_size
+    );
     println!("Recursive steps: {}", config.recursive_steps);
     println!("Initial k: {}", config.initial_k);
     println!("Recursive ks: {:?}", config.ks);
@@ -446,7 +523,8 @@ fn print_config_info(config: &VerifierConfig, log_size: u32) {
     // Sizes
     let poly_size_bytes = info.poly_size * 4; // 4 bytes per BinaryElem32
     println!("\nEstimated sizes:");
-    println!("  Polynomial: {} bytes ({:.2} MB)",
+    println!(
+        "  Polynomial: {} bytes ({:.2} MB)",
         poly_size_bytes,
         poly_size_bytes as f64 / 1_048_576.0
     );
@@ -454,22 +532,30 @@ fn print_config_info(config: &VerifierConfig, log_size: u32) {
 }
 
 fn generate_command(size: u32, pattern: &str, output: Option<String>) -> Result<()> {
-    if size < MIN_LOG_SIZE || size > MAX_LOG_SIZE {
+    if !(MIN_LOG_SIZE..=MAX_LOG_SIZE).contains(&size) {
         anyhow::bail!("Size must be between {} and {}", MIN_LOG_SIZE, MAX_LOG_SIZE);
     }
     let len = 1usize << size;
-    eprintln!("Generating 2^{} = {} elements with pattern '{}'", size, len, pattern);
+    eprintln!(
+        "Generating 2^{} = {} elements with pattern '{}'",
+        size, len, pattern
+    );
 
     let poly: Vec<BinaryElem32> = match pattern {
         "random" => {
             use rand::Rng;
             let mut rng = rand::thread_rng();
-            (0..len).map(|_| BinaryElem32::from(rng.gen::<u32>())).collect()
+            (0..len)
+                .map(|_| BinaryElem32::from(rng.gen::<u32>()))
+                .collect()
         }
         "zeros" => vec![BinaryElem32::from(0); len],
         "ones" => vec![BinaryElem32::from(1); len],
         "sequential" => (0..len).map(|i| BinaryElem32::from(i as u32)).collect(),
-        _ => anyhow::bail!("Unknown pattern '{}'. Use: random, zeros, ones, sequential", pattern),
+        _ => anyhow::bail!(
+            "Unknown pattern '{}'. Use: random, zeros, ones, sequential",
+            pattern
+        ),
     };
 
     // Convert to bytes using bytemuck
@@ -478,14 +564,15 @@ fn generate_command(size: u32, pattern: &str, output: Option<String>) -> Result<
     // Write output
     match output {
         Some(path) => {
-            let mut file = File::create(&path)
-                .context(format!("Failed to create output file: {}", path))?;
+            let mut file =
+                File::create(&path).context(format!("Failed to create output file: {}", path))?;
             file.write_all(&bytes)
                 .context("Failed to write polynomial data")?;
             eprintln!("Wrote {} bytes to {}", bytes.len(), path);
         }
         None => {
-            io::stdout().write_all(&bytes)
+            io::stdout()
+                .write_all(&bytes)
                 .context("Failed to write polynomial data to stdout")?;
         }
     }
@@ -496,7 +583,7 @@ fn generate_command(size: u32, pattern: &str, output: Option<String>) -> Result<
 fn bench_command(size: u32, iterations: usize, do_verify: bool) -> Result<()> {
     use ligerito::prove_sha256;
 
-    if size < MIN_LOG_SIZE || size > MAX_LOG_SIZE {
+    if !(MIN_LOG_SIZE..=MAX_LOG_SIZE).contains(&size) {
         anyhow::bail!("Size must be between {} and {}", MIN_LOG_SIZE, MAX_LOG_SIZE);
     }
 
@@ -530,7 +617,8 @@ fn bench_command(size: u32, iterations: usize, do_verify: bool) -> Result<()> {
         eprintln!("  Run {}: {:.2}ms", i + 1, elapsed.as_secs_f64() * 1000.0);
     }
 
-    let avg_prove = prove_times.iter().map(|d| d.as_millis()).sum::<u128>() / prove_times.len() as u128;
+    let avg_prove =
+        prove_times.iter().map(|d| d.as_millis()).sum::<u128>() / prove_times.len() as u128;
     let min_prove = prove_times.iter().map(|d| d.as_millis()).min().unwrap();
     let max_prove = prove_times.iter().map(|d| d.as_millis()).max().unwrap();
 
@@ -547,15 +635,20 @@ fn bench_command(size: u32, iterations: usize, do_verify: bool) -> Result<()> {
 
         for i in 0..iterations {
             let start = Instant::now();
-            let valid = ligerito::verify_sha256(&verifier_config, &proof)
-                .context("Verification failed")?;
+            let valid =
+                ligerito::verify_sha256(&verifier_config, &proof).context("Verification failed")?;
             let elapsed = start.elapsed();
             verify_times.push(elapsed);
-            eprintln!("  Run {}: {:.2}ms ({})", i + 1, elapsed.as_secs_f64() * 1000.0,
-                if valid { "VALID" } else { "INVALID" });
+            eprintln!(
+                "  Run {}: {:.2}ms ({})",
+                i + 1,
+                elapsed.as_secs_f64() * 1000.0,
+                if valid { "VALID" } else { "INVALID" }
+            );
         }
 
-        let avg_verify = verify_times.iter().map(|d| d.as_millis()).sum::<u128>() / verify_times.len() as u128;
+        let avg_verify =
+            verify_times.iter().map(|d| d.as_millis()).sum::<u128>() / verify_times.len() as u128;
         let min_verify = verify_times.iter().map(|d| d.as_millis()).min().unwrap();
 
         eprintln!("\nVerify results:");

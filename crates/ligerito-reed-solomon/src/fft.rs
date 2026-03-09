@@ -63,7 +63,7 @@ pub fn compute_twiddles<F: BinaryFieldElement>(log_n: usize, beta: F) -> Vec<F> 
         }
     }
 
-    twiddles[1..n].to_vec()  // Remove dummy [0], len = n-1
+    twiddles[1..n].to_vec() // Remove dummy [0], len = n-1
 }
 
 /// FFT butterfly in-place: u' = u + λ*w; w' = w + u' (char 2: + = add)
@@ -71,7 +71,11 @@ fn fft_mul<F: BinaryFieldElement + 'static>(v: &mut [F], lambda: F) {
     let (u, w) = v.split_at_mut(v.len() / 2);
 
     // use SIMD-optimized version for BinaryElem32 when available (x86_64)
-    #[cfg(all(feature = "hardware-accel", target_arch = "x86_64", target_feature = "pclmulqdq"))]
+    #[cfg(all(
+        feature = "hardware-accel",
+        target_arch = "x86_64",
+        target_feature = "pclmulqdq"
+    ))]
     {
         use ligerito_binary_fields::BinaryElem32;
         use std::any::TypeId;
@@ -89,10 +93,14 @@ fn fft_mul<F: BinaryFieldElement + 'static>(v: &mut [F], lambda: F) {
     }
 
     // use SIMD-optimized version for BinaryElem32 when available (WASM SIMD128)
-    #[cfg(all(feature = "hardware-accel", target_arch = "wasm32", target_feature = "simd128"))]
+    #[cfg(all(
+        feature = "hardware-accel",
+        target_arch = "wasm32",
+        target_feature = "simd128"
+    ))]
     {
-        use ligerito_binary_fields::BinaryElem32;
         use core::any::TypeId;
+        use ligerito_binary_fields::BinaryElem32;
 
         // type check for BinaryElem32 - if match, use SIMD path
         if TypeId::of::<F>() == TypeId::of::<BinaryElem32>() {
@@ -120,7 +128,7 @@ fn fft_twiddles<F: BinaryFieldElement + 'static>(v: &mut [F], twiddles: &[F], id
         return;
     }
 
-    fft_mul(v, twiddles[idx - 1]);  // Adjust for 0-based
+    fft_mul(v, twiddles[idx - 1]); // Adjust for 0-based
 
     let mid = v.len() / 2;
     let (u, w) = v.split_at_mut(mid);
@@ -131,7 +139,12 @@ fn fft_twiddles<F: BinaryFieldElement + 'static>(v: &mut [F], twiddles: &[F], id
 
 /// Parallel in-place recursive FFT step with twiddles, idx starts at 1
 #[cfg(feature = "parallel")]
-fn fft_twiddles_parallel<F: BinaryFieldElement + Send + Sync + 'static>(v: &mut [F], twiddles: &[F], idx: usize, thread_depth: usize) {
+fn fft_twiddles_parallel<F: BinaryFieldElement + Send + Sync + 'static>(
+    v: &mut [F],
+    twiddles: &[F],
+    idx: usize,
+    thread_depth: usize,
+) {
     const MIN_PARALLEL_SIZE: usize = 128; // reduce threshold for more parallelism
 
     let len = v.len();
@@ -158,7 +171,11 @@ fn fft_twiddles_parallel<F: BinaryFieldElement + Send + Sync + 'static>(v: &mut 
 
 /// In-place FFT over binary field
 #[cfg(feature = "parallel")]
-pub fn fft<F: BinaryFieldElement + Send + Sync + 'static>(v: &mut [F], twiddles: &[F], parallel: bool) {
+pub fn fft<F: BinaryFieldElement + Send + Sync + 'static>(
+    v: &mut [F],
+    twiddles: &[F],
+    parallel: bool,
+) {
     if v.len() == 1 {
         return;
     }

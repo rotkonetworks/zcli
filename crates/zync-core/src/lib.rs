@@ -11,23 +11,23 @@
 #![allow(unused_variables)]
 
 pub mod error;
-pub mod verifier;
 pub mod scanner;
+pub mod verifier;
 
 #[cfg(feature = "client")]
 pub mod client;
 
-pub use error::{ZyncError, Result};
-pub use scanner::{Scanner, BatchScanner, ScanAction, DecryptedNote};
+pub use error::{Result, ZyncError};
+pub use scanner::{BatchScanner, DecryptedNote, ScanAction, Scanner};
 
 // re-export orchard key types for downstream consumers
 pub use orchard::keys::{FullViewingKey as OrchardFvk, IncomingViewingKey, Scope, SpendingKey};
 
 #[cfg(feature = "client")]
-pub use client::{ZidecarClient, LightwalletdClient};
+pub use client::{LightwalletdClient, ZidecarClient};
 
 use ligerito::{ProverConfig, VerifierConfig};
-use ligerito_binary_fields::{BinaryElem32, BinaryElem128};
+use ligerito_binary_fields::{BinaryElem128, BinaryElem32};
 use std::marker::PhantomData;
 
 /// blocks per epoch (~21 hours at 75s/block)
@@ -71,38 +71,80 @@ pub const EMPTY_SMT_ROOT: [u8; 32] = [0u8; 32];
 
 /// ligerito prover config for tip proofs (2^20)
 pub fn tip_prover_config() -> ProverConfig<BinaryElem32, BinaryElem128> {
-    ligerito::hardcoded_config_20(
-        PhantomData::<BinaryElem32>,
-        PhantomData::<BinaryElem128>,
-    )
+    ligerito::hardcoded_config_20(PhantomData::<BinaryElem32>, PhantomData::<BinaryElem128>)
 }
 
 /// ligerito prover config for epoch proofs (2^26)
 pub fn gigaproof_prover_config() -> ProverConfig<BinaryElem32, BinaryElem128> {
-    ligerito::hardcoded_config_26(
-        PhantomData::<BinaryElem32>,
-        PhantomData::<BinaryElem128>,
-    )
+    ligerito::hardcoded_config_26(PhantomData::<BinaryElem32>, PhantomData::<BinaryElem128>)
 }
 
 /// select the appropriate prover config for a given trace size
-pub fn prover_config_for_size(trace_len: usize) -> (ProverConfig<BinaryElem32, BinaryElem128>, usize) {
-    let log_size = if trace_len == 0 { 12 } else { (trace_len as f64).log2().ceil() as u32 };
+pub fn prover_config_for_size(
+    trace_len: usize,
+) -> (ProverConfig<BinaryElem32, BinaryElem128>, usize) {
+    let log_size = if trace_len == 0 {
+        12
+    } else {
+        (trace_len as f64).log2().ceil() as u32
+    };
 
     let (config_log, config) = if log_size <= 12 {
-        (12, ligerito::hardcoded_config_12(PhantomData::<BinaryElem32>, PhantomData::<BinaryElem128>))
+        (
+            12,
+            ligerito::hardcoded_config_12(
+                PhantomData::<BinaryElem32>,
+                PhantomData::<BinaryElem128>,
+            ),
+        )
     } else if log_size <= 16 {
-        (16, ligerito::hardcoded_config_16(PhantomData::<BinaryElem32>, PhantomData::<BinaryElem128>))
+        (
+            16,
+            ligerito::hardcoded_config_16(
+                PhantomData::<BinaryElem32>,
+                PhantomData::<BinaryElem128>,
+            ),
+        )
     } else if log_size <= 20 {
-        (20, ligerito::hardcoded_config_20(PhantomData::<BinaryElem32>, PhantomData::<BinaryElem128>))
+        (
+            20,
+            ligerito::hardcoded_config_20(
+                PhantomData::<BinaryElem32>,
+                PhantomData::<BinaryElem128>,
+            ),
+        )
     } else if log_size <= 24 {
-        (24, ligerito::hardcoded_config_24(PhantomData::<BinaryElem32>, PhantomData::<BinaryElem128>))
+        (
+            24,
+            ligerito::hardcoded_config_24(
+                PhantomData::<BinaryElem32>,
+                PhantomData::<BinaryElem128>,
+            ),
+        )
     } else if log_size <= 26 {
-        (26, ligerito::hardcoded_config_26(PhantomData::<BinaryElem32>, PhantomData::<BinaryElem128>))
+        (
+            26,
+            ligerito::hardcoded_config_26(
+                PhantomData::<BinaryElem32>,
+                PhantomData::<BinaryElem128>,
+            ),
+        )
     } else if log_size <= 28 {
-        (28, ligerito::hardcoded_config_28(PhantomData::<BinaryElem32>, PhantomData::<BinaryElem128>))
+        (
+            28,
+            ligerito::hardcoded_config_28(
+                PhantomData::<BinaryElem32>,
+                PhantomData::<BinaryElem128>,
+            ),
+        )
     } else {
-        (30, ligerito::hardcoded_config_30(PhantomData::<BinaryElem32>, PhantomData::<BinaryElem128>))
+        (
+            30,
+            ligerito::hardcoded_config_30(
+                PhantomData::<BinaryElem32>,
+                PhantomData::<BinaryElem128>,
+            ),
+        )
     };
 
     (config, 1 << config_log)

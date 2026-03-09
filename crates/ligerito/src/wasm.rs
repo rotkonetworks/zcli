@@ -26,19 +26,17 @@
 //! }
 //! ```
 
-use wasm_bindgen::prelude::*;
 use crate::{
-    prover::prove_with_transcript,
-    verifier::verify_with_transcript,
-    hardcoded_config_12, hardcoded_config_16, hardcoded_config_20, hardcoded_config_24,
-    hardcoded_config_26, hardcoded_config_28, hardcoded_config_30,
-    hardcoded_config_12_verifier, hardcoded_config_16_verifier, hardcoded_config_20_verifier,
-    hardcoded_config_24_verifier, hardcoded_config_26_verifier, hardcoded_config_28_verifier, hardcoded_config_30_verifier,
-    FinalizedLigeritoProof,
-    transcript::FiatShamir,
+    hardcoded_config_12, hardcoded_config_12_verifier, hardcoded_config_16,
+    hardcoded_config_16_verifier, hardcoded_config_20, hardcoded_config_20_verifier,
+    hardcoded_config_24, hardcoded_config_24_verifier, hardcoded_config_26,
+    hardcoded_config_26_verifier, hardcoded_config_28, hardcoded_config_28_verifier,
+    hardcoded_config_30, hardcoded_config_30_verifier, prover::prove_with_transcript,
+    transcript::FiatShamir, verifier::verify_with_transcript, FinalizedLigeritoProof,
 };
-use binary_fields::{BinaryElem32, BinaryElem128};
+use binary_fields::{BinaryElem128, BinaryElem32};
 use std::marker::PhantomData;
+use wasm_bindgen::prelude::*;
 
 // Re-export wasm-bindgen-rayon's init_thread_pool for JavaScript
 #[cfg(feature = "wasm-parallel")]
@@ -65,8 +63,16 @@ fn create_transcript(transcript_type: &str) -> Result<FiatShamir, JsValue> {
         _ => Err(JsValue::from_str(&format!(
             "Unsupported transcript: {}. Available: sha256{}{}",
             transcript_type,
-            if cfg!(feature = "transcript-merlin") { ", merlin" } else { "" },
-            if cfg!(feature = "transcript-blake2b") { ", blake2b" } else { "" },
+            if cfg!(feature = "transcript-merlin") {
+                ", merlin"
+            } else {
+                ""
+            },
+            if cfg!(feature = "transcript-blake2b") {
+                ", blake2b"
+            } else {
+                ""
+            },
         ))),
     }
 }
@@ -88,28 +94,28 @@ fn create_transcript(transcript_type: &str) -> Result<FiatShamir, JsValue> {
 /// const proof = prove(polynomial, 12, "sha256");
 /// ```
 #[wasm_bindgen]
-pub fn prove(polynomial: &[u32], config_size: u8, transcript: Option<String>) -> Result<Vec<u8>, JsValue> {
+pub fn prove(
+    polynomial: &[u32],
+    config_size: u8,
+    transcript: Option<String>,
+) -> Result<Vec<u8>, JsValue> {
     let transcript_type = transcript.as_deref().unwrap_or("sha256");
     let fs = create_transcript(transcript_type)?;
 
     // Convert to BinaryElem32
-    let poly: Vec<BinaryElem32> = polynomial
-        .iter()
-        .map(|&x| BinaryElem32::from(x))
-        .collect();
+    let poly: Vec<BinaryElem32> = polynomial.iter().map(|&x| BinaryElem32::from(x)).collect();
 
     // Helper macro to reduce repetition
     macro_rules! prove_with_config {
         ($config_fn:ident, $expected_size:expr) => {{
-            let config = $config_fn(
-                PhantomData::<BinaryElem32>,
-                PhantomData::<BinaryElem128>,
-            );
+            let config = $config_fn(PhantomData::<BinaryElem32>, PhantomData::<BinaryElem128>);
 
             if poly.len() != (1 << $expected_size) {
                 return Err(JsValue::from_str(&format!(
                     "Expected {} elements for config_size {}, got {}",
-                    1 << $expected_size, $expected_size, poly.len()
+                    1 << $expected_size,
+                    $expected_size,
+                    poly.len()
                 )));
             }
 
@@ -157,13 +163,18 @@ pub fn prove(polynomial: &[u32], config_size: u8, transcript: Option<String>) ->
 /// console.log('Valid:', isValid);
 /// ```
 #[wasm_bindgen]
-pub fn verify(proof_bytes: &[u8], config_size: u8, transcript: Option<String>) -> Result<bool, JsValue> {
+pub fn verify(
+    proof_bytes: &[u8],
+    config_size: u8,
+    transcript: Option<String>,
+) -> Result<bool, JsValue> {
     let transcript_type = transcript.as_deref().unwrap_or("sha256");
     let fs = create_transcript(transcript_type)?;
 
     // Deserialize proof with explicit type
-    let proof: FinalizedLigeritoProof<BinaryElem32, BinaryElem128> = bincode::deserialize(proof_bytes)
-        .map_err(|e| JsValue::from_str(&format!("Deserialization failed: {}", e)))?;
+    let proof: FinalizedLigeritoProof<BinaryElem32, BinaryElem128> =
+        bincode::deserialize(proof_bytes)
+            .map_err(|e| JsValue::from_str(&format!("Deserialization failed: {}", e)))?;
 
     // Helper macro to reduce repetition
     macro_rules! verify_with_config {
@@ -224,8 +235,12 @@ pub fn get_polynomial_size(config_size: u8) -> Result<usize, JsValue> {
 /// # Returns
 /// Serialized proof bytes
 #[wasm_bindgen]
-pub fn generate_and_prove(config_size: u8, seed: u64, transcript: Option<String>) -> Result<Vec<u8>, JsValue> {
-    use rand::{SeedableRng, Rng};
+pub fn generate_and_prove(
+    config_size: u8,
+    seed: u64,
+    transcript: Option<String>,
+) -> Result<Vec<u8>, JsValue> {
+    use rand::{Rng, SeedableRng};
     use rand_chacha::ChaCha8Rng;
 
     let transcript_type = transcript.as_deref().unwrap_or("sha256");
@@ -245,10 +260,7 @@ pub fn generate_and_prove(config_size: u8, seed: u64, transcript: Option<String>
     // Helper macro to reduce repetition
     macro_rules! prove_with_config {
         ($config_fn:ident) => {{
-            let config = $config_fn(
-                PhantomData::<BinaryElem32>,
-                PhantomData::<BinaryElem128>,
-            );
+            let config = $config_fn(PhantomData::<BinaryElem32>, PhantomData::<BinaryElem128>);
             prove_with_transcript(&config, &poly, fs)
                 .map_err(|e| JsValue::from_str(&format!("Proving failed: {}", e)))?
         }};

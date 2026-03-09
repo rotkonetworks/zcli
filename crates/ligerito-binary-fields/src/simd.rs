@@ -1,11 +1,15 @@
 // src/simd.rs
-use crate::poly::{BinaryPoly64, BinaryPoly128, BinaryPoly256};
 use crate::elem::BinaryElem32;
+use crate::poly::{BinaryPoly128, BinaryPoly256, BinaryPoly64};
 
 // 64x64 -> 128 bit carryless multiplication
 pub fn carryless_mul_64(a: BinaryPoly64, b: BinaryPoly64) -> BinaryPoly128 {
     // x86_64 with PCLMULQDQ
-    #[cfg(all(feature = "hardware-accel", target_arch = "x86_64", target_feature = "pclmulqdq"))]
+    #[cfg(all(
+        feature = "hardware-accel",
+        target_arch = "x86_64",
+        target_feature = "pclmulqdq"
+    ))]
     {
         use core::arch::x86_64::*;
 
@@ -23,15 +27,27 @@ pub fn carryless_mul_64(a: BinaryPoly64, b: BinaryPoly64) -> BinaryPoly128 {
     }
 
     // WASM with SIMD128
-    #[cfg(all(feature = "hardware-accel", target_arch = "wasm32", target_feature = "simd128"))]
+    #[cfg(all(
+        feature = "hardware-accel",
+        target_arch = "wasm32",
+        target_feature = "simd128"
+    ))]
     {
         return carryless_mul_64_wasm_simd(a, b);
     }
 
     // Software fallback for other platforms
     #[cfg(not(any(
-        all(feature = "hardware-accel", target_arch = "x86_64", target_feature = "pclmulqdq"),
-        all(feature = "hardware-accel", target_arch = "wasm32", target_feature = "simd128")
+        all(
+            feature = "hardware-accel",
+            target_arch = "x86_64",
+            target_feature = "pclmulqdq"
+        ),
+        all(
+            feature = "hardware-accel",
+            target_arch = "wasm32",
+            target_feature = "simd128"
+        )
     )))]
     {
         // software fallback
@@ -65,7 +81,11 @@ fn carryless_mul_64_soft(a: BinaryPoly64, b: BinaryPoly64) -> BinaryPoly128 {
 }
 
 // WASM SIMD128 optimized implementation using Karatsuba decomposition
-#[cfg(all(feature = "hardware-accel", target_arch = "wasm32", target_feature = "simd128"))]
+#[cfg(all(
+    feature = "hardware-accel",
+    target_arch = "wasm32",
+    target_feature = "simd128"
+))]
 fn carryless_mul_64_wasm_simd(a: BinaryPoly64, b: BinaryPoly64) -> BinaryPoly128 {
     unsafe {
         let a_val = a.value();
@@ -121,7 +141,11 @@ static CLMUL_4X4: [[u8; 16]; 16] = {
 
 // 32x32 -> 64 carryless multiplication using WASM SIMD128 i8x16_swizzle
 // Uses swizzle for parallel 16-way table lookups - 4x faster than scalar
-#[cfg(all(feature = "hardware-accel", target_arch = "wasm32", target_feature = "simd128"))]
+#[cfg(all(
+    feature = "hardware-accel",
+    target_arch = "wasm32",
+    target_feature = "simd128"
+))]
 #[inline(always)]
 unsafe fn mul_32x32_to_64_simd(a: u32, b: u32) -> u64 {
     use core::arch::wasm32::*;
@@ -230,7 +254,11 @@ fn mul_32x32_to_64_lut(a: u32, b: u32) -> u64 {
 
 // 128x128 -> 128 bit carryless multiplication (truncated)
 pub fn carryless_mul_128(a: BinaryPoly128, b: BinaryPoly128) -> BinaryPoly128 {
-    #[cfg(all(feature = "hardware-accel", target_arch = "x86_64", target_feature = "pclmulqdq"))]
+    #[cfg(all(
+        feature = "hardware-accel",
+        target_arch = "x86_64",
+        target_feature = "pclmulqdq"
+    ))]
     {
         use core::arch::x86_64::*;
 
@@ -245,28 +273,28 @@ pub fn carryless_mul_128(a: BinaryPoly128, b: BinaryPoly128) -> BinaryPoly128 {
             let lo_lo = _mm_clmulepi64_si128(
                 _mm_set_epi64x(0, a_lo as i64),
                 _mm_set_epi64x(0, b_lo as i64),
-                0x00
+                0x00,
             );
 
             let lo_hi = _mm_clmulepi64_si128(
                 _mm_set_epi64x(0, a_lo as i64),
                 _mm_set_epi64x(0, b_hi as i64),
-                0x00
+                0x00,
             );
 
             let hi_lo = _mm_clmulepi64_si128(
                 _mm_set_epi64x(0, a_hi as i64),
                 _mm_set_epi64x(0, b_lo as i64),
-                0x00
+                0x00,
             );
 
             // extract 128-bit results - fix the overflow by casting to u128 first
             let r0 = (_mm_extract_epi64(lo_lo, 0) as u64) as u128
-                   | ((_mm_extract_epi64(lo_lo, 1) as u64) as u128) << 64;
+                | ((_mm_extract_epi64(lo_lo, 1) as u64) as u128) << 64;
             let r1 = (_mm_extract_epi64(lo_hi, 0) as u64) as u128
-                   | ((_mm_extract_epi64(lo_hi, 1) as u64) as u128) << 64;
+                | ((_mm_extract_epi64(lo_hi, 1) as u64) as u128) << 64;
             let r2 = (_mm_extract_epi64(hi_lo, 0) as u64) as u128
-                   | ((_mm_extract_epi64(hi_lo, 1) as u64) as u128) << 64;
+                | ((_mm_extract_epi64(hi_lo, 1) as u64) as u128) << 64;
 
             // combine: result = r0 + (r1 << 64) + (r2 << 64)
             let result = r0 ^ (r1 << 64) ^ (r2 << 64);
@@ -275,7 +303,11 @@ pub fn carryless_mul_128(a: BinaryPoly128, b: BinaryPoly128) -> BinaryPoly128 {
         }
     }
 
-    #[cfg(not(all(feature = "hardware-accel", target_arch = "x86_64", target_feature = "pclmulqdq")))]
+    #[cfg(not(all(
+        feature = "hardware-accel",
+        target_arch = "x86_64",
+        target_feature = "pclmulqdq"
+    )))]
     {
         // software fallback
         carryless_mul_128_soft(a, b)
@@ -301,7 +333,11 @@ fn carryless_mul_128_soft(a: BinaryPoly128, b: BinaryPoly128) -> BinaryPoly128 {
 
 // 128x128 -> 256 bit full multiplication
 pub fn carryless_mul_128_full(a: BinaryPoly128, b: BinaryPoly128) -> BinaryPoly256 {
-    #[cfg(all(feature = "hardware-accel", target_arch = "x86_64", target_feature = "pclmulqdq"))]
+    #[cfg(all(
+        feature = "hardware-accel",
+        target_arch = "x86_64",
+        target_feature = "pclmulqdq"
+    ))]
     {
         use core::arch::x86_64::*;
 
@@ -315,25 +351,25 @@ pub fn carryless_mul_128_full(a: BinaryPoly128, b: BinaryPoly128) -> BinaryPoly2
             let lo_lo = _mm_clmulepi64_si128(
                 _mm_set_epi64x(0, a_lo as i64),
                 _mm_set_epi64x(0, b_lo as i64),
-                0x00
+                0x00,
             );
 
             let lo_hi = _mm_clmulepi64_si128(
                 _mm_set_epi64x(0, a_lo as i64),
                 _mm_set_epi64x(0, b_hi as i64),
-                0x00
+                0x00,
             );
 
             let hi_lo = _mm_clmulepi64_si128(
                 _mm_set_epi64x(0, a_hi as i64),
                 _mm_set_epi64x(0, b_lo as i64),
-                0x00
+                0x00,
             );
 
             let hi_hi = _mm_clmulepi64_si128(
                 _mm_set_epi64x(0, a_hi as i64),
                 _mm_set_epi64x(0, b_hi as i64),
-                0x00
+                0x00,
             );
 
             // extract and combine
@@ -367,7 +403,11 @@ pub fn carryless_mul_128_full(a: BinaryPoly128, b: BinaryPoly128) -> BinaryPoly2
         }
     }
 
-    #[cfg(not(all(feature = "hardware-accel", target_arch = "x86_64", target_feature = "pclmulqdq")))]
+    #[cfg(not(all(
+        feature = "hardware-accel",
+        target_arch = "x86_64",
+        target_feature = "pclmulqdq"
+    )))]
     {
         // software fallback
         carryless_mul_128_full_soft(a, b)
@@ -426,12 +466,20 @@ pub fn batch_mul_gf128(a: &[BinaryElem128], b: &[BinaryElem128], out: &mut [Bina
     assert_eq!(a.len(), b.len());
     assert_eq!(a.len(), out.len());
 
-    #[cfg(all(feature = "hardware-accel", target_arch = "x86_64", target_feature = "pclmulqdq"))]
+    #[cfg(all(
+        feature = "hardware-accel",
+        target_arch = "x86_64",
+        target_feature = "pclmulqdq"
+    ))]
     {
         return batch_mul_gf128_hw(a, b, out);
     }
 
-    #[cfg(not(all(feature = "hardware-accel", target_arch = "x86_64", target_feature = "pclmulqdq")))]
+    #[cfg(not(all(
+        feature = "hardware-accel",
+        target_arch = "x86_64",
+        target_feature = "pclmulqdq"
+    )))]
     {
         // scalar fallback
         for i in 0..a.len() {
@@ -452,7 +500,11 @@ pub fn batch_add_gf128(a: &[BinaryElem128], b: &[BinaryElem128], out: &mut [Bina
 }
 
 // pclmulqdq-based batch multiply for x86_64
-#[cfg(all(feature = "hardware-accel", target_arch = "x86_64", target_feature = "pclmulqdq"))]
+#[cfg(all(
+    feature = "hardware-accel",
+    target_arch = "x86_64",
+    target_feature = "pclmulqdq"
+))]
 fn batch_mul_gf128_hw(a: &[BinaryElem128], b: &[BinaryElem128], out: &mut [BinaryElem128]) {
     for i in 0..a.len() {
         let a_poly = a[i].poly();
@@ -491,8 +543,16 @@ pub fn reduce_gf128(product: BinaryPoly256) -> BinaryPoly128 {
 
 /// Vectorized FFT butterfly for GF(2^32) with tiered fallback
 /// Tries: AVX-512 (8 elements) -> AVX2 (4 elements) -> SSE (2 elements) -> scalar
-#[cfg(all(feature = "hardware-accel", target_arch = "x86_64", target_feature = "pclmulqdq"))]
-pub fn fft_butterfly_gf32_avx512(u: &mut [BinaryElem32], w: &mut [BinaryElem32], lambda: BinaryElem32) {
+#[cfg(all(
+    feature = "hardware-accel",
+    target_arch = "x86_64",
+    target_feature = "pclmulqdq"
+))]
+pub fn fft_butterfly_gf32_avx512(
+    u: &mut [BinaryElem32],
+    w: &mut [BinaryElem32],
+    lambda: BinaryElem32,
+) {
     #[cfg(target_arch = "x86_64")]
     {
         // Tier 1: Try AVX-512 with 512-bit VPCLMULQDQ (8 elements at once)
@@ -522,9 +582,17 @@ pub fn fft_butterfly_gf32_avx512(u: &mut [BinaryElem32], w: &mut [BinaryElem32],
 /// AVX-512 implementation using 512-bit VPCLMULQDQ
 /// Processes 8 elements at once using full 512-bit vectors
 /// Requires Rust 1.89+ for _mm512_extracti64x4_epi64
-#[cfg(all(feature = "hardware-accel", target_arch = "x86_64", target_feature = "pclmulqdq"))]
+#[cfg(all(
+    feature = "hardware-accel",
+    target_arch = "x86_64",
+    target_feature = "pclmulqdq"
+))]
 #[target_feature(enable = "avx512f,vpclmulqdq")]
-unsafe fn fft_butterfly_gf32_avx512_impl(u: &mut [BinaryElem32], w: &mut [BinaryElem32], lambda: BinaryElem32) {
+unsafe fn fft_butterfly_gf32_avx512_impl(
+    u: &mut [BinaryElem32],
+    w: &mut [BinaryElem32],
+    lambda: BinaryElem32,
+) {
     use core::arch::x86_64::*;
 
     assert_eq!(u.len(), w.len());
@@ -543,10 +611,14 @@ unsafe fn fft_butterfly_gf32_avx512_impl(u: &mut [BinaryElem32], w: &mut [Binary
         // Load 8 w elements into 512-bit vector
         // Each 128-bit lane holds 2 elements for clmul
         let w_512 = _mm512_set_epi64(
-            w[i+7].poly().value() as i64, w[i+6].poly().value() as i64,
-            w[i+5].poly().value() as i64, w[i+4].poly().value() as i64,
-            w[i+3].poly().value() as i64, w[i+2].poly().value() as i64,
-            w[i+1].poly().value() as i64, w[i].poly().value() as i64,
+            w[i + 7].poly().value() as i64,
+            w[i + 6].poly().value() as i64,
+            w[i + 5].poly().value() as i64,
+            w[i + 4].poly().value() as i64,
+            w[i + 3].poly().value() as i64,
+            w[i + 2].poly().value() as i64,
+            w[i + 1].poly().value() as i64,
+            w[i].poly().value() as i64,
         );
 
         // VPCLMULQDQ selector 0x00: multiply low 64-bits of each 128-bit lane
@@ -569,25 +641,29 @@ unsafe fn fft_butterfly_gf32_avx512_impl(u: &mut [BinaryElem32], w: &mut [Binary
         let p4 = _mm256_extract_epi64::<0>(prod_even_hi) as u64; // lambda * w[4]
         let p6 = _mm256_extract_epi64::<2>(prod_even_hi) as u64; // lambda * w[6]
 
-        let p1 = _mm256_extract_epi64::<0>(prod_odd_lo) as u64;  // lambda * w[1]
-        let p3 = _mm256_extract_epi64::<2>(prod_odd_lo) as u64;  // lambda * w[3]
-        let p5 = _mm256_extract_epi64::<0>(prod_odd_hi) as u64;  // lambda * w[5]
-        let p7 = _mm256_extract_epi64::<2>(prod_odd_hi) as u64;  // lambda * w[7]
+        let p1 = _mm256_extract_epi64::<0>(prod_odd_lo) as u64; // lambda * w[1]
+        let p3 = _mm256_extract_epi64::<2>(prod_odd_lo) as u64; // lambda * w[3]
+        let p5 = _mm256_extract_epi64::<0>(prod_odd_hi) as u64; // lambda * w[5]
+        let p7 = _mm256_extract_epi64::<2>(prod_odd_hi) as u64; // lambda * w[7]
 
         // Reduce all 8 products
         let lw = [
-            reduce_gf32_inline(p0) as u32, reduce_gf32_inline(p1) as u32,
-            reduce_gf32_inline(p2) as u32, reduce_gf32_inline(p3) as u32,
-            reduce_gf32_inline(p4) as u32, reduce_gf32_inline(p5) as u32,
-            reduce_gf32_inline(p6) as u32, reduce_gf32_inline(p7) as u32,
+            reduce_gf32_inline(p0) as u32,
+            reduce_gf32_inline(p1) as u32,
+            reduce_gf32_inline(p2) as u32,
+            reduce_gf32_inline(p3) as u32,
+            reduce_gf32_inline(p4) as u32,
+            reduce_gf32_inline(p5) as u32,
+            reduce_gf32_inline(p6) as u32,
+            reduce_gf32_inline(p7) as u32,
         ];
 
         // u[i] = u[i] XOR lambda_w[i], then w[i] = w[i] XOR u[i]
         for j in 0..8 {
-            let u_val = u[i+j].poly().value() ^ lw[j];
-            let w_val = w[i+j].poly().value() ^ u_val;
-            u[i+j] = BinaryElem32::from(u_val);
-            w[i+j] = BinaryElem32::from(w_val);
+            let u_val = u[i + j].poly().value() ^ lw[j];
+            let w_val = w[i + j].poly().value() ^ u_val;
+            u[i + j] = BinaryElem32::from(u_val);
+            w[i + j] = BinaryElem32::from(w_val);
         }
 
         i += 8;
@@ -617,9 +693,17 @@ fn reduce_gf32_inline(p: u64) -> u64 {
 /// AVX2 vectorized FFT butterfly operation for GF(2^32)
 /// Processes 4 elements at once using 256-bit VPCLMULQDQ
 /// For CPUs with AVX2 but not AVX-512
-#[cfg(all(feature = "hardware-accel", target_arch = "x86_64", target_feature = "pclmulqdq"))]
+#[cfg(all(
+    feature = "hardware-accel",
+    target_arch = "x86_64",
+    target_feature = "pclmulqdq"
+))]
 #[target_feature(enable = "avx2,vpclmulqdq")]
-unsafe fn fft_butterfly_gf32_avx2_impl(u: &mut [BinaryElem32], w: &mut [BinaryElem32], lambda: BinaryElem32) {
+unsafe fn fft_butterfly_gf32_avx2_impl(
+    u: &mut [BinaryElem32],
+    w: &mut [BinaryElem32],
+    lambda: BinaryElem32,
+) {
     use core::arch::x86_64::*;
 
     assert_eq!(u.len(), w.len());
@@ -636,8 +720,10 @@ unsafe fn fft_butterfly_gf32_avx2_impl(u: &mut [BinaryElem32], w: &mut [BinaryEl
     while i + 4 <= len {
         // Load 4 w elements: [w0, w1] in low lane, [w2, w3] in high lane
         let w_256 = _mm256_set_epi64x(
-            w[i+3].poly().value() as i64, w[i+2].poly().value() as i64,
-            w[i+1].poly().value() as i64, w[i].poly().value() as i64,
+            w[i + 3].poly().value() as i64,
+            w[i + 2].poly().value() as i64,
+            w[i + 1].poly().value() as i64,
+            w[i].poly().value() as i64,
         );
 
         // Selector 0x00: multiply low 64-bits of each 128-bit lane
@@ -664,10 +750,10 @@ unsafe fn fft_butterfly_gf32_avx2_impl(u: &mut [BinaryElem32], w: &mut [BinaryEl
 
         // u[i] = u[i] XOR lambda_w[i], then w[i] = w[i] XOR u[i]
         for j in 0..4 {
-            let u_val = u[i+j].poly().value() ^ lw[j];
-            let w_val = w[i+j].poly().value() ^ u_val;
-            u[i+j] = BinaryElem32::from(u_val);
-            w[i+j] = BinaryElem32::from(w_val);
+            let u_val = u[i + j].poly().value() ^ lw[j];
+            let w_val = w[i + j].poly().value() ^ u_val;
+            u[i + j] = BinaryElem32::from(u_val);
+            w[i + j] = BinaryElem32::from(w_val);
         }
 
         i += 4;
@@ -684,27 +770,55 @@ unsafe fn fft_butterfly_gf32_avx2_impl(u: &mut [BinaryElem32], w: &mut [BinaryEl
 
 /// Force AVX-512 path (for benchmarking)
 /// Panics if AVX-512 + VPCLMULQDQ not available
-#[cfg(all(feature = "hardware-accel", target_arch = "x86_64", target_feature = "pclmulqdq"))]
-pub fn fft_butterfly_gf32_avx512_only(u: &mut [BinaryElem32], w: &mut [BinaryElem32], lambda: BinaryElem32) {
-    assert!(is_x86_feature_detected!("vpclmulqdq") && is_x86_feature_detected!("avx512f"),
-            "AVX-512 + VPCLMULQDQ required");
+#[cfg(all(
+    feature = "hardware-accel",
+    target_arch = "x86_64",
+    target_feature = "pclmulqdq"
+))]
+pub fn fft_butterfly_gf32_avx512_only(
+    u: &mut [BinaryElem32],
+    w: &mut [BinaryElem32],
+    lambda: BinaryElem32,
+) {
+    assert!(
+        is_x86_feature_detected!("vpclmulqdq") && is_x86_feature_detected!("avx512f"),
+        "AVX-512 + VPCLMULQDQ required"
+    );
     unsafe { fft_butterfly_gf32_avx512_impl(u, w, lambda) };
 }
 
 /// Force AVX2 path (for benchmarking)
 /// Panics if AVX2 + VPCLMULQDQ not available
-#[cfg(all(feature = "hardware-accel", target_arch = "x86_64", target_feature = "pclmulqdq"))]
-pub fn fft_butterfly_gf32_avx2_only(u: &mut [BinaryElem32], w: &mut [BinaryElem32], lambda: BinaryElem32) {
-    assert!(is_x86_feature_detected!("vpclmulqdq") && is_x86_feature_detected!("avx2"),
-            "AVX2 + VPCLMULQDQ required");
+#[cfg(all(
+    feature = "hardware-accel",
+    target_arch = "x86_64",
+    target_feature = "pclmulqdq"
+))]
+pub fn fft_butterfly_gf32_avx2_only(
+    u: &mut [BinaryElem32],
+    w: &mut [BinaryElem32],
+    lambda: BinaryElem32,
+) {
+    assert!(
+        is_x86_feature_detected!("vpclmulqdq") && is_x86_feature_detected!("avx2"),
+        "AVX2 + VPCLMULQDQ required"
+    );
     unsafe { fft_butterfly_gf32_avx2_impl(u, w, lambda) };
 }
 
 /// SSE vectorized FFT butterfly operation for GF(2^32)
 /// computes: u[i] = u[i] + lambda*w[i]; w[i] = w[i] + u[i]
 /// processes 2 elements at a time using SSE/AVX
-#[cfg(all(feature = "hardware-accel", target_arch = "x86_64", target_feature = "pclmulqdq"))]
-pub fn fft_butterfly_gf32_sse(u: &mut [BinaryElem32], w: &mut [BinaryElem32], lambda: BinaryElem32) {
+#[cfg(all(
+    feature = "hardware-accel",
+    target_arch = "x86_64",
+    target_feature = "pclmulqdq"
+))]
+pub fn fft_butterfly_gf32_sse(
+    u: &mut [BinaryElem32],
+    w: &mut [BinaryElem32],
+    lambda: BinaryElem32,
+) {
     use core::arch::x86_64::*;
 
     assert_eq!(u.len(), w.len());
@@ -724,7 +838,7 @@ pub fn fft_butterfly_gf32_sse(u: &mut [BinaryElem32], w: &mut [BinaryElem32], la
         while i + 2 <= len {
             // load w[i] and w[i+1] into 64-bit lanes
             let w0 = w[i].poly().value() as u64;
-            let w1 = w[i+1].poly().value() as u64;
+            let w1 = w[i + 1].poly().value() as u64;
             let w_vec = _mm_set_epi64x(w1 as i64, w0 as i64);
 
             // carryless multiply: lambda * w[i]
@@ -740,16 +854,16 @@ pub fn fft_butterfly_gf32_sse(u: &mut [BinaryElem32], w: &mut [BinaryElem32], la
 
             // u[i] = u[i] XOR lambda_w[i]
             let u0 = u[i].poly().value() ^ (lambda_w0 as u32);
-            let u1 = u[i+1].poly().value() ^ (lambda_w1 as u32);
+            let u1 = u[i + 1].poly().value() ^ (lambda_w1 as u32);
 
             // w[i] = w[i] XOR u[i] (using updated u)
             let w0_new = w[i].poly().value() ^ u0;
-            let w1_new = w[i+1].poly().value() ^ u1;
+            let w1_new = w[i + 1].poly().value() ^ u1;
 
             u[i] = BinaryElem32::from(u0);
-            u[i+1] = BinaryElem32::from(u1);
+            u[i + 1] = BinaryElem32::from(u1);
             w[i] = BinaryElem32::from(w0_new);
-            w[i+1] = BinaryElem32::from(w1_new);
+            w[i + 1] = BinaryElem32::from(w1_new);
 
             i += 2;
         }
@@ -770,8 +884,8 @@ fn reduce_gf32(p: u64, _irr: u64) -> u64 {
     // for 32x32 -> 64 multiplication, we need to reduce bits [63:32]
     // unrolled reduction: process high 32 bits in chunks
 
-    let hi = (p >> 32) as u64;
-    let lo = (p & 0xFFFFFFFF) as u64;
+    let hi = (p >> 32);
+    let lo = (p & 0xFFFFFFFF);
 
     // compute tmp by shifting high bits down
     // for irreducible 0b1_0000_1000_1001_1000_1001 (x^32 + x^15 + x^9 + x^7 + x^3 + 1)
@@ -787,7 +901,11 @@ fn reduce_gf32(p: u64, _irr: u64) -> u64 {
 }
 
 /// scalar fallback for FFT butterfly
-pub fn fft_butterfly_gf32_scalar(u: &mut [BinaryElem32], w: &mut [BinaryElem32], lambda: BinaryElem32) {
+pub fn fft_butterfly_gf32_scalar(
+    u: &mut [BinaryElem32],
+    w: &mut [BinaryElem32],
+    lambda: BinaryElem32,
+) {
     assert_eq!(u.len(), w.len());
 
     for i in 0..u.len() {
@@ -799,20 +917,36 @@ pub fn fft_butterfly_gf32_scalar(u: &mut [BinaryElem32], w: &mut [BinaryElem32],
 
 /// dispatch FFT butterfly to best available SIMD version
 pub fn fft_butterfly_gf32(u: &mut [BinaryElem32], w: &mut [BinaryElem32], lambda: BinaryElem32) {
-    #[cfg(all(feature = "hardware-accel", target_arch = "x86_64", target_feature = "pclmulqdq"))]
+    #[cfg(all(
+        feature = "hardware-accel",
+        target_arch = "x86_64",
+        target_feature = "pclmulqdq"
+    ))]
     {
         // Try AVX-512 first (runtime detection), fallback to SSE
         return fft_butterfly_gf32_avx512(u, w, lambda);
     }
 
-    #[cfg(all(feature = "hardware-accel", target_arch = "wasm32", target_feature = "simd128"))]
+    #[cfg(all(
+        feature = "hardware-accel",
+        target_arch = "wasm32",
+        target_feature = "simd128"
+    ))]
     {
         return fft_butterfly_gf32_wasm_simd(u, w, lambda);
     }
 
     #[cfg(not(any(
-        all(feature = "hardware-accel", target_arch = "x86_64", target_feature = "pclmulqdq"),
-        all(feature = "hardware-accel", target_arch = "wasm32", target_feature = "simd128")
+        all(
+            feature = "hardware-accel",
+            target_arch = "x86_64",
+            target_feature = "pclmulqdq"
+        ),
+        all(
+            feature = "hardware-accel",
+            target_arch = "wasm32",
+            target_feature = "simd128"
+        )
     )))]
     {
         fft_butterfly_gf32_scalar(u, w, lambda)
@@ -821,8 +955,16 @@ pub fn fft_butterfly_gf32(u: &mut [BinaryElem32], w: &mut [BinaryElem32], lambda
 
 /// WASM SIMD128 optimized FFT butterfly
 /// Uses v128_xor for additions and swizzle-based table lookups for multiplication
-#[cfg(all(feature = "hardware-accel", target_arch = "wasm32", target_feature = "simd128"))]
-pub fn fft_butterfly_gf32_wasm_simd(u: &mut [BinaryElem32], w: &mut [BinaryElem32], lambda: BinaryElem32) {
+#[cfg(all(
+    feature = "hardware-accel",
+    target_arch = "wasm32",
+    target_feature = "simd128"
+))]
+pub fn fft_butterfly_gf32_wasm_simd(
+    u: &mut [BinaryElem32],
+    w: &mut [BinaryElem32],
+    lambda: BinaryElem32,
+) {
     use core::arch::wasm32::*;
 
     assert_eq!(u.len(), w.len());
@@ -841,9 +983,9 @@ pub fn fft_butterfly_gf32_wasm_simd(u: &mut [BinaryElem32], w: &mut [BinaryElem3
 
             // Compute lambda * w[i..i+4] using swizzle-based multiply
             let w0 = w[i].poly().value();
-            let w1 = w[i+1].poly().value();
-            let w2 = w[i+2].poly().value();
-            let w3 = w[i+3].poly().value();
+            let w1 = w[i + 1].poly().value();
+            let w2 = w[i + 2].poly().value();
+            let w3 = w[i + 3].poly().value();
             let lambda_val = lambda.poly().value();
 
             // Multiply and reduce each element
@@ -885,7 +1027,11 @@ pub fn fft_butterfly_gf32_wasm_simd(u: &mut [BinaryElem32], w: &mut [BinaryElem3
 }
 
 /// GF(2^32) reduction for WASM (branchless)
-#[cfg(all(feature = "hardware-accel", target_arch = "wasm32", target_feature = "simd128"))]
+#[cfg(all(
+    feature = "hardware-accel",
+    target_arch = "wasm32",
+    target_feature = "simd128"
+))]
 #[inline(always)]
 fn reduce_gf32_wasm(p: u64, _irr: u64) -> u64 {
     // Reduction for x^32 + x^7 + x^9 + x^15 + x^3 + 1

@@ -3,14 +3,14 @@
 //! provides unified interface for both zidecar (our server) and lightwalletd (public fallback)
 
 #[cfg(feature = "client")]
-mod zidecar;
-#[cfg(feature = "client")]
 mod lightwalletd;
+#[cfg(feature = "client")]
+mod zidecar;
 
 #[cfg(feature = "client")]
-pub use zidecar::ZidecarClient;
-#[cfg(feature = "client")]
 pub use lightwalletd::LightwalletdClient;
+#[cfg(feature = "client")]
+pub use zidecar::ZidecarClient;
 
 /// public lightwalletd endpoints for fallback
 pub const LIGHTWALLETD_MAINNET: &str = "https://mainnet.lightwalletd.com:9067";

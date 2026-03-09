@@ -147,14 +147,15 @@ async fn sync_inner(
     // verify activation block hash against hardcoded anchor
     if mainnet {
         let blocks = client.get_compact_blocks(activation, activation).await?;
-        if !blocks.is_empty() && !blocks[0].hash.is_empty() {
-            if blocks[0].hash != ACTIVATION_HASH_MAINNET {
-                return Err(Error::Other(format!(
-                    "activation block hash mismatch: got {} expected {}",
-                    hex::encode(&blocks[0].hash),
-                    hex::encode(ACTIVATION_HASH_MAINNET),
-                )));
-            }
+        if !blocks.is_empty()
+            && !blocks[0].hash.is_empty()
+            && blocks[0].hash != ACTIVATION_HASH_MAINNET
+        {
+            return Err(Error::Other(format!(
+                "activation block hash mismatch: got {} expected {}",
+                hex::encode(&blocks[0].hash),
+                hex::encode(ACTIVATION_HASH_MAINNET),
+            )));
         }
     }
 
@@ -253,7 +254,7 @@ async fn sync_inner(
                 };
 
                 // try external then internal scope
-                let result = try_decrypt(&fvk, &ivk_ext, &ivk_int, &action.nullifier, &output);
+                let result = try_decrypt(fvk, &ivk_ext, &ivk_int, &action.nullifier, &output);
 
                 if let Some(decrypted) = result {
                     let wallet_note = WalletNote {
@@ -317,7 +318,7 @@ async fn sync_inner(
     if !needs_memo.is_empty() {
         eprintln!("fetching memos for {} notes...", needs_memo.len());
         for (nullifier, txid, cmx, epk, action_nf) in &needs_memo {
-            match fetch_memo(&client, &fvk, &ivk_ext, txid, cmx, epk, action_nf).await {
+            match fetch_memo(&client, fvk, &ivk_ext, txid, cmx, epk, action_nf).await {
                 Ok(Some(memo)) => {
                     // update note in wallet with memo
                     if let Ok(mut note) = wallet.get_note(nullifier) {
@@ -494,7 +495,7 @@ async fn cross_verify(
 
     // BFT majority: need >2/3 of responding nodes to agree
     if tip_total > 0 {
-        let threshold = (tip_total * 2 + 2) / 3;
+        let threshold = (tip_total * 2).div_ceil(3);
         if tip_agree < threshold {
             return Err(Error::Other(format!(
                 "tip hash rejected: {}/{} nodes disagree at height {}",
@@ -504,7 +505,7 @@ async fn cross_verify(
     }
 
     if act_total > 0 {
-        let threshold = (act_total * 2 + 2) / 3;
+        let threshold = (act_total * 2).div_ceil(3);
         if act_agree < threshold {
             return Err(Error::Other(format!(
                 "activation block rejected: {}/{} nodes disagree at height {}",

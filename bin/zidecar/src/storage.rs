@@ -2,12 +2,11 @@
 
 use crate::error::{Result, ZidecarError};
 use nomt::{
-    hasher::Blake3Hasher,
-    KeyReadWrite, Nomt, Options as NomtOptions, Root, SessionParams,
-    proof::PathProofTerminal,
+    hasher::Blake3Hasher, proof::PathProofTerminal, KeyReadWrite, Nomt, Options as NomtOptions,
+    Root, SessionParams,
 };
 use sha2::{Digest, Sha256};
-use tracing::{info, debug};
+use tracing::{debug, info};
 
 /// storage combining NOMT (for merkle state) and sled (for proof cache)
 pub struct Storage {
@@ -30,7 +29,10 @@ impl Storage {
             .unwrap_or(8);
         let nomt_threads = (all_threads / 2).max(4);
         nomt_opts.commit_concurrency(nomt_threads);
-        info!("nomt commit_concurrency: {} threads (50% of {})", nomt_threads, all_threads);
+        info!(
+            "nomt commit_concurrency: {} threads (50% of {})",
+            nomt_threads, all_threads
+        );
 
         let nomt = Nomt::<Blake3Hasher>::open(nomt_opts)
             .map_err(|e| ZidecarError::Storage(format!("nomt: {}", e)))?;
@@ -50,12 +52,7 @@ impl Storage {
     }
 
     /// store proof for height range (simple cache)
-    pub fn store_proof(
-        &self,
-        from_height: u32,
-        to_height: u32,
-        proof_bytes: &[u8],
-    ) -> Result<()> {
+    pub fn store_proof(&self, from_height: u32, to_height: u32, proof_bytes: &[u8]) -> Result<()> {
         let key = proof_key(from_height, to_height);
         self.sled
             .insert(key, proof_bytes)
@@ -120,7 +117,11 @@ impl Storage {
     }
 
     /// Batch insert nullifiers with block height (for sync)
-    pub fn batch_insert_nullifiers(&self, nullifiers: &[[u8; 32]], block_height: u32) -> Result<Root> {
+    pub fn batch_insert_nullifiers(
+        &self,
+        nullifiers: &[[u8; 32]],
+        block_height: u32,
+    ) -> Result<Root> {
         if nullifiers.is_empty() {
             return Ok(self.nomt.root());
         }
@@ -299,8 +300,16 @@ impl Storage {
                 let s = String::from_utf8_lossy(&bytes);
                 let parts: Vec<&str> = s.splitn(3, ':').collect();
                 match parts.len() {
-                    2 => Ok(Some((parts[0].to_string(), parts[1].to_string(), String::new()))),
-                    3 => Ok(Some((parts[0].to_string(), parts[1].to_string(), parts[2].to_string()))),
+                    2 => Ok(Some((
+                        parts[0].to_string(),
+                        parts[1].to_string(),
+                        String::new(),
+                    ))),
+                    3 => Ok(Some((
+                        parts[0].to_string(),
+                        parts[1].to_string(),
+                        parts[2].to_string(),
+                    ))),
                     _ => Ok(None),
                 }
             }
@@ -312,12 +321,10 @@ impl Storage {
     /// get highest cached header height
     pub fn get_max_cached_header_height(&self) -> Result<Option<u32>> {
         let prefix = vec![b'h'];
-        for item in self.sled.scan_prefix(&prefix).rev() {
-            if let Ok((key, _)) = item {
-                if key.len() == 5 {
-                    let height = u32::from_le_bytes([key[1], key[2], key[3], key[4]]);
-                    return Ok(Some(height));
-                }
+        for (key, _) in self.sled.scan_prefix(&prefix).rev().flatten() {
+            if key.len() == 5 {
+                let height = u32::from_le_bytes([key[1], key[2], key[3], key[4]]);
+                return Ok(Some(height));
             }
         }
         Ok(None)
@@ -367,15 +374,12 @@ impl Storage {
     pub fn get_latest_checkpoint_epoch(&self) -> Result<Option<u64>> {
         // scan checkpoints in reverse to find latest
         let prefix = vec![b'c'];
-        for item in self.sled.scan_prefix(&prefix).rev() {
-            if let Ok((key, _)) = item {
-                if key.len() == 9 {
-                    let epoch = u64::from_le_bytes([
-                        key[1], key[2], key[3], key[4],
-                        key[5], key[6], key[7], key[8],
-                    ]);
-                    return Ok(Some(epoch));
-                }
+        for (key, _) in self.sled.scan_prefix(&prefix).rev().flatten() {
+            if key.len() == 9 {
+                let epoch = u64::from_le_bytes([
+                    key[1], key[2], key[3], key[4], key[5], key[6], key[7], key[8],
+                ]);
+                return Ok(Some(epoch));
             }
         }
         Ok(None)
@@ -426,12 +430,10 @@ impl Storage {
     /// get highest height with stored state roots
     pub fn get_latest_state_height(&self) -> Result<Option<u32>> {
         let prefix = vec![b'r'];
-        for item in self.sled.scan_prefix(&prefix).rev() {
-            if let Ok((key, _)) = item {
-                if key.len() == 5 {
-                    let height = u32::from_le_bytes([key[1], key[2], key[3], key[4]]);
-                    return Ok(Some(height));
-                }
+        for (key, _) in self.sled.scan_prefix(&prefix).rev().flatten() {
+            if key.len() == 5 {
+                let height = u32::from_le_bytes([key[1], key[2], key[3], key[4]]);
+                return Ok(Some(height));
             }
         }
         Ok(None)
@@ -452,12 +454,9 @@ impl Storage {
     /// get total action count
     pub fn get_action_count(&self) -> Result<u64> {
         match self.sled.get(b"total_actions") {
-            Ok(Some(bytes)) if bytes.len() == 8 => {
-                Ok(u64::from_le_bytes([
-                    bytes[0], bytes[1], bytes[2], bytes[3],
-                    bytes[4], bytes[5], bytes[6], bytes[7],
-                ]))
-            }
+            Ok(Some(bytes)) if bytes.len() == 8 => Ok(u64::from_le_bytes([
+                bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+            ])),
             Ok(_) => Ok(0),
             Err(e) => Err(ZidecarError::Storage(format!("sled: {}", e))),
         }
@@ -482,12 +481,9 @@ impl Storage {
         key.push(b'p');
         key.extend_from_slice(cmx);
         match self.sled.get(key) {
-            Ok(Some(bytes)) if bytes.len() == 8 => {
-                Ok(Some(u64::from_le_bytes([
-                    bytes[0], bytes[1], bytes[2], bytes[3],
-                    bytes[4], bytes[5], bytes[6], bytes[7],
-                ])))
-            }
+            Ok(Some(bytes)) if bytes.len() == 8 => Ok(Some(u64::from_le_bytes([
+                bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+            ]))),
             Ok(_) => Ok(None),
             Err(e) => Err(ZidecarError::Storage(format!("sled: {}", e))),
         }
@@ -647,7 +643,8 @@ impl Storage {
             .map_err(|e| ZidecarError::Storage(format!("nomt prove: {}", e)))?;
 
         // check if value exists (leaf vs terminator)
-        let exists = matches!(&path_proof.terminal, PathProofTerminal::Leaf(leaf) if leaf.key_path == key);
+        let exists =
+            matches!(&path_proof.terminal, PathProofTerminal::Leaf(leaf) if leaf.key_path == key);
 
         // get root
         let root = self.nomt.root();
@@ -688,7 +685,8 @@ impl Storage {
             .map_err(|e| ZidecarError::Storage(format!("nomt prove: {}", e)))?;
 
         // check if value exists (leaf vs terminator)
-        let exists = matches!(&path_proof.terminal, PathProofTerminal::Leaf(leaf) if leaf.key_path == key);
+        let exists =
+            matches!(&path_proof.terminal, PathProofTerminal::Leaf(leaf) if leaf.key_path == key);
 
         let root = self.nomt.root();
 

@@ -9,11 +9,11 @@
 
 #![cfg(feature = "polkavm-integration")]
 
-use ligerito::pcvm::polkavm_constraints_v2::ProvenTransition;
 use ligerito::pcvm::polkavm_adapter::PolkaVMRegisters;
 use ligerito::pcvm::polkavm_arithmetization::{
     arithmetize_polkavm_trace, verify_arithmetized_trace, STEP_WIDTH,
 };
+use ligerito::pcvm::polkavm_constraints_v2::ProvenTransition;
 use ligerito_binary_fields::{BinaryElem32, BinaryFieldElement};
 
 use polkavm::program::Instruction;
@@ -98,11 +98,7 @@ fn test_arithmetize_simple_trace() {
                 operands: [0, 0, 0],
             },
         },
-        Instruction::add_32(
-            raw_reg(Reg::A2),
-            raw_reg(Reg::A0),
-            raw_reg(Reg::A1),
-        ),
+        Instruction::add_32(raw_reg(Reg::A2), raw_reg(Reg::A0), raw_reg(Reg::A1)),
     );
 
     let trace = vec![step1, step2, step3];
@@ -133,9 +129,18 @@ fn test_arithmetize_simple_trace() {
     );
 
     println!("✓ Arithmetized 3-step trace:");
-    println!("  - Trace polynomial: {} elements", arith.trace_polynomial.len());
-    println!("  - Matrix dimensions: {} steps × {} columns", arith.num_steps, arith.step_width);
-    println!("  - Constraint accumulator: {:?}", arith.constraint_accumulator);
+    println!(
+        "  - Trace polynomial: {} elements",
+        arith.trace_polynomial.len()
+    );
+    println!(
+        "  - Matrix dimensions: {} steps × {} columns",
+        arith.num_steps, arith.step_width
+    );
+    println!(
+        "  - Constraint accumulator: {:?}",
+        arith.constraint_accumulator
+    );
     println!("  - Batching challenge: {:?}", arith.batching_challenge);
 }
 
@@ -144,11 +149,11 @@ fn test_arithmetize_simple_trace() {
 fn test_arithmetize_rejects_forgery() {
     // Create forged trace: claim wrong ADD result
     let mut regs_before = [0u32; 13];
-    regs_before[8] = 10;  // a1 = 10
-    regs_before[9] = 20;  // a2 = 20
+    regs_before[8] = 10; // a1 = 10
+    regs_before[9] = 20; // a2 = 20
 
     let mut regs_after = regs_before;
-    regs_after[7] = 999;  // a0 = 999 (WRONG! Should be 30)
+    regs_after[7] = 999; // a0 = 999 (WRONG! Should be 30)
 
     let forged_step = (
         ProvenTransition {
@@ -167,11 +172,7 @@ fn test_arithmetize_rejects_forgery() {
                 operands: [0, 0, 0],
             },
         },
-        Instruction::add_32(
-            raw_reg(Reg::A0),
-            raw_reg(Reg::A1),
-            raw_reg(Reg::A2),
-        ),
+        Instruction::add_32(raw_reg(Reg::A0), raw_reg(Reg::A1), raw_reg(Reg::A2)),
     );
 
     let trace = vec![forged_step];
@@ -195,7 +196,10 @@ fn test_arithmetize_rejects_forgery() {
     );
 
     println!("✓ Arithmetization correctly rejects forged execution:");
-    println!("  - Constraint accumulator: {:?} (non-zero!)", arith.constraint_accumulator);
+    println!(
+        "  - Constraint accumulator: {:?} (non-zero!)",
+        arith.constraint_accumulator
+    );
 }
 
 /// Test: Polynomial dimensions for different trace lengths
@@ -214,7 +218,7 @@ fn test_polynomial_scaling() {
                     instruction_size: 2,
                     regs_before: PolkaVMRegisters::from_array(regs),
                     regs_after: {
-                        regs[7] = i as u32;  // a0 = i
+                        regs[7] = i as u32; // a0 = i
                         PolkaVMRegisters::from_array(regs)
                     },
                     memory_root_before: [0u8; 32],
@@ -233,16 +237,20 @@ fn test_polynomial_scaling() {
         }
 
         let challenge = BinaryElem32::from(0x42);
-        let arith = arithmetize_polkavm_trace(&trace, [0u8; 32], challenge)
-            .expect("Failed to arithmetize");
+        let arith =
+            arithmetize_polkavm_trace(&trace, [0u8; 32], challenge).expect("Failed to arithmetize");
 
         let expected_size = num_steps * STEP_WIDTH;
         assert_eq!(
             arith.trace_polynomial.len(),
             expected_size,
-            "Polynomial size mismatch for {} steps", num_steps
+            "Polynomial size mismatch for {} steps",
+            num_steps
         );
 
-        println!("✓ {} steps → {} polynomial elements", num_steps, expected_size);
+        println!(
+            "✓ {} steps → {} polynomial elements",
+            num_steps, expected_size
+        );
     }
 }

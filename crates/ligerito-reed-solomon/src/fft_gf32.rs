@@ -5,7 +5,6 @@ use alloc::vec::Vec;
 use ligerito_binary_fields::BinaryElem32;
 
 #[cfg(feature = "parallel")]
-use rayon;
 
 /// FFT butterfly using SIMD for GF(2^32)
 #[inline(always)]
@@ -32,7 +31,12 @@ fn fft_twiddles_gf32(v: &mut [BinaryElem32], twiddles: &[BinaryElem32], idx: usi
 
 /// Parallel monomorphic FFT for GF(2^32) with SIMD
 #[cfg(feature = "parallel")]
-fn fft_twiddles_gf32_parallel(v: &mut [BinaryElem32], twiddles: &[BinaryElem32], idx: usize, thread_depth: usize) {
+fn fft_twiddles_gf32_parallel(
+    v: &mut [BinaryElem32],
+    twiddles: &[BinaryElem32],
+    idx: usize,
+    thread_depth: usize,
+) {
     const MIN_PARALLEL_SIZE: usize = 16384; // Reduce task spawning overhead
 
     let len = v.len();

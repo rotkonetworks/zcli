@@ -69,7 +69,7 @@ pub fn load_ssh_seed(path: &str) -> Result<WalletSeed, Error> {
 
     let mut hasher = Blake2b512::new();
     hasher.update(b"ZcliWalletSeed");
-    hasher.update(&seed32);
+    hasher.update(seed32);
     let hash = hasher.finalize();
 
     let mut bytes = [0u8; 64];

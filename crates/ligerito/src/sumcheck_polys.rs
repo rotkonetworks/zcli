@@ -1,8 +1,8 @@
 #[cfg(not(feature = "std"))]
 use alloc::vec::Vec;
 
-use binary_fields::BinaryFieldElement;
 use crate::utils::evaluate_scaled_basis_inplace;
+use binary_fields::BinaryFieldElement;
 
 /// tensorized dot product exploiting kronecker structure
 /// reduces o(2^k) to o(k × 2^(k-1)) by folding dimensions
@@ -32,8 +32,9 @@ where
 
         for i in 0..half {
             // lagrange contraction: (1-r)*left + r*right
-            current[i] = current[2*i].mul(&one_minus_r)
-                        .add(&current[2*i+1].mul(&r));
+            current[i] = current[2 * i]
+                .mul(&one_minus_r)
+                .add(&current[2 * i + 1].mul(&r));
         }
         current.truncate(half);
     }
@@ -47,7 +48,7 @@ pub fn precompute_alpha_powers<F: BinaryFieldElement>(alpha: F, n: usize) -> Vec
     if n > 0 {
         alpha_pows[0] = F::one();
         for i in 1..n {
-            alpha_pows[i] = alpha_pows[i-1].mul(&alpha);
+            alpha_pows[i] = alpha_pows[i - 1].mul(&alpha);
         }
     }
     alpha_pows
@@ -84,7 +85,13 @@ where
         let qf = T::from_bits(query_mod as u64);
 
         // compute scaled basis (clears buffers internally)
-        evaluate_scaled_basis_inplace(&mut local_sks_x, &mut local_basis, sks_vks, qf, contribution);
+        evaluate_scaled_basis_inplace(
+            &mut local_sks_x,
+            &mut local_basis,
+            sks_vks,
+            qf,
+            contribution,
+        );
 
         for (j, &val) in local_basis.iter().enumerate() {
             basis_poly[j] = basis_poly[j].add(&val);
@@ -129,7 +136,7 @@ where
     let sks_vks = Arc::new(sks_vks);
 
     // compute chunk size
-    let chunk_size = (n_rows + n_threads - 1) / n_threads;
+    let chunk_size = n_rows.div_ceil(n_threads);
 
     // process chunks in parallel, each thread produces its own basis and sum
     let results: Vec<(Vec<U>, U)> = (0..n_threads)
@@ -163,7 +170,13 @@ where
                 let qf = T::from_bits(query_mod as u64);
 
                 // compute scaled basis (clears buffers internally)
-                evaluate_scaled_basis_inplace(&mut local_sks_x, &mut local_basis, &sks_vks, qf, contribution);
+                evaluate_scaled_basis_inplace(
+                    &mut local_sks_x,
+                    &mut local_basis,
+                    &sks_vks,
+                    qf,
+                    contribution,
+                );
 
                 // accumulate into thread-local basis
                 for (j, &val) in local_basis.iter().enumerate() {
@@ -198,14 +211,14 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ligerito_binary_fields::{BinaryElem32, BinaryElem128};
     use crate::utils::eval_sk_at_vks;
+    use ligerito_binary_fields::{BinaryElem128, BinaryElem32};
 
     #[test]
     fn test_alpha_powers() {
         let alpha = BinaryElem128::from(5);
         let powers = precompute_alpha_powers(alpha, 4);
-        
+
         assert_eq!(powers[0], BinaryElem128::one());
         assert_eq!(powers[1], alpha);
         assert_eq!(powers[2], alpha.mul(&alpha));
@@ -218,10 +231,7 @@ mod tests {
         let n = 3; // 2^3 = 8 elements
         let sks_vks: Vec<BinaryElem32> = eval_sk_at_vks(1 << n);
 
-        let v_challenges = vec![
-            BinaryElem128::from(0x1234),
-            BinaryElem128::from(0x5678),
-        ];
+        let v_challenges = vec![BinaryElem128::from(0x1234), BinaryElem128::from(0x5678)];
 
         let queries = vec![0, 2, 5];
         let opened_rows = vec![
@@ -232,17 +242,21 @@ mod tests {
 
         let alpha = BinaryElem128::from(0x9ABC);
 
-        let (basis_poly, enforced_sum) = induce_sumcheck_poly(
-            n, &sks_vks, &opened_rows, &v_challenges, &queries, alpha
-        );
+        let (basis_poly, enforced_sum) =
+            induce_sumcheck_poly(n, &sks_vks, &opened_rows, &v_challenges, &queries, alpha);
 
         // Check sum consistency
-        let computed_sum = basis_poly.iter().fold(BinaryElem128::zero(), |acc, &x| acc.add(&x));
+        let computed_sum = basis_poly
+            .iter()
+            .fold(BinaryElem128::zero(), |acc, &x| acc.add(&x));
         assert_eq!(computed_sum, enforced_sum, "Sum consistency check failed");
 
         // The basis polynomial should not be all zeros (unless all inputs are zero)
         let all_zero = basis_poly.iter().all(|&x| x == BinaryElem128::zero());
-        assert!(!all_zero || alpha == BinaryElem128::zero(), "Basis polynomial should not be all zeros");
+        assert!(
+            !all_zero || alpha == BinaryElem128::zero(),
+            "Basis polynomial should not be all zeros"
+        );
     }
 
     #[test]
@@ -261,33 +275,48 @@ mod tests {
         let queries: Vec<usize> = (0..num_queries).map(|i| (i * 113) % (1 << n)).collect();
         let opened_rows: Vec<Vec<BinaryElem32>> = (0..num_queries)
             .map(|i| {
-                (0..4).map(|j| BinaryElem32::from((i * j + 1) as u32)).collect()
+                (0..4)
+                    .map(|j| BinaryElem32::from((i * j + 1) as u32))
+                    .collect()
             })
             .collect();
 
         let alpha = BinaryElem128::from(0x9ABC);
 
         // Run sequential version
-        let (seq_basis, seq_sum) = induce_sumcheck_poly(
-            n, &sks_vks, &opened_rows, &v_challenges, &queries, alpha
-        );
+        let (seq_basis, seq_sum) =
+            induce_sumcheck_poly(n, &sks_vks, &opened_rows, &v_challenges, &queries, alpha);
 
         // Run parallel version
         let (par_basis, par_sum) = induce_sumcheck_poly_parallel(
-            n, &sks_vks, &opened_rows, &v_challenges, &queries, alpha
+            n,
+            &sks_vks,
+            &opened_rows,
+            &v_challenges,
+            &queries,
+            alpha,
         );
 
         // Compare enforced sums
-        assert_eq!(par_sum, seq_sum, "Parallel and sequential enforced sums differ");
+        assert_eq!(
+            par_sum, seq_sum,
+            "Parallel and sequential enforced sums differ"
+        );
 
         // Compare basis polynomials element by element
         for (i, (&par_val, &seq_val)) in par_basis.iter().zip(seq_basis.iter()).enumerate() {
             if par_val != seq_val {
-                println!("Mismatch at index {}: parallel={:?}, sequential={:?}", i, par_val, seq_val);
+                println!(
+                    "Mismatch at index {}: parallel={:?}, sequential={:?}",
+                    i, par_val, seq_val
+                );
             }
         }
 
-        assert_eq!(par_basis, seq_basis, "Parallel and sequential basis polynomials differ");
+        assert_eq!(
+            par_basis, seq_basis,
+            "Parallel and sequential basis polynomials differ"
+        );
     }
 
     #[test]
@@ -296,9 +325,7 @@ mod tests {
         let sks_vks: Vec<BinaryElem32> = eval_sk_at_vks(1 << n);
 
         // 1 challenge -> Lagrange basis length = 2^1 = 2
-        let v_challenges = vec![
-            BinaryElem128::from(0xABCD),
-        ];
+        let v_challenges = vec![BinaryElem128::from(0xABCD)];
 
         let queries = vec![0, 1, 3];
         // each row must have length 2 to match Lagrange basis
@@ -311,18 +338,28 @@ mod tests {
         let alpha = BinaryElem128::from(0x1337);
 
         // Sequential version
-        let (basis_seq, sum_seq) = induce_sumcheck_poly(
-            n, &sks_vks, &opened_rows, &v_challenges, &queries, alpha
-        );
+        let (basis_seq, sum_seq) =
+            induce_sumcheck_poly(n, &sks_vks, &opened_rows, &v_challenges, &queries, alpha);
 
         // Parallel version
         let (basis_par, sum_par) = induce_sumcheck_poly_parallel(
-            n, &sks_vks, &opened_rows, &v_challenges, &queries, alpha
+            n,
+            &sks_vks,
+            &opened_rows,
+            &v_challenges,
+            &queries,
+            alpha,
         );
 
         // Results should be identical
-        assert_eq!(sum_seq, sum_par, "Sequential and parallel sums should match");
-        assert_eq!(basis_seq, basis_par, "Sequential and parallel basis polynomials should match");
+        assert_eq!(
+            sum_seq, sum_par,
+            "Sequential and parallel sums should match"
+        );
+        assert_eq!(
+            basis_seq, basis_par,
+            "Sequential and parallel basis polynomials should match"
+        );
     }
 
     #[test]
@@ -334,9 +371,8 @@ mod tests {
         let opened_rows: Vec<Vec<BinaryElem32>> = vec![];
         let alpha = BinaryElem128::from(42);
 
-        let (basis_poly, enforced_sum) = induce_sumcheck_poly(
-            n, &sks_vks, &opened_rows, &v_challenges, &queries, alpha
-        );
+        let (basis_poly, enforced_sum) =
+            induce_sumcheck_poly(n, &sks_vks, &opened_rows, &v_challenges, &queries, alpha);
 
         // With no inputs, everything should be zero
         assert_eq!(enforced_sum, BinaryElem128::zero());
@@ -350,19 +386,23 @@ mod tests {
 
         let v_challenges = vec![BinaryElem128::from(5)];
         let queries = vec![2]; // Single query at index 2
-        // Row must have length 2^k where k = number of challenges
+                               // Row must have length 2^k where k = number of challenges
         let opened_rows = vec![vec![BinaryElem32::from(7), BinaryElem32::from(11)]];
         let alpha = BinaryElem128::from(3);
 
-        let (basis_poly, enforced_sum) = induce_sumcheck_poly(
-            n, &sks_vks, &opened_rows, &v_challenges, &queries, alpha
-        );
+        let (basis_poly, enforced_sum) =
+            induce_sumcheck_poly(n, &sks_vks, &opened_rows, &v_challenges, &queries, alpha);
 
         // Check that basis polynomial has the expected structure
-        let basis_sum = basis_poly.iter().fold(BinaryElem128::zero(), |acc, &x| acc.add(&x));
+        let basis_sum = basis_poly
+            .iter()
+            .fold(BinaryElem128::zero(), |acc, &x| acc.add(&x));
         assert_eq!(basis_sum, enforced_sum);
 
         // Basis polynomial sum should equal enforced sum
-        assert!(basis_sum == enforced_sum, "Basis sum should match enforced sum");
+        assert!(
+            basis_sum == enforced_sum,
+            "Basis sum should match enforced sum"
+        );
     }
 }

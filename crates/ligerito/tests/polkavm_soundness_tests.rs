@@ -5,10 +5,10 @@
 
 #![cfg(feature = "polkavm-integration")]
 
-use ligerito::pcvm::polkavm_constraints_v2::{
-    ProvenTransition, ConstraintError, generate_transition_constraints,
-};
 use ligerito::pcvm::polkavm_adapter::PolkaVMRegisters;
+use ligerito::pcvm::polkavm_constraints_v2::{
+    generate_transition_constraints, ConstraintError, ProvenTransition,
+};
 use polkavm::program::Instruction;
 use polkavm_common::program::{RawReg, Reg};
 
@@ -63,8 +63,8 @@ fn test_reject_wrong_branch_taken() {
     // Attacker claims: branch WAS taken (wrong!)
 
     let mut regs_before = [0u32; 13];
-    regs_before[7] = 5;  // a0 = 5
-    regs_before[8] = 7;  // a1 = 7 (different!)
+    regs_before[7] = 5; // a0 = 5
+    regs_before[8] = 7; // a1 = 7 (different!)
 
     let transition = ProvenTransition {
         pc: 0x50,
@@ -118,8 +118,8 @@ fn test_accept_correct_branch_taken() {
     // Branch IS taken correctly
 
     let mut regs_before = [0u32; 13];
-    regs_before[7] = 5;  // a0 = 5
-    regs_before[8] = 5;  // a1 = 5 (equal!)
+    regs_before[7] = 5; // a0 = 5
+    regs_before[8] = 5; // a1 = 5 (equal!)
 
     let transition = ProvenTransition {
         pc: 0x50,
@@ -138,11 +138,7 @@ fn test_accept_correct_branch_taken() {
         },
     };
 
-    let instruction = Instruction::branch_eq(
-        raw_reg(Reg::A0),
-        raw_reg(Reg::A1),
-        50,
-    );
+    let instruction = Instruction::branch_eq(raw_reg(Reg::A0), raw_reg(Reg::A1), 50);
 
     let constraints = generate_transition_constraints(&transition, &instruction)
         .expect("Should generate constraints");
@@ -181,11 +177,7 @@ fn test_unimplemented_instruction_errors() {
     };
 
     // Use an unimplemented instruction (e.g., XOR)
-    let instruction = Instruction::xor(
-        raw_reg(Reg::A0),
-        raw_reg(Reg::A1),
-        raw_reg(Reg::A2),
-    );
+    let instruction = Instruction::xor(raw_reg(Reg::A0), raw_reg(Reg::A1), raw_reg(Reg::A2));
 
     let result = generate_transition_constraints(&transition, &instruction);
 
@@ -197,7 +189,10 @@ fn test_unimplemented_instruction_errors() {
 
     match result {
         Err(ConstraintError::UnimplementedInstruction { opcode }) => {
-            println!("✓ Unimplemented instruction correctly rejected with opcode {}", opcode);
+            println!(
+                "✓ Unimplemented instruction correctly rejected with opcode {}",
+                opcode
+            );
         }
         _ => panic!("Wrong error type!"),
     }
@@ -240,11 +235,7 @@ fn test_load_requires_memory_proof() {
         },
     };
 
-    let instruction = Instruction::load_indirect_u32(
-        raw_reg(Reg::A0),
-        raw_reg(Reg::SP),
-        4,
-    );
+    let instruction = Instruction::load_indirect_u32(raw_reg(Reg::A0), raw_reg(Reg::SP), 4);
 
     let result = generate_transition_constraints(&transition, &instruction);
 
@@ -292,11 +283,7 @@ fn test_memory_root_consistency() {
         },
     };
 
-    let instruction = Instruction::add_32(
-        raw_reg(Reg::T2),
-        raw_reg(Reg::T0),
-        raw_reg(Reg::T1),
-    );
+    let instruction = Instruction::add_32(raw_reg(Reg::T2), raw_reg(Reg::T0), raw_reg(Reg::T1));
 
     let constraints = generate_transition_constraints(&transition, &instruction)
         .expect("Should generate constraints");
@@ -323,11 +310,11 @@ fn test_full_trace_verification() {
     // Result: a0 = 30
 
     let mut regs_before = [0u32; 13];
-    regs_before[8] = 10;  // A1 = 10
-    regs_before[9] = 20;  // A2 = 20
+    regs_before[8] = 10; // A1 = 10
+    regs_before[9] = 20; // A2 = 20
 
     let mut regs_after = regs_before;
-    regs_after[7] = 30;   // A0 = 10 + 20
+    regs_after[7] = 30; // A0 = 10 + 20
 
     let transition = ProvenTransition {
         pc: 0x100,
@@ -346,11 +333,7 @@ fn test_full_trace_verification() {
         },
     };
 
-    let instruction = Instruction::add_32(
-        raw_reg(Reg::A0),
-        raw_reg(Reg::A1),
-        raw_reg(Reg::A2),
-    );
+    let instruction = Instruction::add_32(raw_reg(Reg::A0), raw_reg(Reg::A1), raw_reg(Reg::A2));
 
     let constraints = generate_transition_constraints(&transition, &instruction)
         .expect("Should generate constraints");
@@ -360,7 +343,8 @@ fn test_full_trace_verification() {
         assert_eq!(
             *constraint,
             ligerito_binary_fields::BinaryFieldElement::zero(),
-            "Constraint {} should be satisfied", i
+            "Constraint {} should be satisfied",
+            i
         );
     }
 
@@ -378,7 +362,7 @@ fn test_batched_verification() {
 
     // Step 1: load_imm a0, 10
     let mut regs_1 = regs_0;
-    regs_1[7] = 10;  // a0 = 10
+    regs_1[7] = 10; // a0 = 10
 
     let step1 = (
         ProvenTransition {
@@ -402,7 +386,7 @@ fn test_batched_verification() {
 
     // Step 2: load_imm a1, 20
     let mut regs_2 = regs_1;
-    regs_2[8] = 20;  // a1 = 20
+    regs_2[8] = 20; // a1 = 20
 
     let step2 = (
         ProvenTransition {
@@ -426,7 +410,7 @@ fn test_batched_verification() {
 
     // Step 3: add a2, a0, a1
     let mut regs_3 = regs_2;
-    regs_3[9] = 30;  // a2 = 10 + 20
+    regs_3[9] = 30; // a2 = 10 + 20
 
     let step3 = (
         ProvenTransition {
@@ -445,11 +429,7 @@ fn test_batched_verification() {
                 operands: [0, 0, 0],
             },
         },
-        Instruction::add_32(
-            raw_reg(Reg::A2),
-            raw_reg(Reg::A0),
-            raw_reg(Reg::A1),
-        ),
+        Instruction::add_32(raw_reg(Reg::A2), raw_reg(Reg::A0), raw_reg(Reg::A1)),
     );
 
     let trace = vec![step1, step2, step3];
@@ -458,12 +438,14 @@ fn test_batched_verification() {
     let challenge = BinaryElem32::from(0x12345678u32);
 
     // Batched verification: ALL constraints in ONE check
-    let result = verify_trace_batched_with_challenge(&trace, challenge)
-        .expect("Should verify successfully");
+    let result =
+        verify_trace_batched_with_challenge(&trace, challenge).expect("Should verify successfully");
 
     assert!(result, "Batched verification should pass for valid trace");
 
-    println!("✓ Batched verification: 3 steps × ~46 constraints = 138 checks → 1 accumulator check");
+    println!(
+        "✓ Batched verification: 3 steps × ~46 constraints = 138 checks → 1 accumulator check"
+    );
 }
 
 /// Test that batched verification catches forgeries
@@ -474,11 +456,11 @@ fn test_batched_rejects_forgery() {
 
     // Create forged trace: claim a0 = a1 + a2 but use WRONG result
     let mut regs_before = [0u32; 13];
-    regs_before[8] = 10;  // a1 = 10
-    regs_before[9] = 20;  // a2 = 20
+    regs_before[8] = 10; // a1 = 10
+    regs_before[9] = 20; // a2 = 20
 
     let mut regs_after = regs_before;
-    regs_after[7] = 999;  // a0 = 999 (WRONG! Should be 30)
+    regs_after[7] = 999; // a0 = 999 (WRONG! Should be 30)
 
     let forged_step = (
         ProvenTransition {
@@ -497,11 +479,7 @@ fn test_batched_rejects_forgery() {
                 operands: [0, 0, 0],
             },
         },
-        Instruction::add_32(
-            raw_reg(Reg::A0),
-            raw_reg(Reg::A1),
-            raw_reg(Reg::A2),
-        ),
+        Instruction::add_32(raw_reg(Reg::A0), raw_reg(Reg::A1), raw_reg(Reg::A2)),
     );
 
     let trace = vec![forged_step];
@@ -510,7 +488,10 @@ fn test_batched_rejects_forgery() {
     let result = verify_trace_batched_with_challenge(&trace, challenge)
         .expect("Should generate constraints");
 
-    assert!(!result, "Batched verification must reject forged execution!");
+    assert!(
+        !result,
+        "Batched verification must reject forged execution!"
+    );
 
     println!("✓ Batched verification correctly rejects forgery");
 }

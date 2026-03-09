@@ -23,7 +23,7 @@ pub mod buffers;
 pub mod shaders;
 
 #[cfg(feature = "webgpu")]
-pub use device::{GpuDevice, GpuCapabilities};
+pub use device::{GpuCapabilities, GpuDevice};
 
 /// Check if WebGPU is available in the current environment
 #[cfg(feature = "webgpu")]

@@ -10,7 +10,7 @@ use std::collections::HashSet;
 
 use binary_fields::BinaryFieldElement;
 use merkle_tree::MerkleRoot;
-use sha2::{Sha256, Digest};
+use sha2::{Digest, Sha256};
 
 // Note: rand imports removed - using deterministic hash-based expansion for
 // cross-platform compatibility (native, WASM, etc.)
@@ -86,20 +86,14 @@ impl Transcript for MerlinTranscript {
 
     fn absorb_elems<F: BinaryFieldElement>(&mut self, elems: &[F]) {
         let bytes = unsafe {
-            core::slice::from_raw_parts(
-                elems.as_ptr() as *const u8,
-                elems.len() * core::mem::size_of::<F>()
-            )
+            core::slice::from_raw_parts(elems.as_ptr() as *const u8, std::mem::size_of_val(elems))
         };
         self.transcript.append_message(b"field_elements", bytes);
     }
 
     fn absorb_elem<F: BinaryFieldElement>(&mut self, elem: F) {
         let bytes = unsafe {
-            core::slice::from_raw_parts(
-                &elem as *const F as *const u8,
-                core::mem::size_of::<F>()
-            )
+            core::slice::from_raw_parts(&elem as *const F as *const u8, core::mem::size_of::<F>())
         };
         self.transcript.append_message(b"field_element", bytes);
     }
@@ -121,7 +115,7 @@ impl Transcript for MerlinTranscript {
 
         // Create a more diverse bit pattern
         let mut bit_count = 0;
-        for (_byte_idx, &byte) in bytes.iter().enumerate() {
+        for &byte in bytes.iter() {
             for bit_idx in 0..8 {
                 if bit_count >= bits_needed {
                     break;
@@ -154,7 +148,8 @@ impl Transcript for MerlinTranscript {
         if result == F::one() || result == F::zero() {
             // Mix in the byte position to create diversity
             self.transcript.append_message(b"retry", &bytes);
-            self.transcript.challenge_bytes(b"challenge_retry", &mut bytes);
+            self.transcript
+                .challenge_bytes(b"challenge_retry", &mut bytes);
 
             // XOR with position-based pattern to ensure different challenges
             for i in 0..4 {
@@ -166,7 +161,7 @@ impl Transcript for MerlinTranscript {
             // Recompute with mixed bytes
             result = F::zero();
             bit_count = 0;
-            for (_byte_idx, &byte) in bytes.iter().enumerate() {
+            for &byte in bytes.iter() {
                 for bit_idx in 0..8 {
                     if bit_count >= bits_needed {
                         break;
@@ -202,7 +197,7 @@ impl Transcript for MerlinTranscript {
         let mut bytes = [0u8; 8];
         self.transcript.challenge_bytes(b"query", &mut bytes);
         let value = u64::from_le_bytes(bytes);
-        (value as usize) % max  // Returns 0..max-1 (0-based)
+        (value as usize) % max // Returns 0..max-1 (0-based)
     }
 
     fn get_distinct_queries(&mut self, max: usize, count: usize) -> Vec<usize> {
@@ -236,7 +231,7 @@ pub struct Sha256Transcript {
 impl Sha256Transcript {
     pub fn new(seed: i32) -> Self {
         let mut hasher = Sha256::new();
-        hasher.update(&seed.to_le_bytes());
+        hasher.update(seed.to_le_bytes());
 
         Self {
             hasher,
@@ -256,7 +251,7 @@ impl Sha256Transcript {
     /// Uses pure SHA256 expansion - no external RNG dependencies.
     /// This ensures identical output on native, WASM, and all platforms.
     fn squeeze_bytes(&mut self, count: usize) -> Vec<u8> {
-        self.hasher.update(&self.counter.to_le_bytes());
+        self.hasher.update(self.counter.to_le_bytes());
         self.counter += 1;
 
         let digest = self.hasher.clone().finalize();
@@ -269,7 +264,7 @@ impl Sha256Transcript {
             result.extend_from_slice(&digest[..]);
 
             while result.len() < count {
-                self.hasher.update(&self.counter.to_le_bytes());
+                self.hasher.update(self.counter.to_le_bytes());
                 self.counter += 1;
                 let digest = self.hasher.clone().finalize();
                 let needed = count - result.len();
@@ -290,20 +285,14 @@ impl Transcript for Sha256Transcript {
 
     fn absorb_elems<F: BinaryFieldElement>(&mut self, elems: &[F]) {
         let bytes = unsafe {
-            core::slice::from_raw_parts(
-                elems.as_ptr() as *const u8,
-                elems.len() * core::mem::size_of::<F>()
-            )
+            core::slice::from_raw_parts(elems.as_ptr() as *const u8, std::mem::size_of_val(elems))
         };
         self.hasher.update(bytes);
     }
 
     fn absorb_elem<F: BinaryFieldElement>(&mut self, elem: F) {
         let bytes = unsafe {
-            core::slice::from_raw_parts(
-                &elem as *const F as *const u8,
-                core::mem::size_of::<F>()
-            )
+            core::slice::from_raw_parts(&elem as *const F as *const u8, core::mem::size_of::<F>())
         };
         self.hasher.update(bytes);
     }
@@ -383,14 +372,13 @@ impl Transcript for Sha256Transcript {
         // Use deterministic squeeze_bytes for cross-platform compatibility
         let bytes = self.squeeze_bytes(8);
         let value = u64::from_le_bytes([
-            bytes[0], bytes[1], bytes[2], bytes[3],
-            bytes[4], bytes[5], bytes[6], bytes[7],
+            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
         ]);
 
         if self.julia_compatible {
             ((value as usize) % max + 1) - 1 // 1-based generation, 0-based return
         } else {
-            (value as usize) % max  // Direct 0-based
+            (value as usize) % max // Direct 0-based
         }
     }
 
@@ -426,8 +414,8 @@ impl Blake2bTranscript {
     pub fn new(domain: &[u8]) -> Self {
         #[cfg(feature = "std")]
         let state = {
-            use blake2::{Blake2b, Digest};
             use blake2::digest::consts::U32;
+            use blake2::{Blake2b, Digest};
             type Blake2b256 = Blake2b<U32>;
             let hash = Blake2b256::digest(domain);
             let mut arr = [0u8; 32];
@@ -445,8 +433,8 @@ impl Blake2bTranscript {
     fn hash(data: &[u8]) -> [u8; 32] {
         #[cfg(feature = "std")]
         {
-            use blake2::{Blake2b, Digest};
             use blake2::digest::consts::U32;
+            use blake2::{Blake2b, Digest};
             type Blake2b256 = Blake2b<U32>;
             let hash = Blake2b256::digest(data);
             let mut arr = [0u8; 32];
@@ -462,9 +450,7 @@ impl Blake2bTranscript {
 
     /// Absorb data into the transcript state
     fn absorb(&mut self, label: &[u8], data: &[u8]) {
-        let mut input = Vec::with_capacity(
-            self.state.len() + label.len() + 8 + data.len()
-        );
+        let mut input = Vec::with_capacity(self.state.len() + label.len() + 8 + data.len());
         input.extend_from_slice(&self.state);
         input.extend_from_slice(label);
         input.extend_from_slice(&(data.len() as u64).to_le_bytes());
@@ -474,9 +460,7 @@ impl Blake2bTranscript {
 
     /// Squeeze challenge bytes from the transcript
     fn squeeze(&mut self, label: &[u8]) -> [u8; 32] {
-        let mut input = Vec::with_capacity(
-            self.state.len() + 9 + label.len() + 4
-        );
+        let mut input = Vec::with_capacity(self.state.len() + 9 + label.len() + 4);
         input.extend_from_slice(&self.state);
         input.extend_from_slice(b"challenge");
         input.extend_from_slice(label);
@@ -497,20 +481,14 @@ impl Transcript for Blake2bTranscript {
 
     fn absorb_elems<F: BinaryFieldElement>(&mut self, elems: &[F]) {
         let bytes = unsafe {
-            core::slice::from_raw_parts(
-                elems.as_ptr() as *const u8,
-                elems.len() * core::mem::size_of::<F>()
-            )
+            core::slice::from_raw_parts(elems.as_ptr() as *const u8, std::mem::size_of_val(elems))
         };
         self.absorb(b"field_elements", bytes);
     }
 
     fn absorb_elem<F: BinaryFieldElement>(&mut self, elem: F) {
         let bytes = unsafe {
-            core::slice::from_raw_parts(
-                &elem as *const F as *const u8,
-                core::mem::size_of::<F>()
-            )
+            core::slice::from_raw_parts(&elem as *const F as *const u8, core::mem::size_of::<F>())
         };
         self.absorb(b"field_element", bytes);
     }
@@ -528,12 +506,11 @@ impl Transcript for Blake2bTranscript {
             16 => {
                 // BinaryElem128 - construct from bytes
                 let low = u64::from_le_bytes([
-                    bytes[0], bytes[1], bytes[2], bytes[3],
-                    bytes[4], bytes[5], bytes[6], bytes[7],
+                    bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
                 ]);
                 let high = u64::from_le_bytes([
-                    bytes[8], bytes[9], bytes[10], bytes[11],
-                    bytes[12], bytes[13], bytes[14], bytes[15],
+                    bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14],
+                    bytes[15],
                 ]);
 
                 // Build field element bit by bit
@@ -584,8 +561,7 @@ impl Transcript for Blake2bTranscript {
     fn get_query(&mut self, max: usize) -> usize {
         let bytes = self.squeeze(b"query");
         let value = u64::from_le_bytes([
-            bytes[0], bytes[1], bytes[2], bytes[3],
-            bytes[4], bytes[5], bytes[6], bytes[7],
+            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
         ]);
         (value as usize) % max
     }
@@ -648,16 +624,10 @@ impl FiatShamir {
     pub fn new(transcript_type: TranscriptType) -> Self {
         match transcript_type {
             #[cfg(feature = "transcript-merlin")]
-            TranscriptType::Merlin => {
-                FiatShamir::Merlin(MerlinTranscript::new(b"ligerito-v1"))
-            }
-            TranscriptType::Sha256(seed) => {
-                FiatShamir::Sha256(Sha256Transcript::new(seed))
-            }
+            TranscriptType::Merlin => FiatShamir::Merlin(MerlinTranscript::new(b"ligerito-v1")),
+            TranscriptType::Sha256(seed) => FiatShamir::Sha256(Sha256Transcript::new(seed)),
             #[cfg(feature = "transcript-blake2b")]
-            TranscriptType::Blake2b => {
-                FiatShamir::Blake2b(Blake2bTranscript::new(b"ligerito-v1"))
-            }
+            TranscriptType::Blake2b => FiatShamir::Blake2b(Blake2bTranscript::new(b"ligerito-v1")),
         }
     }
 

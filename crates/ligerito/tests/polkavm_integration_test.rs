@@ -7,21 +7,19 @@
 
 #![cfg(feature = "polkavm-integration")]
 
-use ligerito::pcvm::polkavm_tracer::extract_polkavm_trace;
 use ligerito::pcvm::polkavm_constraints::{generate_step_constraints, verify_step_constraints};
-use polkavm::ProgramBlob;
+use ligerito::pcvm::polkavm_tracer::extract_polkavm_trace;
 use polkavm::program::ISA32_V1;
+use polkavm::ProgramBlob;
 
 #[test]
 fn test_extract_trace_from_real_binary() {
     // Use the hello-world example binary from PolkaVM
     let binary_path = "/home/alice/src/polkavm/guest-programs/output/example-hello-world.polkavm";
-    let program_blob = std::fs::read(binary_path)
-        .expect("Failed to read PolkaVM binary");
+    let program_blob = std::fs::read(binary_path).expect("Failed to read PolkaVM binary");
 
     // Extract trace with step limit (increased to 10000 since program might be larger)
-    let trace = extract_polkavm_trace(&program_blob, 10000)
-        .expect("Failed to extract trace");
+    let trace = extract_polkavm_trace(&program_blob, 10000).expect("Failed to extract trace");
 
     println!("✓ Extracted trace with {} steps", trace.steps.len());
     println!("  Program hash: {:?}", trace.program_hash);
@@ -39,7 +37,12 @@ fn test_extract_trace_from_real_binary() {
     println!("\nLast 5 steps:");
     let start = trace.steps.len().saturating_sub(5);
     for (i, step) in trace.steps.iter().skip(start).enumerate() {
-        println!("  Step {}: PC={:#x}, opcode={}", start + i, step.pc, step.opcode);
+        println!(
+            "  Step {}: PC={:#x}, opcode={}",
+            start + i,
+            step.pc,
+            step.opcode
+        );
     }
 }
 
@@ -47,16 +50,13 @@ fn test_extract_trace_from_real_binary() {
 fn test_generate_constraints_from_trace() {
     // Read the PolkaVM binary
     let binary_path = "/home/alice/src/polkavm/guest-programs/output/example-hello-world.polkavm";
-    let program_blob = std::fs::read(binary_path)
-        .expect("Failed to read PolkaVM binary");
+    let program_blob = std::fs::read(binary_path).expect("Failed to read PolkaVM binary");
 
     // Parse to get instruction decoder
-    let blob = ProgramBlob::parse(program_blob[..].into())
-        .expect("Failed to parse program blob");
+    let blob = ProgramBlob::parse(program_blob[..].into()).expect("Failed to parse program blob");
 
     // Extract trace
-    let trace = extract_polkavm_trace(&program_blob, 1000)
-        .expect("Failed to extract trace");
+    let trace = extract_polkavm_trace(&program_blob, 1000).expect("Failed to extract trace");
 
     println!("Generating constraints for {} steps...", trace.steps.len());
 
@@ -80,32 +80,39 @@ fn test_generate_constraints_from_trace() {
                 instructions_with_constraints += 1;
 
                 if i < 5 {
-                    println!("  Step {}: {:?} -> {} constraints", i, instruction, constraints.len());
+                    println!(
+                        "  Step {}: {:?} -> {} constraints",
+                        i,
+                        instruction,
+                        constraints.len()
+                    );
                 }
             }
         }
     }
 
-    println!("\n✓ Generated {} total constraints across {} instructions",
-             total_constraints, instructions_with_constraints);
+    println!(
+        "\n✓ Generated {} total constraints across {} instructions",
+        total_constraints, instructions_with_constraints
+    );
 
-    assert!(total_constraints > 0, "Should have generated some constraints");
+    assert!(
+        total_constraints > 0,
+        "Should have generated some constraints"
+    );
 }
 
 #[test]
 fn test_verify_constraints_all_satisfied() {
     // Read the PolkaVM binary
     let binary_path = "/home/alice/src/polkavm/guest-programs/output/example-hello-world.polkavm";
-    let program_blob = std::fs::read(binary_path)
-        .expect("Failed to read PolkaVM binary");
+    let program_blob = std::fs::read(binary_path).expect("Failed to read PolkaVM binary");
 
     // Parse blob
-    let blob = ProgramBlob::parse(program_blob[..].into())
-        .expect("Failed to parse program blob");
+    let blob = ProgramBlob::parse(program_blob[..].into()).expect("Failed to parse program blob");
 
     // Extract trace
-    let trace = extract_polkavm_trace(&program_blob, 1000)
-        .expect("Failed to extract trace");
+    let trace = extract_polkavm_trace(&program_blob, 1000).expect("Failed to extract trace");
 
     println!("Verifying constraints for {} steps...", trace.steps.len());
 
@@ -144,7 +151,10 @@ fn test_verify_constraints_all_satisfied() {
         // 1. We haven't implemented all instructions yet
         // 2. Some instructions might need special handling
         // But we should at least verify SOME steps successfully
-        assert!(verified_steps > 0, "Should verify at least some steps successfully");
+        assert!(
+            verified_steps > 0,
+            "Should verify at least some steps successfully"
+        );
     } else {
         println!("✓ All constraints satisfied!");
     }

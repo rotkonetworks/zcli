@@ -203,8 +203,7 @@ pub fn orchard_address_at_from_fvk(
 
 /// parse 96-byte FVK from raw bytes
 pub fn fvk_from_bytes(bytes: &[u8; 96]) -> Result<FullViewingKey, Error> {
-    Option::from(FullViewingKey::from_bytes(bytes))
-        .ok_or_else(|| Error::Address("invalid FVK bytes".into()))
+    FullViewingKey::from_bytes(bytes).ok_or_else(|| Error::Address("invalid FVK bytes".into()))
 }
 
 /// encode an orchard address as a unified address string

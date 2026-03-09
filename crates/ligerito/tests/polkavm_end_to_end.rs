@@ -11,12 +11,12 @@
 
 #![cfg(feature = "polkavm-integration")]
 
-use ligerito::pcvm::polkavm_constraints_v2::{ProvenTransition, InstructionProof};
-use ligerito::pcvm::polkavm_adapter::PolkaVMRegisters;
-use ligerito::pcvm::polkavm_prover::{prove_polkavm_execution, verify_polkavm_proof};
 use ligerito::configs::{hardcoded_config_20, hardcoded_config_20_verifier};
-use ligerito_binary_fields::{BinaryElem32, BinaryElem128};
+use ligerito::pcvm::polkavm_adapter::PolkaVMRegisters;
+use ligerito::pcvm::polkavm_constraints_v2::{InstructionProof, ProvenTransition};
+use ligerito::pcvm::polkavm_prover::{prove_polkavm_execution, verify_polkavm_proof};
 use ligerito::transcript::{Sha256Transcript, Transcript};
+use ligerito_binary_fields::{BinaryElem128, BinaryElem32};
 use std::marker::PhantomData;
 
 use polkavm::program::Instruction;
@@ -50,7 +50,7 @@ fn test_prove_and_verify_simple_execution() {
         }
 
         let mut regs_after = regs;
-        regs_after[7] = i as u32;  // a0 = counter
+        regs_after[7] = i as u32; // a0 = counter
 
         let step = (
             ProvenTransition {
@@ -87,7 +87,8 @@ fn test_prove_and_verify_simple_execution() {
     let final_state = [0u8; 32];
 
     // Create configs using hardcoded 2^20 config
-    let prover_config = hardcoded_config_20(PhantomData::<BinaryElem32>, PhantomData::<BinaryElem32>);
+    let prover_config =
+        hardcoded_config_20(PhantomData::<BinaryElem32>, PhantomData::<BinaryElem32>);
     let verifier_config = hardcoded_config_20_verifier();
 
     // Create transcript and get batching challenge
@@ -115,12 +116,16 @@ fn test_prove_and_verify_simple_execution() {
         batching_challenge,
         &prover_config,
         transcript,
-    ).expect("Failed to generate proof");
+    )
+    .expect("Failed to generate proof");
 
     println!("✓ Proof generated successfully!");
     println!("  - Program: {:?}", &proof.program_commitment[..8]);
     println!("  - Steps: {}", proof.num_steps);
-    println!("  - Constraint accumulator: {:?}", proof.constraint_accumulator);
+    println!(
+        "  - Constraint accumulator: {:?}",
+        proof.constraint_accumulator
+    );
 
     // VERIFY: Check proof
     let verified = verify_polkavm_proof(
@@ -140,11 +145,11 @@ fn test_prove_and_verify_simple_execution() {
 fn test_reject_forged_execution() {
     // Create forged trace: claim wrong ADD result
     let mut regs_before = [0u32; 13];
-    regs_before[8] = 10;  // a1 = 10
-    regs_before[9] = 20;  // a2 = 20
+    regs_before[8] = 10; // a1 = 10
+    regs_before[9] = 20; // a2 = 20
 
     let mut regs_after = regs_before;
-    regs_after[7] = 999;  // a0 = 999 (WRONG! Should be 30)
+    regs_after[7] = 999; // a0 = 999 (WRONG! Should be 30)
 
     let forged_step = (
         ProvenTransition {
@@ -163,16 +168,13 @@ fn test_reject_forged_execution() {
                 operands: [0, 0, 0],
             },
         },
-        Instruction::add_32(
-            raw_reg(Reg::A0),
-            raw_reg(Reg::A1),
-            raw_reg(Reg::A2),
-        ),
+        Instruction::add_32(raw_reg(Reg::A0), raw_reg(Reg::A1), raw_reg(Reg::A2)),
     );
 
     let trace = vec![forged_step];
 
-    let prover_config = hardcoded_config_20(PhantomData::<BinaryElem32>, PhantomData::<BinaryElem32>);
+    let prover_config =
+        hardcoded_config_20(PhantomData::<BinaryElem32>, PhantomData::<BinaryElem32>);
     let batching_challenge = BinaryElem128::from(0x12345678u128);
     let transcript = Sha256Transcript::new(42);
 
@@ -226,10 +228,11 @@ fn test_proof_size_logarithmic() {
             Instruction::load_imm(raw_reg(Reg::A0), 0),
         );
         trace.push(step);
-        pc += 2;  // Maintain PC continuity
+        pc += 2; // Maintain PC continuity
     }
 
-    let prover_config = hardcoded_config_20(PhantomData::<BinaryElem32>, PhantomData::<BinaryElem32>);
+    let prover_config =
+        hardcoded_config_20(PhantomData::<BinaryElem32>, PhantomData::<BinaryElem32>);
     let batching_challenge = BinaryElem128::from(0x12345678u128);
     let transcript = Sha256Transcript::new(42);
 
@@ -239,7 +242,8 @@ fn test_proof_size_logarithmic() {
         batching_challenge,
         &prover_config,
         transcript,
-    ).expect("Should generate proof");
+    )
+    .expect("Should generate proof");
 
     // Proof is succinct - size is O(log²(N))
     // For 4 steps, proof is very small

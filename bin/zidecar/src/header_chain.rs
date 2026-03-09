@@ -148,37 +148,51 @@ impl HeaderChainTrace {
                 let chunk_vec: Vec<u32> = chunk.to_vec();
 
                 // fetch (height, hash, prev_hash, bits) for full PoW verification
-                let fetched: Vec<std::result::Result<(u32, String, String, String), ZidecarError>> = stream::iter(chunk_vec)
-                    .map(|height| {
-                        let zc = zebrad_clone.clone();
-                        async move {
-                            // retry logic
-                            let mut last_err = None;
-                            for attempt in 0..MAX_RETRIES {
-                                match async {
-                                    let hash = zc.get_block_hash(height).await?;
-                                    let header = zc.get_block_header(&hash).await?;
-                                    Ok::<_, ZidecarError>((height, header.hash, header.prev_hash, header.bits))
-                                }.await {
-                                    Ok(result) => return Ok(result),
-                                    Err(e) => {
-                                        last_err = Some(e);
-                                        if attempt < MAX_RETRIES - 1 {
-                                            // exponential backoff: 100ms, 200ms, 400ms
-                                            tokio::time::sleep(tokio::time::Duration::from_millis(100 * (1 << attempt))).await;
+                let fetched: Vec<std::result::Result<(u32, String, String, String), ZidecarError>> =
+                    stream::iter(chunk_vec)
+                        .map(|height| {
+                            let zc = zebrad_clone.clone();
+                            async move {
+                                // retry logic
+                                let mut last_err = None;
+                                for attempt in 0..MAX_RETRIES {
+                                    match async {
+                                        let hash = zc.get_block_hash(height).await?;
+                                        let header = zc.get_block_header(&hash).await?;
+                                        Ok::<_, ZidecarError>((
+                                            height,
+                                            header.hash,
+                                            header.prev_hash,
+                                            header.bits,
+                                        ))
+                                    }
+                                    .await
+                                    {
+                                        Ok(result) => return Ok(result),
+                                        Err(e) => {
+                                            last_err = Some(e);
+                                            if attempt < MAX_RETRIES - 1 {
+                                                // exponential backoff: 100ms, 200ms, 400ms
+                                                tokio::time::sleep(
+                                                    tokio::time::Duration::from_millis(
+                                                        100 * (1 << attempt),
+                                                    ),
+                                                )
+                                                .await;
+                                            }
                                         }
                                     }
                                 }
+                                Err(last_err.unwrap())
                             }
-                            Err(last_err.unwrap())
-                        }
-                    })
-                    .buffer_unordered(CONCURRENT_REQUESTS)
-                    .collect()
-                    .await;
+                        })
+                        .buffer_unordered(CONCURRENT_REQUESTS)
+                        .collect()
+                        .await;
 
                 // collect chunk results
-                let mut headers_to_cache: Vec<(u32, String, String, String)> = Vec::with_capacity(chunk.len());
+                let mut headers_to_cache: Vec<(u32, String, String, String)> =
+                    Vec::with_capacity(chunk.len());
                 for result in fetched {
                     let (height, hash, prev_hash, bits) = result?;
                     headers_to_cache.push((height, hash, prev_hash, bits));
@@ -193,7 +207,10 @@ impl HeaderChainTrace {
 
                 // progress logging
                 let progress = (fetched_count * 100) / total;
-                info!("fetched {}% ({}/{}) headers", progress, fetched_count, total);
+                info!(
+                    "fetched {}% ({}/{}) headers",
+                    progress, fetched_count, total
+                );
             }
             info!("cached all {} headers", fetched_count);
         }
@@ -220,7 +237,8 @@ impl HeaderChainTrace {
         info!("loaded {} headers from cache", headers.len());
 
         // Fetch state roots at epoch boundaries (including nullifier roots from nomt)
-        let state_roots = Self::fetch_epoch_state_roots(zebrad, storage, start_height, end_height).await?;
+        let state_roots =
+            Self::fetch_epoch_state_roots(zebrad, storage, start_height, end_height).await?;
         info!("fetched {} epoch state roots", state_roots.len());
 
         // Get current tip roots for public outputs
@@ -241,7 +259,12 @@ impl HeaderChainTrace {
         let initial_state_commitment = [0u8; 32];
 
         let (trace, final_commitment, final_state_commitment, cumulative_difficulty) =
-            Self::encode_trace(&headers, &state_roots, initial_commitment, initial_state_commitment)?;
+            Self::encode_trace(
+                &headers,
+                &state_roots,
+                initial_commitment,
+                initial_state_commitment,
+            )?;
 
         info!(
             "encoded trace: {} elements ({} headers x {} fields), cumulative difficulty: {}",
@@ -334,10 +357,8 @@ impl HeaderChainTrace {
         let mut cumulative_difficulty: u64 = 0;
 
         // Build map from height to state roots for quick lookup
-        let state_root_map: std::collections::HashMap<u32, &EpochStateRoots> = state_roots
-            .iter()
-            .map(|r| (r.height, r))
-            .collect();
+        let state_root_map: std::collections::HashMap<u32, &EpochStateRoots> =
+            state_roots.iter().map(|r| (r.height, r)).collect();
 
         for (i, header) in headers.iter().enumerate() {
             let offset = i * FIELDS_PER_HEADER;
@@ -442,7 +463,12 @@ impl HeaderChainTrace {
             }
         }
 
-        Ok((trace, running_commitment, state_commitment, cumulative_difficulty))
+        Ok((
+            trace,
+            running_commitment,
+            state_commitment,
+            cumulative_difficulty,
+        ))
     }
 
     /// build trace with specific initial commitments (for composing proofs)
@@ -476,10 +502,16 @@ impl HeaderChainTrace {
             }
 
             // re-fetch state roots (with nullifier roots from storage)
-            let state_roots = Self::fetch_epoch_state_roots(zebrad, storage, start_height, end_height).await?;
+            let state_roots =
+                Self::fetch_epoch_state_roots(zebrad, storage, start_height, end_height).await?;
 
             let (new_trace, final_commitment, final_state_commitment, cumulative_difficulty) =
-                Self::encode_trace(&headers, &state_roots, initial_commitment, initial_state_commitment)?;
+                Self::encode_trace(
+                    &headers,
+                    &state_roots,
+                    initial_commitment,
+                    initial_state_commitment,
+                )?;
 
             trace.trace = new_trace;
             trace.initial_commitment = initial_commitment;
@@ -560,7 +592,7 @@ fn update_running_commitment(
     hasher.update(prev_commitment);
     hasher.update(block_hash);
     hasher.update(prev_hash);
-    hasher.update(&height.to_le_bytes());
+    hasher.update(height.to_le_bytes());
 
     let hash = hasher.finalize();
     let mut result = [0u8; 32];
@@ -583,7 +615,7 @@ fn update_state_commitment(
     hasher.update(sapling_root);
     hasher.update(orchard_root);
     hasher.update(nullifier_root);
-    hasher.update(&height.to_le_bytes());
+    hasher.update(height.to_le_bytes());
 
     let hash = hasher.finalize();
     let mut result = [0u8; 32];
@@ -623,7 +655,7 @@ fn nbits_to_difficulty(nbits: u32) -> u64 {
 
     // Use a simple approximation: difficulty = 2^256 / target
     // Simplified to fit in u64: just use the inverse proportion
-    let shift = if exponent >= 3 { exponent - 3 } else { 0 };
+    let shift = exponent.saturating_sub(3);
 
     // Each block represents some work; use log scale
     // difficulty ~ 2^(32 - 8*exponent) / mantissa

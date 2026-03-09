@@ -1,13 +1,13 @@
-use binary_fields::{BinaryFieldElement, BinaryPolynomial};
-#[cfg(feature = "prover")]
-use reed_solomon::ReedSolomon;
-use merkle_tree::{build_merkle_tree, Hash};
 #[cfg(feature = "prover")]
 use crate::data_structures::RecursiveLigeroWitness;
-use crate::utils::{evaluate_lagrange_basis, eval_sk_at_vks, evaluate_scaled_basis_inplace};
+use crate::utils::{eval_sk_at_vks, evaluate_lagrange_basis, evaluate_scaled_basis_inplace};
+use binary_fields::{BinaryFieldElement, BinaryPolynomial};
+use merkle_tree::{build_merkle_tree, Hash};
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
-use sha2::{Sha256, Digest};
+#[cfg(feature = "prover")]
+use reed_solomon::ReedSolomon;
+use sha2::{Digest, Sha256};
 
 // Debug printing macros - no-ops in no_std
 #[cfg(feature = "std")]
@@ -17,7 +17,7 @@ macro_rules! debug_println {
 
 #[cfg(not(feature = "std"))]
 macro_rules! debug_println {
-    ($($arg:tt)*) => { }
+    ($($arg:tt)*) => {};
 }
 
 #[cfg(feature = "prover")]
@@ -32,16 +32,14 @@ pub fn poly2mat<F: BinaryFieldElement>(
 
     #[cfg(feature = "parallel")]
     {
-        mat.par_iter_mut()
-            .enumerate()
-            .for_each(|(i, row)| {
-                for j in 0..n {
-                    let idx = j * m + i;
-                    if idx < poly.len() {
-                        row[j] = poly[idx];
-                    }
+        mat.par_iter_mut().enumerate().for_each(|(i, row)| {
+            for j in 0..n {
+                let idx = j * m + i;
+                if idx < poly.len() {
+                    row[j] = poly[idx];
                 }
-            });
+            }
+        });
     }
 
     #[cfg(not(feature = "parallel"))]
@@ -120,15 +118,12 @@ pub fn hash_row<F: BinaryFieldElement>(row: &[F]) -> Hash {
     let mut hasher = Sha256::new();
 
     // Hash row length for domain separation
-    hasher.update(&(row.len() as u32).to_le_bytes());
+    hasher.update((row.len() as u32).to_le_bytes());
 
     // Hash entire row at once using bytemuck for zero-copy byte slice
     // This is much faster than per-element hashing
     let row_bytes = unsafe {
-        core::slice::from_raw_parts(
-            row.as_ptr() as *const u8,
-            row.len() * core::mem::size_of::<F>()
-        )
+        core::slice::from_raw_parts(row.as_ptr() as *const u8, std::mem::size_of_val(row))
     };
     hasher.update(row_bytes);
 
@@ -149,26 +144,21 @@ pub fn ligero_commit<F: BinaryFieldElement + Send + Sync + bytemuck::Pod + 'stat
 
     // Parallelize row hashing
     #[cfg(feature = "parallel")]
-    let hashed_rows: Vec<Hash> = poly_mat.par_iter()
-        .map(|row| hash_row(row))
-        .collect();
+    let hashed_rows: Vec<Hash> = poly_mat.par_iter().map(|row| hash_row(row)).collect();
 
     #[cfg(not(feature = "parallel"))]
-    let hashed_rows: Vec<Hash> = poly_mat.iter()
-        .map(|row| hash_row(row))
-        .collect();
+    let hashed_rows: Vec<Hash> = poly_mat.iter().map(|row| hash_row(row)).collect();
 
     let tree = build_merkle_tree(&hashed_rows);
 
-    RecursiveLigeroWitness { mat: poly_mat, tree }
+    RecursiveLigeroWitness {
+        mat: poly_mat,
+        tree,
+    }
 }
 
-pub fn verify_ligero<T, U>(
-    queries: &[usize],
-    opened_rows: &[Vec<T>],
-    yr: &[T],
-    challenges: &[U],
-) where
+pub fn verify_ligero<T, U>(queries: &[usize], opened_rows: &[Vec<T>], yr: &[T], challenges: &[U])
+where
     T: BinaryFieldElement + Send + Sync,
     U: BinaryFieldElement + Send + Sync + From<T>,
 {
@@ -186,42 +176,54 @@ pub fn verify_ligero<T, U>(
         let query = queries[0];
         let row = &opened_rows[query];
 
-        let dot = row.iter()
-            .zip(gr.iter())
-            .fold(U::zero(), |acc, (&r, &g)| {
-                let r_u = U::from(r);
-                acc.add(&r_u.mul(&g))
-            });
+        let dot = row.iter().zip(gr.iter()).fold(U::zero(), |acc, (&r, &g)| {
+            let r_u = U::from(r);
+            acc.add(&r_u.mul(&g))
+        });
 
         // Convert query index to field element correctly
         // julia uses T(query - 1) because julia queries are 1-based
         // rust queries are already 0-based, so use query directly
         let query_for_basis = query % (1 << n);
-        let qf = T::from_poly(<T as BinaryFieldElement>::Poly::from_value(query_for_basis as u64));
+        let qf = T::from_poly(<T as BinaryFieldElement>::Poly::from_value(
+            query_for_basis as u64,
+        ));
 
         let mut local_sks_x = vec![T::zero(); sks_vks.len()];
         let mut local_basis = vec![U::zero(); 1 << n];
         let scale = U::from(T::one());
         evaluate_scaled_basis_inplace(&mut local_sks_x, &mut local_basis, &sks_vks, qf, scale);
 
-        let e = yr.iter()
+        let e = yr
+            .iter()
             .zip(local_basis.iter())
             .fold(U::zero(), |acc, (&y, &b)| {
                 let y_u = U::from(y);
                 acc.add(&y_u.mul(&b))
             });
 
-        debug_println!("verify_ligero: Query {} -> e = {:?}, dot = {:?}", query, e, dot);
+        debug_println!(
+            "verify_ligero: Query {} -> e = {:?}, dot = {:?}",
+            query,
+            e,
+            dot
+        );
         debug_println!("verify_ligero: Equal? {}", e == dot);
 
         if e != dot {
-            debug_println!("verify_ligero: mathematical relationship mismatch for query {}", query);
+            debug_println!(
+                "verify_ligero: mathematical relationship mismatch for query {}",
+                query
+            );
             debug_println!("  e = {:?}", e);
             debug_println!("  dot = {:?}", dot);
             debug_println!("  this might be expected in certain contexts");
             // don't panic - this might be normal behavior in some verification contexts
         } else {
-            debug_println!("verify_ligero: mathematical relationship holds for query {}", query);
+            debug_println!(
+                "verify_ligero: mathematical relationship holds for query {}",
+                query
+            );
         }
     }
 }

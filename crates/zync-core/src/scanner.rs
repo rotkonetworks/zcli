@@ -108,10 +108,7 @@ impl Scanner {
         let domain = OrchardDomain::for_nullifier(nullifier);
 
         // construct compact action for decryption
-        let compact = match compact_action_from_scan(action) {
-            Some(c) => c,
-            None => return None,
-        };
+        let compact = compact_action_from_scan(action)?;
 
         // trial decrypt
         let (note, recipient) = try_compact_note_decryption(&domain, &self.prepared_ivk, &compact)?;
@@ -168,7 +165,7 @@ impl Scanner {
     where
         F: FnMut(usize, usize, &[DecryptedNote]),
     {
-        let total_chunks = (actions.len() + chunk_size - 1) / chunk_size;
+        let total_chunks = actions.len().div_ceil(chunk_size);
         let mut all_notes = Vec::new();
 
         for (i, chunk) in actions.chunks(chunk_size).enumerate() {

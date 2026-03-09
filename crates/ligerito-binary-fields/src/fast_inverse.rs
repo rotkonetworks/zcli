@@ -207,7 +207,7 @@ pub fn batch_invert_gf128(values: &[u128]) -> Vec<u128> {
     let mut result = vec![0u128; n];
 
     // Handle zeros by tracking their positions
-    let mut non_zero_indices: Vec<usize> = values
+    let non_zero_indices: Vec<usize> = values
         .iter()
         .enumerate()
         .filter(|(_, &v)| v != 0)
@@ -408,7 +408,11 @@ mod tests {
             let slow_inv = elem.inv();
             let slow_inv_val = slow_inv.poly().value();
 
-            assert_eq!(fast_inv, slow_inv_val, "fast and slow inverse should match for x = 0x{:032x}", x);
+            assert_eq!(
+                fast_inv, slow_inv_val,
+                "fast and slow inverse should match for x = 0x{:032x}",
+                x
+            );
         }
     }
 
@@ -483,10 +487,10 @@ mod tests {
     fn test_spread_bits_correctness() {
         // Verify the optimized spread_bits matches expected behavior
         let test_cases: [(u64, u128); 4] = [
-            (0b1, 0b1),                    // bit 0 -> bit 0
-            (0b10, 0b100),                 // bit 1 -> bit 2
-            (0b101, 0b10001),              // bits 0,2 -> bits 0,4
-            (0b11111111, 0x5555),          // first 8 bits spread
+            (0b1, 0b1),           // bit 0 -> bit 0
+            (0b10, 0b100),        // bit 1 -> bit 2
+            (0b101, 0b10001),     // bits 0,2 -> bits 0,4
+            (0b11111111, 0x5555), // first 8 bits spread
         ];
 
         for (input, expected) in test_cases {
