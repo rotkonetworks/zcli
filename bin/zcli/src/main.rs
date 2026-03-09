@@ -34,6 +34,7 @@ async fn main() {
 
 async fn run(cli: &Cli) -> Result<(), Error> {
     let mainnet = cli.is_mainnet();
+    wallet::set_watch_mode(cli.watch);
 
     match &cli.command {
         Command::Address {
@@ -46,7 +47,7 @@ async fn run(cli: &Cli) -> Result<(), Error> {
         Command::Balance => cmd_balance(cli, mainnet).await,
         Command::Sync { from, position } => cmd_sync(cli, mainnet, *from, *position).await,
         Command::Shield { fee } => {
-            if load_fvk(cli, mainnet).is_some() {
+            if cli.watch {
                 return Err(Error::Other(
                     "watch-only wallet: shielding requires spending key".into(),
                 ));
@@ -60,41 +61,33 @@ async fn run(cli: &Cli) -> Result<(), Error> {
             memo,
             airgap,
         } => {
-            if *airgap {
-                // airgap mode: try FVK first (watch-only), fall back to seed
-                let fvk = load_fvk(cli, mainnet);
-                if let Some(ref fvk) = fvk {
-                    ops::airgap::send_airgap_with_fvk(
-                        fvk,
-                        amount,
-                        recipient,
-                        memo.as_deref(),
-                        &cli.endpoint,
-                        mainnet,
-                        cli.json,
-                    )
-                    .await
-                } else {
-                    let seed = load_seed(cli)?;
-                    ops::airgap::send_airgap(
-                        &seed,
-                        amount,
-                        recipient,
-                        memo.as_deref(),
-                        &cli.endpoint,
-                        mainnet,
-                        cli.json,
-                    )
-                    .await
-                }
+            if cli.watch {
+                // watch mode: always use airgap with FVK
+                let fvk = load_fvk(cli, mainnet)?;
+                ops::airgap::send_airgap_with_fvk(
+                    &fvk,
+                    amount,
+                    recipient,
+                    memo.as_deref(),
+                    &cli.endpoint,
+                    mainnet,
+                    cli.json,
+                )
+                .await
+            } else if *airgap {
+                // airgap mode with seed (hot wallet)
+                let seed = load_seed(cli)?;
+                ops::airgap::send_airgap(
+                    &seed,
+                    amount,
+                    recipient,
+                    memo.as_deref(),
+                    &cli.endpoint,
+                    mainnet,
+                    cli.json,
+                )
+                .await
             } else {
-                // non-airgap: requires spending key
-                let fvk = load_fvk(cli, mainnet);
-                if fvk.is_some() {
-                    return Err(Error::Other(
-                        "watch-only wallet: use --airgap for signing via zigner".into(),
-                    ));
-                }
                 let seed = load_seed(cli)?;
                 ops::send::send(
                     &seed,
@@ -108,7 +101,10 @@ async fn run(cli: &Cli) -> Result<(), Error> {
                 .await
             }
         }
-        Command::ImportFvk { hex } => cmd_import_fvk(cli, mainnet, hex.as_deref()),
+        Command::ImportFvk { hex } => {
+            // always store FVK in the watch wallet, regardless of --watch flag
+            cmd_import_fvk(cli, mainnet, hex.as_deref())
+        }
         Command::Scan { device, timeout } => cmd_scan(cli, device, *timeout),
         Command::Board {
             port,
@@ -121,7 +117,7 @@ async fn run(cli: &Cli) -> Result<(), Error> {
         Command::Verify => cmd_verify(cli, mainnet).await,
         Command::TreeInfo { height } => cmd_tree_info(cli, *height).await,
         Command::Export => {
-            if load_fvk(cli, mainnet).is_some() {
+            if cli.watch {
                 return Err(Error::Other(
                     "watch-only wallet: export requires spending key".into(),
                 ));
@@ -147,11 +143,8 @@ fn cmd_address(
 
     let mut result = serde_json::Map::new();
 
-    // try FVK first (watch-only), fall back to seed
-    let fvk = load_fvk(cli, mainnet);
-
     if show_t {
-        if fvk.is_some() {
+        if cli.watch {
             if cli.json {
                 result.insert(
                     "transparent".into(),
@@ -172,8 +165,9 @@ fn cmd_address(
     }
 
     if show_o {
-        let uaddr = if let Some(ref fvk) = fvk {
-            address::orchard_address_from_fvk(fvk, mainnet)?
+        let uaddr = if cli.watch {
+            let fvk = load_fvk(cli, mainnet)?;
+            address::orchard_address_from_fvk(&fvk, mainnet)?
         } else {
             let seed = load_seed(cli)?;
             address::orchard_address(&seed, mainnet)?
@@ -193,9 +187,9 @@ fn cmd_address(
 }
 
 fn cmd_receive(cli: &Cli, mainnet: bool) -> Result<(), Error> {
-    let fvk = load_fvk(cli, mainnet);
-    let (uaddr, taddr) = if let Some(ref fvk) = fvk {
-        let ua = address::orchard_address_from_fvk(fvk, mainnet)?;
+    let (uaddr, taddr) = if cli.watch {
+        let fvk = load_fvk(cli, mainnet)?;
+        let ua = address::orchard_address_from_fvk(&fvk, mainnet)?;
         (ua, "(watch-only)".to_string())
     } else {
         let seed = load_seed(cli)?;
@@ -259,9 +253,7 @@ fn cmd_receive(cli: &Cli, mainnet: bool) -> Result<(), Error> {
 }
 
 async fn cmd_balance(cli: &Cli, mainnet: bool) -> Result<(), Error> {
-    // balance uses transparent + shielded; for watch-only we skip transparent
-    let fvk = load_fvk(cli, mainnet);
-    let bal = if fvk.is_some() {
+    let bal = if cli.watch {
         // watch-only: shielded balance only (from local wallet db)
         let wallet = wallet::Wallet::open(&wallet::Wallet::default_path())?;
         let (shielded, _) = wallet.shielded_balance()?;
@@ -305,10 +297,10 @@ async fn cmd_sync(
     from: Option<u32>,
     position: Option<u64>,
 ) -> Result<(), Error> {
-    let fvk = load_fvk(cli, mainnet);
-    let found = if let Some(ref fvk) = fvk {
+    let found = if cli.watch {
+        let fvk = load_fvk(cli, mainnet)?;
         ops::sync::sync_with_fvk(
-            fvk,
+            &fvk,
             &cli.endpoint,
             &cli.verify_endpoints,
             mainnet,
@@ -1430,15 +1422,13 @@ fn cmd_scan(cli: &Cli, device: &str, timeout: u64) -> Result<(), Error> {
     }
 }
 
-/// try to load FVK from wallet db (watch-only mode)
-fn load_fvk(_cli: &Cli, mainnet: bool) -> Option<orchard::keys::FullViewingKey> {
-    let wallet = wallet::Wallet::open(&wallet::Wallet::default_path()).ok()?;
-    if !wallet.is_watch_only() {
-        return None;
-    }
-    let fvk_bytes = wallet.get_fvk_bytes().ok()??;
-    let _ = mainnet; // FVK is network-agnostic at the byte level
-    address::fvk_from_bytes(&fvk_bytes).ok()
+/// load FVK from the watch wallet (~/.zcli/watch)
+fn load_fvk(_cli: &Cli, _mainnet: bool) -> Result<orchard::keys::FullViewingKey, Error> {
+    let watch = wallet::Wallet::open(&wallet::Wallet::watch_path())?;
+    let fvk_bytes = watch
+        .get_fvk_bytes()?
+        .ok_or_else(|| Error::Other("no FVK imported — run `zcli import-fvk` first".into()))?;
+    address::fvk_from_bytes(&fvk_bytes)
 }
 
 fn cmd_import_fvk(cli: &Cli, mainnet: bool, hex_input: Option<&str>) -> Result<(), Error> {
@@ -1488,9 +1478,9 @@ fn cmd_import_fvk(cli: &Cli, mainnet: bool, hex_input: Option<&str>) -> Result<(
         );
     }
 
-    // store in wallet
-    let wallet = wallet::Wallet::open(&wallet::Wallet::default_path())?;
-    wallet.store_fvk(&fvk_bytes)?;
+    // store in watch wallet (separate from SSH key wallet)
+    let watch = wallet::Wallet::open(&wallet::Wallet::watch_path())?;
+    watch.store_fvk(&fvk_bytes)?;
 
     if cli.json {
         println!(

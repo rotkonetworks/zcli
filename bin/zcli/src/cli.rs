@@ -49,6 +49,10 @@ pub struct Cli {
     /// use testnet
     #[arg(long, global = true)]
     pub testnet: bool,
+
+    /// use watch-only (FVK) wallet instead of SSH key wallet
+    #[arg(short = 'w', long, global = true, env = "ZCLI_WATCH")]
+    pub watch: bool,
 }
 
 impl Cli {

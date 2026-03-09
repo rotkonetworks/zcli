@@ -1,6 +1,6 @@
 [package]
 name = "zecli"
-version = "0.5.2"
+version = "0.5.3"
 edition = "2021"
 license = "MIT"
 description = "zcash wallet CLI - ssh keys as wallet seed, agent-friendly"

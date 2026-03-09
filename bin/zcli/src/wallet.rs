@@ -1,5 +1,7 @@
 // local wallet state backed by sled
 
+use std::sync::OnceLock;
+
 use orchard::note::{RandomSeed, Rho};
 use orchard::value::NoteValue;
 use sled::Db;
@@ -18,7 +20,18 @@ const WITHDRAWAL_REQUESTS_TREE: &str = "withdrawal_requests";
 const NEXT_WITHDRAWAL_ID_KEY: &[u8] = b"next_withdrawal_id";
 const ACTIONS_COMMITMENT_KEY: &[u8] = b"actions_commitment";
 const FVK_KEY: &[u8] = b"full_viewing_key";
-const WALLET_MODE_KEY: &[u8] = b"wallet_mode";
+
+/// global watch mode flag — set once at startup, affects default_path()
+static WATCH_MODE: OnceLock<bool> = OnceLock::new();
+
+/// call once at startup to enable watch-only wallet path
+pub fn set_watch_mode(enabled: bool) {
+    WATCH_MODE.set(enabled).ok();
+}
+
+fn is_watch_mode() -> bool {
+    WATCH_MODE.get().copied().unwrap_or(false)
+}
 
 /// a received note stored in the wallet
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -131,13 +144,30 @@ impl Wallet {
     pub fn open(path: &str) -> Result<Self, Error> {
         let db = sled::open(path)
             .map_err(|e| Error::Wallet(format!("cannot open wallet db at {}: {}", path, e)))?;
+        // migrate: remove stale keys from pre-0.5.3 when FVK was stored in main wallet
+        if !is_watch_mode() {
+            let _ = db.remove(b"wallet_mode");
+            let _ = db.remove(b"full_viewing_key");
+        }
         Ok(Self { db })
     }
 
-    /// default wallet path: ~/.zcli/wallet
+    /// default wallet path based on mode:
+    /// - normal: ~/.zcli/wallet
+    /// - watch:  ~/.zcli/watch
     pub fn default_path() -> String {
+        if is_watch_mode() {
+            Self::watch_path()
+        } else {
+            let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+            format!("{}/.zcli/wallet", home)
+        }
+    }
+
+    /// watch-only wallet path: ~/.zcli/watch
+    pub fn watch_path() -> String {
         let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-        format!("{}/.zcli/wallet", home)
+        format!("{}/.zcli/watch", home)
     }
 
     pub fn sync_height(&self) -> Result<u32, Error> {
@@ -479,14 +509,11 @@ impl Wallet {
 
     // -- FVK / watch-only methods --
 
-    /// store a 96-byte orchard full viewing key (enables watch-only mode)
+    /// store a 96-byte orchard full viewing key in the watch wallet
     pub fn store_fvk(&self, fvk_bytes: &[u8; 96]) -> Result<(), Error> {
         self.db
             .insert(FVK_KEY, fvk_bytes.as_ref())
             .map_err(|e| Error::Wallet(format!("write fvk: {}", e)))?;
-        self.db
-            .insert(WALLET_MODE_KEY, b"watch-only")
-            .map_err(|e| Error::Wallet(format!("write wallet mode: {}", e)))?;
         Ok(())
     }
 
@@ -513,12 +540,10 @@ impl Wallet {
         }
     }
 
-    /// check if wallet is in watch-only mode
-    pub fn is_watch_only(&self) -> bool {
-        matches!(
-            self.db.get(WALLET_MODE_KEY),
-            Ok(Some(ref v)) if v.as_ref() == b"watch-only"
-        )
+    /// check if watch wallet has an FVK stored
+    pub fn has_fvk() -> bool {
+        let watch = Self::open(&Self::watch_path());
+        matches!(watch, Ok(w) if w.get_fvk_bytes().ok().flatten().is_some())
     }
 
     // -- withdrawal request methods --
