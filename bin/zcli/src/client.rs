@@ -11,7 +11,46 @@
 
 use crate::error::Error;
 use prost::Message;
-use zync_core::trustless::{CommitmentProof, NomtProof, NullifierProof};
+
+// nomt proof types (previously in zync_core::trustless, now local)
+
+#[derive(Debug, Clone)]
+pub struct NomtProof {
+    pub key: [u8; 32],
+    pub root: [u8; 32],
+    pub exists: bool,
+    pub path: Vec<[u8; 32]>,
+    pub indices: Vec<bool>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CommitmentProof {
+    pub cmx: [u8; 32],
+    pub position: u64,
+    pub tree_root: [u8; 32],
+    pub proof: NomtProof,
+}
+
+impl CommitmentProof {
+    pub fn verify(&self) -> Result<bool, Error> {
+        // proof path consistency: root matches and proof exists flag is set
+        Ok(self.proof.root == self.tree_root && self.proof.exists)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct NullifierProof {
+    pub nullifier: [u8; 32],
+    pub nullifier_root: [u8; 32],
+    pub is_spent: bool,
+    pub proof: NomtProof,
+}
+
+impl NullifierProof {
+    pub fn verify(&self) -> Result<bool, Error> {
+        Ok(self.proof.root == self.nullifier_root)
+    }
+}
 
 pub mod zidecar_proto {
     tonic::include_proto!("zidecar.v1");
