@@ -42,12 +42,18 @@ jobs:
             cp zcli-staging/www/*.css ${{ env.PROJECT_DIR }}/
             cp zcli-staging/www/memos.json ${{ env.PROJECT_DIR }}/ 2>/dev/null || true
 
-            # if container exists and is running, just reload nginx (files are bind-mounted)
+            # if container is running, just reload nginx (files are bind-mounted)
             if podman ps --format '{{.Names}}' | grep -q '^${{ env.CONTAINER_NAME }}$'; then
               podman exec ${{ env.CONTAINER_NAME }} nginx -s reload
-            elif podman ps -a --format '{{.Names}}' | grep -q '^${{ env.CONTAINER_NAME }}$'; then
-              podman start ${{ env.CONTAINER_NAME }}
             else
+              # remove broken/stopped container if it exists
+              podman rm -f ${{ env.CONTAINER_NAME }} 2>/dev/null || true
+              # wait for pasta network namespace cleanup
+              for i in $(seq 1 10); do
+                ss -tlnp | grep -q ':${{ env.CONTAINER_PORT }}' || break
+                sleep 2
+              done
+
               cat > nginx-zcli.conf << 'NGINX_EOF'
             server {
                 listen 80;
