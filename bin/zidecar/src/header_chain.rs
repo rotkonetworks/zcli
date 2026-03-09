@@ -47,6 +47,12 @@ const EPOCH_SIZE: u32 = 1024;
 /// fields encoded per block header in trace (32 fields for full verification)
 pub const FIELDS_PER_HEADER: usize = 32;
 
+/// sentinel row size appended after all headers in the trace
+/// fields 0-7: tip_tree_root (32 bytes = 8 × 4-byte fields)
+/// fields 8-15: tip_nullifier_root (32 bytes = 8 × 4-byte fields)
+/// fields 16-23: final_actions_commitment (32 bytes = 8 × 4-byte fields, zeros for now)
+pub const TIP_SENTINEL_SIZE: usize = 24;
+
 /// state roots at an epoch boundary (from z_gettreestate + nomt)
 #[derive(Clone, Debug, Default)]
 pub struct EpochStateRoots {
@@ -258,19 +264,28 @@ impl HeaderChainTrace {
         let initial_commitment = [0u8; 32];
         let initial_state_commitment = [0u8; 32];
 
+        // Compute running actions commitment chain over all headers
+        let final_actions_commitment = Self::compute_actions_commitment(
+            storage, start_height, end_height,
+        )?;
+
         let (trace, final_commitment, final_state_commitment, cumulative_difficulty) =
             Self::encode_trace(
                 &headers,
                 &state_roots,
                 initial_commitment,
                 initial_state_commitment,
+                tip_tree_root,
+                tip_nullifier_root,
+                final_actions_commitment,
             )?;
 
         info!(
-            "encoded trace: {} elements ({} headers x {} fields), cumulative difficulty: {}",
+            "encoded trace: {} elements ({} headers x {} fields + {} sentinel), cumulative difficulty: {}",
             trace.len(),
             num_headers,
             FIELDS_PER_HEADER,
+            TIP_SENTINEL_SIZE,
             cumulative_difficulty
         );
 
@@ -342,13 +357,21 @@ impl HeaderChainTrace {
 
     /// encode headers with state roots into trace (32 fields per header for full verification)
     /// returns (trace, final_header_commitment, final_state_commitment, cumulative_difficulty)
+    ///
+    /// After all headers, a sentinel row of TIP_SENTINEL_SIZE fields is appended:
+    ///   [0..8)  tip_tree_root
+    ///   [8..16) tip_nullifier_root
+    ///   [16..24) final_actions_commitment
     fn encode_trace(
         headers: &[BlockHeader],
         state_roots: &[EpochStateRoots],
         initial_commitment: [u8; 32],
         initial_state_commitment: [u8; 32],
+        tip_tree_root: [u8; 32],
+        tip_nullifier_root: [u8; 32],
+        final_actions_commitment: [u8; 32],
     ) -> Result<(Vec<BinaryElem32>, [u8; 32], [u8; 32], u64)> {
-        let num_elements = headers.len() * FIELDS_PER_HEADER;
+        let num_elements = headers.len() * FIELDS_PER_HEADER + TIP_SENTINEL_SIZE;
         let trace_size = num_elements.next_power_of_two();
         let mut trace = vec![BinaryElem32::zero(); trace_size];
 
@@ -463,6 +486,27 @@ impl HeaderChainTrace {
             }
         }
 
+        // Append sentinel row after all headers
+        let sentinel_offset = headers.len() * FIELDS_PER_HEADER;
+
+        // Fields 0-7: tip_tree_root (32 bytes = 8 × 4-byte fields)
+        for j in 0..8 {
+            trace[sentinel_offset + j] =
+                bytes_to_field(&tip_tree_root[j * 4..(j + 1) * 4]);
+        }
+
+        // Fields 8-15: tip_nullifier_root (32 bytes = 8 × 4-byte fields)
+        for j in 0..8 {
+            trace[sentinel_offset + 8 + j] =
+                bytes_to_field(&tip_nullifier_root[j * 4..(j + 1) * 4]);
+        }
+
+        // Fields 16-23: final_actions_commitment (32 bytes = 8 × 4-byte fields)
+        for j in 0..8 {
+            trace[sentinel_offset + 16 + j] =
+                bytes_to_field(&final_actions_commitment[j * 4..(j + 1) * 4]);
+        }
+
         Ok((
             trace,
             running_commitment,
@@ -505,12 +549,20 @@ impl HeaderChainTrace {
             let state_roots =
                 Self::fetch_epoch_state_roots(zebrad, storage, start_height, end_height).await?;
 
+            // Recompute running actions commitment chain
+            let final_actions_commitment = Self::compute_actions_commitment(
+                storage, start_height, end_height,
+            )?;
+
             let (new_trace, final_commitment, final_state_commitment, cumulative_difficulty) =
                 Self::encode_trace(
                     &headers,
                     &state_roots,
                     initial_commitment,
                     initial_state_commitment,
+                    trace.tip_tree_root,
+                    trace.tip_nullifier_root,
+                    final_actions_commitment,
                 )?;
 
             trace.trace = new_trace;
@@ -522,6 +574,29 @@ impl HeaderChainTrace {
         }
 
         Ok(trace)
+    }
+
+    /// Compute the running actions commitment chain over a height range.
+    /// For each height, loads the stored actions_root and chains it using
+    /// `zync_core::actions::update_actions_commitment`. Heights without a
+    /// stored actions_root are treated as empty blocks (all-zeros root).
+    fn compute_actions_commitment(
+        storage: &Arc<Storage>,
+        start_height: u32,
+        end_height: u32,
+    ) -> Result<[u8; 32]> {
+        let mut actions_commitment = [0u8; 32];
+        for height in start_height..=end_height {
+            let actions_root = storage
+                .get_actions_root(height)?
+                .unwrap_or([0u8; 32]);
+            actions_commitment = zync_core::actions::update_actions_commitment(
+                &actions_commitment,
+                &actions_root,
+                height,
+            );
+        }
+        Ok(actions_commitment)
     }
 
     /// verify trace encodes headers correctly (for testing)

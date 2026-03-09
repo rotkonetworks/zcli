@@ -5,7 +5,8 @@ use nomt::{
     hasher::Blake3Hasher, proof::PathProofTerminal, KeyReadWrite, Nomt, Options as NomtOptions,
     Root, SessionParams,
 };
-use sha2::{Digest, Sha256};
+use nomt::proof::PathProof;
+use zync_core::nomt::{key_for_note, key_for_nullifier};
 use tracing::{debug, info};
 
 /// storage combining NOMT (for merkle state) and sled (for proof cache)
@@ -439,6 +440,35 @@ impl Storage {
         Ok(None)
     }
 
+    // ===== ACTIONS ROOT STORAGE =====
+
+    /// Store precomputed actions merkle root for a block height
+    pub fn store_actions_root(&self, height: u32, root: [u8; 32]) -> Result<()> {
+        let mut key = Vec::with_capacity(5);
+        key.push(b'a'); // actions root prefix
+        key.extend_from_slice(&height.to_le_bytes());
+        self.sled
+            .insert(key, &root)
+            .map_err(|e| ZidecarError::Storage(format!("sled: {}", e)))?;
+        Ok(())
+    }
+
+    /// Get precomputed actions merkle root for a block height
+    pub fn get_actions_root(&self, height: u32) -> Result<Option<[u8; 32]>> {
+        let mut key = Vec::with_capacity(5);
+        key.push(b'a');
+        key.extend_from_slice(&height.to_le_bytes());
+        match self.sled.get(key) {
+            Ok(Some(bytes)) if bytes.len() == 32 => {
+                let mut root = [0u8; 32];
+                root.copy_from_slice(&bytes);
+                Ok(Some(root))
+            }
+            Ok(_) => Ok(None),
+            Err(e) => Err(ZidecarError::Storage(format!("sled: {}", e))),
+        }
+    }
+
     // ===== ACTION COUNT TRACKING =====
 
     /// increment total action count and return new total
@@ -646,20 +676,28 @@ impl Storage {
         let exists =
             matches!(&path_proof.terminal, PathProofTerminal::Leaf(leaf) if leaf.key_path == key);
 
+        // extract value_hash from leaf (if present)
+        let value_hash = match &path_proof.terminal {
+            PathProofTerminal::Leaf(leaf) if leaf.key_path == key => leaf.value_hash,
+            _ => [0u8; 32],
+        };
+
+        // serialize full PathProof for client-side verification
+        let path_proof_raw = bincode::serialize(&path_proof)
+            .map_err(|e| ZidecarError::Storage(format!("serialize path proof: {}", e)))?;
+
         // get root
         let root = self.nomt.root();
 
-        // extract sibling hashes from proof
+        // extract sibling hashes from proof (legacy)
         let path: Vec<[u8; 32]> = path_proof.siblings.clone();
-
-        // extract path indices from key (bit path through tree)
-        // indices indicate which side (left=false, right=true) the node is on
         let indices: Vec<bool> = key_to_bits(&key, path_proof.siblings.len());
 
         debug!(
-            "generated nullifier proof: {} siblings, exists={}",
+            "generated nullifier proof: {} siblings, exists={}, raw={}B",
             path.len(),
-            exists
+            exists,
+            path_proof_raw.len(),
         );
 
         Ok(NomtProof {
@@ -668,6 +706,8 @@ impl Storage {
             exists,
             path,
             indices,
+            path_proof_raw,
+            value_hash,
         })
     }
 
@@ -688,18 +728,27 @@ impl Storage {
         let exists =
             matches!(&path_proof.terminal, PathProofTerminal::Leaf(leaf) if leaf.key_path == key);
 
+        // extract value_hash from leaf (if present)
+        let value_hash = match &path_proof.terminal {
+            PathProofTerminal::Leaf(leaf) if leaf.key_path == key => leaf.value_hash,
+            _ => [0u8; 32],
+        };
+
+        // serialize full PathProof for client-side verification
+        let path_proof_raw = bincode::serialize(&path_proof)
+            .map_err(|e| ZidecarError::Storage(format!("serialize path proof: {}", e)))?;
+
         let root = self.nomt.root();
 
-        // extract sibling hashes from proof
+        // extract sibling hashes from proof (legacy)
         let path: Vec<[u8; 32]> = path_proof.siblings.clone();
-
-        // extract path indices from key (bit path through tree)
         let indices: Vec<bool> = key_to_bits(&key, path_proof.siblings.len());
 
         debug!(
-            "generated commitment proof: {} siblings, exists={}",
+            "generated commitment proof: {} siblings, exists={}, raw={}B",
             path.len(),
-            exists
+            exists,
+            path_proof_raw.len(),
         );
 
         Ok(NomtProof {
@@ -708,6 +757,8 @@ impl Storage {
             exists,
             path,
             indices,
+            path_proof_raw,
+            value_hash,
         })
     }
 }
@@ -735,6 +786,10 @@ pub struct NomtProof {
     pub exists: bool,
     pub path: Vec<[u8; 32]>,
     pub indices: Vec<bool>,
+    /// serialized PathProof (bincode) for client-side verification
+    pub path_proof_raw: Vec<u8>,
+    /// Blake3 hash of the stored value (leaf value_hash)
+    pub value_hash: [u8; 32],
 }
 
 /// Epoch boundary information for chain continuity verification
@@ -769,21 +824,6 @@ fn proof_key(from_height: u32, to_height: u32) -> Vec<u8> {
     key
 }
 
-/// nomt key for nullifier (domain-separated hash)
-fn key_for_nullifier(nullifier: &[u8; 32]) -> [u8; 32] {
-    let mut hasher = Sha256::new();
-    hasher.update(b"zidecar:nullifier:");
-    hasher.update(nullifier);
-    hasher.finalize().into()
-}
-
-/// nomt key for note commitment (domain-separated hash)
-fn key_for_note(cmx: &[u8; 32]) -> [u8; 32] {
-    let mut hasher = Sha256::new();
-    hasher.update(b"zidecar:note:");
-    hasher.update(cmx);
-    hasher.finalize().into()
-}
 
 // storage error wrapper
 impl From<String> for ZidecarError {

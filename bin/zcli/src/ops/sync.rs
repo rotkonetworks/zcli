@@ -169,8 +169,8 @@ async fn sync_inner(
         cross_verify(&client, &endpoints, tip, &tip_hash, activation).await?;
     }
 
-    // verify header chain proof (ligerito)
-    verify_header_proof(&client, tip).await?;
+    // verify header chain proof (ligerito) — returns proven NOMT roots
+    let proven_roots = verify_header_proof(&client, tip, mainnet).await?;
 
     eprintln!("tip={} start={}", tip, start);
 
@@ -222,6 +222,13 @@ async fn sync_inner(
     let mut received_cmxs: Vec<[u8; 32]> = Vec::new();
     let mut received_positions: Vec<u64> = Vec::new();
 
+    // collect notes in memory first; only persist after proof verification
+    let mut pending_notes: Vec<WalletNote> = Vec::new();
+    // collect nullifiers seen in actions to mark spent after verification
+    let mut seen_nullifiers: Vec<[u8; 32]> = Vec::new();
+    // running actions commitment chain for verifying block completeness
+    let mut running_actions_commitment = [0u8; 32];
+
     while current <= tip {
         let end = (current + BATCH_SIZE - 1).min(tip);
         let blocks = retry_compact_blocks(&client, current, end).await?;
@@ -270,7 +277,7 @@ async fn sync_inner(
                         txid: action.txid.clone(),
                         memo: None,
                     };
-                    wallet.insert_note(&wallet_note)?;
+                    pending_notes.push(wallet_note);
                     found_total += 1;
                     received_cmxs.push(action.cmx);
                     received_positions.push(position_counter);
@@ -286,16 +293,27 @@ async fn sync_inner(
                     }
                 }
 
-                // check if this action's nullifier spends one of our notes
-                wallet.mark_spent(&action.nullifier).ok();
+                // collect nullifiers for marking spent after verification
+                seen_nullifiers.push(action.nullifier);
 
                 position_counter += 1;
             }
+
+            // compute per-block actions_root and update running commitment chain
+            let action_tuples: Vec<([u8; 32], [u8; 32], [u8; 32])> = block
+                .actions
+                .iter()
+                .map(|a| (a.cmx, a.nullifier, a.ephemeral_key))
+                .collect();
+            let actions_root = zync_core::actions::compute_actions_root(&action_tuples);
+            running_actions_commitment = zync_core::actions::update_actions_commitment(
+                &running_actions_commitment,
+                &actions_root,
+                block.height,
+            );
         }
 
         current = end + 1;
-        wallet.set_sync_height(end)?;
-        wallet.set_orchard_position(position_counter)?;
 
         if let Some(ref pb) = pb {
             pb.set_position((current - start) as u64);
@@ -306,13 +324,36 @@ async fn sync_inner(
         pb.finish_and_clear();
     }
 
-    // verify commitment proofs (NOMT) for received notes
-    if !received_cmxs.is_empty() {
-        verify_commitments(&client, &received_cmxs, &received_positions, tip).await?;
+    // verify actions commitment chain against proven value
+    // (only if proof includes actions commitment — zeros means old proof format)
+    if proven_roots.actions_commitment != [0u8; 32] {
+        if running_actions_commitment != proven_roots.actions_commitment {
+            return Err(Error::Other(format!(
+                "actions commitment mismatch: server tampered with block actions (computed={} proven={})",
+                hex::encode(&running_actions_commitment[..8]),
+                hex::encode(&proven_roots.actions_commitment[..8]),
+            )));
+        }
+        eprintln!("actions commitment verified: {}...", hex::encode(&running_actions_commitment[..8]));
     }
 
+    // verify commitment proofs (NOMT) for received notes BEFORE storing
+    if !received_cmxs.is_empty() {
+        verify_commitments(&client, &received_cmxs, &received_positions, tip, &proven_roots).await?;
+    }
+
+    // now that proofs are verified, persist notes to wallet
+    for note in &pending_notes {
+        wallet.insert_note(note)?;
+    }
+    for nf in &seen_nullifiers {
+        wallet.mark_spent(nf).ok();
+    }
+    wallet.set_sync_height(tip)?;
+    wallet.set_orchard_position(position_counter)?;
+
     // verify nullifier proofs (NOMT) for unspent notes
-    verify_nullifiers(&client, &wallet, tip).await?;
+    verify_nullifiers(&client, &wallet, tip, &proven_roots).await?;
 
     // fetch memos for newly found notes
     if !needs_memo.is_empty() {
@@ -382,11 +423,29 @@ fn try_decrypt(
 
     // try external scope
     if let Some((note, _)) = try_compact_note_decryption(&domain, ivk_ext, output) {
+        // Verify the note commitment matches what the server sent.
+        // A malicious server could craft ciphertexts that decrypt to fake notes
+        // with arbitrary values. Recomputing cmx from the decrypted note fields
+        // and comparing against the server-provided cmx detects this.
+        let recomputed = orchard::note::ExtractedNoteCommitment::from(note.commitment());
+        if recomputed.to_bytes() != output.cmx {
+            eprintln!(
+                "WARNING: cmx mismatch after decryption — server sent fake note, skipping"
+            );
+            return None;
+        }
         return Some(extract_note_data(fvk, &note, false));
     }
 
     // try internal scope (change/shielding)
     if let Some((note, _)) = try_compact_note_decryption(&domain, ivk_int, output) {
+        let recomputed = orchard::note::ExtractedNoteCommitment::from(note.commitment());
+        if recomputed.to_bytes() != output.cmx {
+            eprintln!(
+                "WARNING: cmx mismatch after decryption — server sent fake note, skipping"
+            );
+            return None;
+        }
         return Some(extract_note_data(fvk, &note, true));
     }
 
@@ -489,8 +548,9 @@ async fn cross_verify(
     let act_total = act_agree + act_disagree;
 
     if tip_total == 0 && act_total == 0 {
-        eprintln!("warning: no verify nodes responded, continuing unverified");
-        return Ok(());
+        return Err(Error::Other(
+            "cross-verification failed: no verify nodes responded".into(),
+        ));
     }
 
     // BFT majority: need >2/3 of responding nodes to agree
@@ -521,24 +581,29 @@ async fn cross_verify(
     Ok(())
 }
 
-async fn verify_header_proof(client: &ZidecarClient, tip: u32) -> Result<(), Error> {
+/// Proven NOMT roots extracted from the ligerito header proof.
+/// These are the roots that NOMT merkle proofs must verify against.
+#[derive(Clone, Debug, Default)]
+struct ProvenRoots {
+    tree_root: [u8; 32],
+    nullifier_root: [u8; 32],
+    actions_commitment: [u8; 32],
+}
+
+async fn verify_header_proof(
+    client: &ZidecarClient,
+    tip: u32,
+    mainnet: bool,
+) -> Result<ProvenRoots, Error> {
     eprintln!("verifying header proof...");
-    let (proof_bytes, proof_from, proof_to) = match client.get_header_proof().await {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("warning: could not get header proof: {}", e);
-            eprintln!("continuing without header proof verification");
-            return Ok(());
-        }
-    };
-    let result = match zync_core::verifier::verify_proofs_full(&proof_bytes) {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("warning: proof not ready: {}", e);
-            eprintln!("continuing without header proof verification");
-            return Ok(());
-        }
-    };
+    let (proof_bytes, proof_from, proof_to) = client
+        .get_header_proof()
+        .await
+        .map_err(|e| Error::Other(format!("header proof fetch failed: {}", e)))?;
+
+    let result = zync_core::verifier::verify_proofs_full(&proof_bytes)
+        .map_err(|e| Error::Other(format!("header proof verification failed: {}", e)))?;
+
     if !result.gigaproof_valid {
         return Err(Error::Other("gigaproof invalid".into()));
     }
@@ -548,20 +613,48 @@ async fn verify_header_proof(client: &ZidecarClient, tip: u32) -> Result<(), Err
     if !result.continuous {
         return Err(Error::Other("proof chain discontinuous".into()));
     }
-    // bind proven range to our sync tip
-    if let Some(ref tip_out) = result.tip_outputs {
-        if tip_out.end_height < tip {
-            eprintln!(
-                "warning: header proof covers up to {} but tip is {}",
-                tip_out.end_height, tip,
-            );
-        }
+
+    // verify gigaproof anchors to hardcoded activation block hash
+    if mainnet && result.giga_outputs.start_hash != ACTIVATION_HASH_MAINNET {
+        return Err(Error::Other(format!(
+            "gigaproof start_hash doesn't match activation anchor: got {}",
+            hex::encode(&result.giga_outputs.start_hash[..8]),
+        )));
     }
+
+    // extract proven roots from the most recent proof (tip > giga)
+    let outputs = result
+        .tip_outputs
+        .as_ref()
+        .unwrap_or(&result.giga_outputs);
+
+    // reject if proof is more than 1 epoch behind tip
+    if outputs.end_height + zync_core::EPOCH_SIZE < tip {
+        return Err(Error::Other(format!(
+            "header proof too stale: covers to {} but tip is {} (>{} blocks behind)",
+            outputs.end_height,
+            tip,
+            zync_core::EPOCH_SIZE,
+        )));
+    }
+
+    let proven = ProvenRoots {
+        tree_root: outputs.tip_tree_root,
+        nullifier_root: outputs.tip_nullifier_root,
+        actions_commitment: outputs.final_actions_commitment,
+    };
+
     eprintln!(
         "header proof valid ({}..{}) continuous=true",
         proof_from, proof_to
     );
-    Ok(())
+    eprintln!(
+        "  proven tree_root={}.. nullifier_root={}...",
+        hex::encode(&proven.tree_root[..8]),
+        hex::encode(&proven.nullifier_root[..8]),
+    );
+
+    Ok(proven)
 }
 
 async fn verify_commitments(
@@ -569,20 +662,46 @@ async fn verify_commitments(
     cmxs: &[[u8; 32]],
     positions: &[u64],
     tip: u32,
+    proven: &ProvenRoots,
 ) -> Result<(), Error> {
     eprintln!("verifying {} commitment proofs...", cmxs.len());
     let cmx_vecs: Vec<Vec<u8>> = cmxs.iter().map(|c| c.to_vec()).collect();
-    let (proofs, _root) = match client
+    let (proofs, root) = client
         .get_commitment_proofs(cmx_vecs, positions.to_vec(), tip)
         .await
-    {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("warning: could not get commitment proofs: {}", e);
-            return Ok(());
-        }
-    };
+        .map_err(|e| Error::Other(format!("commitment proof fetch failed: {}", e)))?;
+
+    // bind server-returned root to ligerito-proven root
+    if proven.tree_root != [0u8; 32] && root != proven.tree_root {
+        return Err(Error::Other(format!(
+            "commitment tree root mismatch: server={} proven={}",
+            hex::encode(root),
+            hex::encode(proven.tree_root),
+        )));
+    }
+
+    // verify proof count matches requested count
+    if proofs.len() != cmxs.len() {
+        return Err(Error::Other(format!(
+            "commitment proof count mismatch: requested {} but got {}",
+            cmxs.len(),
+            proofs.len(),
+        )));
+    }
+
+    // verify each returned proof's cmx matches one we requested
+    let cmx_set: std::collections::HashSet<[u8; 32]> = cmxs.iter().copied().collect();
     for proof in &proofs {
+        if !cmx_set.contains(&proof.cmx) {
+            return Err(Error::Other(format!(
+                "server returned commitment proof for unrequested cmx {}",
+                hex::encode(proof.cmx),
+            )));
+        }
+    }
+
+    for proof in &proofs {
+        // verify merkle path walks to the claimed root
         match proof.verify() {
             Ok(true) => {}
             Ok(false) => {
@@ -598,12 +717,25 @@ async fn verify_commitments(
                 )))
             }
         }
+
+        // verify proof root matches the proven root
+        if proven.tree_root != [0u8; 32] && proof.tree_root != proven.tree_root {
+            return Err(Error::Other(format!(
+                "commitment proof root mismatch for cmx {}",
+                hex::encode(proof.cmx),
+            )));
+        }
     }
-    eprintln!("all commitment proofs valid");
+    eprintln!("all {} commitment proofs cryptographically valid", proofs.len());
     Ok(())
 }
 
-async fn verify_nullifiers(client: &ZidecarClient, wallet: &Wallet, tip: u32) -> Result<(), Error> {
+async fn verify_nullifiers(
+    client: &ZidecarClient,
+    wallet: &Wallet,
+    tip: u32,
+    proven: &ProvenRoots,
+) -> Result<(), Error> {
     let (_, unspent_notes) = wallet.shielded_balance()?;
     if unspent_notes.is_empty() {
         return Ok(());
@@ -613,13 +745,40 @@ async fn verify_nullifiers(client: &ZidecarClient, wallet: &Wallet, tip: u32) ->
         unspent_notes.len()
     );
     let nf_vecs: Vec<Vec<u8>> = unspent_notes.iter().map(|n| n.nullifier.to_vec()).collect();
-    let (proofs, _root) = match client.get_nullifier_proofs(nf_vecs, tip).await {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("warning: could not get nullifier proofs: {}", e);
-            return Ok(());
+    let (proofs, root) = client
+        .get_nullifier_proofs(nf_vecs, tip)
+        .await
+        .map_err(|e| Error::Other(format!("nullifier proof fetch failed: {}", e)))?;
+
+    // bind server-returned root to ligerito-proven root
+    if proven.nullifier_root != [0u8; 32] && root != proven.nullifier_root {
+        return Err(Error::Other(format!(
+            "nullifier root mismatch: server={} proven={}",
+            hex::encode(root),
+            hex::encode(proven.nullifier_root),
+        )));
+    }
+
+    // verify proof count matches requested count
+    if proofs.len() != unspent_notes.len() {
+        return Err(Error::Other(format!(
+            "nullifier proof count mismatch: requested {} but got {}",
+            unspent_notes.len(),
+            proofs.len(),
+        )));
+    }
+
+    // verify each returned proof's nullifier matches one we requested
+    let nf_set: std::collections::HashSet<[u8; 32]> = unspent_notes.iter().map(|n| n.nullifier).collect();
+    for proof in &proofs {
+        if !nf_set.contains(&proof.nullifier) {
+            return Err(Error::Other(format!(
+                "server returned nullifier proof for unrequested nullifier {}",
+                hex::encode(proof.nullifier),
+            )));
         }
-    };
+    }
+
     for proof in &proofs {
         match proof.verify() {
             Ok(true) => {
@@ -644,8 +803,16 @@ async fn verify_nullifiers(client: &ZidecarClient, wallet: &Wallet, tip: u32) ->
                 )))
             }
         }
+
+        // verify proof root matches the proven root
+        if proven.nullifier_root != [0u8; 32] && proof.nullifier_root != proven.nullifier_root {
+            return Err(Error::Other(format!(
+                "nullifier proof root mismatch for {}",
+                hex::encode(proof.nullifier),
+            )));
+        }
     }
-    eprintln!("all nullifier proofs valid");
+    eprintln!("all {} nullifier proofs cryptographically valid", proofs.len());
     Ok(())
 }
 

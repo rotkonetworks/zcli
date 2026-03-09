@@ -31,6 +31,8 @@ pub struct ProofPublicOutputs {
     pub tip_tree_root: [u8; 32],
     /// Nullifier root (nomt) at proof's end height
     pub tip_nullifier_root: [u8; 32],
+    /// Final actions commitment (running chain, zeros until populated)
+    pub final_actions_commitment: [u8; 32],
 }
 
 /// result of proof verification

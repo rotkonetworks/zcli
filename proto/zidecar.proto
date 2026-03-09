@@ -44,13 +44,19 @@ service Zidecar {
     // This is the main endpoint for secure sync - proves entire chain state
     rpc GetTrustlessStateProof(ProofRequest) returns (TrustlessStateProof);
 
-    // Get NOMT inclusion proof for a note commitment
+    // Get NOMT inclusion proof for a single note commitment
     // Proves: cmx is in the commitment tree at position
     rpc GetCommitmentProof(CommitmentQuery) returns (CommitmentProof);
 
-    // Get NOMT proof for nullifier status
+    // Get NOMT proofs for a batch of note commitments
+    rpc GetCommitmentProofs(GetCommitmentProofsRequest) returns (GetCommitmentProofsResponse);
+
+    // Get NOMT proof for a single nullifier status
     // Proves: nullifier is/isn't in nullifier set
     rpc GetNullifierProof(NullifierQuery) returns (NullifierProof);
+
+    // Get NOMT proofs for a batch of nullifiers
+    rpc GetNullifierProofs(GetNullifierProofsRequest) returns (GetNullifierProofsResponse);
 
     // Get compact blocks with integrity binding
     // Each block includes merkle path proving data matches header
@@ -152,6 +158,7 @@ message CompactBlock {
     uint32 height = 1;
     bytes hash = 2;
     repeated CompactAction actions = 3;
+    bytes actions_root = 4;             // precomputed merkle root over actions
 }
 
 // Compact Orchard action for trial decryption
@@ -336,12 +343,17 @@ message CommitmentProof {
     bytes tree_root = 3;        // tree root this proves against
     uint32 height = 4;          // block height of tree root
 
-    // NOMT merkle proof path
+    // NOMT merkle proof path [legacy -- use path_proof_raw]
     repeated bytes proof_path = 5;      // sibling hashes
     repeated bool proof_indices = 6;    // left/right indicators
 
     // Whether commitment exists in tree
     bool exists = 7;
+
+    // serialized nomt_core::proof::PathProof (bincode)
+    bytes path_proof_raw = 8;
+    // Blake3 hash of the stored value (for confirm_value)
+    bytes value_hash = 9;
 }
 
 // Query for nullifier proof
@@ -356,12 +368,17 @@ message NullifierProof {
     bytes nullifier_root = 2;       // nullifier set root
     uint32 height = 3;              // block height
 
-    // NOMT sparse merkle proof
+    // NOMT sparse merkle proof [legacy -- use path_proof_raw]
     repeated bytes proof_path = 4;
     repeated bool proof_indices = 5;
 
     // Whether nullifier is spent
     bool is_spent = 6;
+
+    // serialized nomt_core::proof::PathProof (bincode)
+    bytes path_proof_raw = 7;
+    // Blake3 hash of the stored value (for confirm_value)
+    bytes value_hash = 8;
 }
 
 // Verified compact block with integrity proof
@@ -378,6 +395,33 @@ message VerifiedBlock {
     // Optional: state after this block
     bytes tree_root_after = 6;      // commitment tree root after block
     bytes nullifier_root_after = 7; // nullifier set root after block
+}
+
+// ===== BATCH QUERY MESSAGES =====
+
+// Request commitment proofs for a batch of cmxs
+message GetCommitmentProofsRequest {
+    repeated bytes cmxs = 1;        // 32 bytes each
+    repeated uint64 positions = 2;
+    uint32 height = 3;              // tree root at this height
+}
+
+// Batch commitment proof response
+message GetCommitmentProofsResponse {
+    repeated CommitmentProof proofs = 1;
+    bytes tree_root = 2;            // 32 bytes - the root all proofs are against
+}
+
+// Request nullifier proofs for a batch of nullifiers
+message GetNullifierProofsRequest {
+    repeated bytes nullifiers = 1;  // 32 bytes each
+    uint32 height = 2;              // nullifier root at this height
+}
+
+// Batch nullifier proof response
+message GetNullifierProofsResponse {
+    repeated NullifierProof proofs = 1;
+    bytes nullifier_root = 2;       // 32 bytes - the root all proofs are against
 }
 
 // ===== EPOCH BOUNDARY MESSAGES =====

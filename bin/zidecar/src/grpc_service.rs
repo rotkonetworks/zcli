@@ -18,6 +18,10 @@ use crate::{
         CommitmentProof,
         CommitmentQuery,
         CompactAction as ProtoCompactAction,
+        GetCommitmentProofsRequest,
+        GetCommitmentProofsResponse,
+        GetNullifierProofsRequest,
+        GetNullifierProofsResponse,
         CompactBlock as ProtoCompactBlock,
         Empty,
         // epoch boundary types
@@ -221,6 +225,7 @@ impl Zidecar for ZidecarService {
         let (tx, rx) = tokio::sync::mpsc::channel(128);
 
         let zebrad = self.zebrad.clone();
+        let storage = self.storage.clone();
         let start = range.start_height;
         let end = range.end_height;
 
@@ -228,6 +233,32 @@ impl Zidecar for ZidecarService {
             for height in start..=end {
                 match InternalCompactBlock::from_zebrad(&zebrad, height).await {
                     Ok(block) => {
+                        // Compute actions_root using zync_core canonical function
+                        let actions_tuples: Vec<([u8; 32], [u8; 32], [u8; 32])> = block
+                            .actions
+                            .iter()
+                            .filter_map(|a| {
+                                if a.cmx.len() == 32 && a.nullifier.len() == 32 && a.ephemeral_key.len() == 32 {
+                                    let mut cmx = [0u8; 32];
+                                    let mut nf = [0u8; 32];
+                                    let mut epk = [0u8; 32];
+                                    cmx.copy_from_slice(&a.cmx);
+                                    nf.copy_from_slice(&a.nullifier);
+                                    epk.copy_from_slice(&a.ephemeral_key);
+                                    Some((cmx, nf, epk))
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect();
+
+                        let actions_root = zync_core::actions::compute_actions_root(&actions_tuples);
+
+                        // Store for use by encode_trace sentinel computation
+                        if let Err(e) = storage.store_actions_root(height, actions_root) {
+                            warn!("failed to store actions_root for height {}: {}", height, e);
+                        }
+
                         let proto_block = ProtoCompactBlock {
                             height: block.height,
                             hash: block.hash,
@@ -242,6 +273,7 @@ impl Zidecar for ZidecarService {
                                     txid: a.txid,
                                 })
                                 .collect(),
+                            actions_root: actions_root.to_vec(),
                         };
 
                         if tx.send(Ok(proto_block)).await.is_err() {
@@ -725,6 +757,8 @@ impl Zidecar for ZidecarService {
             proof_path: proof.path.iter().map(|p| p.to_vec()).collect(),
             proof_indices: proof.indices,
             exists: proof.exists,
+            path_proof_raw: proof.path_proof_raw,
+            value_hash: proof.value_hash.to_vec(),
         }))
     }
 
@@ -762,6 +796,82 @@ impl Zidecar for ZidecarService {
             proof_path: proof.path.iter().map(|p| p.to_vec()).collect(),
             proof_indices: proof.indices,
             is_spent: proof.exists,
+            path_proof_raw: proof.path_proof_raw,
+            value_hash: proof.value_hash.to_vec(),
+        }))
+    }
+
+    async fn get_commitment_proofs(
+        &self,
+        request: Request<GetCommitmentProofsRequest>,
+    ) -> std::result::Result<Response<GetCommitmentProofsResponse>, Status> {
+        let req = request.into_inner();
+
+        info!(
+            "batch commitment proofs request: {} cmxs at height {}",
+            req.cmxs.len(),
+            req.height
+        );
+
+        let mut proofs = Vec::with_capacity(req.cmxs.len());
+        let mut tree_root = Vec::new();
+
+        for cmx_bytes in &req.cmxs {
+            let query = CommitmentQuery {
+                cmx: cmx_bytes.clone(),
+                at_height: req.height,
+            };
+            let resp = self
+                .get_commitment_proof(Request::new(query))
+                .await?
+                .into_inner();
+
+            if tree_root.is_empty() {
+                tree_root = resp.tree_root.clone();
+            }
+            proofs.push(resp);
+        }
+
+        Ok(Response::new(GetCommitmentProofsResponse {
+            proofs,
+            tree_root,
+        }))
+    }
+
+    async fn get_nullifier_proofs(
+        &self,
+        request: Request<GetNullifierProofsRequest>,
+    ) -> std::result::Result<Response<GetNullifierProofsResponse>, Status> {
+        let req = request.into_inner();
+
+        info!(
+            "batch nullifier proofs request: {} nullifiers at height {}",
+            req.nullifiers.len(),
+            req.height
+        );
+
+        let mut proofs = Vec::with_capacity(req.nullifiers.len());
+        let mut nullifier_root = Vec::new();
+
+        for nf_bytes in &req.nullifiers {
+            let query = NullifierQuery {
+                nullifier: nf_bytes.clone(),
+                at_height: req.height,
+            };
+            let resp = self
+                .get_nullifier_proof(Request::new(query))
+                .await?
+                .into_inner();
+
+            if nullifier_root.is_empty() {
+                nullifier_root = resp.nullifier_root.clone();
+            }
+            proofs.push(resp);
+        }
+
+        Ok(Response::new(GetNullifierProofsResponse {
+            proofs,
+            nullifier_root,
         }))
     }
 

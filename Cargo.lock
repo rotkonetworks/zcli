@@ -3140,6 +3140,7 @@ dependencies = [
  "nomt-core",
  "parking_lot 0.12.5",
  "rand 0.8.5",
+ "serde",
  "slab",
  "thread_local",
  "threadpool",
@@ -7269,6 +7270,7 @@ version = "0.3.0"
 dependencies = [
  "anyhow",
  "bincode",
+ "bitvec",
  "blake2",
  "console_error_panic_hook",
  "getrandom 0.2.17",
@@ -7276,6 +7278,7 @@ dependencies = [
  "js-sys",
  "ligerito",
  "ligerito-binary-fields",
+ "nomt-core",
  "orchard 0.7.1",
  "pasta_curves",
  "prost",

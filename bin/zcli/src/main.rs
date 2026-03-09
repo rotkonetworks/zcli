@@ -125,6 +125,7 @@ async fn run(cli: &Cli) -> Result<(), Error> {
             let seed = load_seed(cli)?;
             cmd_board(cli, &seed, mainnet, *port, *interval, dir.as_deref()).await
         }
+        Command::Verify => cmd_verify(cli, mainnet).await,
         Command::TreeInfo { height } => cmd_tree_info(cli, *height).await,
         Command::Export => {
             if load_fvk(cli, mainnet).is_some() {
@@ -341,6 +342,118 @@ async fn cmd_sync(
         println!("{}", serde_json::json!({ "notes_found": found }));
     }
 
+    Ok(())
+}
+
+async fn cmd_verify(cli: &Cli, mainnet: bool) -> Result<(), Error> {
+    let zidecar = client::ZidecarClient::connect(&cli.endpoint).await?;
+    let (tip, tip_hash) = zidecar.get_tip().await?;
+
+    eprintln!("=== zcli verify ===");
+    eprintln!("endpoint: {}", cli.endpoint);
+    eprintln!("tip: {} hash: {}...", tip, hex::encode(&tip_hash[..8]));
+
+    // 1. verify activation block hash (mainnet only)
+    if mainnet {
+        let activation = 1_687_104u32;
+        let blocks = zidecar.get_compact_blocks(activation, activation).await?;
+        let expected: [u8; 32] = [
+            0x00, 0x00, 0x00, 0x00, 0x00, 0xd7, 0x23, 0x15, 0x6d, 0x9b, 0x65, 0xff, 0xcf, 0x49,
+            0x84, 0xda, 0x7a, 0x19, 0x67, 0x5e, 0xd7, 0xe2, 0xf0, 0x6d, 0x9e, 0x5d, 0x51, 0x88,
+            0xaf, 0x08, 0x7b, 0xf8,
+        ];
+        if !blocks.is_empty() && blocks[0].hash == expected {
+            eprintln!("[OK] activation block hash matches hardcoded anchor");
+        } else {
+            return Err(Error::Other("activation block hash mismatch".into()));
+        }
+    }
+
+    // 2. cross-verify tip against lightwalletd
+    let endpoints: Vec<&str> = cli
+        .verify_endpoints
+        .split(',')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if !endpoints.is_empty() {
+        eprintln!("cross-verifying tip against {} lightwalletd node(s)...", endpoints.len());
+        let lwd = client::LightwalletdClient::connect(&endpoints[0]).await?;
+        match lwd.get_block(tip as u64).await {
+            Ok((_, hash, _)) => {
+                if hash == tip_hash {
+                    eprintln!("[OK] tip hash matches lightwalletd");
+                } else {
+                    eprintln!("[WARN] tip hash mismatch with lightwalletd");
+                }
+            }
+            Err(e) => eprintln!("[WARN] lightwalletd unreachable: {}", e),
+        }
+    } else {
+        eprintln!("[SKIP] no lightwalletd endpoints configured");
+    }
+
+    // 3. verify header chain proof (ligerito)
+    eprintln!("fetching header proof...");
+    let (proof_bytes, proof_from, proof_to) = zidecar.get_header_proof().await?;
+    eprintln!("proof covers blocks {}..{} ({} bytes)", proof_from, proof_to, proof_bytes.len());
+
+    let result = zync_core::verifier::verify_proofs_full(&proof_bytes)
+        .map_err(|e| Error::Other(format!("proof verification failed: {}", e)))?;
+
+    if result.gigaproof_valid {
+        eprintln!("[OK] gigaproof valid");
+    } else {
+        return Err(Error::Other("gigaproof INVALID".into()));
+    }
+    if result.tip_valid {
+        eprintln!("[OK] tip proof valid");
+    } else {
+        return Err(Error::Other("tip proof INVALID".into()));
+    }
+    if result.continuous {
+        eprintln!("[OK] proof chain continuous");
+    } else {
+        return Err(Error::Other("proof chain DISCONTINUOUS".into()));
+    }
+
+    let outputs = result.tip_outputs.as_ref().unwrap_or(&result.giga_outputs);
+    eprintln!("  start_height:  {}", outputs.start_height);
+    eprintln!("  end_height:    {}", outputs.end_height);
+    eprintln!("  tip_hash:      {}...", hex::encode(&outputs.tip_hash[..8]));
+    eprintln!("  tree_root:     {}...", hex::encode(&outputs.tip_tree_root[..8]));
+    eprintln!("  nullifier_root:{}...", hex::encode(&outputs.tip_nullifier_root[..8]));
+    eprintln!(
+        "  actions_commit:{}...",
+        hex::encode(&outputs.final_actions_commitment[..8])
+    );
+
+    let staleness = tip.saturating_sub(outputs.end_height);
+    if staleness > zync_core::EPOCH_SIZE {
+        eprintln!("[WARN] proof is {} blocks behind tip (>1 epoch)", staleness);
+    } else {
+        eprintln!("[OK] proof freshness: {} blocks behind tip", staleness);
+    }
+
+    if cli.json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "tip": tip,
+                "proof_from": proof_from,
+                "proof_to": proof_to,
+                "gigaproof_valid": result.gigaproof_valid,
+                "tip_valid": result.tip_valid,
+                "continuous": result.continuous,
+                "tree_root": hex::encode(outputs.tip_tree_root),
+                "nullifier_root": hex::encode(outputs.tip_nullifier_root),
+                "actions_commitment": hex::encode(outputs.final_actions_commitment),
+                "staleness_blocks": staleness,
+            })
+        );
+    }
+
+    eprintln!("\n=== verification complete ===");
     Ok(())
 }
 

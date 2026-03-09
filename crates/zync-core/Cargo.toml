@@ -40,6 +40,10 @@ anyhow = "1.0"
 hex = "0.4"
 bincode = "1.3"
 
+# nomt merkle proof verification
+nomt-core = { version = "1.0", features = ["blake3-hasher", "serde"] }
+bitvec = "1"
+
 # zcash
 orchard = "0.7"
 zcash_note_encryption = "0.4"

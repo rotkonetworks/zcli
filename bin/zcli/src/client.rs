@@ -11,30 +11,29 @@
 
 use crate::error::Error;
 use prost::Message;
+use zync_core::nomt;
 
-// nomt proof types (previously in zync_core::trustless, now local)
-
-#[derive(Debug, Clone)]
-pub struct NomtProof {
-    pub key: [u8; 32],
-    pub root: [u8; 32],
-    pub exists: bool,
-    pub path: Vec<[u8; 32]>,
-    pub indices: Vec<bool>,
-}
+// re-export for callers that use these directly
+pub use zync_core::nomt::{key_for_note, key_for_nullifier};
 
 #[derive(Debug, Clone)]
 pub struct CommitmentProof {
     pub cmx: [u8; 32],
     pub position: u64,
     pub tree_root: [u8; 32],
-    pub proof: NomtProof,
+    pub path_proof_raw: Vec<u8>,
+    pub value_hash: [u8; 32],
 }
 
 impl CommitmentProof {
     pub fn verify(&self) -> Result<bool, Error> {
-        // proof path consistency: root matches and proof exists flag is set
-        Ok(self.proof.root == self.tree_root && self.proof.exists)
+        nomt::verify_commitment_proof(
+            &self.cmx,
+            self.tree_root,
+            &self.path_proof_raw,
+            self.value_hash,
+        )
+        .map_err(|e| Error::Other(e.to_string()))
     }
 }
 
@@ -43,12 +42,20 @@ pub struct NullifierProof {
     pub nullifier: [u8; 32],
     pub nullifier_root: [u8; 32],
     pub is_spent: bool,
-    pub proof: NomtProof,
+    pub path_proof_raw: Vec<u8>,
+    pub value_hash: [u8; 32],
 }
 
 impl NullifierProof {
     pub fn verify(&self) -> Result<bool, Error> {
-        Ok(self.proof.root == self.nullifier_root)
+        nomt::verify_nullifier_proof(
+            &self.nullifier,
+            self.nullifier_root,
+            self.is_spent,
+            &self.path_proof_raw,
+            self.value_hash,
+        )
+        .map_err(|e| Error::Other(e.to_string()))
     }
 }
 
@@ -77,6 +84,7 @@ pub struct CompactBlock {
     pub height: u32,
     pub hash: Vec<u8>,
     pub actions: Vec<CompactAction>,
+    pub actions_root: [u8; 32],
 }
 
 #[derive(Debug, Clone)]
@@ -108,43 +116,33 @@ fn bytes_to_32(b: &[u8]) -> Result<[u8; 32], Error> {
         .map_err(|_| Error::Network(format!("expected 32 bytes, got {}", b.len())))
 }
 
-fn proto_to_nomt_proof(p: zidecar_proto::NomtMerkleProof) -> Result<NomtProof, Error> {
-    Ok(NomtProof {
-        key: bytes_to_32(&p.key)?,
-        root: bytes_to_32(&p.root)?,
-        exists: p.exists,
-        path: p
-            .path
-            .iter()
-            .map(|b| bytes_to_32(b))
-            .collect::<Result<Vec<_>, _>>()?,
-        indices: p.indices,
-    })
-}
-
 fn proto_to_commitment_proof(
-    p: zidecar_proto::CommitmentProofMsg,
+    p: zidecar_proto::CommitmentProof,
 ) -> Result<CommitmentProof, Error> {
-    let nomt = p
-        .proof
-        .ok_or_else(|| Error::Network("missing commitment merkle proof".into()))?;
     Ok(CommitmentProof {
         cmx: bytes_to_32(&p.cmx)?,
         position: p.position,
         tree_root: bytes_to_32(&p.tree_root)?,
-        proof: proto_to_nomt_proof(nomt)?,
+        path_proof_raw: p.path_proof_raw,
+        value_hash: bytes_to_32(&p.value_hash)
+            .map_err(|_| Error::Other("missing value_hash in proof".into()))?,
     })
 }
 
-fn proto_to_nullifier_proof(p: zidecar_proto::NullifierProofMsg) -> Result<NullifierProof, Error> {
-    let nomt = p
-        .proof
-        .ok_or_else(|| Error::Network("missing nullifier merkle proof".into()))?;
+fn proto_to_nullifier_proof(p: zidecar_proto::NullifierProof) -> Result<NullifierProof, Error> {
+    // for non-existence proofs (is_spent=false), value_hash can legitimately be zeros
+    let value_hash = if !p.is_spent && p.value_hash.is_empty() {
+        [0u8; 32]
+    } else {
+        bytes_to_32(&p.value_hash)
+            .map_err(|_| Error::Other("missing value_hash in proof".into()))?
+    };
     Ok(NullifierProof {
         nullifier: bytes_to_32(&p.nullifier)?,
         nullifier_root: bytes_to_32(&p.nullifier_root)?,
         is_spent: p.is_spent,
-        proof: proto_to_nomt_proof(nomt)?,
+        path_proof_raw: p.path_proof_raw,
+        value_hash,
     })
 }
 
@@ -426,10 +424,19 @@ impl ZidecarClient {
                     })
                     .collect();
 
+                let actions_root = if block.actions_root.len() == 32 {
+                    let mut ar = [0u8; 32];
+                    ar.copy_from_slice(&block.actions_root);
+                    ar
+                } else {
+                    [0u8; 32]
+                };
+
                 CompactBlock {
                     height: block.height,
                     hash: block.hash,
                     actions,
+                    actions_root,
                 }
             })
             .collect())

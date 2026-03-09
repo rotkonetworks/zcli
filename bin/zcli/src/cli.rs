@@ -200,6 +200,9 @@ pub enum Command {
         hex: Option<String>,
     },
 
+    /// verify proofs: header chain, commitment proofs, nullifier proofs
+    Verify,
+
     /// show orchard tree info at a height (for --position)
     TreeInfo {
         /// block height

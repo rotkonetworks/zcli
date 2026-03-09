@@ -113,6 +113,14 @@ impl Scanner {
         // trial decrypt
         let (note, recipient) = try_compact_note_decryption(&domain, &self.prepared_ivk, &compact)?;
 
+        // Verify note commitment: recompute cmx from decrypted note fields and check
+        // it matches the cmx the server sent. Without this, a malicious server can
+        // craft ciphertexts that decrypt to fake notes with arbitrary values.
+        let recomputed = ExtractedNoteCommitment::from(note.commitment());
+        if recomputed.to_bytes() != action.cmx {
+            return None;
+        }
+
         Some(DecryptedNote {
             value: note.value().inner(),
             note,

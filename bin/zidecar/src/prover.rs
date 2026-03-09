@@ -48,6 +48,8 @@ pub struct ProofPublicOutputs {
     pub tip_tree_root: [u8; 32],
     /// Nullifier root (nomt) at proof's end height
     pub tip_nullifier_root: [u8; 32],
+    /// Final actions commitment (running chain, zeros until populated)
+    pub final_actions_commitment: [u8; 32],
 }
 
 /// header chain proof with public outputs
@@ -120,9 +122,11 @@ impl HeaderChainProof {
     }
 
     /// Extract public outputs from the trace
-    /// These values are what the proof actually commits to
+    /// These values are what the proof actually commits to.
+    /// tip_tree_root, tip_nullifier_root, and final_actions_commitment are read
+    /// from the sentinel row in the committed trace (not self-reported struct fields).
     fn extract_public_outputs(trace: &HeaderChainTrace) -> Result<ProofPublicOutputs> {
-        use crate::header_chain::FIELDS_PER_HEADER;
+        use crate::header_chain::{FIELDS_PER_HEADER, TIP_SENTINEL_SIZE};
 
         if trace.num_headers == 0 {
             return Err(ZidecarError::ProofGeneration("empty trace".into()));
@@ -158,6 +162,29 @@ impl HeaderChainProof {
             tip_prev_hash[j * 4..(j + 1) * 4].copy_from_slice(&field_val.to_le_bytes());
         }
 
+        // Extract tip_tree_root, tip_nullifier_root, and final_actions_commitment
+        // from the sentinel row in the committed trace (cryptographically bound).
+        let sentinel_offset = trace.num_headers * FIELDS_PER_HEADER;
+
+        let mut tip_tree_root = [0u8; 32];
+        for j in 0..8 {
+            let field_val = trace.trace[sentinel_offset + j].poly().value();
+            tip_tree_root[j * 4..(j + 1) * 4].copy_from_slice(&field_val.to_le_bytes());
+        }
+
+        let mut tip_nullifier_root = [0u8; 32];
+        for j in 0..8 {
+            let field_val = trace.trace[sentinel_offset + 8 + j].poly().value();
+            tip_nullifier_root[j * 4..(j + 1) * 4].copy_from_slice(&field_val.to_le_bytes());
+        }
+
+        let mut final_actions_commitment = [0u8; 32];
+        for j in 0..8 {
+            let field_val = trace.trace[sentinel_offset + 16 + j].poly().value();
+            final_actions_commitment[j * 4..(j + 1) * 4]
+                .copy_from_slice(&field_val.to_le_bytes());
+        }
+
         Ok(ProofPublicOutputs {
             start_height: trace.start_height,
             end_height: trace.end_height,
@@ -169,8 +196,9 @@ impl HeaderChainProof {
             final_commitment: trace.final_commitment,
             final_state_commitment: trace.final_state_commitment,
             num_headers: trace.num_headers as u32,
-            tip_tree_root: trace.tip_tree_root,
-            tip_nullifier_root: trace.tip_nullifier_root,
+            tip_tree_root,
+            tip_nullifier_root,
+            final_actions_commitment,
         })
     }
 

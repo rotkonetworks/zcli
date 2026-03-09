@@ -10,7 +10,9 @@
 #![allow(unused_imports)]
 #![allow(unused_variables)]
 
+pub mod actions;
 pub mod error;
+pub mod nomt;
 pub mod scanner;
 pub mod verifier;
 
