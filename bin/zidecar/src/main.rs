@@ -15,12 +15,13 @@ mod epoch;
 mod error;
 mod grpc_service;
 mod header_chain;
+mod lwd_service;
 mod prover;
 mod storage;
 mod witness;
 mod zebrad;
 
-use crate::{epoch::EpochManager, grpc_service::ZidecarService};
+use crate::{epoch::EpochManager, grpc_service::ZidecarService, lwd_service::LwdService};
 use std::sync::Arc;
 
 #[derive(Parser, Debug)]
@@ -159,29 +160,33 @@ async fn main() -> Result<()> {
     info!("  tip proof generator: running (1s real-time)");
     info!("  nullifier sync: running (indexes shielded spends)");
 
-    // create gRPC service
+    // create gRPC services
+    let lwd = LwdService::new(zebrad.clone(), storage_arc.clone(), args.testnet);
     let service = ZidecarService::new(zebrad, storage_arc, epoch_manager, args.start_height);
 
     info!("starting gRPC server on {}", args.listen);
     info!("gRPC-web enabled for browser clients");
-
-    // build gRPC service
-    let grpc_service = zidecar::zidecar_server::ZidecarServer::new(service);
-
-    // wrap with gRPC-web + CORS support for browser clients
-    // tonic_web::enable() handles CORS and protocol translation
-    let grpc_web_service = tonic_web::enable(grpc_service);
+    info!("lightwalletd CompactTxStreamer compatibility: enabled");
 
     Server::builder()
         .accept_http1(true) // required for gRPC-web
-        .add_service(grpc_web_service)
+        .add_service(tonic_web::enable(
+            lightwalletd::compact_tx_streamer_server::CompactTxStreamerServer::new(lwd),
+        ))
+        .add_service(tonic_web::enable(
+            zidecar::zidecar_server::ZidecarServer::new(service),
+        ))
         .serve(args.listen)
         .await?;
 
     Ok(())
 }
 
-// generated proto module
+// generated proto modules
 pub mod zidecar {
     tonic::include_proto!("zidecar.v1");
+}
+
+pub mod lightwalletd {
+    tonic::include_proto!("cash.z.wallet.sdk.rpc");
 }
