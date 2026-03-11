@@ -12,7 +12,7 @@
 
 use crate::error::{Result, ZidecarError};
 use crate::header_chain::HeaderChainTrace;
-use ligerito::transcript::FiatShamir;
+use ligerito::transcript::{FiatShamir, Transcript};
 use ligerito::{data_structures::FinalizedLigeritoProof, prove_with_transcript, ProverConfig};
 use ligerito_binary_fields::{BinaryElem128, BinaryElem32, BinaryFieldElement};
 use serde::{Deserialize, Serialize};
@@ -91,7 +91,14 @@ impl HeaderChainProof {
 
         // use SHA256 transcript for browser WASM verification
         // (blake2b requires extra WASM feature, sha256 is always available)
-        let transcript = FiatShamir::new_sha256(0);
+        let mut transcript = FiatShamir::new_sha256(0);
+
+        // Bind public outputs to Fiat-Shamir transcript BEFORE proving.
+        // This ensures challenges depend on the claimed outputs — swapping
+        // outputs after proving invalidates the proof.
+        let public_bytes = bincode::serialize(&public_outputs)
+            .map_err(|e| ZidecarError::Serialization(format!("bincode public outputs: {}", e)))?;
+        transcript.absorb_bytes(b"public_outputs", &public_bytes);
 
         // prove with ligerito using SHA256 transcript
         let proof = prove_with_transcript(config, &trace.trace, transcript)

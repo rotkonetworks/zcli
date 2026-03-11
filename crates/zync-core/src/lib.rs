@@ -41,6 +41,12 @@ pub const MAX_ACTIONS_PER_BLOCK: usize = 512;
 /// fields encoded per action in trace polynomial
 pub const FIELDS_PER_ACTION: usize = 8;
 
+/// fields encoded per block header in trace polynomial
+pub const FIELDS_PER_HEADER: usize = 32;
+
+/// sentinel row size appended after all headers in trace
+pub const TIP_SENTINEL_SIZE: usize = 24;
+
 /// polynomial size exponent for tip proofs (2^20 config, max ~32K headers)
 pub const TIP_TRACE_LOG_SIZE: usize = 20;
 

@@ -5,9 +5,12 @@
 //! where each full proof is:
 //!   [public_outputs_len: u32][public_outputs (bincode)][log_size: u8][ligerito_proof (bincode)]
 
-use crate::verifier_config_for_log_size;
+use crate::{verifier_config_for_log_size, FIELDS_PER_HEADER, TIP_SENTINEL_SIZE};
 use anyhow::Result;
-use ligerito::{transcript::FiatShamir, verify_with_transcript, FinalizedLigeritoProof};
+use ligerito::{
+    transcript::{FiatShamir, Transcript},
+    verify_with_transcript, FinalizedLigeritoProof,
+};
 use ligerito_binary_fields::{BinaryElem128, BinaryElem32};
 use serde::{Deserialize, Serialize};
 
@@ -74,10 +77,33 @@ fn deserialize_proof(
 }
 
 /// verify a single raw proof (sha256 transcript to match prover)
-fn verify_single(proof_bytes: &[u8]) -> Result<bool> {
+/// public outputs are bound to the Fiat-Shamir transcript before verification,
+/// so swapping outputs after proving invalidates the proof.
+fn verify_single(proof_bytes: &[u8], public_outputs: &ProofPublicOutputs) -> Result<bool> {
     let (proof, log_size) = deserialize_proof(proof_bytes)?;
+
+    // validate log_size against num_headers to prevent config downgrade attacks
+    let expected_trace_elements =
+        (public_outputs.num_headers as usize) * FIELDS_PER_HEADER + TIP_SENTINEL_SIZE;
+    let expected_padded = expected_trace_elements.next_power_of_two();
+    let expected_log_size = expected_padded.trailing_zeros() as u8;
+    if log_size != expected_log_size {
+        anyhow::bail!(
+            "log_size mismatch: proof claims {} but num_headers={} requires {}",
+            log_size,
+            public_outputs.num_headers,
+            expected_log_size,
+        );
+    }
+
     let config = verifier_config_for_log_size(log_size as u32);
-    let transcript = FiatShamir::new_sha256(0);
+    let mut transcript = FiatShamir::new_sha256(0);
+
+    // bind public outputs to transcript (must match prover)
+    let public_bytes = bincode::serialize(public_outputs)
+        .map_err(|e| anyhow::anyhow!("serialize public outputs: {}", e))?;
+    transcript.absorb_bytes(b"public_outputs", &public_bytes);
+
     verify_with_transcript(&config, &proof, transcript)
         .map_err(|e| anyhow::anyhow!("verification error: {}", e))
 }
@@ -129,12 +155,18 @@ pub fn verify_proofs_full(combined_proof: &[u8]) -> Result<VerifyResult> {
         (None, vec![])
     };
 
-    // verify both proofs in parallel
+    // verify both proofs in parallel (public outputs bound to transcript)
     let epoch_raw_clone = epoch_raw;
+    let epoch_outputs_clone = epoch_outputs.clone();
     let tip_raw_clone = tip_raw;
-    let epoch_handle = thread::spawn(move || verify_single(&epoch_raw_clone));
+    let tip_outputs_clone = tip_outputs.clone();
+    let epoch_handle =
+        thread::spawn(move || verify_single(&epoch_raw_clone, &epoch_outputs_clone));
     let tip_handle = if !tip_raw_clone.is_empty() {
-        Some(thread::spawn(move || verify_single(&tip_raw_clone)))
+        let tip_out = tip_outputs_clone.unwrap();
+        Some(thread::spawn(move || {
+            verify_single(&tip_raw_clone, &tip_out)
+        }))
     } else {
         None
     };
@@ -202,9 +234,9 @@ pub fn verify_proofs_full(combined_proof: &[u8]) -> Result<VerifyResult> {
         (None, vec![])
     };
 
-    let epoch_proof_valid = verify_single(&epoch_raw)?;
+    let epoch_proof_valid = verify_single(&epoch_raw, &epoch_outputs)?;
     let tip_valid = if !tip_raw.is_empty() {
-        verify_single(&tip_raw)?
+        verify_single(&tip_raw, tip_outputs.as_ref().unwrap())?
     } else {
         true
     };
@@ -224,8 +256,10 @@ pub fn verify_proofs_full(combined_proof: &[u8]) -> Result<VerifyResult> {
 }
 
 /// verify just tip proof (for incremental sync)
+/// tip_proof is a full proof: [public_outputs_len][public_outputs][log_size][proof]
 pub fn verify_tip(tip_proof: &[u8]) -> Result<bool> {
-    verify_single(tip_proof)
+    let (outputs, raw) = split_full_proof(tip_proof)?;
+    verify_single(&raw, &outputs)
 }
 
 #[cfg(test)]

@@ -817,11 +817,13 @@ async fn verify_nullifiers(
             }
         }
 
-        // verify proof root matches the proven root
-        if proven.nullifier_root != [0u8; 32] && proof.nullifier_root != proven.nullifier_root {
+        // verify proof root matches the proven root (no bypass for zero roots)
+        if proof.nullifier_root != proven.nullifier_root {
             return Err(Error::Other(format!(
-                "nullifier proof root mismatch for {}",
+                "nullifier proof root mismatch for {}: server={} proven={}",
                 hex::encode(proof.nullifier),
+                hex::encode(proof.nullifier_root),
+                hex::encode(proven.nullifier_root),
             )));
         }
     }

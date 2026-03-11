@@ -27,6 +27,9 @@ pub trait Transcript: Send + Sync {
     /// Absorb a single field element
     fn absorb_elem<F: BinaryFieldElement>(&mut self, elem: F);
 
+    /// Absorb raw bytes with a domain label (for binding public data)
+    fn absorb_bytes(&mut self, label: &[u8], data: &[u8]);
+
     /// Get a field element challenge
     fn get_challenge<F: BinaryFieldElement>(&mut self) -> F;
 
@@ -49,6 +52,9 @@ pub trait Transcript {
 
     /// Absorb a single field element
     fn absorb_elem<F: BinaryFieldElement>(&mut self, elem: F);
+
+    /// Absorb raw bytes with a domain label (for binding public data)
+    fn absorb_bytes(&mut self, label: &[u8], data: &[u8]);
 
     /// Get a field element challenge
     fn get_challenge<F: BinaryFieldElement>(&mut self) -> F;
@@ -193,6 +199,11 @@ impl Transcript for MerlinTranscript {
         result
     }
 
+    fn absorb_bytes(&mut self, _label: &[u8], data: &[u8]) {
+        // Merlin uses static labels; use a fixed label for public data binding
+        self.transcript.append_message(b"bound_data", data);
+    }
+
     fn get_query(&mut self, max: usize) -> usize {
         let mut bytes = [0u8; 8];
         self.transcript.challenge_bytes(b"query", &mut bytes);
@@ -226,6 +237,9 @@ pub struct Sha256Transcript {
     hasher: Sha256,
     counter: u32,
     julia_compatible: bool,
+    /// When true, absorb methods include type labels and length prefixes
+    /// to prevent message boundary confusion. Enabled by default.
+    domain_separated: bool,
 }
 
 impl Sha256Transcript {
@@ -237,7 +251,17 @@ impl Sha256Transcript {
             hasher,
             counter: 0,
             julia_compatible: false,
+            domain_separated: true,
         }
+    }
+
+    /// Create a raw transcript without domain separation labels.
+    /// Use this when you need plain SHA256(data) absorbs without type
+    /// tags or length prefixes (e.g. for third-party interop).
+    pub fn new_raw(seed: i32) -> Self {
+        let mut t = Self::new(seed);
+        t.domain_separated = false;
+        t
     }
 
     /// Create a Julia-compatible transcript (1-based queries)
@@ -279,6 +303,10 @@ impl Sha256Transcript {
 impl Transcript for Sha256Transcript {
     fn absorb_root(&mut self, root: &MerkleRoot) {
         if let Some(hash) = &root.root {
+            if self.domain_separated {
+                self.hasher.update(b"merkle_root");
+                self.hasher.update(&(hash.len() as u64).to_le_bytes());
+            }
             self.hasher.update(hash);
         }
     }
@@ -287,6 +315,10 @@ impl Transcript for Sha256Transcript {
         let bytes = unsafe {
             core::slice::from_raw_parts(elems.as_ptr() as *const u8, std::mem::size_of_val(elems))
         };
+        if self.domain_separated {
+            self.hasher.update(b"field_elements");
+            self.hasher.update(&(bytes.len() as u64).to_le_bytes());
+        }
         self.hasher.update(bytes);
     }
 
@@ -294,7 +326,17 @@ impl Transcript for Sha256Transcript {
         let bytes = unsafe {
             core::slice::from_raw_parts(&elem as *const F as *const u8, core::mem::size_of::<F>())
         };
+        if self.domain_separated {
+            self.hasher.update(b"field_element");
+            self.hasher.update(&(bytes.len() as u64).to_le_bytes());
+        }
         self.hasher.update(bytes);
+    }
+
+    fn absorb_bytes(&mut self, label: &[u8], data: &[u8]) {
+        self.hasher.update(label);
+        self.hasher.update(&(data.len() as u64).to_le_bytes());
+        self.hasher.update(data);
     }
 
     fn get_challenge<F: BinaryFieldElement>(&mut self) -> F {
@@ -493,6 +535,10 @@ impl Transcript for Blake2bTranscript {
         self.absorb(b"field_element", bytes);
     }
 
+    fn absorb_bytes(&mut self, label: &[u8], data: &[u8]) {
+        self.absorb(label, data);
+    }
+
     fn get_challenge<F: BinaryFieldElement>(&mut self) -> F {
         let bytes = self.squeeze(b"field_challenge");
         let field_bytes = core::mem::size_of::<F>();
@@ -637,10 +683,17 @@ impl FiatShamir {
         Self::new(TranscriptType::Merlin)
     }
 
-    /// Create SHA256 transcript (Julia-compatible with 1-based indexing)
+    /// Create SHA256 transcript with domain separation (recommended)
     pub fn new_sha256(seed: i32) -> Self {
-        // Always use Julia-compatible mode for SHA256 to match the Julia implementation
         let mut transcript = Sha256Transcript::new(seed);
+        transcript.julia_compatible = true;
+        FiatShamir::Sha256(transcript)
+    }
+
+    /// Create SHA256 transcript without domain separation labels.
+    /// For third-party interop where the verifier expects plain absorbs.
+    pub fn new_sha256_raw(seed: i32) -> Self {
+        let mut transcript = Sha256Transcript::new_raw(seed);
         transcript.julia_compatible = true;
         FiatShamir::Sha256(transcript)
     }
@@ -681,6 +734,16 @@ impl Transcript for FiatShamir {
             FiatShamir::Sha256(t) => t.absorb_elem(elem),
             #[cfg(feature = "transcript-blake2b")]
             FiatShamir::Blake2b(t) => t.absorb_elem(elem),
+        }
+    }
+
+    fn absorb_bytes(&mut self, label: &[u8], data: &[u8]) {
+        match self {
+            #[cfg(feature = "transcript-merlin")]
+            FiatShamir::Merlin(t) => t.absorb_bytes(label, data),
+            FiatShamir::Sha256(t) => t.absorb_bytes(label, data),
+            #[cfg(feature = "transcript-blake2b")]
+            FiatShamir::Blake2b(t) => t.absorb_bytes(label, data),
         }
     }
 
