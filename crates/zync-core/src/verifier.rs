@@ -83,16 +83,17 @@ fn verify_single(proof_bytes: &[u8], public_outputs: &ProofPublicOutputs) -> Res
     let (proof, log_size) = deserialize_proof(proof_bytes)?;
 
     // validate log_size against num_headers to prevent config downgrade attacks
+    // prover may use a larger fixed trace size (e.g. 2^20 for tip proofs), so allow >=
     let expected_trace_elements =
         (public_outputs.num_headers as usize) * FIELDS_PER_HEADER + TIP_SENTINEL_SIZE;
     let expected_padded = expected_trace_elements.next_power_of_two();
-    let expected_log_size = expected_padded.trailing_zeros() as u8;
-    if log_size != expected_log_size {
+    let min_log_size = expected_padded.trailing_zeros() as u8;
+    if log_size < min_log_size {
         anyhow::bail!(
-            "log_size mismatch: proof claims {} but num_headers={} requires {}",
+            "log_size too small: proof claims {} but num_headers={} requires at least {}",
             log_size,
             public_outputs.num_headers,
-            expected_log_size,
+            min_log_size,
         );
     }
 

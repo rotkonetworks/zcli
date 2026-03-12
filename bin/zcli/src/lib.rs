@@ -1,11 +1,19 @@
 pub mod address;
-#[cfg(target_os = "linux")]
-pub mod cam;
-pub mod client;
 pub mod error;
 pub mod key;
-pub mod ops;
-pub mod quic;
+pub mod pczt;
 pub mod tx;
+
+#[cfg(feature = "cli")]
+#[cfg(target_os = "linux")]
+pub mod cam;
+#[cfg(feature = "cli")]
+pub mod client;
+#[cfg(feature = "cli")]
+pub mod ops;
+#[cfg(feature = "cli")]
+pub mod quic;
+#[cfg(feature = "cli")]
 pub mod wallet;
+#[cfg(feature = "cli")]
 pub mod witness;

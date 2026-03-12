@@ -165,6 +165,15 @@ pub struct BlockchainInfo {
     pub blocks: u32,
     pub bestblockhash: String,
     pub difficulty: f64,
+    #[serde(default)]
+    pub consensus: Option<ConsensusInfo>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ConsensusInfo {
+    pub chaintip: String,
+    #[serde(default)]
+    pub nextblock: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

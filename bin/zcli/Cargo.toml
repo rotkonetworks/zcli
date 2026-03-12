@@ -15,16 +15,33 @@ path = "src/lib.rs"
 [[bin]]
 name = "zcli"
 path = "src/main.rs"
+required-features = ["cli"]
+
+[features]
+default = ["cli"]
+cli = [
+    "dep:clap",
+    "dep:ssh-key",
+    "dep:tokio",
+    "dep:reqwest",
+    "dep:tonic",
+    "dep:prost",
+    "dep:rpassword",
+    "dep:is-terminal",
+    "dep:indicatif",
+    "dep:qrcode",
+    "dep:sled",
+    "dep:quinn",
+    "dep:rustls",
+    "dep:rcgen",
+    "dep:ring",
+    "dep:urlencoding",
+    "dep:zync-core",
+    "dep:anyhow",
+]
 
 [dependencies]
-# cli
-clap = { version = "4", features = ["derive", "env"] }
-
-# ssh key loading
-ssh-key = { version = "0.6", features = ["encryption", "ed25519"] }
-
-# async runtime
-tokio = { version = "1", features = ["full"] }
+# -- always available (pure crypto, wasm-safe) --
 
 # bip39 mnemonic
 bip39 = { version = "2.0", features = ["rand"] }
@@ -53,21 +70,8 @@ ff = "0.13"
 blake2 = "0.10"
 blake2b_simd = "1.0"
 
-# gRPC-web client
-prost = "0.12"
-reqwest = { version = "0.12", features = ["rustls-tls", "http2"], default-features = false }
-
-# gRPC (build-time proto codegen)
-tonic = { version = "0.11", default-features = false, features = ["codegen", "prost"] }
-
-# terminal
-rpassword = "7"
-is-terminal = "0.4"
-indicatif = "0.17"
-qrcode = "0.14"
-
-# local wallet storage
-sled = "0.34"
+# UR (Uniform Resources) decoding for zigner QR interop
+ur = "0.4"
 
 # serialization
 serde = { version = "1.0", features = ["derive"] }
@@ -75,25 +79,32 @@ serde_json = "1.0"
 
 # error handling
 thiserror = "1.0"
-anyhow = "1.0"
-
-# proof verification
-zync-core = { version = "0.4.0", path = "../../crates/zync-core", default-features = false }
-
-# QUIC transport (exchange API)
-quinn = "0.11"
-rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
-rcgen = { version = "0.13", features = ["ring"] }
-ring = "0.17"
-
-# UR (Uniform Resources) decoding for zigner QR interop
-ur = "0.4"
 
 # misc
-urlencoding = "2"
 hex = "0.4"
 rand = "0.8"
 zeroize = { version = "1", features = ["zeroize_derive"] }
+
+# -- cli-only deps (not for wasm) --
+
+clap = { version = "4", features = ["derive", "env"], optional = true }
+ssh-key = { version = "0.6", features = ["encryption", "ed25519"], optional = true }
+tokio = { version = "1", features = ["full"], optional = true }
+prost = { version = "0.12", optional = true }
+reqwest = { version = "0.12", features = ["rustls-tls", "http2"], default-features = false, optional = true }
+tonic = { version = "0.11", default-features = false, features = ["codegen", "prost"], optional = true }
+rpassword = { version = "7", optional = true }
+is-terminal = { version = "0.4", optional = true }
+indicatif = { version = "0.17", optional = true }
+qrcode = { version = "0.14", optional = true }
+sled = { version = "0.34", optional = true }
+anyhow = { version = "1.0", optional = true }
+zync-core = { version = "0.4.0", path = "../../crates/zync-core", default-features = false, optional = true }
+quinn = { version = "0.11", optional = true }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"], optional = true }
+rcgen = { version = "0.13", features = ["ring"], optional = true }
+ring = { version = "0.17", optional = true }
+urlencoding = { version = "2", optional = true }
 
 [build-dependencies]
 tonic-build = "0.11"

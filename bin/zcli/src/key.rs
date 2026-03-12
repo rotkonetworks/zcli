@@ -1,4 +1,3 @@
-use blake2::{Blake2b512, Digest};
 use zeroize::Zeroize;
 
 use crate::error::Error;
@@ -24,7 +23,39 @@ impl Drop for WalletSeed {
     }
 }
 
+/// load wallet seed from bip39 mnemonic
+///
+/// derivation: mnemonic.to_seed("") → 64-byte seed (standard bip39)
+pub fn load_mnemonic_seed(phrase: &str) -> Result<WalletSeed, Error> {
+    let mnemonic = bip39::Mnemonic::parse(phrase)
+        .map_err(|e| Error::Key(format!("invalid mnemonic: {}", e)))?;
+
+    let seed = mnemonic.to_seed("");
+    let mut bytes = [0u8; 64];
+    bytes.copy_from_slice(&seed);
+    Ok(WalletSeed { bytes })
+}
+
+/// generate a new 24-word BIP-39 mnemonic
+pub fn generate_mnemonic() -> String {
+    let mnemonic = bip39::Mnemonic::generate(24).expect("valid word count");
+    mnemonic.to_string()
+}
+
+/// validate a BIP-39 mnemonic phrase, returns Ok(()) or error
+pub fn validate_mnemonic(phrase: &str) -> Result<(), Error> {
+    bip39::Mnemonic::parse(phrase)
+        .map_err(|e| Error::Key(format!("invalid mnemonic: {}", e)))?;
+    Ok(())
+}
+
+// -- SSH key functions (not available on wasm) --
+
+#[cfg(feature = "cli")]
+use blake2::{Blake2b512, Digest};
+
 /// parse an openssh ed25519 private key, returning (seed_32, pubkey_32)
+#[cfg(feature = "cli")]
 fn parse_ssh_ed25519(path: &str) -> Result<([u8; 32], [u8; 32]), Error> {
     let key_data = std::fs::read_to_string(path)
         .map_err(|e| Error::Key(format!("cannot read {}: {}", path, e)))?;
@@ -64,6 +95,7 @@ fn parse_ssh_ed25519(path: &str) -> Result<([u8; 32], [u8; 32]), Error> {
 /// load wallet seed from ed25519 ssh private key
 ///
 /// derivation: BLAKE2b-512("ZcliWalletSeed" || ed25519_seed_32bytes)
+#[cfg(feature = "cli")]
 pub fn load_ssh_seed(path: &str) -> Result<WalletSeed, Error> {
     let (seed32, _) = parse_ssh_ed25519(path)?;
 
@@ -78,11 +110,13 @@ pub fn load_ssh_seed(path: &str) -> Result<WalletSeed, Error> {
 }
 
 /// load raw ed25519 keypair from ssh key (for QUIC cert generation)
+#[cfg(feature = "cli")]
 pub fn load_ssh_ed25519_keypair(path: &str) -> Result<([u8; 32], [u8; 32]), Error> {
     parse_ssh_ed25519(path)
 }
 
 /// decrypt a .age file using an ssh identity key, return contents as string
+#[cfg(feature = "cli")]
 pub fn decrypt_age_file(age_path: &str, identity_path: &str) -> Result<String, Error> {
     let output = std::process::Command::new("age")
         .args(["-d", "-i", identity_path, age_path])
@@ -97,20 +131,8 @@ pub fn decrypt_age_file(age_path: &str, identity_path: &str) -> Result<String, E
         .map_err(|e| Error::Key(format!("age output not utf8: {}", e)))
 }
 
-/// load wallet seed from bip39 mnemonic
-///
-/// derivation: mnemonic.to_seed("") → 64-byte seed (standard bip39)
-pub fn load_mnemonic_seed(phrase: &str) -> Result<WalletSeed, Error> {
-    let mnemonic = bip39::Mnemonic::parse(phrase)
-        .map_err(|e| Error::Key(format!("invalid mnemonic: {}", e)))?;
-
-    let seed = mnemonic.to_seed("");
-    let mut bytes = [0u8; 64];
-    bytes.copy_from_slice(&seed);
-    Ok(WalletSeed { bytes })
-}
-
 /// prompt for ssh key passphrase if needed
+#[cfg(feature = "cli")]
 fn ssh_passphrase(key_data: &str) -> Result<Option<String>, Error> {
     // unencrypted keys don't have ENCRYPTED in the PEM header
     if !key_data.contains("ENCRYPTED") {

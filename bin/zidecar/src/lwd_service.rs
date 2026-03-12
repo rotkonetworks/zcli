@@ -12,8 +12,9 @@ use crate::{
 use crate::lightwalletd::{
     compact_tx_streamer_server::CompactTxStreamer,
     BlockId, BlockRange, ChainSpec, CompactBlock, CompactOrchardAction, CompactTx,
-    Empty, GetAddressUtxosArg, GetAddressUtxosReply, GetAddressUtxosReplyList, LightdInfo,
-    RawTransaction, SendResponse, TreeState, TxFilter,
+    Empty, GetAddressUtxosArg, GetAddressUtxosReply, GetAddressUtxosReplyList,
+    GetSubtreeRootsArg, LightdInfo, RawTransaction, SendResponse, SubtreeRoot,
+    TreeState, TxFilter,
 };
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -98,6 +99,7 @@ async fn prev_hash_for(zebrad: &ZebradClient, height: u32) -> Vec<u8> {
 impl CompactTxStreamer for LwdService {
     type GetBlockRangeStream = ReceiverStream<Result<CompactBlock, Status>>;
     type GetAddressUtxosStreamStream = ReceiverStream<Result<GetAddressUtxosReply, Status>>;
+    type GetSubtreeRootsStream = ReceiverStream<Result<SubtreeRoot, Status>>;
 
     async fn get_latest_block(
         &self,
@@ -260,6 +262,39 @@ impl CompactTxStreamer for LwdService {
         Ok(Response::new(ReceiverStream::new(rx)))
     }
 
+    async fn get_subtree_roots(
+        &self,
+        req: Request<GetSubtreeRootsArg>,
+    ) -> Result<Response<Self::GetSubtreeRootsStream>, Status> {
+        let arg = req.into_inner();
+        let pool = match arg.shielded_protocol() {
+            crate::lightwalletd::ShieldedProtocol::Sapling => "sapling",
+            crate::lightwalletd::ShieldedProtocol::Orchard => "orchard",
+        };
+
+        let limit = if arg.max_entries > 0 { Some(arg.max_entries) } else { None };
+
+        let response = self.zebrad.get_subtrees_by_index(pool, arg.start_index, limit).await
+            .map_err(|e| Status::internal(e.to_string()))?;
+
+        let (tx, rx) = mpsc::channel(32);
+        tokio::spawn(async move {
+            for subtree in response.subtrees {
+                let root_hash = hex::decode(&subtree.root).unwrap_or_default();
+                let root = SubtreeRoot {
+                    root_hash,
+                    completing_block_hash: vec![],
+                    completing_block_height: subtree.end_height as u64,
+                };
+                if tx.send(Ok(root)).await.is_err() {
+                    break;
+                }
+            }
+        });
+
+        Ok(Response::new(ReceiverStream::new(rx)))
+    }
+
     async fn get_lightd_info(
         &self,
         _: Request<Empty>,
@@ -275,7 +310,10 @@ impl CompactTxStreamer for LwdService {
             taddr_support: true,
             chain_name: self.chain_name().to_string(),
             sapling_activation_height: sapling_height,
-            consensus_branch_id: String::new(),
+            consensus_branch_id: info.consensus
+                .as_ref()
+                .map(|c| c.chaintip.clone())
+                .unwrap_or_default(),
             block_height: info.blocks as u64,
             git_commit: env!("CARGO_PKG_VERSION").to_string(),
             branch: "main".to_string(),

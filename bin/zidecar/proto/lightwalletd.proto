@@ -129,6 +129,26 @@ message TreeState {
 // Empty message
 message Empty {}
 
+// Shielded protocol enum for subtree queries
+enum ShieldedProtocol {
+    sapling = 0;
+    orchard = 1;
+}
+
+// Request for GetSubtreeRoots
+message GetSubtreeRootsArg {
+    uint32 startIndex = 1;
+    ShieldedProtocol shieldedProtocol = 2;
+    uint32 maxEntries = 3;
+}
+
+// Subtree root response
+message SubtreeRoot {
+    bytes rootHash = 2;
+    bytes completingBlockHash = 3;
+    uint64 completingBlockHeight = 4;
+}
+
 // Lightwalletd service definition
 service CompactTxStreamer {
     // Get latest block
@@ -157,6 +177,9 @@ service CompactTxStreamer {
 
     // Get lightwalletd info
     rpc GetLightdInfo(Empty) returns (LightdInfo);
+
+    // Get subtree roots for efficient syncing
+    rpc GetSubtreeRoots(GetSubtreeRootsArg) returns (stream SubtreeRoot);
 }
 
 // Chain specification

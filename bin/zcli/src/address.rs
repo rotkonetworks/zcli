@@ -132,6 +132,27 @@ pub fn derive_transparent_key(seed: &WalletSeed) -> Result<[u8; 32], Error> {
     derive_transparent_privkey(seed.as_bytes())
 }
 
+/// derive transparent private key from raw seed bytes at m/44'/133'/0'/0/0
+pub fn derive_transparent_key_from_seed(seed: &[u8]) -> Result<[u8; 32], Error> {
+    derive_transparent_privkey(seed)
+}
+
+/// derive transparent private key at m/44'/coin'/account'/0/index
+pub fn derive_transparent_privkey_at(
+    seed: &[u8],
+    coin_type: u32,
+    account: u32,
+    index: u32,
+) -> Result<[u8; 32], Error> {
+    let master = bip32_master_key(seed);
+    let c44 = bip32_derive_child(&master, 44, true)?;
+    let c_coin = bip32_derive_child(&c44, coin_type, true)?;
+    let c_acct = bip32_derive_child(&c_coin, account, true)?;
+    let c_change = bip32_derive_child(&c_acct, 0, false)?;
+    let c_index = bip32_derive_child(&c_change, index, false)?;
+    Ok(c_index.key)
+}
+
 /// derive transparent private key from seed at m/44'/133'/0'/0/0
 fn derive_transparent_privkey(seed: &[u8]) -> Result<[u8; 32], Error> {
     let master = bip32_master_key(seed);

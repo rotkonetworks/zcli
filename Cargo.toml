@@ -8,6 +8,7 @@ members = [
     "crates/ligerito-binary-fields",
     "crates/ligerito-merkle",
     "crates/ligerito-reed-solomon",
+    "crates/zcash-wasm",
 ]
 
 [workspace.package]
