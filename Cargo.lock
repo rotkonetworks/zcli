@@ -7367,7 +7367,7 @@ dependencies = [
 
 [[package]]
 name = "zecli"
-version = "0.5.3"
+version = "0.5.4"
 dependencies = [
  "anyhow",
  "bip39",
