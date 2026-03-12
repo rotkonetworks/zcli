@@ -310,7 +310,7 @@ impl ZidecarClient {
             .post(&url)
             .header("content-type", "application/grpc-web+proto")
             .header("x-grpc-web", "1")
-            .timeout(std::time::Duration::from_secs(120))
+            .timeout(std::time::Duration::from_secs(300))
             .body(body)
             .send()
             .await
@@ -325,20 +325,43 @@ impl ZidecarClient {
 
         check_grpc_status(&headers, &[])?;
 
-        // read full response body (grpc-web buffers server-stream in single response)
-        let bytes = resp
-            .bytes()
-            .await
-            .map_err(|e| Error::Network(format!("{}: read body: {}", method, e)))?;
+        // stream-decode grpc-web frames incrementally to avoid OOM on large responses
+        let mut messages = Vec::new();
+        let mut buf = Vec::new();
+        let mut stream = resp;
 
-        let frames = grpc_web_decode_stream(&bytes)?;
-        frames
-            .iter()
-            .map(|f| {
-                Resp::decode(f.as_slice())
-                    .map_err(|e| Error::Network(format!("{}: decode: {}", method, e)))
-            })
-            .collect()
+        loop {
+            match stream.chunk().await {
+                Ok(Some(chunk)) => {
+                    buf.extend_from_slice(&chunk);
+
+                    // parse complete frames from buffer
+                    while buf.len() >= 5 {
+                        let frame_type = buf[0];
+                        let len =
+                            u32::from_be_bytes([buf[1], buf[2], buf[3], buf[4]]) as usize;
+                        if buf.len() < 5 + len {
+                            break; // need more data
+                        }
+                        if frame_type == 0x00 {
+                            let payload = &buf[5..5 + len];
+                            let msg = Resp::decode(payload).map_err(|e| {
+                                Error::Network(format!("{}: decode: {}", method, e))
+                            })?;
+                            messages.push(msg);
+                        }
+                        // 0x80 = trailer frame, skip
+                        buf.drain(..5 + len);
+                    }
+                }
+                Ok(None) => break, // stream ended
+                Err(e) => {
+                    return Err(Error::Network(format!("{}: read body: {}", method, e)));
+                }
+            }
+        }
+
+        Ok(messages)
     }
 
     pub async fn get_tip(&self) -> Result<(u32, Vec<u8>), Error> {
