@@ -102,6 +102,7 @@ extern crate ligerito_reed_solomon as reed_solomon;
 pub mod autosizer;
 pub mod configs;
 pub mod data_structures;
+pub mod eval_proof;
 pub mod sumcheck_polys;
 pub mod sumcheck_verifier;
 pub mod transcript;
@@ -175,14 +176,14 @@ pub use data_structures::*;
 
 // Prover exports (only with prover feature)
 #[cfg(feature = "prover")]
-pub use prover::{prove, prove_sha256, prove_with_transcript};
+pub use prover::{prove, prove_sha256, prove_with_evaluations, prove_with_transcript};
 
 // Verifier exports (always available)
 pub use sumcheck_verifier::SumcheckError;
 pub use transcript::{FiatShamir, Sha256Transcript, Transcript, TranscriptType};
 pub use verifier::{
     verify, verify_complete, verify_complete_sha256, verify_debug, verify_sha256,
-    verify_with_transcript,
+    verify_with_evaluations, verify_with_transcript, EvalVerifyResult,
 };
 
 #[cfg(feature = "transcript-merlin")]

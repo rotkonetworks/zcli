@@ -667,4 +667,24 @@ mod tests {
             computed == BinaryElem128::from_bits(6)
         );
     }
+
+    #[test]
+    fn check_position_systematic_gf32() {
+        use ligerito_binary_fields::BinaryElem32;
+        let rs = reed_solomon::<BinaryElem32>(16, 64);
+        let msg: Vec<BinaryElem32> = (1..=16u32).map(BinaryElem32::from).collect();
+        let enc = encode(&rs, &msg);
+        for i in 0..16 {
+            if enc[i] != msg[i] {
+                println!(
+                    "MISMATCH at {}: msg={} enc={}",
+                    i,
+                    msg[i].poly().value(),
+                    enc[i].poly().value()
+                );
+            }
+        }
+        let matches = (0..16).filter(|&i| enc[i] == msg[i]).count();
+        println!("position-systematic: {}/16 match", matches);
+    }
 }

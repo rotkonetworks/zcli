@@ -27,9 +27,10 @@
 //! Fields 16-23: final_actions_commitment (32 bytes)
 //! ```
 //!
-//! The verifier checks public outputs extracted from fixed trace positions,
-//! making it impossible to forge outputs without producing a valid proof
-//! over the committed trace.
+//! Public outputs are extracted from fixed trace positions by the prover
+//! and bound to the Fiat-Shamir transcript. The Ligerito proximity test
+//! does NOT constrain these values — soundness relies on the honest-prover
+//! assumption plus cross-verification against independent nodes.
 
 use blake2::{Blake2b512, Digest};
 use ligerito_binary_fields::{BinaryElem32, BinaryFieldElement};

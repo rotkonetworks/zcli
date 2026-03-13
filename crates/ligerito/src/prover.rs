@@ -47,35 +47,23 @@ where
     induce_sumcheck_poly(n, sks_vks, opened_rows, v_challenges, sorted_queries, alpha)
 }
 
-// Removed: S is now config.num_queries
-
-/// Main prover function with configurable transcript
-pub fn prove_with_transcript<T, U>(
+/// Core proving logic after initial commitment and root absorption.
+///
+/// Called by both `prove_with_transcript` (no eval claims) and
+/// `prove_with_evaluations` (with eval claims prepended to the transcript).
+fn prove_core<T, U>(
     config: &ProverConfig<T, U>,
     poly: &[T],
-    mut fs: impl Transcript,
+    wtns_0: crate::data_structures::RecursiveLigeroWitness<T>,
+    cm_0: RecursiveLigeroCommitment,
+    fs: &mut impl Transcript,
 ) -> crate::Result<FinalizedLigeritoProof<T, U>>
 where
     T: BinaryFieldElement + Send + Sync + bytemuck::Pod + 'static,
     U: BinaryFieldElement + Send + Sync + From<T> + bytemuck::Pod + 'static,
 {
-    // Validate configuration
-    config.validate()?;
-
     let mut proof = LigeritoProof::<T, U>::new();
-
-    // Initial commitment
-    let wtns_0 = ligero_commit(
-        poly,
-        config.initial_dims.0,
-        config.initial_dims.1,
-        &config.initial_reed_solomon,
-    );
-    let cm_0 = RecursiveLigeroCommitment {
-        root: wtns_0.tree.get_root(),
-    };
-    proof.initial_ligero_cm = Some(cm_0.clone());
-    fs.absorb_root(&cm_0.root);
+    proof.initial_ligero_cm = Some(cm_0);
 
     // Get initial challenges - get them as T type (base field)
     let partial_evals_0: Vec<T> = (0..config.initial_k).map(|_| fs.get_challenge()).collect();
@@ -236,6 +224,75 @@ where
     unreachable!("Should have returned in final round");
 }
 
+/// Main prover function with configurable transcript
+pub fn prove_with_transcript<T, U>(
+    config: &ProverConfig<T, U>,
+    poly: &[T],
+    mut fs: impl Transcript,
+) -> crate::Result<FinalizedLigeritoProof<T, U>>
+where
+    T: BinaryFieldElement + Send + Sync + bytemuck::Pod + 'static,
+    U: BinaryFieldElement + Send + Sync + From<T> + bytemuck::Pod + 'static,
+{
+    config.validate()?;
+
+    let wtns_0 = ligero_commit(
+        poly,
+        config.initial_dims.0,
+        config.initial_dims.1,
+        &config.initial_reed_solomon,
+    );
+    let cm_0 = RecursiveLigeroCommitment {
+        root: wtns_0.tree.get_root(),
+    };
+    fs.absorb_root(&cm_0.root);
+
+    prove_core(config, poly, wtns_0, cm_0, &mut fs)
+}
+
+/// Prover with evaluation claims (sumcheck-based evaluation proofs).
+///
+/// Runs an evaluation sumcheck proving P(z_k) = v_k for each claim,
+/// then the standard Ligerito proximity protocol. Both share the
+/// Fiat-Shamir transcript — the Merkle root is absorbed before the
+/// eval sumcheck, so eval challenges are transcript-bound to the
+/// commitment. However, the eval sumcheck and proximity test are
+/// independent protocols; full malicious-prover soundness requires
+/// an evaluation opening that ties P(r) to the committed polynomial.
+pub fn prove_with_evaluations<T, U>(
+    config: &ProverConfig<T, U>,
+    poly: &[T],
+    claims: &[crate::eval_proof::EvalClaim<T>],
+    mut fs: impl Transcript,
+) -> crate::Result<FinalizedLigeritoProof<T, U>>
+where
+    T: BinaryFieldElement + Send + Sync + bytemuck::Pod + 'static,
+    U: BinaryFieldElement + Send + Sync + From<T> + bytemuck::Pod + 'static,
+{
+    config.validate()?;
+
+    let wtns_0 = ligero_commit(
+        poly,
+        config.initial_dims.0,
+        config.initial_dims.1,
+        &config.initial_reed_solomon,
+    );
+    let cm_0 = RecursiveLigeroCommitment {
+        root: wtns_0.tree.get_root(),
+    };
+    fs.absorb_root(&cm_0.root);
+
+    // Eval sumcheck: prove P(z_k) = v_k, transcript-bound to Merkle root
+    let n = poly.len().trailing_zeros() as usize;
+    let alphas: Vec<U> = (0..claims.len()).map(|_| fs.get_challenge()).collect();
+    let (eval_rounds, _, _) =
+        crate::eval_proof::eval_sumcheck_prove::<T, U>(poly, claims, &alphas, n, &mut fs);
+
+    let mut proof = prove_core(config, poly, wtns_0, cm_0, &mut fs)?;
+    proof.eval_rounds = eval_rounds;
+    Ok(proof)
+}
+
 /// Main prover function using default Merlin transcript
 pub fn prove<T, U>(
     config: &ProverConfig<T, U>,
@@ -245,11 +302,9 @@ where
     T: BinaryFieldElement + Send + Sync + bytemuck::Pod + 'static,
     U: BinaryFieldElement + Send + Sync + From<T> + bytemuck::Pod + 'static,
 {
-    // Use Merlin by default for better performance (when available)
     #[cfg(feature = "transcript-merlin")]
     let fs = FiatShamir::new_merlin();
 
-    // Fall back to SHA256 when Merlin is not available (e.g., WASM)
     #[cfg(not(feature = "transcript-merlin"))]
     let fs = FiatShamir::new_sha256(0);
 
@@ -265,7 +320,6 @@ where
     T: BinaryFieldElement + Send + Sync + bytemuck::Pod + 'static,
     U: BinaryFieldElement + Send + Sync + From<T> + bytemuck::Pod + 'static,
 {
-    // Use SHA256 with seed 1234 to match Julia
     let fs = FiatShamir::new_sha256(1234);
     prove_with_transcript(config, poly, fs)
 }
@@ -634,21 +688,84 @@ mod tests {
 
     #[test]
     fn test_sumcheck_consistency_in_prover() {
-        // This is tested indirectly through the debug assertions in the prover
         let config = hardcoded_config_12(PhantomData::<BinaryElem32>, PhantomData::<BinaryElem128>);
 
-        // Test with zero polynomial
         let poly = vec![BinaryElem32::zero(); 1 << 12];
-
         let proof = prove(&config, &poly);
         assert!(proof.is_ok(), "Zero polynomial proof should succeed");
 
-        // Test with simple pattern
         let mut poly = vec![BinaryElem32::zero(); 1 << 12];
         poly[0] = BinaryElem32::one();
         poly[1] = BinaryElem32::from(2);
-
         let proof = prove(&config, &poly);
         assert!(proof.is_ok(), "Simple pattern proof should succeed");
+    }
+
+    #[test]
+    fn test_prove_with_evaluations() {
+        use crate::eval_proof::EvalClaim;
+
+        let config = hardcoded_config_12(PhantomData::<BinaryElem32>, PhantomData::<BinaryElem128>);
+        let verifier_config = crate::hardcoded_config_12_verifier();
+
+        // polynomial with known values
+        let mut poly = vec![BinaryElem32::zero(); 1 << 12];
+        poly[0] = BinaryElem32::from(42);
+        poly[7] = BinaryElem32::from(99);
+        poly[100] = BinaryElem32::from(255);
+
+        // claim: P(0) = 42, P(7) = 99, P(100) = 255
+        let claims = vec![
+            EvalClaim { index: 0, value: BinaryElem32::from(42) },
+            EvalClaim { index: 7, value: BinaryElem32::from(99) },
+            EvalClaim { index: 100, value: BinaryElem32::from(255) },
+        ];
+
+        // prove
+        let fs = FiatShamir::new_sha256(0);
+        let proof = prove_with_evaluations(&config, &poly, &claims, fs);
+        assert!(proof.is_ok(), "prove_with_evaluations should succeed");
+        let proof = proof.unwrap();
+        assert_eq!(proof.eval_rounds.len(), 12, "should have 12 eval sumcheck rounds for 2^12 poly");
+
+        // verify
+        let fs = FiatShamir::new_sha256(0);
+        let result = crate::verifier::verify_with_evaluations::<BinaryElem32, BinaryElem128>(
+            &verifier_config, &proof, &claims, fs,
+        );
+        assert!(result.is_ok(), "verify_with_evaluations should not error");
+        let result = result.unwrap();
+        assert!(result.is_some(), "eval sumcheck should pass");
+        let result = result.unwrap();
+        assert!(result.proximity_valid, "proximity test should pass");
+    }
+
+    #[test]
+    fn test_prove_with_evaluations_wrong_claim_fails() {
+        use crate::eval_proof::EvalClaim;
+
+        let config = hardcoded_config_12(PhantomData::<BinaryElem32>, PhantomData::<BinaryElem128>);
+        let verifier_config = crate::hardcoded_config_12_verifier();
+
+        let mut poly = vec![BinaryElem32::zero(); 1 << 12];
+        poly[5] = BinaryElem32::from(77);
+
+        // wrong claim: P(5) = 88 (actual is 77)
+        let claims = vec![
+            EvalClaim { index: 5, value: BinaryElem32::from(88) },
+        ];
+
+        // prove (prover uses actual polynomial, eval sumcheck computes from actual values)
+        let fs = FiatShamir::new_sha256(0);
+        let proof = prove_with_evaluations(&config, &poly, &claims, fs).unwrap();
+
+        // verify with wrong claim — eval sumcheck should fail
+        let fs = FiatShamir::new_sha256(0);
+        let result = crate::verifier::verify_with_evaluations::<BinaryElem32, BinaryElem128>(
+            &verifier_config, &proof, &claims, fs,
+        ).unwrap();
+
+        // the eval sumcheck should reject because target (α·88) ≠ actual sum (α·77)
+        assert!(result.is_none(), "wrong eval claim should fail verification");
     }
 }

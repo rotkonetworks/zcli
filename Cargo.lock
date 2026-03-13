@@ -2854,7 +2854,7 @@ dependencies = [
 
 [[package]]
 name = "ligerito"
-version = "0.4.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "bincode",
@@ -2893,7 +2893,7 @@ dependencies = [
 
 [[package]]
 name = "ligerito-binary-fields"
-version = "0.4.0"
+version = "0.6.0"
 dependencies = [
  "bytemuck",
  "criterion",
@@ -2907,7 +2907,7 @@ dependencies = [
 
 [[package]]
 name = "ligerito-merkle"
-version = "0.4.0"
+version = "0.6.0"
 dependencies = [
  "blake3",
  "bytemuck",
@@ -2920,7 +2920,7 @@ dependencies = [
 
 [[package]]
 name = "ligerito-reed-solomon"
-version = "0.4.0"
+version = "0.6.0"
 dependencies = [
  "criterion",
  "ligerito-binary-fields",
@@ -7367,7 +7367,7 @@ dependencies = [
 
 [[package]]
 name = "zecli"
-version = "0.5.4"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "bip39",
@@ -7509,7 +7509,7 @@ dependencies = [
 
 [[package]]
 name = "zidecar"
-version = "0.4.1"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "bincode",
@@ -7572,7 +7572,7 @@ checksum = "b8848ee67ecc8aedbaf3e4122217aff892639231befc6a1b58d29fff4c2cabaa"
 
 [[package]]
 name = "zync-core"
-version = "0.4.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "bincode",

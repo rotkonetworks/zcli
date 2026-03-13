@@ -11,9 +11,11 @@
 //! 1. **Header chain.** [ligerito](https://crates.io/crates/ligerito) polynomial
 //!    commitment proofs over block headers. The prover encodes headers into a trace
 //!    polynomial and commits to the evaluation; the verifier checks the commitment
-//!    in O(log n) without seeing any headers. Chain continuity (prev_hash linkage),
-//!    cumulative difficulty, and height progression are enforced by the trace
-//!    constraints. Proven roots anchor all subsequent verification.
+//!    in O(log n) without seeing any headers. Public outputs (block hashes,
+//!    state roots, commitments) are transcript-bound but NOT evaluation-proven —
+//!    the ligerito proximity test does not constrain which values the polynomial
+//!    contains. Soundness relies on the honest-prover assumption; cross-verification
+//!    (item 4) detects a malicious prover. Proven roots anchor subsequent steps.
 //!
 //! 2. **State proofs.** NOMT sparse merkle proofs for note commitments and
 //!    nullifiers. Each proof binds to the tree root proven by the header chain.

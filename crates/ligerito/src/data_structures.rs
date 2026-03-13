@@ -67,6 +67,14 @@ pub struct VerifierConfig {
     pub num_queries: usize,
 }
 
+impl VerifierConfig {
+    /// Log₂ of the committed polynomial size: initial_dim + initial_k.
+    /// This is the number of sumcheck rounds needed for evaluation proofs.
+    pub fn poly_log_size(&self) -> usize {
+        self.initial_dim + self.initial_k
+    }
+}
+
 /// Recursive Ligero witness (prover side only)
 #[cfg(feature = "prover")]
 pub struct RecursiveLigeroWitness<T: BinaryFieldElement> {
@@ -198,6 +206,10 @@ pub struct FinalizedLigeritoProof<T: BinaryFieldElement, U: BinaryFieldElement> 
     pub recursive_proofs: Vec<RecursiveLigeroProof<U>>,
     pub final_ligero_proof: FinalLigeroProof<U>,
     pub sumcheck_transcript: SumcheckTranscript<U>,
+    /// Evaluation sumcheck rounds proving P(z_k) = v_k at specific positions.
+    /// Empty when no evaluation claims are made (backwards compatible).
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub eval_rounds: Vec<crate::eval_proof::EvalSumcheckRound<U>>,
 }
 
 impl<T: BinaryFieldElement, U: BinaryFieldElement> FinalizedLigeritoProof<T, U> {
@@ -216,6 +228,7 @@ impl<T: BinaryFieldElement, U: BinaryFieldElement> FinalizedLigeritoProof<T, U> 
                 .sum::<usize>()
             + self.final_ligero_proof.size_of()
             + self.sumcheck_transcript.size_of()
+            + self.eval_rounds.len() * 3 * core::mem::size_of::<U>()
     }
 }
 
@@ -238,5 +251,6 @@ pub fn finalize<T: BinaryFieldElement, U: BinaryFieldElement>(
         sumcheck_transcript: proof
             .sumcheck_transcript
             .ok_or(crate::LigeritoError::InvalidProof)?,
+        eval_rounds: Vec::new(),
     })
 }

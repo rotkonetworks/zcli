@@ -77,8 +77,9 @@ fn deserialize_proof(
 }
 
 /// verify a single raw proof (sha256 transcript to match prover)
-/// public outputs are bound to the Fiat-Shamir transcript before verification,
-/// so swapping outputs after proving invalidates the proof.
+///
+/// public outputs are transcript-bound (anti-tampering) but NOT evaluation-proven.
+/// soundness against a malicious prover requires cross-verification.
 fn verify_single(proof_bytes: &[u8], public_outputs: &ProofPublicOutputs) -> Result<bool> {
     let (proof, log_size) = deserialize_proof(proof_bytes)?;
 
@@ -261,6 +262,96 @@ pub fn verify_proofs_full(combined_proof: &[u8]) -> Result<VerifyResult> {
 pub fn verify_tip(tip_proof: &[u8]) -> Result<bool> {
     let (outputs, raw) = split_full_proof(tip_proof)?;
     verify_single(&raw, &outputs)
+}
+
+/// result of chain verification across multiple proof segments
+#[derive(Clone, Debug)]
+pub struct ChainVerifyResult {
+    /// all individual proofs passed the ligerito proximity test
+    pub all_proofs_valid: bool,
+    /// adjacent proof public outputs satisfy continuity invariants
+    pub chain_continuous: bool,
+    /// public outputs of the first proof in the chain (chain start)
+    pub start_outputs: ProofPublicOutputs,
+    /// public outputs of the last proof in the chain (chain tip)
+    pub tip_outputs: ProofPublicOutputs,
+    /// number of segments verified
+    pub num_segments: usize,
+}
+
+/// verify a chain of proof segments with continuity checking.
+///
+/// each segment is a full proof: [public_outputs_len][public_outputs][log_size][proof]
+///
+/// # what this checks
+///
+/// 1. each proof individually passes the ligerito proximity test
+/// 2. adjacent segments satisfy: prev.tip_hash == next.start_prev_hash
+/// 3. adjacent segments satisfy: prev.end_height + 1 == next.start_height
+/// 4. running commitment chains: prev.final_commitment is consistent
+///    with next's trace (not enforced by proof — honest prover assumed)
+///
+/// # what this does NOT check
+///
+/// the ligerito proof is a polynomial commitment proximity test. it does
+/// NOT prove that the public outputs (start_hash, tip_hash, commitments)
+/// actually match the committed polynomial. a malicious prover can claim
+/// arbitrary public outputs for any valid polynomial commitment.
+///
+/// sound composition requires evaluation opening proofs binding public
+/// outputs to specific polynomial positions. until ligerito supports
+/// evaluation proofs, chain verification is sound ONLY under:
+///
+/// - honest prover assumption (zidecar extracts outputs correctly), OR
+/// - cross-verification against independent nodes confirms chain tip
+///
+/// callers MUST cross-verify the chain tip against independent sources.
+pub fn verify_chain(segments: &[&[u8]]) -> Result<ChainVerifyResult> {
+    if segments.is_empty() {
+        anyhow::bail!("empty chain");
+    }
+
+    let mut all_outputs: Vec<ProofPublicOutputs> = Vec::with_capacity(segments.len());
+
+    // verify each proof individually and collect public outputs
+    let mut all_valid = true;
+    for (i, segment) in segments.iter().enumerate() {
+        let (outputs, raw) = split_full_proof(segment)
+            .map_err(|e| anyhow::anyhow!("segment {}: {}", i, e))?;
+        let valid = verify_single(&raw, &outputs)
+            .map_err(|e| anyhow::anyhow!("segment {} verification: {}", i, e))?;
+        if !valid {
+            all_valid = false;
+        }
+        all_outputs.push(outputs);
+    }
+
+    // check continuity between adjacent segments
+    let mut continuous = true;
+    for i in 0..all_outputs.len() - 1 {
+        let prev = &all_outputs[i];
+        let next = &all_outputs[i + 1];
+
+        // hash linkage: next block's prev_hash must equal previous tip
+        if prev.tip_hash != next.start_prev_hash {
+            continuous = false;
+            break;
+        }
+
+        // height continuity
+        if prev.end_height + 1 != next.start_height {
+            continuous = false;
+            break;
+        }
+    }
+
+    Ok(ChainVerifyResult {
+        all_proofs_valid: all_valid,
+        chain_continuous: continuous,
+        start_outputs: all_outputs[0].clone(),
+        tip_outputs: all_outputs.last().unwrap().clone(),
+        num_segments: segments.len(),
+    })
 }
 
 #[cfg(test)]

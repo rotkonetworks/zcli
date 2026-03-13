@@ -73,11 +73,7 @@ where
     )
 }
 
-/// Verify a Ligerito proof - FIXED VERSION
-///
-/// # Safety
-/// This function performs cryptographic verification and will return false
-/// for any invalid proof. All array accesses are bounds-checked.
+/// Verify a Ligerito proof (default Merlin transcript)
 pub fn verify<T, U>(
     config: &VerifierConfig,
     proof: &FinalizedLigeritoProof<T, U>,
@@ -86,221 +82,22 @@ where
     T: BinaryFieldElement + Send + Sync,
     U: BinaryFieldElement + Send + Sync + From<T>,
 {
-    // OPTIMIZATION: Precompute basis evaluations once
-    // Cache initial basis (type T)
-    let cached_initial_sks: Vec<T> = eval_sk_at_vks(1 << config.initial_dim);
-
-    // Cache recursive basis evaluations (type U) for all rounds
-    let cached_recursive_sks: Vec<Vec<U>> = config
-        .log_dims
-        .iter()
-        .map(|&dim| eval_sk_at_vks(1 << dim))
-        .collect();
-
-    // Initialize transcript with proper domain separation
     #[cfg(feature = "transcript-merlin")]
-    let mut fs = FiatShamir::new_merlin();
+    let fs = FiatShamir::new_merlin();
 
     #[cfg(not(feature = "transcript-merlin"))]
-    let mut fs = FiatShamir::new_sha256(0);
+    let fs = FiatShamir::new_sha256(0);
 
-    // Absorb initial commitment
-    fs.absorb_root(&proof.initial_ligero_cm.root);
-
-    // Get initial challenges in base field to match prover
-    let partial_evals_0_t: Vec<T> = (0..config.initial_k).map(|_| fs.get_challenge()).collect();
-
-    // Convert to extension field for computations
-    let partial_evals_0: Vec<U> = partial_evals_0_t.iter().map(|&x| U::from(x)).collect();
-
-    // Absorb first recursive commitment
-    if proof.recursive_commitments.is_empty() {
-        return Ok(false);
-    }
-    fs.absorb_root(&proof.recursive_commitments[0].root);
-
-    // Verify initial Merkle proof
-    let depth = config.initial_dim + LOG_INV_RATE;
-    let queries = fs.get_distinct_queries(1 << depth, S);
-
-    // Hash opened rows for Merkle verification
-    let hashed_leaves: Vec<Hash> = proof
-        .initial_ligero_proof
-        .opened_rows
-        .iter()
-        .map(|row| hash_row(row))
-        .collect();
-
-    if !ligerito_merkle::verify(
-        &proof.initial_ligero_cm.root,
-        &proof.initial_ligero_proof.merkle_proof,
-        depth,
-        &hashed_leaves,
-        &queries,
-    ) {
-        return Ok(false);
-    }
-
-    let alpha = fs.get_challenge::<U>();
-
-    // Use cached basis instead of recomputing
-    let sks_vks = &cached_initial_sks;
-    let (_basis_poly, enforced_sum) = induce_sumcheck_poly_auto(
-        config.initial_dim,
-        sks_vks,
-        &proof.initial_ligero_proof.opened_rows,
-        &partial_evals_0,
-        &queries,
-        alpha,
-    );
-
-    // Use the enforced_sum from sumcheck computation
-    let mut current_sum = enforced_sum;
-
-    // Initial sumcheck absorb
-    fs.absorb_elem(current_sum);
-
-    // Process recursive rounds
-    let mut transcript_idx = 0;
-
-    for i in 0..config.recursive_steps {
-        let mut rs = Vec::with_capacity(config.ks[i]);
-
-        // Verify sumcheck rounds
-        for _ in 0..config.ks[i] {
-            // Bounds check for transcript access
-            if transcript_idx >= proof.sumcheck_transcript.transcript.len() {
-                return Ok(false);
-            }
-
-            let coeffs = proof.sumcheck_transcript.transcript[transcript_idx];
-            let claimed_sum =
-                evaluate_quadratic(coeffs, U::zero()).add(&evaluate_quadratic(coeffs, U::one()));
-
-            if claimed_sum != current_sum {
-                return Ok(false);
-            }
-
-            let ri = fs.get_challenge::<U>();
-            rs.push(ri);
-            current_sum = evaluate_quadratic(coeffs, ri);
-            fs.absorb_elem(current_sum);
-
-            transcript_idx += 1;
-        }
-
-        // Bounds check for recursive commitments
-        if i >= proof.recursive_commitments.len() {
-            return Ok(false);
-        }
-
-        let root = &proof.recursive_commitments[i].root;
-
-        // Final round verification
-        if i == config.recursive_steps - 1 {
-            fs.absorb_elems(&proof.final_ligero_proof.yr);
-
-            let depth = config.log_dims[i] + LOG_INV_RATE;
-            let queries = fs.get_distinct_queries(1 << depth, S);
-
-            // Hash final opened rows
-            let hashed_final: Vec<Hash> = proof
-                .final_ligero_proof
-                .opened_rows
-                .iter()
-                .map(|row| hash_row(row))
-                .collect();
-
-            if !ligerito_merkle::verify(
-                root,
-                &proof.final_ligero_proof.merkle_proof,
-                depth,
-                &hashed_final,
-                &queries,
-            ) {
-                return Ok(false);
-            }
-
-            // Ligero consistency check verifies polynomial evaluations match opened rows
-            // For stateful verify_partial check, use verify_complete() instead
-            verify_ligero(
-                &queries,
-                &proof.final_ligero_proof.opened_rows,
-                &proof.final_ligero_proof.yr,
-                &rs,
-            );
-
-            return Ok(true);
-        }
-
-        // Continue recursion for non-final rounds
-        if i + 1 >= proof.recursive_commitments.len() {
-            return Ok(false);
-        }
-
-        fs.absorb_root(&proof.recursive_commitments[i + 1].root);
-
-        let depth = config.log_dims[i] + LOG_INV_RATE;
-
-        // Bounds check for recursive proofs
-        if i >= proof.recursive_proofs.len() {
-            return Ok(false);
-        }
-
-        let ligero_proof = &proof.recursive_proofs[i];
-        let queries = fs.get_distinct_queries(1 << depth, S);
-
-        // Hash recursive opened rows
-        let hashed_rec: Vec<Hash> = ligero_proof
-            .opened_rows
-            .iter()
-            .map(|row| hash_row(row))
-            .collect();
-
-        if !ligerito_merkle::verify(
-            root,
-            &ligero_proof.merkle_proof,
-            depth,
-            &hashed_rec,
-            &queries,
-        ) {
-            return Ok(false);
-        }
-
-        let alpha = fs.get_challenge::<U>();
-
-        // Bounds check for log_dims
-        if i >= config.log_dims.len() {
-            return Ok(false);
-        }
-
-        // Use cached basis instead of recomputing
-        let sks_vks = &cached_recursive_sks[i];
-        let (_basis_poly_next, enforced_sum) = induce_sumcheck_poly_auto(
-            config.log_dims[i],
-            sks_vks,
-            &ligero_proof.opened_rows,
-            &rs,
-            &queries,
-            alpha,
-        );
-
-        // Glue verification
-        let glue_sum = current_sum.add(&enforced_sum);
-        fs.absorb_elem(glue_sum);
-
-        let beta = fs.get_challenge::<U>();
-        current_sum = glue_sums(current_sum, enforced_sum, beta);
-    }
-
-    Ok(true)
+    verify_with_transcript(config, proof, fs)
 }
 
-/// Verify with custom transcript implementation
-pub fn verify_with_transcript<T, U>(
+/// Core verification logic after initial commitment root absorption.
+///
+/// Called by both `verify_with_transcript` and `verify_with_evaluations`.
+fn verify_core<T, U>(
     config: &VerifierConfig,
     proof: &FinalizedLigeritoProof<T, U>,
-    mut fs: impl Transcript,
+    fs: &mut impl Transcript,
 ) -> crate::Result<bool>
 where
     T: BinaryFieldElement + Send + Sync,
@@ -313,9 +110,6 @@ where
         .iter()
         .map(|&dim| eval_sk_at_vks(1 << dim))
         .collect();
-
-    // Absorb initial commitment
-    fs.absorb_root(&proof.initial_ligero_cm.root);
 
     // Get initial challenges in base field
     let partial_evals_0_t: Vec<T> = (0..config.initial_k).map(|_| fs.get_challenge()).collect();
@@ -485,6 +279,92 @@ where
     }
 
     Ok(true)
+}
+
+/// Verify with custom transcript implementation
+pub fn verify_with_transcript<T, U>(
+    config: &VerifierConfig,
+    proof: &FinalizedLigeritoProof<T, U>,
+    mut fs: impl Transcript,
+) -> crate::Result<bool>
+where
+    T: BinaryFieldElement + Send + Sync,
+    U: BinaryFieldElement + Send + Sync + From<T>,
+{
+    fs.absorb_root(&proof.initial_ligero_cm.root);
+    verify_core(config, proof, &mut fs)
+}
+
+/// Evaluation proof result
+pub struct EvalVerifyResult<U: BinaryFieldElement> {
+    /// Ligerito proximity test passed
+    pub proximity_valid: bool,
+    /// Evaluation sumcheck challenges (the random point r)
+    pub eval_challenges: Vec<U>,
+    /// P(r) as derived from the eval sumcheck
+    pub p_at_r: U,
+}
+
+/// Verify with evaluation claims (sumcheck-based evaluation proofs).
+///
+/// Runs the eval sumcheck (checking internal consistency of P(z_k) = v_k
+/// claims), then the standard Ligerito proximity test. Both share the
+/// Fiat-Shamir transcript.
+///
+/// Returns None if the evaluation sumcheck fails. Returns
+/// Some(EvalVerifyResult) with the proximity test result, the random
+/// point r, and the claimed P(r). The caller is responsible for
+/// binding P(r) to the committed polynomial via an evaluation opening.
+pub fn verify_with_evaluations<T, U>(
+    config: &VerifierConfig,
+    proof: &FinalizedLigeritoProof<T, U>,
+    claims: &[crate::eval_proof::EvalClaim<T>],
+    mut fs: impl Transcript,
+) -> crate::Result<Option<EvalVerifyResult<U>>>
+where
+    T: BinaryFieldElement + Send + Sync,
+    U: BinaryFieldElement + Send + Sync + From<T>,
+{
+    fs.absorb_root(&proof.initial_ligero_cm.root);
+
+    // Eval sumcheck: verify P(z_k) = v_k
+    let alphas: Vec<U> = (0..claims.len()).map(|_| fs.get_challenge()).collect();
+
+    // Compute target: Σ α_k · v_k
+    let target: U = claims
+        .iter()
+        .zip(alphas.iter())
+        .map(|(c, &a)| a.mul(&U::from(c.value)))
+        .fold(U::zero(), |acc, x| acc.add(&x));
+
+    // Derive n from config, not from the proof — a malicious prover must not
+    // control the number of sumcheck rounds.
+    let n = config.poly_log_size();
+    if proof.eval_rounds.len() != n {
+        return Ok(None);
+    }
+    let eval_result = crate::eval_proof::eval_sumcheck_verify::<T, U>(
+        &proof.eval_rounds,
+        claims,
+        &alphas,
+        target,
+        n,
+        &mut fs,
+    );
+
+    let (eval_challenges, p_at_r) = match eval_result {
+        Some(r) => r,
+        None => return Ok(None),
+    };
+
+    // Continue with Ligerito proximity verification (same transcript state)
+    let proximity_valid = verify_core(config, proof, &mut fs)?;
+
+    Ok(Some(EvalVerifyResult {
+        proximity_valid,
+        eval_challenges,
+        p_at_r,
+    }))
 }
 
 /// SHA256-based verification for compatibility

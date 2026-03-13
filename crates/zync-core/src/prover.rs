@@ -14,11 +14,13 @@
 //!
 //! Public outputs are bound to the Fiat-Shamir transcript before proving,
 //! so swapping outputs after proof generation invalidates the proof.
+//! However, the Ligerito proximity test does NOT constrain the public
+//! outputs to match the polynomial — an honest prover is assumed.
 //!
 //! ## Public outputs
 //!
-//! Extracted from fixed positions in the committed trace polynomial, not
-//! self-reported. The proof cryptographically binds them to the trace contents.
+//! Extracted from fixed positions in the committed trace polynomial by
+//! the (honest) prover. Transcript-bound, not evaluation-proven.
 //!
 //! - `start_hash`, `tip_hash`: first and last block hashes
 //! - `start_prev_hash`, `tip_prev_hash`: chain continuity linkage
@@ -36,11 +38,23 @@ use serde::{Deserialize, Serialize};
 use crate::error::ZyncError;
 use crate::trace::{HeaderChainTrace, FIELDS_PER_HEADER, TIP_SENTINEL_SIZE};
 
-/// Public outputs that the proof commits to.
+/// Public outputs claimed by the prover.
 ///
-/// These values are extracted from the committed trace at fixed offsets.
-/// A valid proof guarantees these match the trace contents. Forging them
-/// requires breaking the polynomial commitment scheme.
+/// These values are extracted from the committed trace at fixed offsets
+/// and bound to the Fiat-Shamir transcript before proving, so they cannot
+/// be swapped after proof generation. However, the Ligerito proof itself
+/// does NOT constrain these values — a malicious prover can claim arbitrary
+/// outputs for any valid polynomial commitment.
+///
+/// # Security model
+///
+/// Under the honest-prover assumption (zidecar), the values are correct
+/// because the prover honestly extracts them from the trace. The cross-
+/// verification layer (BFT majority against independent lightwalletd nodes)
+/// detects a malicious prover claiming forged outputs.
+///
+/// For sound proof composition, evaluation opening proofs binding these
+/// values to specific polynomial positions are required (not yet implemented).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ProofPublicOutputs {
     pub start_height: u32,
@@ -78,6 +92,10 @@ impl HeaderChainProof {
     ///
     /// Uses SHA256 transcript for browser WASM verification.
     /// Binds public outputs to Fiat-Shamir transcript before proving.
+    ///
+    /// Note: the transcript binding prevents post-hoc output tampering
+    /// but does NOT prove the outputs match the polynomial. See
+    /// [`ProofPublicOutputs`] for the full security model.
     pub fn prove(
         config: &ProverConfig<BinaryElem32, BinaryElem128>,
         trace: &HeaderChainTrace,
@@ -119,8 +137,8 @@ impl HeaderChainProof {
     /// Extract public outputs from the committed trace.
     ///
     /// Reads values from fixed positions in the trace polynomial.
-    /// The sentinel row contains tip_tree_root, tip_nullifier_root,
-    /// and final_actions_commitment.
+    /// These values are honest extractions — not proven by the Ligerito
+    /// proximity test. See [`ProofPublicOutputs`] security model.
     fn extract_public_outputs(trace: &HeaderChainTrace) -> Result<ProofPublicOutputs, ZyncError> {
         if trace.num_headers == 0 {
             return Err(ZyncError::InvalidData("empty trace".into()));
