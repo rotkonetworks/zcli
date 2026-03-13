@@ -24,6 +24,11 @@ impl Storage {
         // open nomt for merkle state
         let mut nomt_opts = NomtOptions::new();
         nomt_opts.path(format!("{}/nomt", path));
+        // Zcash mainnet has millions of nullifiers; default 64K buckets causes
+        // "bucket exhaustion" once occupancy exceeds ~90%. 2M buckets (~8GB ht
+        // file) supports ~1.8M pages before degradation. Only takes effect on
+        // fresh database creation — existing dbs keep their original size.
+        nomt_opts.hashtable_buckets(2_000_000);
         // use 50% of CPU threads for NOMT (leaves room for other ops)
         let all_threads = std::thread::available_parallelism()
             .map(|p| p.get())
