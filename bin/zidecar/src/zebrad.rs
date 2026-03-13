@@ -301,6 +301,8 @@ pub struct TreeCommitment {
 pub struct TreeCommitmentData {
     #[serde(rename = "finalState")]
     pub final_state: String,
+    #[serde(default, rename = "finalStateSize")]
+    pub final_state_size: Option<u32>,
 }
 
 /// transparent UTXO from getaddressutxos

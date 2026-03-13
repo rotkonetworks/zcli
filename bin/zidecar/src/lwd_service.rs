@@ -11,8 +11,8 @@ use crate::{
 };
 use crate::lightwalletd::{
     compact_tx_streamer_server::CompactTxStreamer,
-    BlockId, BlockRange, ChainSpec, CompactBlock, CompactOrchardAction, CompactTx,
-    Empty, GetAddressUtxosArg, GetAddressUtxosReply, GetAddressUtxosReplyList,
+    BlockId, BlockRange, ChainMetadata, ChainSpec, CompactBlock, CompactOrchardAction,
+    CompactTx, Empty, GetAddressUtxosArg, GetAddressUtxosReply, GetAddressUtxosReplyList,
     GetSubtreeRootsArg, LightdInfo, RawTransaction, SendResponse, SubtreeRoot,
     TreeState, TxFilter,
 };
@@ -40,7 +40,13 @@ impl LwdService {
 
 /// Convert internal compact block to lightwalletd wire format.
 /// Groups actions by txid into CompactTx entries.
-fn to_lwd_block(block: &InternalBlock, prev_hash: Vec<u8>, time: u32) -> CompactBlock {
+fn to_lwd_block(
+    block: &InternalBlock,
+    prev_hash: Vec<u8>,
+    time: u32,
+    sapling_tree_size: u32,
+    orchard_tree_size: u32,
+) -> CompactBlock {
     use std::collections::HashMap;
 
     let mut tx_map: HashMap<Vec<u8>, Vec<CompactOrchardAction>> = HashMap::new();
@@ -80,7 +86,21 @@ fn to_lwd_block(block: &InternalBlock, prev_hash: Vec<u8>, time: u32) -> Compact
         time,
         header: vec![],
         vtx,
-        chain_metadata: None,
+        chain_metadata: Some(ChainMetadata {
+            sapling_commitment_tree_size: sapling_tree_size,
+            orchard_commitment_tree_size: orchard_tree_size,
+        }),
+    }
+}
+
+/// Fetch commitment tree sizes at a given height from zebrad.
+async fn tree_sizes_at(zebrad: &ZebradClient, height: u32) -> (u32, u32) {
+    match zebrad.get_tree_state(&height.to_string()).await {
+        Ok(ts) => (
+            ts.sapling.commitments.final_state_size.unwrap_or(0),
+            ts.orchard.commitments.final_state_size.unwrap_or(0),
+        ),
+        Err(_) => (0, 0),
     }
 }
 
@@ -129,8 +149,9 @@ impl CompactTxStreamer for LwdService {
             .map_err(|e| Status::internal(e.to_string()))?;
 
         let prev_hash = prev_hash_for(&self.zebrad, height).await;
+        let (sapling_size, orchard_size) = tree_sizes_at(&self.zebrad, height).await;
 
-        Ok(Response::new(to_lwd_block(&block, prev_hash, block_meta.time as u32)))
+        Ok(Response::new(to_lwd_block(&block, prev_hash, block_meta.time as u32, sapling_size, orchard_size)))
     }
 
     async fn get_block_range(
@@ -159,7 +180,8 @@ impl CompactTxStreamer for LwdService {
                     Err(e) => { warn!("lwd range height {}: {}", height, e); let _ = tx.send(Err(Status::internal(e.to_string()))).await; break; }
                 };
                 let prev_hash = prev_hash_for(&zebrad, height).await;
-                if tx.send(Ok(to_lwd_block(&block, prev_hash, block_meta.time as u32))).await.is_err() {
+                let (sapling_size, orchard_size) = tree_sizes_at(&zebrad, height).await;
+                if tx.send(Ok(to_lwd_block(&block, prev_hash, block_meta.time as u32, sapling_size, orchard_size))).await.is_err() {
                     break;
                 }
             }
