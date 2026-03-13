@@ -34,7 +34,7 @@ pub struct Cli {
         long,
         global = true,
         env = "ZCLI_VERIFY_ENDPOINTS",
-        default_value = "https://zec.rocks"
+        default_value = "https://na.zec.rocks,https://eu.zec.rocks,https://ap.zec.rocks,https://us.zec.stardust.rest,https://eu.zec.stardust.rest,https://jp.zec.stardust.rest"
     )]
     pub verify_endpoints: String,
 

@@ -173,29 +173,6 @@ fn grpc_web_decode(body: &[u8]) -> Result<(Vec<u8>, u8), Error> {
     Ok((body[5..5 + len].to_vec(), frame_type))
 }
 
-/// decode all data frames from a grpc-web response, return concatenated payloads
-fn grpc_web_decode_stream(body: &[u8]) -> Result<Vec<Vec<u8>>, Error> {
-    let mut messages = Vec::new();
-    let mut offset = 0;
-    while offset + 5 <= body.len() {
-        let frame_type = body[offset];
-        let len = u32::from_be_bytes([
-            body[offset + 1],
-            body[offset + 2],
-            body[offset + 3],
-            body[offset + 4],
-        ]) as usize;
-        if offset + 5 + len > body.len() {
-            return Err(Error::Network("grpc-web: truncated stream frame".into()));
-        }
-        if frame_type == 0x00 {
-            messages.push(body[offset + 5..offset + 5 + len].to_vec());
-        }
-        // 0x80 = trailer frame, skip
-        offset += 5 + len;
-    }
-    Ok(messages)
-}
 
 fn check_grpc_status(headers: &reqwest::header::HeaderMap, body: &[u8]) -> Result<(), Error> {
     // check header-level grpc-status first
@@ -310,7 +287,7 @@ impl ZidecarClient {
             .post(&url)
             .header("content-type", "application/grpc-web+proto")
             .header("x-grpc-web", "1")
-            .timeout(std::time::Duration::from_secs(300))
+            .timeout(std::time::Duration::from_secs(30))
             .body(body)
             .send()
             .await

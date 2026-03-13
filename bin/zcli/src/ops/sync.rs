@@ -2,8 +2,8 @@ use indicatif::{ProgressBar, ProgressStyle};
 use orchard::keys::{FullViewingKey, PreparedIncomingViewingKey, Scope, SpendingKey};
 use orchard::note_encryption::OrchardDomain;
 use zcash_note_encryption::{
-    try_compact_note_decryption, try_note_decryption, EphemeralKeyBytes, ShieldedOutput,
-    COMPACT_NOTE_SIZE, ENC_CIPHERTEXT_SIZE,
+    try_compact_note_decryption, EphemeralKeyBytes, ShieldedOutput,
+    COMPACT_NOTE_SIZE,
 };
 
 use crate::client::{LightwalletdClient, ZidecarClient};
@@ -11,7 +11,9 @@ use crate::error::Error;
 use crate::key::WalletSeed;
 use crate::wallet::{Wallet, WalletNote};
 
-const BATCH_SIZE: u32 = 500;
+const BATCH_SIZE_MIN: u32 = 500;
+const BATCH_SIZE_MAX: u32 = 5_000;
+const BATCH_ACTIONS_TARGET: usize = 50_000; // aim for ~50k actions per batch
 
 use zync_core::{
     ORCHARD_ACTIVATION_HEIGHT as ORCHARD_ACTIVATION_MAINNET,
@@ -34,24 +36,6 @@ impl ShieldedOutput<OrchardDomain, COMPACT_NOTE_SIZE> for CompactShieldedOutput 
     }
     fn enc_ciphertext(&self) -> &[u8; COMPACT_NOTE_SIZE] {
         &self.ciphertext
-    }
-}
-
-struct FullShieldedOutput {
-    epk: [u8; 32],
-    cmx: [u8; 32],
-    enc_ciphertext: [u8; ENC_CIPHERTEXT_SIZE],
-}
-
-impl ShieldedOutput<OrchardDomain, ENC_CIPHERTEXT_SIZE> for FullShieldedOutput {
-    fn ephemeral_key(&self) -> EphemeralKeyBytes {
-        EphemeralKeyBytes(self.epk)
-    }
-    fn cmstar_bytes(&self) -> [u8; 32] {
-        self.cmx
-    }
-    fn enc_ciphertext(&self) -> &[u8; ENC_CIPHERTEXT_SIZE] {
-        &self.enc_ciphertext
     }
 }
 
@@ -202,6 +186,7 @@ async fn sync_inner(
 
     let mut found_total = 0u32;
     let mut current = start;
+    let mut batch_size = BATCH_SIZE_MIN; // adaptive: grows for sparse blocks, shrinks for dense
     // global position counter - tracks every orchard action from activation
     let mut position_counter = if let Some(pos) = from_position {
         wallet.set_orchard_position(pos)?;
@@ -234,8 +219,17 @@ async fn sync_inner(
     };
 
     while current <= tip {
-        let end = (current + BATCH_SIZE - 1).min(tip);
-        let blocks = retry_compact_blocks(&client, current, end).await?;
+        let end = (current + batch_size - 1).min(tip);
+        let blocks = match retry_compact_blocks(&client, current, end).await {
+            Ok(b) => b,
+            Err(_) if batch_size > BATCH_SIZE_MIN => {
+                // batch too large — halve and retry
+                batch_size = (batch_size / 2).max(BATCH_SIZE_MIN);
+                eprintln!("  reducing batch size to {}", batch_size);
+                continue;
+            }
+            Err(e) => return Err(e),
+        };
 
         let action_count: usize = blocks.iter().map(|b| b.actions.len()).sum();
         if action_count > 0 {
@@ -246,6 +240,16 @@ async fn sync_inner(
                 blocks.len(),
                 action_count
             );
+        }
+
+        // adaptive batch sizing: grow for sparse blocks, shrink for dense
+        // cap growth to 2x per step to avoid overshooting
+        if action_count == 0 {
+            batch_size = (batch_size * 2).min(BATCH_SIZE_MAX);
+        } else if action_count > BATCH_ACTIONS_TARGET {
+            batch_size = (batch_size / 2).max(BATCH_SIZE_MIN);
+        } else {
+            batch_size = (batch_size * 2).clamp(BATCH_SIZE_MIN, BATCH_SIZE_MAX);
         }
 
         for block in &blocks {
@@ -329,22 +333,17 @@ async fn sync_inner(
     }
 
     // verify actions commitment chain against proven value
+    running_actions_commitment = zync_core::sync::verify_actions_commitment(
+        &running_actions_commitment,
+        &proven_roots.actions_commitment,
+        actions_commitment_available,
+    )
+    .map_err(|e| Error::Other(e.to_string()))?;
     if !actions_commitment_available {
-        // legacy wallet: no saved actions commitment from pre-0.5.1 sync.
-        // we can't verify the chain (started mid-chain from zeros), so trust the
-        // proven value from the header proof and save it. subsequent syncs will
-        // chain correctly from this proven anchor.
-        running_actions_commitment = proven_roots.actions_commitment;
         eprintln!(
             "actions commitment: migrating from pre-0.5.1 wallet, saving proven {}...",
             hex::encode(&running_actions_commitment[..8]),
         );
-    } else if running_actions_commitment != proven_roots.actions_commitment {
-        return Err(Error::Other(format!(
-            "actions commitment mismatch: server tampered with block actions (computed={} proven={})",
-            hex::encode(&running_actions_commitment[..8]),
-            hex::encode(&proven_roots.actions_commitment[..8]),
-        )));
     } else {
         eprintln!("actions commitment verified: {}...", hex::encode(&running_actions_commitment[..8]));
     }
@@ -465,19 +464,7 @@ fn try_decrypt(
     None
 }
 
-/// compare two block hashes, accounting for LE/BE byte order differences
-/// between native gRPC lightwalletd (BE display order) and zidecar (LE internal).
-fn hashes_match(a: &[u8], b: &[u8]) -> bool {
-    if a.is_empty() || b.is_empty() {
-        return true; // can't compare empty hashes
-    }
-    if a == b {
-        return true;
-    }
-    let mut b_rev = b.to_vec();
-    b_rev.reverse();
-    a == b_rev.as_slice()
-}
+use zync_core::sync::hashes_match;
 
 /// cross-verify tip and activation block against independent lightwalletd nodes.
 /// requires BFT majority (>2/3 of reachable nodes) to agree with zidecar.
@@ -594,14 +581,7 @@ async fn cross_verify(
     Ok(())
 }
 
-/// Proven NOMT roots extracted from the ligerito header proof.
-/// These are the roots that NOMT merkle proofs must verify against.
-#[derive(Clone, Debug, Default)]
-struct ProvenRoots {
-    tree_root: [u8; 32],
-    nullifier_root: [u8; 32],
-    actions_commitment: [u8; 32],
-}
+use zync_core::sync::ProvenRoots;
 
 async fn verify_header_proof(
     client: &ZidecarClient,
@@ -614,48 +594,8 @@ async fn verify_header_proof(
         .await
         .map_err(|e| Error::Other(format!("header proof fetch failed: {}", e)))?;
 
-    let result = zync_core::verifier::verify_proofs_full(&proof_bytes)
-        .map_err(|e| Error::Other(format!("header proof verification failed: {}", e)))?;
-
-    if !result.epoch_proof_valid {
-        return Err(Error::Other("epoch proof invalid".into()));
-    }
-    if !result.tip_valid {
-        return Err(Error::Other("tip proof invalid".into()));
-    }
-    if !result.continuous {
-        return Err(Error::Other("proof chain discontinuous".into()));
-    }
-
-    // verify epoch proof anchors to hardcoded activation block hash
-    if mainnet && result.epoch_outputs.start_hash != ACTIVATION_HASH_MAINNET {
-        return Err(Error::Other(format!(
-            "epoch proof start_hash doesn't match activation anchor: got {}",
-            hex::encode(&result.epoch_outputs.start_hash[..8]),
-        )));
-    }
-
-    // extract proven roots from the most recent proof (tip > epoch proof)
-    let outputs = result
-        .tip_outputs
-        .as_ref()
-        .unwrap_or(&result.epoch_outputs);
-
-    // reject if proof is more than 1 epoch behind tip
-    if outputs.end_height + zync_core::EPOCH_SIZE < tip {
-        return Err(Error::Other(format!(
-            "header proof too stale: covers to {} but tip is {} (>{} blocks behind)",
-            outputs.end_height,
-            tip,
-            zync_core::EPOCH_SIZE,
-        )));
-    }
-
-    let proven = ProvenRoots {
-        tree_root: outputs.tip_tree_root,
-        nullifier_root: outputs.tip_nullifier_root,
-        actions_commitment: outputs.final_actions_commitment,
-    };
+    let proven = zync_core::sync::verify_header_proof(&proof_bytes, tip, mainnet)
+        .map_err(|e| Error::Other(e.to_string()))?;
 
     eprintln!(
         "header proof valid ({}..{}) continuous=true",
@@ -684,61 +624,19 @@ async fn verify_commitments(
         .await
         .map_err(|e| Error::Other(format!("commitment proof fetch failed: {}", e)))?;
 
-    // bind server-returned root to ligerito-proven root
-    if root != proven.tree_root {
-        return Err(Error::Other(format!(
-            "commitment tree root mismatch: server={} proven={}",
-            hex::encode(root),
-            hex::encode(proven.tree_root),
-        )));
-    }
+    let proof_data: Vec<zync_core::sync::CommitmentProofData> = proofs
+        .iter()
+        .map(|p| zync_core::sync::CommitmentProofData {
+            cmx: p.cmx,
+            tree_root: p.tree_root,
+            path_proof_raw: p.path_proof_raw.clone(),
+            value_hash: p.value_hash,
+        })
+        .collect();
 
-    // verify proof count matches requested count
-    if proofs.len() != cmxs.len() {
-        return Err(Error::Other(format!(
-            "commitment proof count mismatch: requested {} but got {}",
-            cmxs.len(),
-            proofs.len(),
-        )));
-    }
+    zync_core::sync::verify_commitment_proofs(&proof_data, cmxs, proven, &root)
+        .map_err(|e| Error::Other(e.to_string()))?;
 
-    // verify each returned proof's cmx matches one we requested
-    let cmx_set: std::collections::HashSet<[u8; 32]> = cmxs.iter().copied().collect();
-    for proof in &proofs {
-        if !cmx_set.contains(&proof.cmx) {
-            return Err(Error::Other(format!(
-                "server returned commitment proof for unrequested cmx {}",
-                hex::encode(proof.cmx),
-            )));
-        }
-    }
-
-    for proof in &proofs {
-        // verify merkle path walks to the claimed root
-        match proof.verify() {
-            Ok(true) => {}
-            Ok(false) => {
-                return Err(Error::Other(format!(
-                    "commitment proof invalid for cmx {}",
-                    hex::encode(proof.cmx),
-                )))
-            }
-            Err(e) => {
-                return Err(Error::Other(format!(
-                    "commitment proof verification error: {}",
-                    e,
-                )))
-            }
-        }
-
-        // verify proof root matches the proven root
-        if proof.tree_root != proven.tree_root {
-            return Err(Error::Other(format!(
-                "commitment proof root mismatch for cmx {}",
-                hex::encode(proof.cmx),
-            )));
-        }
-    }
     eprintln!("all {} commitment proofs cryptographically valid", proofs.len());
     Ok(())
 }
@@ -758,75 +656,34 @@ async fn verify_nullifiers(
         unspent_notes.len()
     );
     let nf_vecs: Vec<Vec<u8>> = unspent_notes.iter().map(|n| n.nullifier.to_vec()).collect();
+    let requested_nfs: Vec<[u8; 32]> = unspent_notes.iter().map(|n| n.nullifier).collect();
     let (proofs, root) = client
         .get_nullifier_proofs(nf_vecs, tip)
         .await
         .map_err(|e| Error::Other(format!("nullifier proof fetch failed: {}", e)))?;
 
-    // bind server-returned root to ligerito-proven root
-    if root != proven.nullifier_root {
-        return Err(Error::Other(format!(
-            "nullifier root mismatch: server={} proven={}",
-            hex::encode(root),
-            hex::encode(proven.nullifier_root),
-        )));
+    let proof_data: Vec<zync_core::sync::NullifierProofData> = proofs
+        .iter()
+        .map(|p| zync_core::sync::NullifierProofData {
+            nullifier: p.nullifier,
+            nullifier_root: p.nullifier_root,
+            is_spent: p.is_spent,
+            path_proof_raw: p.path_proof_raw.clone(),
+            value_hash: p.value_hash,
+        })
+        .collect();
+
+    let spent = zync_core::sync::verify_nullifier_proofs(&proof_data, &requested_nfs, proven, &root)
+        .map_err(|e| Error::Other(e.to_string()))?;
+
+    for nf in &spent {
+        eprintln!(
+            "  nullifier {} proven spent, updating wallet",
+            hex::encode(nf)
+        );
+        wallet.mark_spent(nf).ok();
     }
 
-    // verify proof count matches requested count
-    if proofs.len() != unspent_notes.len() {
-        return Err(Error::Other(format!(
-            "nullifier proof count mismatch: requested {} but got {}",
-            unspent_notes.len(),
-            proofs.len(),
-        )));
-    }
-
-    // verify each returned proof's nullifier matches one we requested
-    let nf_set: std::collections::HashSet<[u8; 32]> = unspent_notes.iter().map(|n| n.nullifier).collect();
-    for proof in &proofs {
-        if !nf_set.contains(&proof.nullifier) {
-            return Err(Error::Other(format!(
-                "server returned nullifier proof for unrequested nullifier {}",
-                hex::encode(proof.nullifier),
-            )));
-        }
-    }
-
-    for proof in &proofs {
-        match proof.verify() {
-            Ok(true) => {
-                if proof.is_spent {
-                    eprintln!(
-                        "  nullifier {} proven spent, updating wallet",
-                        hex::encode(proof.nullifier)
-                    );
-                    wallet.mark_spent(&proof.nullifier).ok();
-                }
-            }
-            Ok(false) => {
-                return Err(Error::Other(format!(
-                    "nullifier proof invalid for {}",
-                    hex::encode(proof.nullifier),
-                )))
-            }
-            Err(e) => {
-                return Err(Error::Other(format!(
-                    "nullifier proof verification error: {}",
-                    e,
-                )))
-            }
-        }
-
-        // verify proof root matches the proven root (no bypass for zero roots)
-        if proof.nullifier_root != proven.nullifier_root {
-            return Err(Error::Other(format!(
-                "nullifier proof root mismatch for {}: server={} proven={}",
-                hex::encode(proof.nullifier),
-                hex::encode(proof.nullifier_root),
-                hex::encode(proven.nullifier_root),
-            )));
-        }
-    }
     eprintln!("all {} nullifier proofs cryptographically valid", proofs.len());
     Ok(())
 }
@@ -843,10 +700,10 @@ async fn retry_compact_blocks(
             Ok(blocks) => return Ok(blocks),
             Err(e) => {
                 attempts += 1;
-                if attempts >= 5 {
+                if attempts >= 3 {
                     return Err(e);
                 }
-                eprintln!("  retry {}/5 for {}..{}: {}", attempts, start, end, e);
+                eprintln!("  retry {}/3 for {}..{}: {}", attempts, start, end, e);
                 tokio::time::sleep(std::time::Duration::from_millis(500 * attempts)).await;
             }
         }
@@ -863,10 +720,11 @@ async fn fetch_memo(
     epk: &[u8; 32],
     action_nf: &[u8; 32],
 ) -> Result<Option<String>, Error> {
-    let raw_tx = client.get_transaction(txid).await?;
+    use orchard::note_encryption::OrchardDomain;
+    use zcash_note_encryption::{try_note_decryption, ENC_CIPHERTEXT_SIZE};
 
-    let enc_ciphertext = extract_enc_ciphertext(&raw_tx, cmx, epk)?;
-    let Some(enc) = enc_ciphertext else {
+    let raw_tx = client.get_transaction(txid).await?;
+    let Some(enc) = zync_core::sync::extract_enc_ciphertext(&raw_tx, cmx, epk) else {
         return Ok(None);
     };
 
@@ -892,45 +750,22 @@ async fn fetch_memo(
     );
     let domain = OrchardDomain::for_compact_action(&compact);
 
-    let output = FullShieldedOutput {
-        epk: *epk,
-        cmx: *cmx,
-        enc_ciphertext: enc,
-    };
-
-    if let Some((_, _, memo)) = try_note_decryption(&domain, ivk, &output) {
-        let end = memo
-            .iter()
-            .rposition(|&b| b != 0)
-            .map(|i| i + 1)
-            .unwrap_or(0);
-        if end > 0 {
-            let text = String::from_utf8_lossy(&memo[..end]).to_string();
-            return Ok(Some(text));
-        }
+    struct FullOutput {
+        epk: [u8; 32],
+        cmx: [u8; 32],
+        enc_ciphertext: [u8; ENC_CIPHERTEXT_SIZE],
+    }
+    impl ShieldedOutput<OrchardDomain, ENC_CIPHERTEXT_SIZE> for FullOutput {
+        fn ephemeral_key(&self) -> EphemeralKeyBytes { EphemeralKeyBytes(self.epk) }
+        fn cmstar_bytes(&self) -> [u8; 32] { self.cmx }
+        fn enc_ciphertext(&self) -> &[u8; ENC_CIPHERTEXT_SIZE] { &self.enc_ciphertext }
     }
 
-    Ok(None)
-}
-
-/// extract the 580-byte enc_ciphertext for an action matching cmx+epk from raw tx bytes
-///
-/// V5 orchard action = cv(32) + nf(32) + rk(32) + cmx(32) + epk(32) + enc(580) + out(80) = 820 bytes
-/// enc_ciphertext immediately follows epk within each action.
-fn extract_enc_ciphertext(
-    raw_tx: &[u8],
-    cmx: &[u8; 32],
-    epk: &[u8; 32],
-) -> Result<Option<[u8; ENC_CIPHERTEXT_SIZE]>, Error> {
-    for i in 0..raw_tx.len().saturating_sub(64 + ENC_CIPHERTEXT_SIZE) {
-        if &raw_tx[i..i + 32] == cmx && &raw_tx[i + 32..i + 64] == epk {
-            let start = i + 64;
-            let end = start + ENC_CIPHERTEXT_SIZE;
-            if end <= raw_tx.len() {
-                let mut enc = [0u8; ENC_CIPHERTEXT_SIZE];
-                enc.copy_from_slice(&raw_tx[start..end]);
-                return Ok(Some(enc));
-            }
+    let output = FullOutput { epk: *epk, cmx: *cmx, enc_ciphertext: enc };
+    if let Some((_, _, memo)) = try_note_decryption(&domain, ivk, &output) {
+        let end = memo.iter().rposition(|&b| b != 0).map(|i| i + 1).unwrap_or(0);
+        if end > 0 {
+            return Ok(Some(String::from_utf8_lossy(&memo[..end]).to_string()));
         }
     }
     Ok(None)
