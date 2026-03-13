@@ -3,10 +3,13 @@ name = "zync-core"
 version = "0.4.0"
 edition = "2021"
 license = "MIT"
-description = "Zcash light client primitives — verification, scanning, proof types"
+description = "Trust-minimized Zcash light client primitives: verification, scanning, proving"
 repository = "https://github.com/rotkonetworks/zcli"
 keywords = ["zcash", "ligerito", "light-client", "zk-proofs"]
 categories = ["cryptography"]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
 
 [features]
 default = ["client", "parallel"]

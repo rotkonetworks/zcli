@@ -12,10 +12,8 @@ pub use lightwalletd::LightwalletdClient;
 #[cfg(feature = "client")]
 pub use zidecar::ZidecarClient;
 
-/// public lightwalletd endpoints for fallback
-pub const LIGHTWALLETD_MAINNET: &str = "https://mainnet.lightwalletd.com:9067";
-pub const LIGHTWALLETD_MAINNET_ALT: &str = "https://lightwalletd.electriccoin.co:9067";
-pub const LIGHTWALLETD_TESTNET: &str = "https://testnet.lightwalletd.com:9067";
+// re-export endpoints from the non-gated module for backwards compat
+pub use crate::endpoints::*;
 
 /// generated protobuf types for zidecar
 #[cfg(feature = "client")]

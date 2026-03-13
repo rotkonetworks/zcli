@@ -1,20 +1,105 @@
-//! ZYNC Core - Zcash light client primitives
+//! # zync-core
 //!
-//! Shared library for zcash light client verification and scanning:
-//! - Ligerito header chain verification
-//! - NOMT state proof verification
-//! - Orchard note trial decryption
-//! - gRPC client for zidecar/lightwalletd
+//! Trust-minimized Zcash light client primitives. Remaining trust assumptions:
+//! the hardcoded activation block hash, the cryptographic proof systems
+//! (ligerito, NOMT, Halo 2), and your key material.
+//!
+//! ## Trust model
+//!
+//! A zync-powered light client verifies every claim the server makes:
+//!
+//! 1. **Header chain.** [ligerito](https://crates.io/crates/ligerito) polynomial
+//!    commitment proofs over block headers. The prover encodes headers into a trace
+//!    polynomial and commits to the evaluation; the verifier checks the commitment
+//!    in O(log n) without seeing any headers. Chain continuity (prev_hash linkage),
+//!    cumulative difficulty, and height progression are enforced by the trace
+//!    constraints. Proven roots anchor all subsequent verification.
+//!
+//! 2. **State proofs.** NOMT sparse merkle proofs for note commitments and
+//!    nullifiers. Each proof binds to the tree root proven by the header chain.
+//!    Commitment proofs verify that received notes exist in the global tree.
+//!    Nullifier proofs verify spent/unspent status without trusting the server.
+//!
+//! 3. **Actions integrity.** A running Blake2b commitment chain over per-block
+//!    orchard action merkle roots. Verified against the header-proven value to
+//!    detect block action tampering (inserted, removed, or reordered actions).
+//!
+//! 4. **Cross-verification.** BFT majority consensus against independent
+//!    lightwalletd nodes. Tip and activation block hashes are compared with
+//!    >2/3 agreement required. Prevents single-server eclipse attacks.
+//!
+//! 5. **Trial decryption.** Orchard note scanning with cmx recomputation.
+//!    After decryption, the note commitment is recomputed from the decrypted
+//!    fields and compared against the server-provided cmx. A malicious server
+//!    cannot craft ciphertexts that decrypt to fake notes with arbitrary values.
+//!
+//! ## Modules
+//!
+//! - [`verifier`]: ligerito header chain proof verification (epoch + tip, parallel)
+//! - [`nomt`]: NOMT sparse merkle proof verification (commitments + nullifiers)
+//! - [`actions`]: actions merkle root computation and running commitment chain
+//! - [`scanner`]: orchard note trial decryption (native + WASM parallel)
+//! - [`sync`]: sync verification primitives (proof validation, cross-verify, memo extraction)
+//! - [`prover`]: ligerito proof generation from header chain traces
+//! - [`trace`]: header chain trace encoding (headers to polynomial)
+//! - [`client`]: gRPC clients for zidecar and lightwalletd (feature-gated)
+//!
+//! ## Platform support
+//!
+//! Default features (`client`, `parallel`) build a native library with gRPC
+//! clients and rayon-based parallel scanning. For WASM, disable defaults and
+//! enable `wasm` or `wasm-parallel`:
+//!
+//! ```toml
+//! zync-core = { version = "0.4", default-features = false, features = ["wasm-parallel"] }
+//! ```
+//!
+//! WASM parallel scanning requires `SharedArrayBuffer` (COOP/COEP headers)
+//! and builds with:
+//! ```sh
+//! RUSTFLAGS='-C target-feature=+atomics,+bulk-memory,+mutable-globals' \
+//!   cargo build --target wasm32-unknown-unknown
+//! ```
+//!
+//! ## Minimal sync loop
+//!
+//! ```ignore
+//! use zync_core::{sync, verifier, Scanner, OrchardFvk};
+//!
+//! // 1. fetch header proof from zidecar
+//! let (proof_bytes, _, _) = client.get_header_proof().await?;
+//!
+//! // 2. verify and extract proven NOMT roots
+//! let proven = sync::verify_header_proof(&proof_bytes, tip, true)?;
+//!
+//! // 3. scan compact blocks for owned notes
+//! let scanner = Scanner::from_fvk(&fvk);
+//! let notes = scanner.scan(&actions);
+//!
+//! // 4. verify commitment proofs for received notes
+//! sync::verify_commitment_proofs(&proofs, &cmxs, &proven, &server_root)?;
+//!
+//! // 5. verify nullifier proofs for unspent notes
+//! let spent = sync::verify_nullifier_proofs(&nf_proofs, &nullifiers, &proven, &nf_root)?;
+//!
+//! // 6. verify actions commitment chain
+//! sync::verify_actions_commitment(&running, &proven.actions_commitment, true)?;
+//! ```
 
 #![allow(dead_code)]
-#![allow(unused_imports)]
-#![allow(unused_variables)]
 
 pub mod actions;
+pub mod endpoints;
 pub mod error;
 pub mod nomt;
+pub mod prover;
 pub mod scanner;
+pub mod sync;
+pub mod trace;
 pub mod verifier;
+
+#[cfg(feature = "wasm")]
+pub mod wasm_api;
 
 #[cfg(feature = "client")]
 pub mod client;
