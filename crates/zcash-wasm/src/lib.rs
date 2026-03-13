@@ -32,22 +32,16 @@ extern "C" {
     fn log(s: &str);
 }
 
-/// Cached Halo 2 proving key — building this is very expensive (~seconds).
-/// Cache it in thread-local storage so it's only built once per WASM instance.
-thread_local! {
-    static PROVING_KEY: std::cell::RefCell<Option<orchard::circuit::ProvingKey>> =
-        const { std::cell::RefCell::new(None) };
-}
+/// Cached Halo 2 proving key. Building is expensive (~seconds), built once
+/// and shared across all rayon threads via OnceLock.
+static PROVING_KEY: std::sync::OnceLock<orchard::circuit::ProvingKey> = std::sync::OnceLock::new();
 
 fn with_proving_key<R>(f: impl FnOnce(&orchard::circuit::ProvingKey) -> R) -> R {
-    PROVING_KEY.with(|cell| {
-        let mut opt = cell.borrow_mut();
-        if opt.is_none() {
-            log("[zafu-wasm] building Halo 2 proving key (one-time)");
-            *opt = Some(orchard::circuit::ProvingKey::build());
-        }
-        f(opt.as_ref().unwrap())
-    })
+    let pk = PROVING_KEY.get_or_init(|| {
+        log("[zafu-wasm] building Halo 2 proving key (one-time)");
+        orchard::circuit::ProvingKey::build()
+    });
+    f(pk)
 }
 
 /// Initialize panic hook for better error messages

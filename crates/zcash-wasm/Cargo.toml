@@ -21,7 +21,7 @@ group = "0.13"
 
 # Orchard protocol - real key derivation and note encryption
 # Use latest versions to avoid halo2_proofs/indexmap conflict
-orchard = { version = "0.12", default-features = false, features = ["circuit"] }
+orchard = { version = "0.12", default-features = false, features = ["circuit", "multicore"] }
 zcash_keys = { version = "0.12", default-features = false, features = ["orchard", "transparent-inputs"] }
 zcash_protocol = { version = "0.7", default-features = false }
 zip32 = { version = "0.2", default-features = false }
