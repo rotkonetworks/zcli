@@ -310,17 +310,42 @@ async fn cmd_sync(
         )
         .await?
     } else {
-        let seed = load_seed(cli)?;
-        ops::sync::sync(
-            &seed,
-            &cli.endpoint,
-            &cli.verify_endpoints,
-            mainnet,
-            cli.json,
-            from,
-            position,
-        )
-        .await?
+        match load_seed(cli) {
+            Ok(seed) => {
+                // auto-store FVK in watch wallet for future non-interactive syncs
+                ensure_fvk_cached(&seed, mainnet);
+                ops::sync::sync(
+                    &seed,
+                    &cli.endpoint,
+                    &cli.verify_endpoints,
+                    mainnet,
+                    cli.json,
+                    from,
+                    position,
+                )
+                .await?
+            }
+            Err(e) if e.is_key_error() => {
+                // SSH key failed (encrypted, wrong type, etc) — try watch wallet FVK
+                match load_fvk(cli, mainnet) {
+                    Ok(fvk) => {
+                        eprintln!("SSH key unavailable ({}), using watch-only FVK", e);
+                        ops::sync::sync_with_fvk(
+                            &fvk,
+                            &cli.endpoint,
+                            &cli.verify_endpoints,
+                            mainnet,
+                            cli.json,
+                            from,
+                            position,
+                        )
+                        .await?
+                    }
+                    Err(_) => return Err(e),
+                }
+            }
+            Err(e) => return Err(e),
+        }
     };
 
     if cli.json {
@@ -1520,6 +1545,32 @@ fn read_hex_line() -> Result<Vec<u8>, Error> {
         .ok_or_else(|| Error::Other("no input".into()))?
         .map_err(|e| Error::Other(format!("read stdin: {}", e)))?;
     hex::decode(line.trim()).map_err(|e| Error::Other(format!("invalid hex: {}", e)))
+}
+
+/// derive FVK from seed and store in watch wallet if not already cached
+fn ensure_fvk_cached(seed: &key::WalletSeed, mainnet: bool) {
+    let coin_type = if mainnet { 133 } else { 1 };
+    let sk = match orchard::keys::SpendingKey::from_zip32_seed(
+        seed.as_bytes(),
+        coin_type,
+        zip32::AccountId::ZERO,
+    ) {
+        Ok(sk) => sk,
+        Err(_) => return,
+    };
+    let fvk = orchard::keys::FullViewingKey::from(&sk);
+    let fvk_bytes = fvk.to_bytes();
+    let watch = match wallet::Wallet::open(&wallet::Wallet::watch_path()) {
+        Ok(w) => w,
+        Err(_) => return,
+    };
+    // only write if not already stored
+    if watch.get_fvk_bytes().ok().flatten().is_none() {
+        if watch.store_fvk(&fvk_bytes).is_ok() {
+            watch.flush();
+            eprintln!("cached FVK in watch wallet for future non-interactive syncs");
+        }
+    }
 }
 
 fn load_seed(cli: &Cli) -> Result<key::WalletSeed, Error> {

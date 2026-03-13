@@ -34,4 +34,8 @@ impl Error {
             _ => 1,
         }
     }
+
+    pub fn is_key_error(&self) -> bool {
+        matches!(self, Self::Key(_))
+    }
 }

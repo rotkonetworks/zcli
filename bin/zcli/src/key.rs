@@ -72,7 +72,23 @@ fn parse_ssh_ed25519(path: &str) -> Result<([u8; 32], [u8; 32]), Error> {
 
     let ed25519_keypair = match private_key.key_data() {
         ssh_key::private::KeypairData::Ed25519(kp) => kp,
-        _ => return Err(Error::Key("not an ed25519 key".into())),
+        ssh_key::private::KeypairData::Encrypted(_) => {
+            return Err(Error::Key(
+                "key is encrypted — set ZCLI_PASSPHRASE env var or use an unencrypted ed25519 key (-i path)".into(),
+            ));
+        }
+        other => {
+            let algo = match other {
+                ssh_key::private::KeypairData::Rsa(_) => "RSA",
+                ssh_key::private::KeypairData::Ecdsa(_) => "ECDSA",
+                ssh_key::private::KeypairData::Dsa(_) => "DSA",
+                _ => "unknown",
+            };
+            return Err(Error::Key(format!(
+                "key is {} — zcli requires ed25519 (use -i to specify a different key)",
+                algo,
+            )));
+        }
     };
 
     let seed_bytes = ed25519_keypair.private.as_ref();
@@ -131,11 +147,23 @@ pub fn decrypt_age_file(age_path: &str, identity_path: &str) -> Result<String, E
         .map_err(|e| Error::Key(format!("age output not utf8: {}", e)))
 }
 
+/// check if openssh key is encrypted by trying to parse it
+#[cfg(feature = "cli")]
+fn is_openssh_encrypted(key_data: &str) -> bool {
+    match ssh_key::PrivateKey::from_openssh(key_data) {
+        Ok(k) => k.is_encrypted(),
+        Err(_) => false,
+    }
+}
+
 /// prompt for ssh key passphrase if needed
 #[cfg(feature = "cli")]
 fn ssh_passphrase(key_data: &str) -> Result<Option<String>, Error> {
-    // unencrypted keys don't have ENCRYPTED in the PEM header
-    if !key_data.contains("ENCRYPTED") {
+    // check if key is encrypted:
+    // - older PEM format: "ENCRYPTED" in header
+    // - OpenSSH format: cipher name in binary payload (aes256-ctr, aes256-gcm, etc)
+    let is_encrypted = key_data.contains("ENCRYPTED") || is_openssh_encrypted(key_data);
+    if !is_encrypted {
         return Ok(None);
     }
 

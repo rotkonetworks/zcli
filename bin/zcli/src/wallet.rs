@@ -141,11 +141,16 @@ pub struct Wallet {
 }
 
 impl Wallet {
+    pub fn flush(&self) {
+        self.db.flush().ok();
+    }
+
     pub fn open(path: &str) -> Result<Self, Error> {
         let db = sled::open(path)
             .map_err(|e| Error::Wallet(format!("cannot open wallet db at {}: {}", path, e)))?;
         // migrate: remove stale keys from pre-0.5.3 when FVK was stored in main wallet
-        if !is_watch_mode() {
+        // only clean up the main wallet (not the watch wallet)
+        if !is_watch_mode() && !path.ends_with("/watch") {
             let _ = db.remove(b"wallet_mode");
             let _ = db.remove(b"full_viewing_key");
         }
