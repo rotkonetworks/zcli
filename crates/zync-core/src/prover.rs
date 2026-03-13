@@ -36,7 +36,7 @@ use ligerito_binary_fields::{BinaryElem128, BinaryElem32, BinaryFieldElement};
 use serde::{Deserialize, Serialize};
 
 use crate::error::ZyncError;
-use crate::trace::{HeaderChainTrace, FIELDS_PER_HEADER, TIP_SENTINEL_SIZE};
+use crate::trace::{HeaderChainTrace, FIELDS_PER_HEADER};
 
 /// Public outputs claimed by the prover.
 ///

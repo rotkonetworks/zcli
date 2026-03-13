@@ -111,7 +111,7 @@ fn read_compact_size(data: &[u8], pos: &mut usize) -> Result<u64, String> {
                 data[*pos + 7],
             ]);
             *pos += 8;
-            Ok(v as u64)
+            Ok(v)
         }
     }
 }
@@ -205,7 +205,7 @@ pub fn build_merkle_paths_inner(
                 MerkleHashOrchard::empty_leaf()
             };
 
-            tree.append(hash.clone())
+            tree.append(hash)
                 .map_err(|_| "merkle tree full".to_string())?;
 
             // snapshot witness at note positions
@@ -218,7 +218,7 @@ pub fn build_merkle_paths_inner(
                 if w.witnessed_position()
                     < incrementalmerkletree::Position::from(position_counter)
                 {
-                    w.append(hash.clone())
+                    w.append(hash)
                         .map_err(|_| "witness tree full".to_string())?;
                 }
             }

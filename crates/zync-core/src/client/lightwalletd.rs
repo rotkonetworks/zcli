@@ -9,7 +9,7 @@ use super::{
 };
 use anyhow::Result;
 use tonic::transport::Channel;
-use tracing::{debug, info, warn};
+use tracing::info;
 
 pub struct LightwalletdClient {
     client: GrpcClient<Channel>,

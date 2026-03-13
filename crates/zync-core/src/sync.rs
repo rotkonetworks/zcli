@@ -356,12 +356,10 @@ pub fn extract_enc_ciphertext(
 }
 
 /// Compute running actions commitment for a sequence of blocks.
-///
-/// Processes each block's actions through the commitment chain,
-/// returning the final running commitment.
+#[allow(clippy::type_complexity)]
 pub fn chain_actions_commitment(
     initial: &[u8; 32],
-    blocks: &[(u32, Vec<([u8; 32], [u8; 32], [u8; 32])>)], // (height, actions)
+    blocks: &[(u32, Vec<([u8; 32], [u8; 32], [u8; 32])>)],
 ) -> [u8; 32] {
     let mut running = *initial;
     for (height, block_actions) in blocks {

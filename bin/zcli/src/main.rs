@@ -1565,11 +1565,11 @@ fn ensure_fvk_cached(seed: &key::WalletSeed, mainnet: bool) {
         Err(_) => return,
     };
     // only write if not already stored
-    if watch.get_fvk_bytes().ok().flatten().is_none() {
-        if watch.store_fvk(&fvk_bytes).is_ok() {
-            watch.flush();
-            eprintln!("cached FVK in watch wallet for future non-interactive syncs");
-        }
+    if watch.get_fvk_bytes().ok().flatten().is_none()
+        && watch.store_fvk(&fvk_bytes).is_ok()
+    {
+        watch.flush();
+        eprintln!("cached FVK in watch wallet for future non-interactive syncs");
     }
 }
 

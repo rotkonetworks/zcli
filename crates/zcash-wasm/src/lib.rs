@@ -219,6 +219,7 @@ impl WalletKeys {
     /// Try to decrypt a binary-format action using official Orchard note decryption
     /// Tries BOTH external and internal scope IVKs
     /// Returns (value, note_nullifier, rseed_bytes, rho_bytes, recipient_address_bytes)
+    #[allow(clippy::type_complexity)]
     fn try_decrypt_action_binary(&self, action: &CompactActionBinary) -> Option<(u64, [u8; 32], [u8; 32], [u8; 32], [u8; 43])> {
         // Parse the nullifier and cmx
         let nullifier = orchard::note::Nullifier::from_bytes(&action.nullifier);
@@ -495,7 +496,7 @@ fn hex_encode(bytes: &[u8]) -> String {
 }
 
 fn hex_decode(s: &str) -> Option<Vec<u8>> {
-    if s.len() % 2 != 0 {
+    if !s.len().is_multiple_of(2) {
         return None;
     }
     (0..s.len())
@@ -542,7 +543,7 @@ impl WatchOnlyWallet {
         let fvk_array: [u8; 96] = fvk_bytes.try_into().unwrap();
         let fvk = orchard::keys::FullViewingKey::from_bytes(&fvk_array);
 
-        if fvk.is_none().into() {
+        if fvk.is_none() {
             return Err(JsError::new("Invalid FVK bytes"));
         }
         let fvk = fvk.unwrap();
@@ -579,7 +580,7 @@ impl WatchOnlyWallet {
         // extract raw 96-byte FVK
         let fvk_bytes = orchard_fvk.to_bytes();
         let fvk = orchard::keys::FullViewingKey::from_bytes(&fvk_bytes);
-        if fvk.is_none().into() {
+        if fvk.is_none() {
             return Err(JsError::new("invalid orchard FVK in UFVK"));
         }
         let fvk = fvk.unwrap();
@@ -716,6 +717,7 @@ impl WatchOnlyWallet {
 
     /// Try to decrypt a compact action
     /// Returns (value, note_nullifier, rseed_bytes, rho_bytes, recipient_address_bytes)
+    #[allow(clippy::type_complexity)]
     fn try_decrypt_action(&self, action: &CompactActionBinary) -> Option<(u64, [u8; 32], [u8; 32], [u8; 32], [u8; 43])> {
         let nullifier = orchard::note::Nullifier::from_bytes(&action.nullifier);
         if nullifier.is_none().into() {
@@ -1031,6 +1033,7 @@ struct FullOrchardAction {
     cmx: [u8; 32],
     epk: [u8; 32],
     enc_ciphertext: [u8; 580], // full ciphertext including memo
+    #[allow(dead_code)]
     out_ciphertext: [u8; 80],   // for outgoing note decryption
 }
 
@@ -1294,7 +1297,7 @@ fn parse_memo_bytes(memo: &[u8; 512]) -> (String, bool) {
     if let Ok(text) = String::from_utf8(text_bytes.clone()) {
         // Check if it looks like text (mostly printable ASCII + common UTF-8)
         let printable_ratio = text_bytes.iter()
-            .filter(|&&b| b >= 32 && b <= 126 || b >= 0xC0)
+            .filter(|&&b| (32..=126).contains(&b) || b >= 0xC0)
             .count() as f32 / text_bytes.len().max(1) as f32;
 
         if printable_ratio > 0.8 {
@@ -1542,6 +1545,7 @@ mod tests {
 /// - unsigned_tx: the serialized v5 transaction with dummy spend auth sigs (hex)
 /// - spend_indices: array of action indices that need external signatures
 /// - summary: human-readable transaction summary
+#[allow(clippy::too_many_arguments)]
 #[wasm_bindgen]
 pub fn build_unsigned_transaction(
     ufvk_str: &str,
@@ -1717,7 +1721,7 @@ pub fn build_unsigned_transaction(
         }
 
         let merkle_path = OrchardMerklePath::from_parts(
-            u32::try_from(mp.position).map_err(|_| JsError::new(&format!("tree position {} exceeds u32 max", mp.position)))?.into(),
+            u32::try_from(mp.position).map_err(|_| JsError::new(&format!("tree position {} exceeds u32 max", mp.position)))?,
             merkle_hashes.try_into().map_err(|_| JsError::new("merkle path conversion"))?,
         );
 
@@ -1747,7 +1751,7 @@ pub fn build_unsigned_transaction(
 
 
     // --- create proof (Halo 2 — expensive) ---
-    with_proving_key(|pk| pczt_bundle.create_proof(pk, &mut rng))
+    with_proving_key(|pk| pczt_bundle.create_proof(pk, rng))
         .map_err(|e| JsError::new(&format!("create_proof: {}", e)))?;
 
 
@@ -1809,7 +1813,7 @@ pub fn build_unsigned_transaction(
 
 
     // --- finalize IO (signs dummies, computes bsk) ---
-    pczt_bundle.finalize_io(sighash, &mut rng)
+    pczt_bundle.finalize_io(sighash, rng)
         .map_err(|e| JsError::new(&format!("finalize_io: {}", e)))?;
 
 
@@ -1840,7 +1844,7 @@ pub fn build_unsigned_transaction(
         .ok_or_else(|| JsError::new("missing bsk after finalize_io"))?;
 
     // Compute binding signature
-    let binding_sig = bsk.sign(&mut rng, &sighash);
+    let binding_sig = bsk.sign(rng, &sighash);
 
     let mut tx_bytes = Vec::new();
 
@@ -2032,7 +2036,7 @@ pub fn complete_transaction(
 
     // skip action data: each action is 820 bytes
     // cv(32) + nf(32) + rk(32) + cmx(32) + epk(32) + enc(580) + out(80) = 820
-    let actions_start = pos;
+    let _actions_start = pos;
     pos += n_actions as usize * 820;
 
     // skip flags(1) + valueBalance(8) + anchor(32) = 41
@@ -2117,7 +2121,7 @@ pub fn build_merkle_paths(
 
     let result =
         witness::build_merkle_paths_inner(tree_state_hex, &blocks, &positions, anchor_height)
-            .map_err(|e| JsError::new(&format!("{}", e)))?;
+            .map_err(|e| JsError::new(&e.to_string()))?;
 
     let json = serde_json::to_string(&result)
         .map_err(|e| JsError::new(&format!("failed to serialize result: {}", e)))?;
@@ -2130,7 +2134,7 @@ pub fn build_merkle_paths(
 pub fn frontier_tree_size(tree_state_hex: &str) -> Result<u64, JsError> {
     let data =
         hex::decode(tree_state_hex).map_err(|e| JsError::new(&format!("invalid hex: {}", e)))?;
-    witness::compute_frontier_tree_size(&data).map_err(|e| JsError::new(&format!("{}", e)))
+    witness::compute_frontier_tree_size(&data).map_err(|e| JsError::new(&e.to_string()))
 }
 
 /// Compute the tree root from a hex-encoded frontier.
@@ -2138,7 +2142,7 @@ pub fn frontier_tree_size(tree_state_hex: &str) -> Result<u64, JsError> {
 pub fn tree_root_hex(tree_state_hex: &str) -> Result<String, JsError> {
     let data =
         hex::decode(tree_state_hex).map_err(|e| JsError::new(&format!("invalid hex: {}", e)))?;
-    let root = witness::compute_tree_root(&data).map_err(|e| JsError::new(&format!("{}", e)))?;
+    let root = witness::compute_tree_root(&data).map_err(|e| JsError::new(&e.to_string()))?;
     Ok(hex::encode(root))
 }
 
@@ -2287,6 +2291,7 @@ struct SpendableNote {
 ///
 /// # Returns
 /// Hex-encoded signed v5 transaction bytes ready for broadcast
+#[allow(clippy::too_many_arguments)]
 #[wasm_bindgen]
 pub fn build_signed_spend_transaction(
     seed_phrase: &str,
@@ -2461,7 +2466,7 @@ pub fn build_signed_spend_transaction(
         }
 
         let merkle_path = OrchardMerklePath::from_parts(
-            u32::try_from(mp.position).map_err(|_| JsError::new(&format!("tree position {} exceeds u32 max", mp.position)))?.into(),
+            u32::try_from(mp.position).map_err(|_| JsError::new(&format!("tree position {} exceeds u32 max", mp.position)))?,
             merkle_hashes.try_into().map_err(|_| JsError::new("merkle path conversion"))?,
         );
 
@@ -2547,7 +2552,7 @@ pub fn build_signed_spend_transaction(
 
     // apply spend auth signatures + binding signature
     let authorized_bundle = proven_bundle
-        .apply_signatures(&mut rng, sighash, &[ask])
+        .apply_signatures(rng, sighash, &[ask])
         .map_err(|e| JsError::new(&format!("apply_signatures: {:?}", e)))?;
 
     // --- serialize v5 transaction ---
@@ -2966,8 +2971,7 @@ pub fn build_shielding_transaction(
     // --- sign transparent inputs ---
     let mut signed_inputs: Vec<SignedTransparentInput> = Vec::new();
 
-    for i in 0..n_inputs {
-        let utxo = &selected[i];
+    for utxo in &selected[..n_inputs] {
         let txid_be = hex_decode(&utxo.txid).unwrap();
         let mut txid_le = txid_be.clone();
         txid_le.reverse();
@@ -3053,7 +3057,7 @@ pub fn build_shielding_transaction(
     };
 
     let authorized_bundle = proven_bundle
-        .apply_signatures(&mut rng, txid_sighash, &[])
+        .apply_signatures(rng, txid_sighash, &[])
         .map_err(|e| JsError::new(&format!("apply_signatures: {:?}", e)))?;
 
     // --- serialize v5 transaction ---
@@ -3251,8 +3255,7 @@ pub fn build_unsigned_shielding_transaction(
     // --- compute per-input sighashes (but do NOT sign) ---
     let mut sighashes: Vec<String> = Vec::new();
 
-    for i in 0..n_inputs {
-        let utxo = &selected[i];
+    for utxo in &selected[..n_inputs] {
         let txid_be = hex_decode(&utxo.txid).unwrap();
         let mut txid_le = txid_be.clone();
         txid_le.reverse();
@@ -3315,7 +3318,7 @@ pub fn build_unsigned_shielding_transaction(
     };
 
     let authorized_bundle = proven_bundle
-        .apply_signatures(&mut rng, txid_sighash, &[])
+        .apply_signatures(rng, txid_sighash, &[])
         .map_err(|e| JsError::new(&format!("apply_signatures: {:?}", e)))?;
 
     // --- serialize v5 transaction with EMPTY scriptSigs ---
@@ -3482,7 +3485,7 @@ fn read_compact_size(data: &[u8], pos: usize) -> Result<(u64, usize), JsError> {
                 data[pos + 1], data[pos + 2], data[pos + 3], data[pos + 4],
                 data[pos + 5], data[pos + 6], data[pos + 7], data[pos + 8],
             ]);
-            Ok((v as u64, 9))
+            Ok((v, 9))
         }
     }
 }
