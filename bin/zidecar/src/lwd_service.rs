@@ -337,7 +337,7 @@ impl CompactTxStreamer for LwdService {
                 .map(|c| c.chaintip.clone())
                 .unwrap_or_default(),
             block_height: info.blocks as u64,
-            git_commit: env!("CARGO_PKG_VERSION").to_string(),
+            git_commit: format!("v{}-{}", env!("CARGO_PKG_VERSION"), env!("GIT_HASH")),
             branch: "main".to_string(),
             build_date: String::new(),
             build_user: "zidecar".to_string(),
