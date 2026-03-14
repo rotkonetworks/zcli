@@ -1,0 +1,190 @@
+syntax = "proto3";
+package zclid.v1;
+
+// wallet daemon service
+//
+// two custody modes:
+//   CUSTODY  — zclid holds spending key, can sign transactions (agents, automated payments)
+//   VIEW     — zclid holds only viewing key, builds unsigned txs for external signing (zafu, zigner)
+service WalletDaemon {
+    // ── queries (both modes) ──
+
+    // which mode is zclid running in
+    rpc GetCustodyMode(Empty) returns (CustodyModeResponse);
+
+    // wallet addresses (shielded + transparent)
+    rpc GetAddress(Empty) returns (AddressResponse);
+
+    // instant balance (no sync wait)
+    rpc GetBalance(Empty) returns (Balance);
+
+    // spendable notes with pending status
+    rpc GetNotes(Empty) returns (NoteList);
+
+    // sync state + mempool activity
+    rpc GetStatus(Empty) returns (DaemonStatus);
+
+    // pending mempool activity (incoming + spends)
+    rpc GetPendingActivity(Empty) returns (PendingActivity);
+
+    // recent transaction history
+    rpc GetHistory(HistoryRequest) returns (HistoryResponse);
+
+    // ── transaction building (both modes) ──
+
+    // build unsigned transaction from intent
+    // returns serialized PCZT bundle + sighash for external signing
+    rpc PrepareTransaction(TransactionIntent) returns (PreparedTransaction);
+
+    // ── signing + broadcast ──
+
+    // mode 1 (CUSTODY): sign with held key + broadcast in one step
+    // errors with FAILED_PRECONDITION in VIEW mode
+    rpc SignAndSend(TransactionIntent) returns (SendResponse);
+
+    // mode 2 (VIEW): submit externally signed transaction
+    // accepts signatures from zafu/zigner and completes the PCZT
+    rpc SubmitSigned(SignedTransaction) returns (SendResponse);
+
+    // broadcast raw pre-built transaction bytes (either mode)
+    rpc SendRawTransaction(RawTransaction) returns (SendResponse);
+}
+
+message Empty {}
+
+// ── custody ──
+
+enum CustodyMode {
+    CUSTODY = 0;    // spending key held — full spend authority
+    VIEW = 1;       // viewing key only — builds unsigned txs
+}
+
+message CustodyModeResponse {
+    CustodyMode mode = 1;
+}
+
+// ── addresses ──
+
+message AddressResponse {
+    // unified orchard address (u1...)
+    string shielded_address = 1;
+    // transparent address (t1...) for shielding
+    string transparent_address = 2;
+}
+
+// ── balance ──
+
+message Balance {
+    uint64 confirmed_zat = 1;
+    uint64 pending_incoming_zat = 2;
+    uint32 num_notes = 3;
+    uint32 num_pending_spends = 4;
+    uint32 synced_to = 5;
+    uint32 chain_tip = 6;
+}
+
+// ── notes ──
+
+message WalletNote {
+    uint64 value = 1;
+    bytes nullifier = 2;        // 32 bytes
+    bytes cmx = 3;              // 32 bytes
+    uint32 height = 4;          // 0 = mempool
+    bool is_change = 5;
+    bool spend_pending = 6;
+    uint64 position = 7;
+    bytes txid = 8;
+    string memo = 9;
+}
+
+message NoteList {
+    repeated WalletNote notes = 1;
+}
+
+// ── status ──
+
+message DaemonStatus {
+    uint32 synced_to = 1;
+    uint32 chain_tip = 2;
+    bool syncing = 3;
+    uint32 mempool_txs_seen = 4;
+    uint32 mempool_actions_scanned = 5;
+    uint64 started_at = 6;
+    string endpoint = 7;
+    CustodyMode custody_mode = 8;
+}
+
+// ── mempool ──
+
+message PendingActivity {
+    repeated PendingEvent events = 1;
+}
+
+message PendingEvent {
+    enum Kind {
+        INCOMING = 0;
+        SPEND = 1;
+        CHANGE = 2;
+    }
+    Kind kind = 1;
+    uint64 value_zat = 2;
+    bytes txid = 3;
+    bytes nullifier = 4;
+}
+
+// ── history ──
+
+message HistoryRequest {
+    uint32 limit = 1;
+}
+
+message HistoryResponse {
+    repeated HistoryEntry entries = 1;
+}
+
+message HistoryEntry {
+    bytes txid = 1;
+    uint32 height = 2;
+    int64 value_zat = 3;
+    string memo = 4;
+    uint64 timestamp = 5;
+}
+
+// ── transactions ──
+
+message TransactionIntent {
+    // where to send
+    string to_address = 1;
+    // amount in zatoshis
+    uint64 amount_zat = 2;
+    // optional memo (max 512 bytes)
+    string memo = 3;
+}
+
+message PreparedTransaction {
+    // serialized PCZT sign request (QR-encodable, same format as zigner)
+    bytes sign_request = 1;
+    // sighash to sign (32 bytes)
+    bytes sighash = 2;
+    // number of signatures needed
+    uint32 num_signatures = 3;
+    // opaque state blob — pass back to SubmitSigned to complete the tx
+    bytes pczt_state = 4;
+}
+
+message SignedTransaction {
+    // opaque state from PrepareTransaction
+    bytes pczt_state = 1;
+    // orchard authorization signatures (64 bytes each)
+    repeated bytes signatures = 2;
+}
+
+message RawTransaction {
+    bytes data = 1;
+}
+
+message SendResponse {
+    string txid = 1;
+    int32 error_code = 2;
+    string error_message = 3;
+}

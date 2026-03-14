@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "bin/zcli",
+    "bin/zclid",
     "bin/zidecar",
     "crates/zync-core",
     "crates/ligerito",
