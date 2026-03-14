@@ -15,9 +15,45 @@ ExecStart=/usr/local/bin/zclid \
 Restart=on-failure
 RestartSec=10
 
-# runs as calling user, needs wallet access
+# filesystem — needs wallet db + ssh key (read) + socket
+NoNewPrivileges=true
 ProtectSystem=strict
+ProtectHome=false
 ReadWritePaths=%h/.zcli
+ReadOnlyPaths=%h/.ssh/id_ed25519
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectProc=invisible
+ProcSubset=pid
+
+# network — outbound https to zidecar + local listen
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+# capabilities — none
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# syscall filter
+SystemCallFilter=@system-service
+SystemCallFilter=~@mount @reboot @swap @clock @cpu-emulation @debug @obsolete @raw-io @privileged
+SystemCallArchitectures=native
+
+# memory — spending key protection
+MemoryDenyWriteExecute=true
+LockPersonality=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+RemoveIPC=true
+
+# no core dumps — spending key must not hit disk
+LimitCORE=0
+
+# restrict /proc visibility from other users
+UMask=0077
 
 [Install]
 WantedBy=default.target

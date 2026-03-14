@@ -6,6 +6,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=zidecar
+Group=zidecar
 ExecStart=/usr/local/bin/zidecar \
     --zebrad-rpc http://127.0.0.1:8232 \
     --listen 0.0.0.0:50051 \
@@ -14,15 +15,45 @@ ExecStart=/usr/local/bin/zidecar \
 Restart=on-failure
 RestartSec=5
 
-# hardening
+# filesystem
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 ReadWritePaths=/var/lib/zidecar
 PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectProc=invisible
+ProcSubset=pid
+
+# network — only needs outbound to zebrad + inbound grpc
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+IPAddressDeny=any
+IPAddressAllow=localhost
+IPAddressAllow=0.0.0.0/0
+
+# capabilities — none needed, runs as unprivileged user
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# syscall filter
+SystemCallFilter=@system-service
+SystemCallFilter=~@mount @reboot @swap @clock @cpu-emulation @debug @obsolete @raw-io @privileged
+SystemCallArchitectures=native
+
+# memory
+MemoryDenyWriteExecute=true
+LockPersonality=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+RemoveIPC=true
 
 # resource limits
 LimitNOFILE=65536
+LimitCORE=0
 
 [Install]
 WantedBy=multi-user.target
