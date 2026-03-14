@@ -420,7 +420,7 @@ pub struct TreeCommitment {
 
 #[derive(Debug, Deserialize)]
 pub struct TreeCommitmentData {
-    #[serde(rename = "finalState")]
+    #[serde(default, rename = "finalState")]
     pub final_state: String,
     #[serde(default, rename = "finalStateSize")]
     pub final_state_size: Option<u32>,
