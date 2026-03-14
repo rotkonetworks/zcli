@@ -16,6 +16,7 @@ mod error;
 mod grpc_service;
 mod header_chain;
 mod lwd_service;
+mod middleware;
 mod prover;
 mod storage;
 mod witness;
@@ -170,6 +171,7 @@ async fn main() -> Result<()> {
 
     Server::builder()
         .accept_http1(true) // required for gRPC-web
+        .layer(middleware::trace_layer())
         .add_service(tonic_web::enable(
             lightwalletd::compact_tx_streamer_server::CompactTxStreamerServer::new(lwd),
         ))
