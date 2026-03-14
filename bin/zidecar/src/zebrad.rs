@@ -1,54 +1,160 @@
-//! zebrad RPC client
+//! zebrad RPC client with tower retry + timeout
 
 use crate::error::{Result, ZidecarError};
 use reqwest::Client;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::{json, Value};
+use std::{
+    future::Future,
+    pin::Pin,
+    task::{Context, Poll},
+    time::Duration,
+};
+use tower::{buffer::Buffer, retry, Service, ServiceBuilder, ServiceExt};
+use tracing::warn;
+
+/// JSON-RPC request to zebrad
+#[derive(Clone, Debug)]
+pub struct ZebradRequest {
+    pub method: String,
+    pub params: Vec<Value>,
+}
+
+/// inner service: bare reqwest calls to zebrad JSON-RPC
+#[derive(Clone)]
+struct ZebradInner {
+    url: String,
+    client: Client, // reqwest Client with built-in 30s timeout
+}
+
+impl Service<ZebradRequest> for ZebradInner {
+    type Response = Value;
+    type Error = ZidecarError;
+    type Future = Pin<Box<dyn Future<Output = std::result::Result<Value, ZidecarError>> + Send>>;
+
+    fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<std::result::Result<(), Self::Error>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn call(&mut self, req: ZebradRequest) -> Self::Future {
+        let url = self.url.clone();
+        let client = self.client.clone();
+        Box::pin(async move {
+            let payload = json!({
+                "jsonrpc": "2.0",
+                "id": "zidecar",
+                "method": req.method,
+                "params": req.params,
+            });
+
+            let response = client
+                .post(&url)
+                .json(&payload)
+                .send()
+                .await
+                .map_err(ZidecarError::ZebradTransport)?;
+
+            let json: RpcResponse = response
+                .json()
+                .await
+                .map_err(ZidecarError::ZebradTransport)?;
+
+            if let Some(error) = json.error {
+                return Err(ZidecarError::ZebradRpc(format!(
+                    "RPC error {}: {}",
+                    error.code, error.message
+                )));
+            }
+
+            json.result
+                .ok_or_else(|| ZidecarError::ZebradRpc("no result in response".into()))
+        })
+    }
+}
+
+/// retry policy: retry transient errors up to 3 times with exponential backoff
+#[derive(Clone)]
+struct ZebradRetryPolicy {
+    max_retries: usize,
+}
+
+impl retry::Policy<ZebradRequest, Value, ZidecarError> for ZebradRetryPolicy {
+    type Future = Pin<Box<dyn Future<Output = Self> + Send>>;
+
+    fn retry(
+        &self,
+        _req: &ZebradRequest,
+        result: std::result::Result<&Value, &ZidecarError>,
+    ) -> Option<Self::Future> {
+        match result {
+            Ok(_) => None,
+            Err(err) if err.is_transient() && self.max_retries > 0 => {
+                let remaining = self.max_retries - 1;
+                let attempt = 3 - self.max_retries;
+                let backoff = Duration::from_millis(100 * (1 << attempt));
+                warn!(
+                    "zebrad transient error, retrying in {:?} ({} left): {}",
+                    backoff, remaining, err
+                );
+                Some(Box::pin(async move {
+                    tokio::time::sleep(backoff).await;
+                    ZebradRetryPolicy {
+                        max_retries: remaining,
+                    }
+                }))
+            }
+            Err(_) => None,
+        }
+    }
+
+    fn clone_request(&self, req: &ZebradRequest) -> Option<ZebradRequest> {
+        Some(req.clone())
+    }
+}
+
+type ZebradService = Buffer<
+    retry::Retry<ZebradRetryPolicy, ZebradInner>,
+    ZebradRequest,
+>;
 
 #[derive(Clone)]
 pub struct ZebradClient {
-    url: String,
-    client: Client,
+    service: ZebradService,
 }
 
 impl ZebradClient {
     pub fn new(url: &str) -> Self {
-        Self {
+        let client = Client::builder()
+            .timeout(Duration::from_secs(30))
+            .build()
+            .expect("failed to build reqwest client");
+
+        let inner = ZebradInner {
             url: url.to_string(),
-            client: Client::new(),
-        }
+            client,
+        };
+
+        let service = ServiceBuilder::new()
+            .buffer(32)
+            .retry(ZebradRetryPolicy { max_retries: 3 })
+            .service(inner);
+
+        Self { service }
     }
 
     async fn call(&self, method: &str, params: Vec<Value>) -> Result<Value> {
-        let payload = json!({
-            "jsonrpc": "2.0",
-            "id": "zidecar",
-            "method": method,
-            "params": params,
-        });
-
-        let response = self
-            .client
-            .post(&self.url)
-            .json(&payload)
-            .send()
+        let req = ZebradRequest {
+            method: method.to_string(),
+            params,
+        };
+        self.service
+            .clone()
+            .ready()
             .await
-            .map_err(|e| ZidecarError::ZebradRpc(e.to_string()))?;
-
-        let json: RpcResponse = response
-            .json()
+            .map_err(unbox_error)?
+            .call(req)
             .await
-            .map_err(|e| ZidecarError::ZebradRpc(e.to_string()))?;
-
-        if let Some(error) = json.error {
-            return Err(ZidecarError::ZebradRpc(format!(
-                "RPC error {}: {}",
-                error.code, error.message
-            )));
-        }
-
-        json.result
-            .ok_or_else(|| ZidecarError::ZebradRpc("no result in response".into()))
+            .map_err(unbox_error)
     }
 
     pub async fn get_blockchain_info(&self) -> Result<BlockchainInfo> {
@@ -144,6 +250,15 @@ impl ZebradClient {
         }
         let result = self.call("z_getsubtreesbyindex", params).await?;
         serde_json::from_value(result).map_err(|e| ZidecarError::ZebradRpc(e.to_string()))
+    }
+}
+
+/// recover the original ZidecarError from Buffer's Box<dyn Error> wrapper
+fn unbox_error(boxed: Box<dyn std::error::Error + Send + Sync>) -> ZidecarError {
+    // try downcast to our concrete type first
+    match boxed.downcast::<ZidecarError>() {
+        Ok(e) => *e,
+        Err(other) => ZidecarError::ZebradRpc(other.to_string()),
     }
 }
 

@@ -35,9 +35,6 @@ use tracing::{info, warn};
 /// concurrent requests for header fetching (reduced to avoid overwhelming zebrad)
 const CONCURRENT_REQUESTS: usize = 16;
 
-/// max retries for RPC calls
-const MAX_RETRIES: usize = 3;
-
 /// batch size for caching to disk (flush every N headers)
 const CACHE_BATCH_SIZE: usize = 1000;
 
@@ -154,42 +151,20 @@ impl HeaderChainTrace {
                 let chunk_vec: Vec<u32> = chunk.to_vec();
 
                 // fetch (height, hash, prev_hash, bits) for full PoW verification
+                // retry + timeout handled by ZebradClient's tower layers
                 let fetched: Vec<std::result::Result<(u32, String, String, String), ZidecarError>> =
                     stream::iter(chunk_vec)
                         .map(|height| {
                             let zc = zebrad_clone.clone();
                             async move {
-                                // retry logic
-                                let mut last_err = None;
-                                for attempt in 0..MAX_RETRIES {
-                                    match async {
-                                        let hash = zc.get_block_hash(height).await?;
-                                        let header = zc.get_block_header(&hash).await?;
-                                        Ok::<_, ZidecarError>((
-                                            height,
-                                            header.hash,
-                                            header.prev_hash,
-                                            header.bits,
-                                        ))
-                                    }
-                                    .await
-                                    {
-                                        Ok(result) => return Ok(result),
-                                        Err(e) => {
-                                            last_err = Some(e);
-                                            if attempt < MAX_RETRIES - 1 {
-                                                // exponential backoff: 100ms, 200ms, 400ms
-                                                tokio::time::sleep(
-                                                    tokio::time::Duration::from_millis(
-                                                        100 * (1 << attempt),
-                                                    ),
-                                                )
-                                                .await;
-                                            }
-                                        }
-                                    }
-                                }
-                                Err(last_err.unwrap())
+                                let hash = zc.get_block_hash(height).await?;
+                                let header = zc.get_block_header(&hash).await?;
+                                Ok::<_, ZidecarError>((
+                                    height,
+                                    header.hash,
+                                    header.prev_hash,
+                                    header.bits,
+                                ))
                             }
                         })
                         .buffer_unordered(CONCURRENT_REQUESTS)

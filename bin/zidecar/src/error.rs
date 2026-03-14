@@ -5,6 +5,9 @@ pub enum ZidecarError {
     #[error("zebrad RPC error: {0}")]
     ZebradRpc(String),
 
+    #[error("zebrad transport error: {0}")]
+    ZebradTransport(#[from] reqwest::Error),
+
     #[error("storage error: {0}")]
     Storage(String),
 
@@ -28,6 +31,20 @@ pub enum ZidecarError {
 
     #[error("zync core error: {0}")]
     ZyncCore(#[from] zync_core::ZyncError),
+}
+
+impl ZidecarError {
+    /// whether this error is transient and worth retrying
+    pub fn is_transient(&self) -> bool {
+        match self {
+            ZidecarError::ZebradTransport(e) => {
+                e.is_connect() || e.is_timeout() || e.is_request()
+            }
+            ZidecarError::Network(_) => true,
+            // RPC-level errors (JSON parse, RPC error code) are not transient
+            _ => false,
+        }
+    }
 }
 
 pub type Result<T> = std::result::Result<T, ZidecarError>;

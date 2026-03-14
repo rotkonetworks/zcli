@@ -5913,6 +5913,7 @@ dependencies = [
  "pin-project-lite",
  "tower-layer",
  "tower-service",
+ "tracing",
 ]
 
 [[package]]
@@ -7534,6 +7535,8 @@ dependencies = [
  "tonic",
  "tonic-build",
  "tonic-web",
+ "tower 0.4.13",
+ "tower-http 0.4.4",
  "tracing",
  "tracing-subscriber",
  "zync-core",
