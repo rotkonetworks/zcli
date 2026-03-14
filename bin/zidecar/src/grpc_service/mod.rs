@@ -44,14 +44,26 @@ use crate::{
     },
 };
 use std::sync::Arc;
+use std::time::{Duration, Instant};
+use tokio::sync::RwLock;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
+
+use crate::compact::CompactBlock as InternalCompactBlock;
+
+/// cached mempool scan result
+pub(crate) struct MempoolCache {
+    pub(crate) blocks: Vec<InternalCompactBlock>,
+    pub(crate) fetched_at: Instant,
+}
 
 pub struct ZidecarService {
     pub(crate) zebrad: ZebradClient,
     pub(crate) storage: Arc<Storage>,
     pub(crate) epoch_manager: Arc<EpochManager>,
     pub(crate) start_height: u32,
+    pub(crate) mempool_cache: Arc<RwLock<Option<MempoolCache>>>,
+    pub(crate) mempool_cache_ttl: Duration,
 }
 
 impl ZidecarService {
@@ -60,12 +72,15 @@ impl ZidecarService {
         storage: Arc<Storage>,
         epoch_manager: Arc<EpochManager>,
         start_height: u32,
+        mempool_cache_ttl: Duration,
     ) -> Self {
         Self {
             zebrad,
             storage,
             epoch_manager,
             start_height,
+            mempool_cache: Arc::new(RwLock::new(None)),
+            mempool_cache_ttl,
         }
     }
 }
@@ -164,6 +179,17 @@ impl Zidecar for ZidecarService {
         request: Request<TransparentAddressFilter>,
     ) -> std::result::Result<Response<TxidList>, Status> {
         self.handle_get_taddress_txids(request).await
+    }
+
+    // === mempool ===
+
+    type GetMempoolStreamStream = ReceiverStream<std::result::Result<ProtoCompactBlock, Status>>;
+
+    async fn get_mempool_stream(
+        &self,
+        request: Request<Empty>,
+    ) -> std::result::Result<Response<Self::GetMempoolStreamStream>, Status> {
+        self.handle_get_mempool_stream(request).await
     }
 
     // === nomt ===

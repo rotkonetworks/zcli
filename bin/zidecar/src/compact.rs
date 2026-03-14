@@ -84,6 +84,58 @@ impl CompactBlock {
     }
 }
 
+impl CompactBlock {
+    /// build compact blocks from mempool transactions
+    /// returns one CompactBlock per mempool tx that has orchard actions (height=0)
+    pub async fn from_mempool(zebrad: &ZebradClient) -> Result<Vec<Self>> {
+        let txids = zebrad.get_raw_mempool().await?;
+        let mut blocks = Vec::new();
+
+        for txid in &txids {
+            match zebrad.get_raw_transaction(txid).await {
+                Ok(tx) => {
+                    if let Some(orchard) = tx.orchard {
+                        if orchard.actions.is_empty() {
+                            continue;
+                        }
+                        let txid_bytes = hex_to_bytes(txid)?;
+                        let actions: Vec<CompactAction> = orchard
+                            .actions
+                            .into_iter()
+                            .filter_map(|action| {
+                                Some(CompactAction {
+                                    cmx: hex_to_bytes(&action.cmx).ok()?,
+                                    ephemeral_key: hex_to_bytes(&action.ephemeral_key).ok()?,
+                                    ciphertext: hex_to_bytes(&action.enc_ciphertext)
+                                        .ok()?
+                                        .into_iter()
+                                        .take(52)
+                                        .collect(),
+                                    nullifier: hex_to_bytes(&action.nullifier).ok()?,
+                                    txid: txid_bytes.clone(),
+                                })
+                            })
+                            .collect();
+
+                        if !actions.is_empty() {
+                            blocks.push(Self {
+                                height: 0, // unconfirmed
+                                hash: txid_bytes,
+                                actions,
+                            });
+                        }
+                    }
+                }
+                Err(e) => {
+                    debug!("mempool tx {} unavailable: {}", &txid[..16], e);
+                }
+            }
+        }
+
+        Ok(blocks)
+    }
+}
+
 fn hex_to_bytes(hex: &str) -> Result<Vec<u8>> {
     hex::decode(hex).map_err(|e| ZidecarError::Serialization(e.to_string()))
 }

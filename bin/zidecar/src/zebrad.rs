@@ -236,6 +236,12 @@ impl ZebradClient {
         serde_json::from_value(result).map_err(|e| ZidecarError::ZebradRpc(e.to_string()))
     }
 
+    /// get raw mempool transaction IDs
+    pub async fn get_raw_mempool(&self) -> Result<Vec<String>> {
+        let result = self.call("getrawmempool", vec![]).await?;
+        serde_json::from_value(result).map_err(|e| ZidecarError::ZebradRpc(e.to_string()))
+    }
+
     /// get subtrees by index for sapling/orchard commitment trees
     /// returns precomputed subtree roots for efficient witness reconstruction
     pub async fn get_subtrees_by_index(

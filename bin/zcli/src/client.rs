@@ -523,6 +523,53 @@ impl ZidecarClient {
         Ok((proofs, root))
     }
 
+    pub async fn get_mempool_stream(&self) -> Result<Vec<CompactBlock>, Error> {
+        let protos: Vec<zidecar_proto::CompactBlock> = self
+            .call_server_stream(
+                "zidecar.v1.Zidecar/GetMempoolStream",
+                &zidecar_proto::Empty {},
+            )
+            .await?;
+
+        Ok(protos
+            .into_iter()
+            .map(|block| {
+                let actions = block
+                    .actions
+                    .into_iter()
+                    .filter_map(|a| {
+                        if a.cmx.len() != 32
+                            || a.ephemeral_key.len() != 32
+                            || a.nullifier.len() != 32
+                        {
+                            return None;
+                        }
+                        let mut cmx = [0u8; 32];
+                        let mut ek = [0u8; 32];
+                        let mut nf = [0u8; 32];
+                        cmx.copy_from_slice(&a.cmx);
+                        ek.copy_from_slice(&a.ephemeral_key);
+                        nf.copy_from_slice(&a.nullifier);
+                        Some(CompactAction {
+                            cmx,
+                            ephemeral_key: ek,
+                            ciphertext: a.ciphertext,
+                            nullifier: nf,
+                            txid: a.txid,
+                        })
+                    })
+                    .collect();
+
+                CompactBlock {
+                    height: 0,
+                    hash: block.hash,
+                    actions,
+                    actions_root: [0u8; 32],
+                }
+            })
+            .collect())
+    }
+
     pub async fn get_nullifier_proofs(
         &self,
         nullifiers: Vec<Vec<u8>>,

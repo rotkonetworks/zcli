@@ -7367,6 +7367,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "zclid"
+version = "0.6.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "getrandom 0.2.17",
+ "hex",
+ "http 0.2.12",
+ "libc",
+ "orchard 0.12.0",
+ "prost",
+ "subtle",
+ "tokio",
+ "tokio-stream",
+ "tonic",
+ "tonic-build",
+ "tower 0.4.13",
+ "tracing",
+ "tracing-subscriber",
+ "zecli",
+ "zip32 0.2.1",
+ "zync-core",
+]
+
+[[package]]
 name = "zecli"
 version = "0.6.0"
 dependencies = [

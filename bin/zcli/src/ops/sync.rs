@@ -385,11 +385,17 @@ async fn sync_inner(
         }
     }
 
+    // scan mempool for pending activity (full scan for privacy)
+    let mempool_found = scan_mempool(&client, fvk, &ivk_ext, &ivk_int, &wallet, json).await;
+
     if !json {
         eprintln!(
             "synced to {} - {} new notes found (position {})",
             tip, found_total, position_counter
         );
+        if mempool_found > 0 {
+            eprintln!("  {} pending mempool transaction(s) detected", mempool_found);
+        }
     }
 
     Ok(found_total)
@@ -593,6 +599,7 @@ async fn verify_header_proof(
         .get_header_proof()
         .await
         .map_err(|e| Error::Other(format!("header proof fetch failed: {}", e)))?;
+    eprintln!("  proof: {} bytes, range {}..{}", proof_bytes.len(), proof_from, proof_to);
 
     let proven = zync_core::sync::verify_header_proof(&proof_bytes, tip, mainnet)
         .map_err(|e| Error::Other(e.to_string()))?;
@@ -769,6 +776,93 @@ async fn fetch_memo(
         }
     }
     Ok(None)
+}
+
+/// scan full mempool for privacy — trial decrypt all actions + check nullifiers.
+/// always scans everything so the server can't distinguish which tx triggered interest.
+/// returns number of relevant transactions found (incoming or spend-pending).
+async fn scan_mempool(
+    client: &ZidecarClient,
+    fvk: &FullViewingKey,
+    ivk_ext: &PreparedIncomingViewingKey,
+    ivk_int: &PreparedIncomingViewingKey,
+    wallet: &Wallet,
+    json: bool,
+) -> u32 {
+    let blocks = match client.get_mempool_stream().await {
+        Ok(b) => b,
+        Err(e) => {
+            if !json {
+                eprintln!("mempool scan skipped: {}", e);
+            }
+            return 0;
+        }
+    };
+
+    let total_actions: usize = blocks.iter().map(|b| b.actions.len()).sum();
+    if total_actions == 0 {
+        return 0;
+    }
+
+    if !json {
+        eprintln!(
+            "scanning mempool: {} txs, {} orchard actions",
+            blocks.len(),
+            total_actions
+        );
+    }
+
+    // collect wallet nullifiers for spend detection
+    let wallet_nullifiers: Vec<[u8; 32]> = wallet
+        .shielded_balance()
+        .map(|(_, notes)| notes.iter().map(|n| n.nullifier).collect())
+        .unwrap_or_default();
+
+    let mut found = 0u32;
+
+    for block in &blocks {
+        let txid_hex = hex::encode(&block.hash);
+
+        for action in &block.actions {
+            // check if any wallet nullifier is being spent in mempool
+            if wallet_nullifiers.contains(&action.nullifier) {
+                if !json {
+                    eprintln!(
+                        "  PENDING SPEND: nullifier {}.. in mempool tx {}...",
+                        hex::encode(&action.nullifier[..8]),
+                        &txid_hex[..16],
+                    );
+                }
+                found += 1;
+            }
+
+            // trial decrypt for incoming payments
+            if action.ciphertext.len() >= 52 {
+                let mut ct = [0u8; 52];
+                ct.copy_from_slice(&action.ciphertext[..52]);
+                let output = CompactShieldedOutput {
+                    epk: action.ephemeral_key,
+                    cmx: action.cmx,
+                    ciphertext: ct,
+                };
+                if let Some(decrypted) = try_decrypt(fvk, ivk_ext, ivk_int, &action.nullifier, &output) {
+                    let zec = decrypted.value as f64 / 1e8;
+                    let kind = if decrypted.is_change { "change" } else { "incoming" };
+                    if !json {
+                        eprintln!(
+                            "  PENDING {}: {:.8} ZEC in mempool tx {}...",
+                            kind.to_uppercase(),
+                            zec,
+                            &txid_hex[..16],
+                        );
+                    }
+                    found += 1;
+                }
+            }
+        }
+    }
+
+    found
 }
 
 /// extract all fields from a decrypted note for wallet storage

@@ -1,9 +1,10 @@
 //! block-related gRPC handlers
 
-use super::ZidecarService;
+use super::{MempoolCache, ZidecarService};
 use crate::{
     compact::CompactBlock as InternalCompactBlock,
     error::{Result, ZidecarError},
+    zebrad::ZebradClient,
     zidecar::{
         BlockHeader as ProtoBlockHeader, BlockId, BlockRange, BlockTransactions,
         CompactAction as ProtoCompactAction, CompactBlock as ProtoCompactBlock, Empty,
@@ -11,6 +12,9 @@ use crate::{
         Utxo, UtxoList, VerifiedBlock,
     },
 };
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+use tokio::sync::RwLock;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
 use tracing::{error, info, warn};
@@ -406,6 +410,48 @@ impl ZidecarService {
         }
     }
 
+    pub(crate) async fn handle_get_mempool_stream(
+        &self,
+        _request: Request<Empty>,
+    ) -> std::result::Result<Response<ReceiverStream<std::result::Result<ProtoCompactBlock, Status>>>, Status>
+    {
+        let (tx, rx) = tokio::sync::mpsc::channel(128);
+        let zebrad = self.zebrad.clone();
+        let cache = self.mempool_cache.clone();
+        let ttl = self.mempool_cache_ttl;
+
+        tokio::spawn(async move {
+            let blocks = match fetch_or_cached_mempool(&zebrad, &cache, ttl).await {
+                Ok(b) => b,
+                Err(e) => {
+                    error!("mempool fetch failed: {}", e);
+                    let _ = tx.send(Err(Status::internal(e.to_string()))).await;
+                    return;
+                }
+            };
+
+            for block in blocks {
+                let proto = ProtoCompactBlock {
+                    height: 0,
+                    hash: block.hash,
+                    actions: block.actions.into_iter().map(|a| ProtoCompactAction {
+                        cmx: a.cmx,
+                        ephemeral_key: a.ephemeral_key,
+                        ciphertext: a.ciphertext,
+                        nullifier: a.nullifier,
+                        txid: a.txid,
+                    }).collect(),
+                    actions_root: vec![],
+                };
+                if tx.send(Ok(proto)).await.is_err() {
+                    break;
+                }
+            }
+        });
+
+        Ok(Response::new(ReceiverStream::new(rx)))
+    }
+
     pub(crate) async fn fetch_headers(
         &self,
         from_height: u32,
@@ -428,6 +474,39 @@ impl ZidecarService {
         }
         Ok(headers)
     }
+}
+
+/// fetch mempool, using cache if ttl > 0 and cache is fresh
+async fn fetch_or_cached_mempool(
+    zebrad: &ZebradClient,
+    cache: &Arc<RwLock<Option<MempoolCache>>>,
+    ttl: Duration,
+) -> Result<Vec<InternalCompactBlock>> {
+    // ttl == 0 means caching disabled
+    if ttl.is_zero() {
+        return InternalCompactBlock::from_mempool(zebrad).await;
+    }
+
+    // check cache freshness
+    {
+        let cached = cache.read().await;
+        if let Some(ref c) = *cached {
+            if c.fetched_at.elapsed() < ttl {
+                return Ok(c.blocks.clone());
+            }
+        }
+    }
+
+    // cache miss or stale — fetch fresh
+    let blocks = InternalCompactBlock::from_mempool(zebrad).await?;
+    {
+        let mut cached = cache.write().await;
+        *cached = Some(MempoolCache {
+            blocks: blocks.clone(),
+            fetched_at: Instant::now(),
+        });
+    }
+    Ok(blocks)
 }
 
 fn compute_actions_root(actions: &[crate::compact::CompactAction]) -> [u8; 32] {

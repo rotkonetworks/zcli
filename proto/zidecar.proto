@@ -65,6 +65,9 @@ service Zidecar {
     // Get FROST checkpoint at epoch boundary
     rpc GetCheckpoint(EpochRequest) returns (FrostCheckpoint);
 
+    // Stream current mempool as compact actions (height=0 = unconfirmed)
+    rpc GetMempoolStream(Empty) returns (stream CompactBlock);
+
     // Get epoch boundary hashes for chain continuity verification
     rpc GetEpochBoundary(EpochRequest) returns (EpochBoundary);
 

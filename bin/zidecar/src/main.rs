@@ -48,6 +48,11 @@ struct Args {
     /// Enable testnet mode
     #[arg(long)]
     testnet: bool,
+
+    /// Mempool cache TTL in seconds (0 = disabled, each request hits zebrad directly).
+    /// Enable on public nodes serving many clients to reduce zebrad load.
+    #[arg(long, default_value_t = 0)]
+    mempool_cache_ttl: u64,
 }
 
 #[tokio::main]
@@ -163,7 +168,17 @@ async fn main() -> Result<()> {
 
     // create gRPC services
     let lwd = LwdService::new(zebrad.clone(), storage_arc.clone(), args.testnet);
-    let service = ZidecarService::new(zebrad, storage_arc, epoch_manager, args.start_height);
+    let mempool_cache_ttl = std::time::Duration::from_secs(args.mempool_cache_ttl);
+    if args.mempool_cache_ttl > 0 {
+        info!("mempool cache: {}s TTL", args.mempool_cache_ttl);
+    }
+    let service = ZidecarService::new(
+        zebrad,
+        storage_arc,
+        epoch_manager,
+        args.start_height,
+        mempool_cache_ttl,
+    );
 
     info!("starting gRPC server on {}", args.listen);
     info!("gRPC-web enabled for browser clients");
