@@ -1,0 +1,104 @@
+# zidecar HA reverse proxy
+#
+# terminates TLS, load-balances gRPC/gRPC-web to zidecar backends.
+# caddy handles ACME certificates automatically.
+#
+# topology:
+#   DNS (2 IPs)
+#     ├→ caddy-01 ──┬→ zidecar-01:50051 → zebrad-01:8232
+#     └→ caddy-02 ──┤
+#                    └→ zidecar-02:50051 → zebrad-02:8232
+#
+# usage:
+#   single node:  caddy run --config Caddyfile.zidecar
+#   HA pair:      deploy identical config to both caddy nodes,
+#                 DNS A records point to both IPs
+#
+# adjust {args[0]} or set ZIDECAR_DOMAIN env:
+#   caddy run --config Caddyfile.zidecar --adapter caddyfile
+
+# ── global options ──
+
+{
+	# ACME email for certificate notifications
+	email ops@rotko.net
+
+	# enable HTTP/3 (QUIC) for clients that support it
+	servers {
+		protocols h1 h2 h3
+	}
+}
+
+# ── zidecar gRPC + gRPC-web endpoint ──
+
+{$ZIDECAR_DOMAIN:zcash.rotko.net} {
+	# gRPC and gRPC-web need these headers forwarded correctly
+	header {
+		# allow grpc-web from browser origins
+		Access-Control-Allow-Origin *
+		Access-Control-Allow-Headers content-type,x-grpc-web,x-user-agent
+		Access-Control-Allow-Methods POST,OPTIONS
+		Access-Control-Expose-Headers grpc-status,grpc-message
+		# security
+		X-Content-Type-Options nosniff
+		Referrer-Policy no-referrer
+	}
+
+	# handle CORS preflight
+	@preflight method OPTIONS
+	respond @preflight 204
+
+	# load balance across zidecar backends
+	reverse_proxy {$ZIDECAR_BACKENDS:localhost:50051} {
+		# gRPC requires h2c (HTTP/2 cleartext) to backends
+		transport http {
+			versions h2c
+		}
+
+		# load balancing
+		lb_policy round_robin
+
+		# active health checks — GetTip is cheap and exercises the full
+		# stack (zidecar → zebrad → response)
+		health_uri /zidecar.v1.Zidecar/GetTip
+		health_interval 10s
+		health_timeout 5s
+		health_headers {
+			Content-Type application/grpc
+		}
+
+		# passive health checks — mark backend down after failures
+		fail_duration 30s
+		max_fails 3
+		unhealthy_status 503
+
+		# flush immediately for streaming RPCs (GetCompactBlocks, etc.)
+		flush_interval -1
+	}
+
+	# request logging
+	log {
+		output file /var/log/caddy/zidecar-access.log {
+			roll_size 100MiB
+			roll_keep 5
+		}
+		format json
+		level INFO
+	}
+}
+
+# ── optional: lightwalletd compatibility endpoint ──
+# uncomment if you want a separate subdomain for lwd clients
+
+# lwd.{$ZIDECAR_DOMAIN:zcash.rotko.net} {
+# 	reverse_proxy {$ZIDECAR_BACKENDS:localhost:50051} {
+# 		transport http {
+# 			versions h2c
+# 		}
+# 		lb_policy round_robin
+# 		health_uri /cash.z.wallet.sdk.rpc.CompactTxStreamer/GetLightdInfo
+# 		health_interval 10s
+# 		health_timeout 5s
+# 		flush_interval -1
+# 	}
+# }

@@ -1,0 +1,28 @@
+[Unit]
+Description=zidecar — ligerito-powered zcash light server
+After=network-online.target zebrad.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=zidecar
+ExecStart=/usr/local/bin/zidecar \
+    --zebrad-rpc http://127.0.0.1:8232 \
+    --listen 0.0.0.0:50051 \
+    --db-path /var/lib/zidecar/zidecar.db \
+    --mempool-cache-ttl 3
+Restart=on-failure
+RestartSec=5
+
+# hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/zidecar
+PrivateTmp=true
+
+# resource limits
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

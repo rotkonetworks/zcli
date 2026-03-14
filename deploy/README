@@ -1,0 +1,41 @@
+# zidecar deployment
+
+## single node (personal)
+
+    zidecar --zebrad-rpc http://127.0.0.1:8232
+
+## single node with caddy (public)
+
+    ZIDECAR_DOMAIN=zcash.example.com caddy run --config Caddyfile.zidecar
+
+## HA pair
+
+    DNS A records → caddy-01 IP, caddy-02 IP
+
+    on each caddy node:
+
+    ZIDECAR_DOMAIN=zcash.example.com \
+    ZIDECAR_BACKENDS="zidecar-01:50051 zidecar-02:50051" \
+    caddy run --config Caddyfile.zidecar
+
+    on each zidecar node:
+
+    zidecar --zebrad-rpc http://local-zebrad:8232 \
+            --listen 0.0.0.0:50051 \
+            --mempool-cache-ttl 3
+
+## zclid (wallet daemon)
+
+    # start daemon
+    zclid --endpoint https://zcash.rotko.net
+
+    # zcli connects automatically to 127.0.0.1:9067
+    zcli balance    # instant, no sync
+    zcli notes      # shows pending mempool activity
+
+## systemd
+
+    cp zidecar.service /etc/systemd/system/
+    cp zclid.service /etc/systemd/user/
+    systemctl enable --now zidecar
+    systemctl --user enable --now zclid

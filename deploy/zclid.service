@@ -1,0 +1,23 @@
+[Unit]
+Description=zclid — background wallet daemon for zcli
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=%i
+ExecStart=/usr/local/bin/zclid \
+    --endpoint https://zcash.rotko.net \
+    --listen 127.0.0.1:9067 \
+    --identity %h/.ssh/id_ed25519 \
+    --mempool-interval 10 \
+    --sync-interval 30
+Restart=on-failure
+RestartSec=10
+
+# runs as calling user, needs wallet access
+ProtectSystem=strict
+ReadWritePaths=%h/.zcli
+
+[Install]
+WantedBy=default.target
