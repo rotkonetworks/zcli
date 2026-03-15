@@ -55,10 +55,10 @@ struct Args {
     #[arg(long, default_value_t = 0)]
     mempool_cache_ttl: u64,
 
-    /// Enable FROST multisig relay (room-based message forwarding for DKG/signing).
-    /// Disabled by default — opt in on public nodes.
+    /// Disable FROST dummy switch. The dummy switch forwards opaque signed
+    /// blobs between room participants without reading them.
     #[arg(long)]
-    frost_relay: bool,
+    no_frost_relay: bool,
 }
 
 #[tokio::main]
@@ -206,7 +206,10 @@ async fn main() -> Result<()> {
             zidecar::zidecar_server::ZidecarServer::new(service),
         ));
 
-    if args.frost_relay {
+    if args.no_frost_relay {
+        info!("frost relay: disabled");
+        router.serve(args.listen).await?;
+    } else {
         let frost = frost_relay::FrostRelayService::new();
         info!("frost relay: enabled");
         router
@@ -215,8 +218,6 @@ async fn main() -> Result<()> {
             ))
             .serve(args.listen)
             .await?;
-    } else {
-        router.serve(args.listen).await?;
     }
 
     Ok(())
