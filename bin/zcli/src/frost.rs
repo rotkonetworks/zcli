@@ -6,11 +6,18 @@
 //   - frost-rerandomized 2.2.0 (rerandomized signatures)
 //   - ed25519-consensus 2 (message authentication, same crate zebra uses)
 //
-// every FROST message is signed with the participant's ed25519 identity key.
-// FROST identifiers are derived from ed25519 public keys (Penumbra pattern).
-// no separate "participant index" — identity IS the key.
+// privacy model:
+//   - each DKG or signing session uses a fresh ephemeral ed25519 keypair
+//   - FROST identifiers derive from ephemeral pubkeys, not long-lived identity
+//   - long-lived SSH key only authenticates QUIC transport (TLS layer)
+//   - sessions are unlinkable: no persistent identity in FROST messages
+//
+// this means an observer who compromises one session's ephemeral key
+// learns nothing about other sessions. even other participants can't
+// link your signing activity across sessions without the QUIC layer.
 
 use ed25519_consensus::{SigningKey, VerificationKey, Signature};
+use rand_core::OsRng;
 use serde::{Serialize, Deserialize};
 
 pub use reddsa::frost::redpallas::{
@@ -23,15 +30,26 @@ pub use reddsa::frost::redpallas::{
 
 use crate::error::Error;
 
+// ── ephemeral session identity ──
+//
+// generated fresh for each DKG or signing session.
+// the ed25519 seed is stored in the session secret state
+// and discarded when the session completes.
+
+/// generate a fresh ephemeral ed25519 identity for a session
+pub fn ephemeral_identity() -> SigningKey {
+    SigningKey::new(OsRng)
+}
+
 // ── signed message envelope ──
 //
 // every FROST round message is wrapped in this envelope.
-// the ed25519 signature covers the payload bytes, preventing
-// MITM even if the transport is compromised.
+// the ed25519 key is ephemeral (per-session), so the pubkey
+// in the envelope does not reveal long-lived identity.
 
 #[derive(Serialize, Deserialize)]
 pub struct SignedMessage {
-    /// ed25519 public key of the sender
+    /// ephemeral ed25519 public key (per-session, not long-lived)
     pub pk: Vec<u8>,
     /// ed25519 signature over payload
     pub sig: Vec<u8>,
@@ -40,7 +58,6 @@ pub struct SignedMessage {
 }
 
 impl SignedMessage {
-    /// create a signed message
     pub fn sign(sk: &SigningKey, payload: &[u8]) -> Self {
         let sig = sk.sign(payload);
         Self {
@@ -50,7 +67,7 @@ impl SignedMessage {
         }
     }
 
-    /// verify signature and return (verification_key, payload)
+    /// verify signature and return (ephemeral verification_key, payload)
     pub fn verify(&self) -> Result<(VerificationKey, &[u8]), Error> {
         let pk_bytes: [u8; 32] = self.pk.as_slice().try_into()
             .map_err(|_| Error::Other("invalid ed25519 pubkey length".into()))?;
@@ -65,13 +82,12 @@ impl SignedMessage {
     }
 }
 
-/// derive a FROST identifier from an ed25519 verification key (Penumbra pattern)
+/// derive FROST identifier from ephemeral ed25519 verification key
 pub fn identifier_from_vk(vk: &VerificationKey) -> Result<Identifier, Error> {
     Identifier::derive(vk.as_bytes().as_slice())
         .map_err(|e| Error::Other(format!("derive frost identifier: {}", e)))
 }
 
-/// load ed25519 signing key from raw 32-byte seed
 pub fn signing_key_from_seed(seed: &[u8; 32]) -> SigningKey {
     SigningKey::from(*seed)
 }
@@ -89,14 +105,4 @@ pub fn from_hex<T: serde::de::DeserializeOwned>(hex_str: &str) -> Result<T, Erro
         .map_err(|e| Error::Other(format!("bad hex: {}", e)))?;
     serde_json::from_slice(&bytes)
         .map_err(|e| Error::Other(format!("deserialize: {}", e)))
-}
-
-/// serialize a SignedMessage to hex
-pub fn signed_to_hex(msg: &SignedMessage) -> Result<String, Error> {
-    to_hex(msg)
-}
-
-/// deserialize and verify a SignedMessage from hex
-pub fn signed_from_hex(hex_str: &str) -> Result<SignedMessage, Error> {
-    from_hex(hex_str)
 }

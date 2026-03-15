@@ -236,7 +236,7 @@ pub enum MultisigAction {
         max_signers: u16,
     },
 
-    /// DKG round 1: generate ed25519-signed commitment (uses your SSH key as identity)
+    /// DKG round 1: generate ephemeral identity + signed commitment
     DkgPart1 {
         #[arg(short = 'n', long)]
         max_signers: u16,
@@ -265,14 +265,18 @@ pub enum MultisigAction {
         round2_packages: Vec<String>,
     },
 
-    /// signing round 1: generate ed25519-signed nonces + commitments
+    /// signing round 1: generate ephemeral-signed nonces + commitments
     SignRound1 {
+        /// your ephemeral seed (hex, from dealer bundle or dkg-part3)
+        ephemeral_seed: String,
         /// your key package (hex)
         key_package: String,
     },
 
     /// coordinator: generate signed randomizer (broadcast to all signers)
     Randomize {
+        /// coordinator's ephemeral seed (hex)
+        ephemeral_seed: String,
         /// message to sign (hex)
         message: String,
         /// signed commitments from all signers (hex, comma-separated)
@@ -280,8 +284,10 @@ pub enum MultisigAction {
         commitments: Vec<String>,
     },
 
-    /// signing round 2: produce ed25519-signed signature share
+    /// signing round 2: produce ephemeral-signed signature share
     SignRound2 {
+        /// your ephemeral seed (hex)
+        ephemeral_seed: String,
         /// your key package (hex)
         key_package: String,
         /// your nonces from round1 (hex, NOT the signed broadcast)

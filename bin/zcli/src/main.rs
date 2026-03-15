@@ -1616,8 +1616,11 @@ fn load_seed(cli: &Cli) -> Result<key::WalletSeed, Error> {
     }
 }
 
-fn load_identity_seed(cli: &Cli) -> Result<[u8; 32], Error> {
-    key::load_ed25519_seed(&cli.identity_path())
+fn parse_ephemeral_seed(hex_str: &str) -> Result<[u8; 32], Error> {
+    let bytes = hex::decode(hex_str)
+        .map_err(|e| Error::Other(format!("bad ephemeral seed hex: {}", e)))?;
+    bytes.try_into()
+        .map_err(|_| Error::Other("ephemeral seed must be 32 bytes".into()))
 }
 
 fn cmd_multisig(cli: &Cli, action: &MultisigAction) -> Result<(), Error> {
@@ -1639,8 +1642,7 @@ fn cmd_multisig(cli: &Cli, action: &MultisigAction) -> Result<(), Error> {
             Ok(())
         }
         MultisigAction::DkgPart1 { max_signers, min_signers } => {
-            let seed = load_identity_seed(cli)?;
-            let result = ops::multisig::dkg_part1(&seed, *max_signers, *min_signers)?;
+            let result = ops::multisig::dkg_part1(*max_signers, *min_signers)?;
             if cli.json {
                 println!("{}", serde_json::json!({
                     "secret": result.secret_hex,
@@ -1675,18 +1677,18 @@ fn cmd_multisig(cli: &Cli, action: &MultisigAction) -> Result<(), Error> {
                 println!("{}", serde_json::json!({
                     "key_package": result.key_package_hex,
                     "public_key_package": result.public_key_package_hex,
-                    "identity_pubkey": result.identity_pubkey,
+                    "ephemeral_seed": result.ephemeral_seed_hex,
                 }));
             } else {
                 eprintln!("DKG complete!");
-                eprintln!("identity: {}", result.identity_pubkey);
+                eprintln!("ephemeral seed (for signing): {}", result.ephemeral_seed_hex);
                 eprintln!("key package (SECRET): {}", result.key_package_hex);
                 eprintln!("public key package: {}", result.public_key_package_hex);
             }
             Ok(())
         }
-        MultisigAction::SignRound1 { key_package } => {
-            let seed = load_identity_seed(cli)?;
+        MultisigAction::SignRound1 { ephemeral_seed, key_package } => {
+            let seed = parse_ephemeral_seed(ephemeral_seed)?;
             let (nonces_hex, signed_commitments_hex) = ops::multisig::sign_round1(&seed, key_package)?;
             if cli.json {
                 println!("{}", serde_json::json!({
@@ -1700,8 +1702,8 @@ fn cmd_multisig(cli: &Cli, action: &MultisigAction) -> Result<(), Error> {
             }
             Ok(())
         }
-        MultisigAction::Randomize { message, commitments } => {
-            let seed = load_identity_seed(cli)?;
+        MultisigAction::Randomize { ephemeral_seed, message, commitments } => {
+            let seed = parse_ephemeral_seed(ephemeral_seed)?;
             let msg_bytes = hex::decode(message)
                 .map_err(|e| Error::Other(format!("bad message hex: {}", e)))?;
             let signed_randomizer = ops::multisig::generate_randomizer(
@@ -1714,8 +1716,8 @@ fn cmd_multisig(cli: &Cli, action: &MultisigAction) -> Result<(), Error> {
             }
             Ok(())
         }
-        MultisigAction::SignRound2 { key_package, nonces, message, randomizer, commitments } => {
-            let seed = load_identity_seed(cli)?;
+        MultisigAction::SignRound2 { ephemeral_seed, key_package, nonces, message, randomizer, commitments } => {
+            let seed = parse_ephemeral_seed(ephemeral_seed)?;
             let msg_bytes = hex::decode(message)
                 .map_err(|e| Error::Other(format!("bad message hex: {}", e)))?;
             let signed_share = ops::multisig::sign_round2(
