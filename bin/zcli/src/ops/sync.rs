@@ -2,8 +2,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 use orchard::keys::{FullViewingKey, PreparedIncomingViewingKey, Scope, SpendingKey};
 use orchard::note_encryption::OrchardDomain;
 use zcash_note_encryption::{
-    try_compact_note_decryption, EphemeralKeyBytes, ShieldedOutput,
-    COMPACT_NOTE_SIZE,
+    try_compact_note_decryption, EphemeralKeyBytes, ShieldedOutput, COMPACT_NOTE_SIZE,
 };
 
 use crate::client::{LightwalletdClient, ZidecarClient};
@@ -16,9 +15,8 @@ const BATCH_SIZE_MAX: u32 = 5_000;
 const BATCH_ACTIONS_TARGET: usize = 50_000; // aim for ~50k actions per batch
 
 use zync_core::{
-    ORCHARD_ACTIVATION_HEIGHT as ORCHARD_ACTIVATION_MAINNET,
+    ACTIVATION_HASH_MAINNET, ORCHARD_ACTIVATION_HEIGHT as ORCHARD_ACTIVATION_MAINNET,
     ORCHARD_ACTIVATION_HEIGHT_TESTNET as ORCHARD_ACTIVATION_TESTNET,
-    ACTIVATION_HASH_MAINNET,
 };
 
 struct CompactShieldedOutput {
@@ -187,7 +185,7 @@ async fn sync_inner(
     let mut found_total = 0u32;
     let mut current = start;
     let mut batch_size = BATCH_SIZE_MIN; // adaptive: grows for sparse blocks, shrinks for dense
-    // global position counter - tracks every orchard action from activation
+                                         // global position counter - tracks every orchard action from activation
     let mut position_counter = if let Some(pos) = from_position {
         wallet.set_orchard_position(pos)?;
         pos
@@ -345,12 +343,22 @@ async fn sync_inner(
             hex::encode(&running_actions_commitment[..8]),
         );
     } else {
-        eprintln!("actions commitment verified: {}...", hex::encode(&running_actions_commitment[..8]));
+        eprintln!(
+            "actions commitment verified: {}...",
+            hex::encode(&running_actions_commitment[..8])
+        );
     }
 
     // verify commitment proofs (NOMT) for received notes BEFORE storing
     if !received_cmxs.is_empty() {
-        verify_commitments(&client, &received_cmxs, &received_positions, tip, &proven_roots).await?;
+        verify_commitments(
+            &client,
+            &received_cmxs,
+            &received_positions,
+            tip,
+            &proven_roots,
+        )
+        .await?;
     }
 
     // now that proofs are verified, persist notes to wallet
@@ -394,7 +402,10 @@ async fn sync_inner(
             tip, found_total, position_counter
         );
         if mempool_found > 0 {
-            eprintln!("  {} pending mempool transaction(s) detected", mempool_found);
+            eprintln!(
+                "  {} pending mempool transaction(s) detected",
+                mempool_found
+            );
         }
     }
 
@@ -447,9 +458,7 @@ fn try_decrypt(
         // and comparing against the server-provided cmx detects this.
         let recomputed = orchard::note::ExtractedNoteCommitment::from(note.commitment());
         if recomputed.to_bytes() != output.cmx {
-            eprintln!(
-                "WARNING: cmx mismatch after decryption — server sent fake note, skipping"
-            );
+            eprintln!("WARNING: cmx mismatch after decryption — server sent fake note, skipping");
             return None;
         }
         return Some(extract_note_data(fvk, &note, false));
@@ -459,9 +468,7 @@ fn try_decrypt(
     if let Some((note, _)) = try_compact_note_decryption(&domain, ivk_int, output) {
         let recomputed = orchard::note::ExtractedNoteCommitment::from(note.commitment());
         if recomputed.to_bytes() != output.cmx {
-            eprintln!(
-                "WARNING: cmx mismatch after decryption — server sent fake note, skipping"
-            );
+            eprintln!("WARNING: cmx mismatch after decryption — server sent fake note, skipping");
             return None;
         }
         return Some(extract_note_data(fvk, &note, true));
@@ -599,7 +606,12 @@ async fn verify_header_proof(
         .get_header_proof()
         .await
         .map_err(|e| Error::Other(format!("header proof fetch failed: {}", e)))?;
-    eprintln!("  proof: {} bytes, range {}..{}", proof_bytes.len(), proof_from, proof_to);
+    eprintln!(
+        "  proof: {} bytes, range {}..{}",
+        proof_bytes.len(),
+        proof_from,
+        proof_to
+    );
 
     let proven = zync_core::sync::verify_header_proof(&proof_bytes, tip, mainnet)
         .map_err(|e| Error::Other(e.to_string()))?;
@@ -644,7 +656,10 @@ async fn verify_commitments(
     zync_core::sync::verify_commitment_proofs(&proof_data, cmxs, proven, &root)
         .map_err(|e| Error::Other(e.to_string()))?;
 
-    eprintln!("all {} commitment proofs cryptographically valid", proofs.len());
+    eprintln!(
+        "all {} commitment proofs cryptographically valid",
+        proofs.len()
+    );
     Ok(())
 }
 
@@ -680,8 +695,9 @@ async fn verify_nullifiers(
         })
         .collect();
 
-    let spent = zync_core::sync::verify_nullifier_proofs(&proof_data, &requested_nfs, proven, &root)
-        .map_err(|e| Error::Other(e.to_string()))?;
+    let spent =
+        zync_core::sync::verify_nullifier_proofs(&proof_data, &requested_nfs, proven, &root)
+            .map_err(|e| Error::Other(e.to_string()))?;
 
     for nf in &spent {
         eprintln!(
@@ -691,7 +707,10 @@ async fn verify_nullifiers(
         wallet.mark_spent(nf).ok();
     }
 
-    eprintln!("all {} nullifier proofs cryptographically valid", proofs.len());
+    eprintln!(
+        "all {} nullifier proofs cryptographically valid",
+        proofs.len()
+    );
     Ok(())
 }
 
@@ -763,14 +782,28 @@ async fn fetch_memo(
         enc_ciphertext: [u8; ENC_CIPHERTEXT_SIZE],
     }
     impl ShieldedOutput<OrchardDomain, ENC_CIPHERTEXT_SIZE> for FullOutput {
-        fn ephemeral_key(&self) -> EphemeralKeyBytes { EphemeralKeyBytes(self.epk) }
-        fn cmstar_bytes(&self) -> [u8; 32] { self.cmx }
-        fn enc_ciphertext(&self) -> &[u8; ENC_CIPHERTEXT_SIZE] { &self.enc_ciphertext }
+        fn ephemeral_key(&self) -> EphemeralKeyBytes {
+            EphemeralKeyBytes(self.epk)
+        }
+        fn cmstar_bytes(&self) -> [u8; 32] {
+            self.cmx
+        }
+        fn enc_ciphertext(&self) -> &[u8; ENC_CIPHERTEXT_SIZE] {
+            &self.enc_ciphertext
+        }
     }
 
-    let output = FullOutput { epk: *epk, cmx: *cmx, enc_ciphertext: enc };
+    let output = FullOutput {
+        epk: *epk,
+        cmx: *cmx,
+        enc_ciphertext: enc,
+    };
     if let Some((_, _, memo)) = try_note_decryption(&domain, ivk, &output) {
-        let end = memo.iter().rposition(|&b| b != 0).map(|i| i + 1).unwrap_or(0);
+        let end = memo
+            .iter()
+            .rposition(|&b| b != 0)
+            .map(|i| i + 1)
+            .unwrap_or(0);
         if end > 0 {
             return Ok(Some(String::from_utf8_lossy(&memo[..end]).to_string()));
         }
@@ -845,9 +878,15 @@ async fn scan_mempool(
                     cmx: action.cmx,
                     ciphertext: ct,
                 };
-                if let Some(decrypted) = try_decrypt(fvk, ivk_ext, ivk_int, &action.nullifier, &output) {
+                if let Some(decrypted) =
+                    try_decrypt(fvk, ivk_ext, ivk_int, &action.nullifier, &output)
+                {
                     let zec = decrypted.value as f64 / 1e8;
-                    let kind = if decrypted.is_change { "change" } else { "incoming" };
+                    let kind = if decrypted.is_change {
+                        "change"
+                    } else {
+                        "incoming"
+                    };
                     if !json {
                         eprintln!(
                             "  PENDING {}: {:.8} ZEC in mempool tx {}...",

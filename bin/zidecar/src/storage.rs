@@ -1,13 +1,13 @@
 //! storage layer using NOMT for sparse merkle trees + sled for proof cache
 
 use crate::error::{Result, ZidecarError};
+use nomt::proof::PathProof;
 use nomt::{
     hasher::Blake3Hasher, proof::PathProofTerminal, KeyReadWrite, Nomt, Options as NomtOptions,
     Root, SessionParams,
 };
-use nomt::proof::PathProof;
-use zync_core::nomt::{key_for_note, key_for_nullifier};
 use tracing::{debug, info};
+use zync_core::nomt::{key_for_note, key_for_nullifier};
 
 /// storage combining NOMT (for merkle state) and sled (for proof cache)
 pub struct Storage {
@@ -828,7 +828,6 @@ fn proof_key(from_height: u32, to_height: u32) -> Vec<u8> {
     key.extend_from_slice(&to_height.to_le_bytes());
     key
 }
-
 
 // storage error wrapper
 impl From<String> for ZidecarError {

@@ -240,9 +240,8 @@ impl HeaderChainTrace {
         let initial_state_commitment = [0u8; 32];
 
         // Compute running actions commitment chain over all headers
-        let final_actions_commitment = Self::compute_actions_commitment(
-            storage, start_height, end_height,
-        )?;
+        let final_actions_commitment =
+            Self::compute_actions_commitment(storage, start_height, end_height)?;
 
         let (trace, final_commitment, final_state_commitment, cumulative_difficulty) =
             Self::encode_trace(
@@ -466,8 +465,7 @@ impl HeaderChainTrace {
 
         // Fields 0-7: tip_tree_root (32 bytes = 8 × 4-byte fields)
         for j in 0..8 {
-            trace[sentinel_offset + j] =
-                bytes_to_field(&tip_tree_root[j * 4..(j + 1) * 4]);
+            trace[sentinel_offset + j] = bytes_to_field(&tip_tree_root[j * 4..(j + 1) * 4]);
         }
 
         // Fields 8-15: tip_nullifier_root (32 bytes = 8 × 4-byte fields)
@@ -525,9 +523,8 @@ impl HeaderChainTrace {
                 Self::fetch_epoch_state_roots(zebrad, storage, start_height, end_height).await?;
 
             // Recompute running actions commitment chain
-            let final_actions_commitment = Self::compute_actions_commitment(
-                storage, start_height, end_height,
-            )?;
+            let final_actions_commitment =
+                Self::compute_actions_commitment(storage, start_height, end_height)?;
 
             let (new_trace, final_commitment, final_state_commitment, cumulative_difficulty) =
                 Self::encode_trace(
@@ -562,9 +559,7 @@ impl HeaderChainTrace {
     ) -> Result<[u8; 32]> {
         let mut actions_commitment = [0u8; 32];
         for height in start_height..=end_height {
-            let actions_root = storage
-                .get_actions_root(height)?
-                .unwrap_or([0u8; 32]);
+            let actions_root = storage.get_actions_root(height)?.unwrap_or([0u8; 32]);
             actions_commitment = zync_core::actions::update_actions_commitment(
                 &actions_commitment,
                 &actions_root,

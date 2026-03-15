@@ -697,9 +697,11 @@ mod tests {
         // simulate syncing blocks 100..103 and saving commitment
         let mut ac = [0u8; 32];
         for height in 100..103 {
-            let root = zync_core::actions::compute_actions_root(&[
-                ([height as u8; 32], [0u8; 32], [0u8; 32]),
-            ]);
+            let root = zync_core::actions::compute_actions_root(&[(
+                [height as u8; 32],
+                [0u8; 32],
+                [0u8; 32],
+            )]);
             ac = zync_core::actions::update_actions_commitment(&ac, &root, height);
         }
         w.set_actions_commitment(&ac).unwrap();
@@ -709,18 +711,22 @@ mod tests {
         let mut resumed_ac = w.actions_commitment().unwrap();
         assert_eq!(resumed_ac, ac);
         for height in 103..106 {
-            let root = zync_core::actions::compute_actions_root(&[
-                ([height as u8; 32], [0u8; 32], [0u8; 32]),
-            ]);
+            let root = zync_core::actions::compute_actions_root(&[(
+                [height as u8; 32],
+                [0u8; 32],
+                [0u8; 32],
+            )]);
             resumed_ac = zync_core::actions::update_actions_commitment(&resumed_ac, &root, height);
         }
 
         // compute the full chain from scratch for comparison
         let mut full_ac = [0u8; 32];
         for height in 100..106 {
-            let root = zync_core::actions::compute_actions_root(&[
-                ([height as u8; 32], [0u8; 32], [0u8; 32]),
-            ]);
+            let root = zync_core::actions::compute_actions_root(&[(
+                [height as u8; 32],
+                [0u8; 32],
+                [0u8; 32],
+            )]);
             full_ac = zync_core::actions::update_actions_commitment(&full_ac, &root, height);
         }
 

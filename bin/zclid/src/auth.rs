@@ -8,7 +8,10 @@ use std::path::Path;
 use std::{
     future::Future,
     pin::Pin,
-    sync::{atomic::{AtomicU64, Ordering}, Arc},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
     task::{Context, Poll},
 };
 use subtle::ConstantTimeEq;

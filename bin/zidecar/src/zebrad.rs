@@ -112,10 +112,7 @@ impl retry::Policy<ZebradRequest, Value, ZidecarError> for ZebradRetryPolicy {
     }
 }
 
-type ZebradService = Buffer<
-    retry::Retry<ZebradRetryPolicy, ZebradInner>,
-    ZebradRequest,
->;
+type ZebradService = Buffer<retry::Retry<ZebradRetryPolicy, ZebradInner>, ZebradRequest>;
 
 #[derive(Clone)]
 pub struct ZebradClient {

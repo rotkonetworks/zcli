@@ -326,7 +326,11 @@ mod tests {
             let slow_inv = elem.inv();
             let slow_inv_val = slow_inv.poly().value();
 
-            assert_eq!(fast_inv, slow_inv_val, "fast and slow inverse should match for x = 0x{:032x}", x);
+            assert_eq!(
+                fast_inv, slow_inv_val,
+                "fast and slow inverse should match for x = 0x{:032x}",
+                x
+            );
         }
     }
 
@@ -396,5 +400,4 @@ mod tests {
         let batch_inverted = batch_invert_gf128(&values);
         assert_eq!(batch_inverted[0], invert_gf128(0x12345678));
     }
-
 }

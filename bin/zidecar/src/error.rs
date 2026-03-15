@@ -37,9 +37,7 @@ impl ZidecarError {
     /// whether this error is transient and worth retrying
     pub fn is_transient(&self) -> bool {
         match self {
-            ZidecarError::ZebradTransport(e) => {
-                e.is_connect() || e.is_timeout() || e.is_request()
-            }
+            ZidecarError::ZebradTransport(e) => e.is_connect() || e.is_timeout() || e.is_request(),
             ZidecarError::Network(_) => true,
             // RPC-level errors (JSON parse, RPC error code) are not transient
             _ => false,

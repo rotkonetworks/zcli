@@ -10,14 +10,16 @@
 
 mod witness;
 
-use wasm_bindgen::prelude::*;
 use blake2::{Blake2b512, Digest};
 use serde::{Deserialize, Serialize};
+use wasm_bindgen::prelude::*;
 
 // Real Orchard key derivation and note decryption
-use orchard::keys::{SpendingKey, Scope, IncomingViewingKey, PreparedIncomingViewingKey};
+use orchard::keys::{IncomingViewingKey, PreparedIncomingViewingKey, Scope, SpendingKey};
 use orchard::note_encryption::OrchardDomain;
-use zcash_note_encryption::{try_compact_note_decryption, EphemeralKeyBytes, ShieldedOutput, COMPACT_NOTE_SIZE};
+use zcash_note_encryption::{
+    try_compact_note_decryption, EphemeralKeyBytes, ShieldedOutput, COMPACT_NOTE_SIZE,
+};
 
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
@@ -123,15 +125,16 @@ impl WalletKeys {
             .par_iter()
             .enumerate()
             .filter_map(|(idx, action)| {
-                self.try_decrypt_action_binary(action).map(|(value, note_nf, rseed, rho, addr)| FoundNote {
-                    index: idx as u32,
-                    value,
-                    nullifier: hex_encode(&note_nf),
-                    cmx: hex_encode(&action.cmx),
-                    rseed: Some(hex_encode(&rseed)),
-                    rho: Some(hex_encode(&rho)),
-                    recipient: Some(hex_encode(&addr)),
-                })
+                self.try_decrypt_action_binary(action)
+                    .map(|(value, note_nf, rseed, rho, addr)| FoundNote {
+                        index: idx as u32,
+                        value,
+                        nullifier: hex_encode(&note_nf),
+                        cmx: hex_encode(&action.cmx),
+                        rseed: Some(hex_encode(&rseed)),
+                        rho: Some(hex_encode(&rho)),
+                        recipient: Some(hex_encode(&addr)),
+                    })
             })
             .collect();
 
@@ -140,15 +143,16 @@ impl WalletKeys {
             .iter()
             .enumerate()
             .filter_map(|(idx, action)| {
-                self.try_decrypt_action_binary(action).map(|(value, note_nf, rseed, rho, addr)| FoundNote {
-                    index: idx as u32,
-                    value,
-                    nullifier: hex_encode(&note_nf),
-                    cmx: hex_encode(&action.cmx),
-                    rseed: Some(hex_encode(&rseed)),
-                    rho: Some(hex_encode(&rho)),
-                    recipient: Some(hex_encode(&addr)),
-                })
+                self.try_decrypt_action_binary(action)
+                    .map(|(value, note_nf, rseed, rho, addr)| FoundNote {
+                        index: idx as u32,
+                        value,
+                        nullifier: hex_encode(&note_nf),
+                        cmx: hex_encode(&action.cmx),
+                        rseed: Some(hex_encode(&rseed)),
+                        rho: Some(hex_encode(&rho)),
+                        recipient: Some(hex_encode(&addr)),
+                    })
             })
             .collect();
 
@@ -202,13 +206,18 @@ impl WalletKeys {
 
     /// Calculate balance from found notes minus spent nullifiers
     #[wasm_bindgen]
-    pub fn calculate_balance(&self, notes_json: JsValue, spent_nullifiers_json: JsValue) -> Result<u64, JsError> {
+    pub fn calculate_balance(
+        &self,
+        notes_json: JsValue,
+        spent_nullifiers_json: JsValue,
+    ) -> Result<u64, JsError> {
         let notes: Vec<FoundNote> = serde_wasm_bindgen::from_value(notes_json)
             .map_err(|e| JsError::new(&format!("Invalid notes: {}", e)))?;
         let spent: Vec<String> = serde_wasm_bindgen::from_value(spent_nullifiers_json)
             .map_err(|e| JsError::new(&format!("Invalid nullifiers: {}", e)))?;
 
-        let balance: u64 = notes.iter()
+        let balance: u64 = notes
+            .iter()
             .filter(|n| !spent.contains(&n.nullifier))
             .map(|n| n.value)
             .sum();
@@ -220,7 +229,10 @@ impl WalletKeys {
     /// Tries BOTH external and internal scope IVKs
     /// Returns (value, note_nullifier, rseed_bytes, rho_bytes, recipient_address_bytes)
     #[allow(clippy::type_complexity)]
-    fn try_decrypt_action_binary(&self, action: &CompactActionBinary) -> Option<(u64, [u8; 32], [u8; 32], [u8; 32], [u8; 43])> {
+    fn try_decrypt_action_binary(
+        &self,
+        action: &CompactActionBinary,
+    ) -> Option<(u64, [u8; 32], [u8; 32], [u8; 32], [u8; 43])> {
         // Parse the nullifier and cmx
         let nullifier = orchard::note::Nullifier::from_bytes(&action.nullifier);
         if nullifier.is_none().into() {
@@ -253,19 +265,35 @@ impl WalletKeys {
         };
 
         // Try compact note decryption with EXTERNAL scope IVK first
-        if let Some((note, addr)) = try_compact_note_decryption(&domain, &self.prepared_ivk_external, &output) {
+        if let Some((note, addr)) =
+            try_compact_note_decryption(&domain, &self.prepared_ivk_external, &output)
+        {
             let note_nf = note.nullifier(&self.fvk);
             let rseed = *note.rseed().as_bytes();
             let rho = note.rho().to_bytes();
-            return Some((note.value().inner(), note_nf.to_bytes(), rseed, rho, addr.to_raw_address_bytes()));
+            return Some((
+                note.value().inner(),
+                note_nf.to_bytes(),
+                rseed,
+                rho,
+                addr.to_raw_address_bytes(),
+            ));
         }
 
         // If external failed, try INTERNAL scope IVK (for change/shielding outputs)
-        if let Some((note, addr)) = try_compact_note_decryption(&domain, &self.prepared_ivk_internal, &output) {
+        if let Some((note, addr)) =
+            try_compact_note_decryption(&domain, &self.prepared_ivk_internal, &output)
+        {
             let note_nf = note.nullifier(&self.fvk);
             let rseed = *note.rseed().as_bytes();
             let rho = note.rho().to_bytes();
-            return Some((note.value().inner(), note_nf.to_bytes(), rseed, rho, addr.to_raw_address_bytes()));
+            return Some((
+                note.value().inner(),
+                note_nf.to_bytes(),
+                rseed,
+                rho,
+                addr.to_raw_address_bytes(),
+            ));
         }
 
         None
@@ -316,12 +344,16 @@ impl WalletKeys {
         };
 
         // Try compact note decryption with EXTERNAL scope IVK first
-        if let Some(result) = try_compact_note_decryption(&domain, &self.prepared_ivk_external, &output) {
+        if let Some(result) =
+            try_compact_note_decryption(&domain, &self.prepared_ivk_external, &output)
+        {
             return Some(result.0.value().inner());
         }
 
         // If external failed, try INTERNAL scope IVK (for change/shielding outputs)
-        if let Some(result) = try_compact_note_decryption(&domain, &self.prepared_ivk_internal, &output) {
+        if let Some(result) =
+            try_compact_note_decryption(&domain, &self.prepared_ivk_internal, &output)
+        {
             return Some(result.0.value().inner());
         }
 
@@ -371,7 +403,9 @@ fn parse_compact_actions(data: &[u8]) -> Result<Vec<CompactActionBinary>, JsErro
     if data.len() < 4 + count * action_size {
         return Err(JsError::new(&format!(
             "Data too short: expected {} bytes for {} actions, got {}",
-            4 + count * action_size, count, data.len()
+            4 + count * action_size,
+            count,
+            data.len()
         )));
     }
 
@@ -393,7 +427,12 @@ fn parse_compact_actions(data: &[u8]) -> Result<Vec<CompactActionBinary>, JsErro
         ciphertext.copy_from_slice(&data[offset..offset + 52]);
         offset += 52;
 
-        actions.push(CompactActionBinary { nullifier, cmx, epk, ciphertext });
+        actions.push(CompactActionBinary {
+            nullifier,
+            cmx,
+            epk,
+            ciphertext,
+        });
     }
 
     Ok(actions)
@@ -435,7 +474,16 @@ pub struct ScanResult {
 }
 
 /// Derive real Orchard keys (FVK, External IVK, Internal IVK) from seed using proper ZIP-32 derivation
-fn derive_orchard_keys(seed: &[u8]) -> Result<(orchard::keys::FullViewingKey, IncomingViewingKey, IncomingViewingKey), String> {
+fn derive_orchard_keys(
+    seed: &[u8],
+) -> Result<
+    (
+        orchard::keys::FullViewingKey,
+        IncomingViewingKey,
+        IncomingViewingKey,
+    ),
+    String,
+> {
     // Seed must be 64 bytes (from BIP39)
     if seed.len() != 64 {
         return Err(format!("Invalid seed length: {} (expected 64)", seed.len()));
@@ -535,9 +583,16 @@ pub struct WatchOnlyWallet {
 impl WatchOnlyWallet {
     /// Import a watch-only wallet from FVK bytes (96 bytes)
     #[wasm_bindgen(constructor)]
-    pub fn from_fvk_bytes(fvk_bytes: &[u8], account_index: u32, mainnet: bool) -> Result<WatchOnlyWallet, JsError> {
+    pub fn from_fvk_bytes(
+        fvk_bytes: &[u8],
+        account_index: u32,
+        mainnet: bool,
+    ) -> Result<WatchOnlyWallet, JsError> {
         if fvk_bytes.len() != 96 {
-            return Err(JsError::new(&format!("Invalid FVK length: {} (expected 96)", fvk_bytes.len())));
+            return Err(JsError::new(&format!(
+                "Invalid FVK length: {} (expected 96)",
+                fvk_bytes.len()
+            )));
         }
 
         let fvk_array: [u8; 96] = fvk_bytes.try_into().unwrap();
@@ -572,9 +627,11 @@ impl WatchOnlyWallet {
             UnifiedFullViewingKey::decode(&MainNetwork, ufvk_str)
         } else {
             UnifiedFullViewingKey::decode(&TestNetwork, ufvk_str)
-        }.map_err(|e| JsError::new(&format!("invalid UFVK: {}", e)))?;
+        }
+        .map_err(|e| JsError::new(&format!("invalid UFVK: {}", e)))?;
 
-        let orchard_fvk = ufvk.orchard()
+        let orchard_fvk = ufvk
+            .orchard()
             .ok_or_else(|| JsError::new("UFVK has no orchard component"))?;
 
         // extract raw 96-byte FVK
@@ -600,8 +657,7 @@ impl WatchOnlyWallet {
     /// Import from hex-encoded QR data
     #[wasm_bindgen]
     pub fn from_qr_hex(qr_hex: &str) -> Result<WatchOnlyWallet, JsError> {
-        let data = hex_decode(qr_hex)
-            .ok_or_else(|| JsError::new("Invalid hex string"))?;
+        let data = hex_decode(qr_hex).ok_or_else(|| JsError::new("Invalid hex string"))?;
 
         // Validate prelude: [0x53][0x04][0x01]
         if data.len() < 9 {
@@ -662,7 +718,10 @@ impl WatchOnlyWallet {
     /// Get address at specific diversifier index
     #[wasm_bindgen]
     pub fn get_address_at(&self, diversifier_index: u32) -> String {
-        let addr = self.fvk.to_ivk(Scope::External).address_at(diversifier_index as u64);
+        let addr = self
+            .fvk
+            .to_ivk(Scope::External)
+            .address_at(diversifier_index as u64);
         encode_orchard_address(&addr, self.mainnet)
     }
 
@@ -682,15 +741,16 @@ impl WatchOnlyWallet {
             .par_iter()
             .enumerate()
             .filter_map(|(idx, action)| {
-                self.try_decrypt_action(action).map(|(value, note_nf, rseed, rho, addr)| FoundNote {
-                    index: idx as u32,
-                    value,
-                    nullifier: hex_encode(&note_nf),
-                    cmx: hex_encode(&action.cmx),
-                    rseed: Some(hex_encode(&rseed)),
-                    rho: Some(hex_encode(&rho)),
-                    recipient: Some(hex_encode(&addr)),
-                })
+                self.try_decrypt_action(action)
+                    .map(|(value, note_nf, rseed, rho, addr)| FoundNote {
+                        index: idx as u32,
+                        value,
+                        nullifier: hex_encode(&note_nf),
+                        cmx: hex_encode(&action.cmx),
+                        rseed: Some(hex_encode(&rseed)),
+                        rho: Some(hex_encode(&rho)),
+                        recipient: Some(hex_encode(&addr)),
+                    })
             })
             .collect();
 
@@ -699,15 +759,16 @@ impl WatchOnlyWallet {
             .iter()
             .enumerate()
             .filter_map(|(idx, action)| {
-                self.try_decrypt_action(action).map(|(value, note_nf, rseed, rho, addr)| FoundNote {
-                    index: idx as u32,
-                    value,
-                    nullifier: hex_encode(&note_nf),
-                    cmx: hex_encode(&action.cmx),
-                    rseed: Some(hex_encode(&rseed)),
-                    rho: Some(hex_encode(&rho)),
-                    recipient: Some(hex_encode(&addr)),
-                })
+                self.try_decrypt_action(action)
+                    .map(|(value, note_nf, rseed, rho, addr)| FoundNote {
+                        index: idx as u32,
+                        value,
+                        nullifier: hex_encode(&note_nf),
+                        cmx: hex_encode(&action.cmx),
+                        rseed: Some(hex_encode(&rseed)),
+                        rho: Some(hex_encode(&rho)),
+                        recipient: Some(hex_encode(&addr)),
+                    })
             })
             .collect();
 
@@ -718,7 +779,10 @@ impl WatchOnlyWallet {
     /// Try to decrypt a compact action
     /// Returns (value, note_nullifier, rseed_bytes, rho_bytes, recipient_address_bytes)
     #[allow(clippy::type_complexity)]
-    fn try_decrypt_action(&self, action: &CompactActionBinary) -> Option<(u64, [u8; 32], [u8; 32], [u8; 32], [u8; 43])> {
+    fn try_decrypt_action(
+        &self,
+        action: &CompactActionBinary,
+    ) -> Option<(u64, [u8; 32], [u8; 32], [u8; 32], [u8; 43])> {
         let nullifier = orchard::note::Nullifier::from_bytes(&action.nullifier);
         if nullifier.is_none().into() {
             return None;
@@ -746,19 +810,35 @@ impl WatchOnlyWallet {
         };
 
         // Try external scope first
-        if let Some((note, addr)) = try_compact_note_decryption(&domain, &self.prepared_ivk_external, &output) {
+        if let Some((note, addr)) =
+            try_compact_note_decryption(&domain, &self.prepared_ivk_external, &output)
+        {
             let note_nf = note.nullifier(&self.fvk);
             let rseed = *note.rseed().as_bytes();
             let rho = note.rho().to_bytes();
-            return Some((note.value().inner(), note_nf.to_bytes(), rseed, rho, addr.to_raw_address_bytes()));
+            return Some((
+                note.value().inner(),
+                note_nf.to_bytes(),
+                rseed,
+                rho,
+                addr.to_raw_address_bytes(),
+            ));
         }
 
         // Try internal scope (change addresses)
-        if let Some((note, addr)) = try_compact_note_decryption(&domain, &self.prepared_ivk_internal, &output) {
+        if let Some((note, addr)) =
+            try_compact_note_decryption(&domain, &self.prepared_ivk_internal, &output)
+        {
             let note_nf = note.nullifier(&self.fvk);
             let rseed = *note.rseed().as_bytes();
             let rho = note.rho().to_bytes();
-            return Some((note.value().inner(), note_nf.to_bytes(), rseed, rho, addr.to_raw_address_bytes()));
+            return Some((
+                note.value().inner(),
+                note_nf.to_bytes(),
+                rseed,
+                rho,
+                addr.to_raw_address_bytes(),
+            ));
         }
 
         None
@@ -771,7 +851,12 @@ impl WalletKeys {
     /// Export Full Viewing Key as hex-encoded QR data
     /// This is used to create a watch-only wallet on an online device
     #[wasm_bindgen]
-    pub fn export_fvk_qr_hex(&self, account_index: u32, label: Option<String>, mainnet: bool) -> String {
+    pub fn export_fvk_qr_hex(
+        &self,
+        account_index: u32,
+        label: Option<String>,
+        mainnet: bool,
+    ) -> String {
         let mut output = Vec::new();
 
         // Prelude: [0x53][0x04][0x01] - Substrate compat, Zcash, FVK export
@@ -781,7 +866,9 @@ impl WalletKeys {
 
         // Flags: mainnet, has_orchard, no_transparent
         let mut flags = 0u8;
-        if mainnet { flags |= 0x01; }
+        if mainnet {
+            flags |= 0x01;
+        }
         flags |= 0x02; // has orchard
         output.push(flags);
 
@@ -820,7 +907,10 @@ impl WalletKeys {
     /// Get receiving address at specific diversifier index
     #[wasm_bindgen]
     pub fn get_receiving_address_at(&self, diversifier_index: u32, mainnet: bool) -> String {
-        let addr = self.fvk.to_ivk(Scope::External).address_at(diversifier_index as u64);
+        let addr = self
+            .fvk
+            .to_ivk(Scope::External)
+            .address_at(diversifier_index as u64);
         encode_orchard_address(&addr, mainnet)
     }
 }
@@ -831,7 +921,11 @@ fn encode_orchard_address(addr: &orchard::Address, mainnet: bool) -> String {
     // For simplicity, return hex-encoded raw address bytes
     // A proper implementation would use Unified Address encoding (ZIP-316)
     let raw = addr.to_raw_address_bytes();
-    let prefix = if mainnet { "u1orchard:" } else { "utest1orchard:" };
+    let prefix = if mainnet {
+        "u1orchard:"
+    } else {
+        "utest1orchard:"
+    };
     format!("{}{}", prefix, hex_encode(&raw))
 }
 
@@ -902,7 +996,10 @@ pub fn create_sign_request(
     let request = PcztSignRequest {
         account_index,
         sighash: sighash_hex.to_string(),
-        orchard_actions: alphas.into_iter().map(|a| OrchardActionInfo { alpha: a }).collect(),
+        orchard_actions: alphas
+            .into_iter()
+            .map(|a| OrchardActionInfo { alpha: a })
+            .collect(),
         summary: summary.to_string(),
     };
 
@@ -918,8 +1015,8 @@ pub fn create_sign_request(
     output.extend_from_slice(&account_index.to_le_bytes());
 
     // Sighash (32 bytes)
-    let sighash_bytes = hex_decode(sighash_hex)
-        .ok_or_else(|| JsError::new("Invalid sighash hex"))?;
+    let sighash_bytes =
+        hex_decode(sighash_hex).ok_or_else(|| JsError::new("Invalid sighash hex"))?;
     if sighash_bytes.len() != 32 {
         return Err(JsError::new("Sighash must be 32 bytes"));
     }
@@ -930,8 +1027,8 @@ pub fn create_sign_request(
 
     // Each action's alpha
     for action in &request.orchard_actions {
-        let alpha_bytes = hex_decode(&action.alpha)
-            .ok_or_else(|| JsError::new("Invalid alpha hex"))?;
+        let alpha_bytes =
+            hex_decode(&action.alpha).ok_or_else(|| JsError::new("Invalid alpha hex"))?;
         if alpha_bytes.len() != 32 {
             return Err(JsError::new("Alpha must be 32 bytes"));
         }
@@ -950,8 +1047,7 @@ pub fn create_sign_request(
 /// Returns JSON with sighash and orchard_sigs array
 #[wasm_bindgen]
 pub fn parse_signature_response(qr_hex: &str) -> Result<JsValue, JsError> {
-    let data = hex_decode(qr_hex)
-        .ok_or_else(|| JsError::new("Invalid hex string"))?;
+    let data = hex_decode(qr_hex).ok_or_else(|| JsError::new("Invalid hex string"))?;
 
     // Validate prelude
     if data.len() < 36 {
@@ -1034,7 +1130,7 @@ struct FullOrchardAction {
     epk: [u8; 32],
     enc_ciphertext: [u8; 580], // full ciphertext including memo
     #[allow(dead_code)]
-    out_ciphertext: [u8; 80],   // for outgoing note decryption
+    out_ciphertext: [u8; 80], // for outgoing note decryption
 }
 
 /// Full shielded output for use with zcash_note_encryption
@@ -1047,7 +1143,9 @@ struct FullShieldedOutput {
 /// NOTE_PLAINTEXT_SIZE for Orchard (580 bytes enc_ciphertext)
 const ORCHARD_NOTE_PLAINTEXT_SIZE: usize = 580;
 
-impl zcash_note_encryption::ShieldedOutput<OrchardDomain, ORCHARD_NOTE_PLAINTEXT_SIZE> for FullShieldedOutput {
+impl zcash_note_encryption::ShieldedOutput<OrchardDomain, ORCHARD_NOTE_PLAINTEXT_SIZE>
+    for FullShieldedOutput
+{
     fn ephemeral_key(&self) -> EphemeralKeyBytes {
         EphemeralKeyBytes(self.epk)
     }
@@ -1064,9 +1162,9 @@ impl zcash_note_encryption::ShieldedOutput<OrchardDomain, ORCHARD_NOTE_PLAINTEXT
 /// Parse full Orchard actions from raw transaction bytes
 /// Uses zcash_primitives for proper v5 transaction parsing
 fn parse_orchard_actions_from_tx(tx_bytes: &[u8]) -> Result<Vec<FullOrchardAction>, String> {
-    use zcash_primitives::transaction::Transaction;
-    use zcash_primitives::consensus::BranchId;
     use std::io::Cursor;
+    use zcash_primitives::consensus::BranchId;
+    use zcash_primitives::transaction::Transaction;
 
     // Parse transaction using zcash_primitives
     let mut cursor = Cursor::new(tx_bytes);
@@ -1153,7 +1251,9 @@ impl WalletKeys {
             };
 
             // Try external scope first
-            if let Some((note, _addr, memo)) = try_note_decryption(&domain, &self.prepared_ivk_external, &output) {
+            if let Some((note, _addr, memo)) =
+                try_note_decryption(&domain, &self.prepared_ivk_external, &output)
+            {
                 let note_nf = note.nullifier(&self.fvk);
                 let (memo_str, is_text) = parse_memo_bytes(&memo);
 
@@ -1169,7 +1269,9 @@ impl WalletKeys {
             }
 
             // Try internal scope (change)
-            if let Some((note, _addr, memo)) = try_note_decryption(&domain, &self.prepared_ivk_internal, &output) {
+            if let Some((note, _addr, memo)) =
+                try_note_decryption(&domain, &self.prepared_ivk_internal, &output)
+            {
                 let note_nf = note.nullifier(&self.fvk);
                 let (memo_str, is_text) = parse_memo_bytes(&memo);
 
@@ -1231,7 +1333,9 @@ impl WatchOnlyWallet {
             };
 
             // Try external scope
-            if let Some((note, _addr, memo)) = try_note_decryption(&domain, &self.prepared_ivk_external, &output) {
+            if let Some((note, _addr, memo)) =
+                try_note_decryption(&domain, &self.prepared_ivk_external, &output)
+            {
                 let note_nf = note.nullifier(&self.fvk);
                 let (memo_str, is_text) = parse_memo_bytes(&memo);
 
@@ -1247,7 +1351,9 @@ impl WatchOnlyWallet {
             }
 
             // Try internal scope
-            if let Some((note, _addr, memo)) = try_note_decryption(&domain, &self.prepared_ivk_internal, &output) {
+            if let Some((note, _addr, memo)) =
+                try_note_decryption(&domain, &self.prepared_ivk_internal, &output)
+            {
                 let note_nf = note.nullifier(&self.fvk);
                 let (memo_str, is_text) = parse_memo_bytes(&memo);
 
@@ -1278,10 +1384,7 @@ fn parse_memo_bytes(memo: &[u8; 512]) -> (String, bool) {
     // Check if it's a text memo (starts with 0xF5 followed by UTF-8)
     if memo[0] == 0xF5 {
         // Find the end of the text (first null byte or end of memo)
-        let text_bytes: Vec<u8> = memo[1..].iter()
-            .take_while(|&&b| b != 0)
-            .copied()
-            .collect();
+        let text_bytes: Vec<u8> = memo[1..].iter().take_while(|&&b| b != 0).copied().collect();
 
         if let Ok(text) = String::from_utf8(text_bytes) {
             return (text, true);
@@ -1289,16 +1392,15 @@ fn parse_memo_bytes(memo: &[u8; 512]) -> (String, bool) {
     }
 
     // Try to parse as raw UTF-8 (some wallets don't use the 0xF5 prefix)
-    let text_bytes: Vec<u8> = memo.iter()
-        .take_while(|&&b| b != 0)
-        .copied()
-        .collect();
+    let text_bytes: Vec<u8> = memo.iter().take_while(|&&b| b != 0).copied().collect();
 
     if let Ok(text) = String::from_utf8(text_bytes.clone()) {
         // Check if it looks like text (mostly printable ASCII + common UTF-8)
-        let printable_ratio = text_bytes.iter()
+        let printable_ratio = text_bytes
+            .iter()
             .filter(|&&b| (32..=126).contains(&b) || b >= 0xC0)
-            .count() as f32 / text_bytes.len().max(1) as f32;
+            .count() as f32
+            / text_bytes.len().max(1) as f32;
 
         if printable_ratio > 0.8 {
             return (text, true);
@@ -1434,7 +1536,11 @@ mod tests {
             out.push(ALPHABET[rem as usize]);
         }
         for &b in data.iter() {
-            if b == 0 { out.push(b'1'); } else { break; }
+            if b == 0 {
+                out.push(b'1');
+            } else {
+                break;
+            }
         }
         out.reverse();
         String::from_utf8(out).unwrap()
@@ -1471,7 +1577,7 @@ mod tests {
     fn test_orchard_builder_shielding() {
         use orchard::builder::{Builder, BundleType};
         use orchard::bundle::Flags;
-        use orchard::keys::{SpendingKey, FullViewingKey, Scope};
+        use orchard::keys::{FullViewingKey, Scope, SpendingKey};
         use orchard::tree::Anchor;
         use orchard::value::NoteValue;
         use rand::rngs::OsRng;
@@ -1486,7 +1592,8 @@ mod tests {
             &seed_bytes,
             133,
             zip32::AccountId::try_from(0u32).unwrap(),
-        ).unwrap();
+        )
+        .unwrap();
         let fvk = FullViewingKey::from(&sk);
         let recipient = fvk.address_at(0u64, Scope::External);
 
@@ -1497,7 +1604,8 @@ mod tests {
         };
         let mut builder = Builder::new(bundle_type, Anchor::empty_tree());
 
-        builder.add_output(None, recipient, NoteValue::from_raw(50_000), [0u8; 512])
+        builder
+            .add_output(None, recipient, NoteValue::from_raw(50_000), [0u8; 512])
             .expect("add_output should succeed");
 
         let mut rng = OsRng;
@@ -1508,7 +1616,10 @@ mod tests {
 
         println!("bundle built: {} actions", unauthorized.actions().len());
         // orchard pads to minimum 2 actions
-        assert!(unauthorized.actions().len() >= 2, "expected >=2 actions (padding)");
+        assert!(
+            unauthorized.actions().len() >= 2,
+            "expected >=2 actions (padding)"
+        );
 
         // prove (expensive but should work natively)
         let proven = with_proving_key(|pk| unauthorized.create_proof(pk, &mut rng))
@@ -1518,7 +1629,8 @@ mod tests {
 
         // apply signatures (no spend auth keys for output-only)
         let sighash = [0u8; 32]; // dummy sighash for test
-        let authorized = proven.apply_signatures(&mut rng, sighash, &[])
+        let authorized = proven
+            .apply_signatures(&mut rng, sighash, &[])
             .expect("signatures should succeed");
 
         println!("authorized bundle: {} actions", authorized.actions().len());
@@ -1561,7 +1673,7 @@ pub fn build_unsigned_transaction(
     use group::ff::PrimeField;
     use orchard::builder::{Builder, BundleType};
     use orchard::bundle::Flags;
-    use orchard::note::{Rho, RandomSeed};
+    use orchard::note::{RandomSeed, Rho};
     use orchard::tree::{Anchor, MerkleHashOrchard, MerklePath as OrchardMerklePath};
     use orchard::value::NoteValue;
     use rand::rngs::OsRng;
@@ -1574,9 +1686,11 @@ pub fn build_unsigned_transaction(
         UnifiedFullViewingKey::decode(&MainNetwork, ufvk_str)
     } else {
         UnifiedFullViewingKey::decode(&TestNetwork, ufvk_str)
-    }.map_err(|e| JsError::new(&format!("invalid UFVK: {}", e)))?;
+    }
+    .map_err(|e| JsError::new(&format!("invalid UFVK: {}", e)))?;
 
-    let orchard_fvk_old = ufvk.orchard()
+    let orchard_fvk_old = ufvk
+        .orchard()
         .ok_or_else(|| JsError::new("UFVK has no orchard component"))?;
 
     // Reconstruct as our orchard 0.12 FVK via raw bytes
@@ -1594,19 +1708,22 @@ pub fn build_unsigned_transaction(
     let recipient_addr = if is_transparent {
         None
     } else {
-        Some(parse_orchard_address(recipient, mainnet)
-            .map_err(|e| JsError::new(&format!("invalid recipient: {}", e)))?)
+        Some(
+            parse_orchard_address(recipient, mainnet)
+                .map_err(|e| JsError::new(&format!("invalid recipient: {}", e)))?,
+        )
     };
     let t_output_script = if is_transparent {
-        Some(decode_t_address_script(recipient, mainnet)
-            .map_err(|e| JsError::new(&format!("invalid transparent address: {}", e)))?)
+        Some(
+            decode_t_address_script(recipient, mainnet)
+                .map_err(|e| JsError::new(&format!("invalid transparent address: {}", e)))?,
+        )
     } else {
         None
     };
 
     // --- parse anchor ---
-    let anchor_bytes = hex_decode(anchor_hex)
-        .ok_or_else(|| JsError::new("invalid anchor hex"))?;
+    let anchor_bytes = hex_decode(anchor_hex).ok_or_else(|| JsError::new("invalid anchor hex"))?;
     if anchor_bytes.len() != 32 {
         return Err(JsError::new("anchor must be 32 bytes"));
     }
@@ -1629,12 +1746,12 @@ pub fn build_unsigned_transaction(
     let total_input: u64 = notes.iter().map(|n| n.value).sum();
     if total_input < amount + fee {
         return Err(JsError::new(&format!(
-            "insufficient funds: {} < {} + {}", total_input, amount, fee
+            "insufficient funds: {} < {} + {}",
+            total_input, amount, fee
         )));
     }
     let change = total_input - amount - fee;
     let num_spends = notes.len();
-
 
     // --- build orchard bundle using PCZT path ---
     let bundle_type = BundleType::Transactional {
@@ -1648,7 +1765,10 @@ pub fn build_unsigned_transaction(
         let rho_bytes = hex_decode(&note_info.rho_hex)
             .ok_or_else(|| JsError::new(&format!("invalid rho hex for note {}", i)))?;
         if rho_bytes.len() != 32 {
-            return Err(JsError::new(&format!("rho must be 32 bytes for note {}", i)));
+            return Err(JsError::new(&format!(
+                "rho must be 32 bytes for note {}",
+                i
+            )));
         }
         let mut rho_arr = [0u8; 32];
         rho_arr.copy_from_slice(&rho_bytes);
@@ -1658,7 +1778,10 @@ pub fn build_unsigned_transaction(
         let rseed_bytes = hex_decode(&note_info.rseed_hex)
             .ok_or_else(|| JsError::new(&format!("invalid rseed hex for note {}", i)))?;
         if rseed_bytes.len() != 32 {
-            return Err(JsError::new(&format!("rseed must be 32 bytes for note {}", i)));
+            return Err(JsError::new(&format!(
+                "rseed must be 32 bytes for note {}",
+                i
+            )));
         }
         let mut rseed_arr = [0u8; 32];
         rseed_arr.copy_from_slice(&rseed_bytes);
@@ -1670,18 +1793,32 @@ pub fn build_unsigned_transaction(
         let note: orchard::Note = if !note_info.recipient_hex.is_empty() {
             let addr_bytes = hex_decode(&note_info.recipient_hex)
                 .ok_or_else(|| JsError::new(&format!("invalid recipient hex for note {}", i)))?;
-            let addr_arr: [u8; 43] = addr_bytes.try_into()
+            let addr_arr: [u8; 43] = addr_bytes
+                .try_into()
                 .map_err(|_| JsError::new(&format!("recipient must be 43 bytes for note {}", i)))?;
             let addr = Option::from(orchard::Address::from_raw_address_bytes(&addr_arr))
                 .ok_or_else(|| JsError::new(&format!("invalid orchard address for note {}", i)))?;
-            Option::from(orchard::Note::from_parts(addr, note_value, rho, rseed))
-                .ok_or_else(|| JsError::new(&format!("failed to reconstruct note {} from stored address", i)))?
+            Option::from(orchard::Note::from_parts(addr, note_value, rho, rseed)).ok_or_else(
+                || {
+                    JsError::new(&format!(
+                        "failed to reconstruct note {} from stored address",
+                        i
+                    ))
+                },
+            )?
         } else {
             let ext_addr = fvk.to_ivk(Scope::External).address_at(0u64);
             let int_addr = fvk.to_ivk(Scope::Internal).address_at(0u64);
             Option::from(orchard::Note::from_parts(ext_addr, note_value, rho, rseed))
-                .or_else(|| Option::from(orchard::Note::from_parts(int_addr, note_value, rho, rseed)))
-                .ok_or_else(|| JsError::new(&format!("failed to reconstruct note {} — rseed/rho/value mismatch", i)))?
+                .or_else(|| {
+                    Option::from(orchard::Note::from_parts(int_addr, note_value, rho, rseed))
+                })
+                .ok_or_else(|| {
+                    JsError::new(&format!(
+                        "failed to reconstruct note {} — rseed/rho/value mismatch",
+                        i
+                    ))
+                })?
         };
 
         // verify cmx
@@ -1691,7 +1828,9 @@ pub fn build_unsigned_transaction(
         if hex_encode(&reconstructed_cmx.to_bytes()) != hex_encode(&expected_cmx) {
             return Err(JsError::new(&format!(
                 "cmx mismatch for note {}: reconstructed={} expected={}",
-                i, hex_encode(&reconstructed_cmx.to_bytes()), hex_encode(&expected_cmx)
+                i,
+                hex_encode(&reconstructed_cmx.to_bytes()),
+                hex_encode(&expected_cmx)
             )));
         }
 
@@ -1699,7 +1838,9 @@ pub fn build_unsigned_transaction(
         let mp = &merkle_paths[i];
         if mp.path.len() != 32 {
             return Err(JsError::new(&format!(
-                "merkle path must have 32 elements, got {} for note {}", mp.path.len(), i
+                "merkle path must have 32 elements, got {} for note {}",
+                mp.path.len(),
+                i
             )));
         }
 
@@ -1708,38 +1849,52 @@ pub fn build_unsigned_transaction(
             let hash_bytes = hex_decode(hash_hex)
                 .ok_or_else(|| JsError::new(&format!("invalid merkle path hash at {}/{}", i, j)))?;
             if hash_bytes.len() != 32 {
-                return Err(JsError::new(&format!("merkle path hash must be 32 bytes at {}/{}", i, j)));
+                return Err(JsError::new(&format!(
+                    "merkle path hash must be 32 bytes at {}/{}",
+                    i, j
+                )));
             }
             auth_path[j].copy_from_slice(&hash_bytes);
         }
 
-        let merkle_hashes: Vec<MerkleHashOrchard> = auth_path.iter()
+        let merkle_hashes: Vec<MerkleHashOrchard> = auth_path
+            .iter()
             .filter_map(|bytes| Option::from(MerkleHashOrchard::from_bytes(bytes)))
             .collect();
         if merkle_hashes.len() != 32 {
-            return Err(JsError::new(&format!("invalid merkle path hashes for note {}", i)));
+            return Err(JsError::new(&format!(
+                "invalid merkle path hashes for note {}",
+                i
+            )));
         }
 
         let merkle_path = OrchardMerklePath::from_parts(
-            u32::try_from(mp.position).map_err(|_| JsError::new(&format!("tree position {} exceeds u32 max", mp.position)))?,
-            merkle_hashes.try_into().map_err(|_| JsError::new("merkle path conversion"))?,
+            u32::try_from(mp.position).map_err(|_| {
+                JsError::new(&format!("tree position {} exceeds u32 max", mp.position))
+            })?,
+            merkle_hashes
+                .try_into()
+                .map_err(|_| JsError::new("merkle path conversion"))?,
         );
 
-        builder.add_spend(fvk.clone(), note, merkle_path)
+        builder
+            .add_spend(fvk.clone(), note, merkle_path)
             .map_err(|e| JsError::new(&format!("add_spend for note {}: {:?}", i, e)))?;
     }
 
     // add recipient output (orchard only — transparent outputs are added to the tx directly)
     if let Some(ref addr) = recipient_addr {
         let memo = [0u8; 512];
-        builder.add_output(None, *addr, NoteValue::from_raw(amount), memo)
+        builder
+            .add_output(None, *addr, NoteValue::from_raw(amount), memo)
             .map_err(|e| JsError::new(&format!("add_output (recipient): {:?}", e)))?;
     }
 
     // add change output if needed (for z→t, all orchard value minus amount+fee goes to change)
     if change > 0 {
         let memo = [0u8; 512];
-        builder.add_output(None, change_addr, NoteValue::from_raw(change), memo)
+        builder
+            .add_output(None, change_addr, NoteValue::from_raw(change), memo)
             .map_err(|e| JsError::new(&format!("add_output (change): {:?}", e)))?;
     }
 
@@ -1749,17 +1904,15 @@ pub fn build_unsigned_transaction(
         .build_for_pczt(&mut rng)
         .map_err(|e| JsError::new(&format!("pczt bundle build: {:?}", e)))?;
 
-
     // --- create proof (Halo 2 — expensive) ---
     with_proving_key(|pk| pczt_bundle.create_proof(pk, rng))
         .map_err(|e| JsError::new(&format!("create_proof: {}", e)))?;
 
-
     // --- extract effects bundle for sighash computation ---
-    let effects_bundle: orchard::Bundle<orchard::bundle::EffectsOnly, ZatBalance> =
-        pczt_bundle.extract_effects()
-            .map_err(|e| JsError::new(&format!("extract_effects: {}", e)))?
-            .ok_or_else(|| JsError::new("extract_effects produced no bundle"))?;
+    let effects_bundle: orchard::Bundle<orchard::bundle::EffectsOnly, ZatBalance> = pczt_bundle
+        .extract_effects()
+        .map_err(|e| JsError::new(&format!("extract_effects: {}", e)))?
+        .ok_or_else(|| JsError::new("extract_effects produced no bundle"))?;
 
     // --- compute ZIP-244 sighash ---
     let branch_id: u32 = 0x4DEC4DF0; // NU6.1
@@ -1811,11 +1964,10 @@ pub fn build_unsigned_transaction(
 
     let sighash = blake2b_256_personal(&sighash_personal, &sighash_input);
 
-
     // --- finalize IO (signs dummies, computes bsk) ---
-    pczt_bundle.finalize_io(sighash, rng)
+    pczt_bundle
+        .finalize_io(sighash, rng)
         .map_err(|e| JsError::new(&format!("finalize_io: {}", e)))?;
-
 
     // --- extract alphas for real (non-dummy) spend actions ---
     // After finalize_io, dummy spends have spend_auth_sig set, real spends do not.
@@ -1826,20 +1978,23 @@ pub fn build_unsigned_transaction(
     for (i, action) in pczt_bundle.actions().iter().enumerate() {
         if action.spend().spend_auth_sig().is_none() {
             // This is a real spend that needs external signing
-            let alpha = action.spend().alpha()
+            let alpha = action
+                .spend()
+                .alpha()
                 .ok_or_else(|| JsError::new(&format!("missing alpha for action {}", i)))?;
             alphas.push(hex_encode(&alpha.to_repr()));
             spend_indices.push(i as u32);
         }
     }
 
-
     // --- serialize v5 transaction from PCZT bundle ---
     // Get proof and bsk from the PCZT bundle
-    let proof = pczt_bundle.zkproof()
+    let proof = pczt_bundle
+        .zkproof()
         .as_ref()
         .ok_or_else(|| JsError::new("missing proof after create_proof"))?;
-    let bsk = pczt_bundle.bsk()
+    let bsk = pczt_bundle
+        .bsk()
         .as_ref()
         .ok_or_else(|| JsError::new("missing bsk after finalize_io"))?;
 
@@ -1857,7 +2012,7 @@ pub fn build_unsigned_transaction(
 
     // transparent inputs (none)
     tx_bytes.extend_from_slice(&compact_size(0)); // vin
-    // transparent outputs
+                                                  // transparent outputs
     if let Some(ref script) = t_output_script {
         tx_bytes.extend_from_slice(&compact_size(1)); // 1 vout
         tx_bytes.extend_from_slice(&amount.to_le_bytes());
@@ -1878,13 +2033,14 @@ pub fn build_unsigned_transaction(
 
     // each action (without auth sigs)
     for action in actions.iter() {
-        tx_bytes.extend_from_slice(&action.cv_net().to_bytes());           // 32
+        tx_bytes.extend_from_slice(&action.cv_net().to_bytes()); // 32
         tx_bytes.extend_from_slice(&action.spend().nullifier().to_bytes()); // 32
         tx_bytes.extend_from_slice(&<[u8; 32]>::from(action.spend().rk())); // 32
-        tx_bytes.extend_from_slice(&action.output().cmx().to_bytes());      // 32
+        tx_bytes.extend_from_slice(&action.output().cmx().to_bytes()); // 32
         tx_bytes.extend_from_slice(&action.output().encrypted_note().epk_bytes); // 32
         tx_bytes.extend_from_slice(&action.output().encrypted_note().enc_ciphertext); // 580
-        tx_bytes.extend_from_slice(&action.output().encrypted_note().out_ciphertext); // 80
+        tx_bytes.extend_from_slice(&action.output().encrypted_note().out_ciphertext);
+        // 80
     }
 
     // flags byte
@@ -1913,7 +2069,6 @@ pub fn build_unsigned_transaction(
 
     // binding signature (64 bytes)
     tx_bytes.extend_from_slice(&<[u8; 64]>::from(&binding_sig));
-
 
     // Build summary
     let amount_zec = amount as f64 / 100_000_000.0;
@@ -1984,13 +2139,13 @@ pub fn complete_transaction(
     if signatures.len() != spend_indices.len() {
         return Err(JsError::new(&format!(
             "signature count {} != spend_indices count {}",
-            signatures.len(), spend_indices.len()
+            signatures.len(),
+            spend_indices.len()
         )));
     }
 
-    let mut tx_bytes = hex_decode(unsigned_tx_hex)
-        .ok_or_else(|| JsError::new("invalid unsigned tx hex"))?;
-
+    let mut tx_bytes =
+        hex_decode(unsigned_tx_hex).ok_or_else(|| JsError::new("invalid unsigned tx hex"))?;
 
     // Parse the v5 transaction to find the orchard bundle offsets.
     // v5 layout:
@@ -2049,12 +2204,12 @@ pub fn complete_transaction(
     // now pos points to the start of spend auth signatures
     let spend_auth_sigs_start = pos;
 
-
     // Patch each signature at the correct offset
     for (sig_idx, &action_idx) in spend_indices.iter().enumerate() {
         if action_idx as u64 >= n_actions {
             return Err(JsError::new(&format!(
-                "spend_index {} out of range (n_actions={})", action_idx, n_actions
+                "spend_index {} out of range (n_actions={})",
+                action_idx, n_actions
             )));
         }
 
@@ -2063,7 +2218,9 @@ pub fn complete_transaction(
             .ok_or_else(|| JsError::new(&format!("invalid signature hex at index {}", sig_idx)))?;
         if sig_bytes.len() != 64 {
             return Err(JsError::new(&format!(
-                "signature must be 64 bytes, got {} at index {}", sig_bytes.len(), sig_idx
+                "signature must be 64 bytes, got {} at index {}",
+                sig_bytes.len(),
+                sig_idx
             )));
         }
 
@@ -2075,7 +2232,6 @@ pub fn complete_transaction(
         tx_bytes[offset..offset + 64].copy_from_slice(&sig_bytes);
     }
 
-
     Ok(hex_encode(&tx_bytes))
 }
 
@@ -2084,8 +2240,7 @@ pub fn complete_transaction(
 #[wasm_bindgen]
 pub fn get_commitment_proof_request(note_cmx_hex: &str) -> Result<String, JsError> {
     // Just validate and return the cmx
-    let cmx_bytes = hex_decode(note_cmx_hex)
-        .ok_or_else(|| JsError::new("Invalid cmx hex"))?;
+    let cmx_bytes = hex_decode(note_cmx_hex).ok_or_else(|| JsError::new("Invalid cmx hex"))?;
     if cmx_bytes.len() != 32 {
         return Err(JsError::new("CMX must be 32 bytes"));
     }
@@ -2156,16 +2311,19 @@ pub fn address_from_ufvk(ufvk_str: &str, diversifier_index: u32) -> Result<Strin
         UnifiedFullViewingKey::decode(&MainNetwork, ufvk_str)
     } else {
         UnifiedFullViewingKey::decode(&TestNetwork, ufvk_str)
-    }.map_err(|e| JsError::new(&format!("invalid UFVK: {}", e)))?;
+    }
+    .map_err(|e| JsError::new(&format!("invalid UFVK: {}", e)))?;
 
     let mainnet = ufvk_str.starts_with("uview1") && !ufvk_str.starts_with("uviewtest");
 
     // get the orchard FVK from the UFVK
-    let orchard_fvk_old = ufvk.orchard()
+    let orchard_fvk_old = ufvk
+        .orchard()
         .ok_or_else(|| JsError::new("UFVK has no orchard component"))?;
 
     // derive address at diversifier index
-    let addr_old = orchard_fvk_old.address_at(diversifier_index as u64, orchard::keys::Scope::External);
+    let addr_old =
+        orchard_fvk_old.address_at(diversifier_index as u64, orchard::keys::Scope::External);
     let raw = addr_old.to_raw_address_bytes();
 
     // encode as unified address string
@@ -2178,7 +2336,10 @@ pub fn address_from_ufvk(ufvk_str: &str, diversifier_index: u32) -> Result<Strin
 /// Derive a transparent (t1.../tm...) address from a UFVK string at a given address index.
 /// Returns the base58check-encoded P2PKH address.
 #[wasm_bindgen]
-pub fn transparent_address_from_ufvk(ufvk_str: &str, address_index: u32) -> Result<String, JsError> {
+pub fn transparent_address_from_ufvk(
+    ufvk_str: &str,
+    address_index: u32,
+) -> Result<String, JsError> {
     use zcash_keys::keys::UnifiedFullViewingKey;
     use zcash_protocol::consensus::{MainNetwork, TestNetwork};
 
@@ -2188,19 +2349,23 @@ pub fn transparent_address_from_ufvk(ufvk_str: &str, address_index: u32) -> Resu
         UnifiedFullViewingKey::decode(&MainNetwork, ufvk_str)
     } else {
         UnifiedFullViewingKey::decode(&TestNetwork, ufvk_str)
-    }.map_err(|e| JsError::new(&format!("invalid UFVK: {}", e)))?;
+    }
+    .map_err(|e| JsError::new(&format!("invalid UFVK: {}", e)))?;
 
-    let account_pubkey = ufvk.transparent()
+    let account_pubkey = ufvk
+        .transparent()
         .ok_or_else(|| JsError::new("UFVK has no transparent component"))?;
 
-    let external_ivk = account_pubkey.derive_external_ivk()
+    let external_ivk = account_pubkey
+        .derive_external_ivk()
         .map_err(|e| JsError::new(&format!("failed to derive external IVK: {}", e)))?;
 
     use zcash_transparent::keys::IncomingViewingKey;
     let child_index = zcash_transparent::keys::NonHardenedChildIndex::from_index(address_index)
         .ok_or_else(|| JsError::new("address index out of range"))?;
 
-    let t_addr = external_ivk.derive_address(child_index)
+    let t_addr = external_ivk
+        .derive_address(child_index)
         .map_err(|e| JsError::new(&format!("failed to derive transparent address: {}", e)))?;
 
     // extract pubkey hash
@@ -2307,7 +2472,7 @@ pub fn build_signed_spend_transaction(
     use orchard::builder::{Builder, BundleType};
     use orchard::bundle::Flags;
     use orchard::keys::SpendAuthorizingKey;
-    use orchard::note::{Rho, RandomSeed};
+    use orchard::note::{RandomSeed, Rho};
     use orchard::tree::{Anchor, MerkleHashOrchard, MerklePath as OrchardMerklePath};
     use orchard::value::NoteValue;
     use rand::rngs::OsRng;
@@ -2335,19 +2500,22 @@ pub fn build_signed_spend_transaction(
     let recipient_addr = if is_transparent {
         None // transparent recipient — no orchard output for the recipient
     } else {
-        Some(parse_orchard_address(recipient, mainnet)
-            .map_err(|e| JsError::new(&format!("invalid recipient: {}", e)))?)
+        Some(
+            parse_orchard_address(recipient, mainnet)
+                .map_err(|e| JsError::new(&format!("invalid recipient: {}", e)))?,
+        )
     };
     let t_output_script = if is_transparent {
-        Some(decode_t_address_script(recipient, mainnet)
-            .map_err(|e| JsError::new(&format!("invalid transparent address: {}", e)))?)
+        Some(
+            decode_t_address_script(recipient, mainnet)
+                .map_err(|e| JsError::new(&format!("invalid transparent address: {}", e)))?,
+        )
     } else {
         None
     };
 
     // --- parse anchor ---
-    let anchor_bytes = hex_decode(anchor_hex)
-        .ok_or_else(|| JsError::new("invalid anchor hex"))?;
+    let anchor_bytes = hex_decode(anchor_hex).ok_or_else(|| JsError::new("invalid anchor hex"))?;
     if anchor_bytes.len() != 32 {
         return Err(JsError::new("anchor must be 32 bytes"));
     }
@@ -2370,7 +2538,8 @@ pub fn build_signed_spend_transaction(
     let total_input: u64 = notes.iter().map(|n| n.value).sum();
     if total_input < amount + fee {
         return Err(JsError::new(&format!(
-            "insufficient funds: {} < {} + {}", total_input, amount, fee
+            "insufficient funds: {} < {} + {}",
+            total_input, amount, fee
         )));
     }
     let change = total_input - amount - fee;
@@ -2388,7 +2557,10 @@ pub fn build_signed_spend_transaction(
         let rho_bytes = hex_decode(&note_info.rho_hex)
             .ok_or_else(|| JsError::new(&format!("invalid rho hex for note {}", i)))?;
         if rho_bytes.len() != 32 {
-            return Err(JsError::new(&format!("rho must be 32 bytes for note {}", i)));
+            return Err(JsError::new(&format!(
+                "rho must be 32 bytes for note {}",
+                i
+            )));
         }
         let mut rho_arr = [0u8; 32];
         rho_arr.copy_from_slice(&rho_bytes);
@@ -2398,7 +2570,10 @@ pub fn build_signed_spend_transaction(
         let rseed_bytes = hex_decode(&note_info.rseed_hex)
             .ok_or_else(|| JsError::new(&format!("invalid rseed hex for note {}", i)))?;
         if rseed_bytes.len() != 32 {
-            return Err(JsError::new(&format!("rseed must be 32 bytes for note {}", i)));
+            return Err(JsError::new(&format!(
+                "rseed must be 32 bytes for note {}",
+                i
+            )));
         }
         let mut rseed_arr = [0u8; 32];
         rseed_arr.copy_from_slice(&rseed_bytes);
@@ -2411,19 +2586,33 @@ pub fn build_signed_spend_transaction(
         let note: orchard::Note = if !note_info.recipient_hex.is_empty() {
             let addr_bytes = hex_decode(&note_info.recipient_hex)
                 .ok_or_else(|| JsError::new(&format!("invalid recipient hex for note {}", i)))?;
-            let addr_arr: [u8; 43] = addr_bytes.try_into()
+            let addr_arr: [u8; 43] = addr_bytes
+                .try_into()
                 .map_err(|_| JsError::new(&format!("recipient must be 43 bytes for note {}", i)))?;
             let addr = Option::from(orchard::Address::from_raw_address_bytes(&addr_arr))
                 .ok_or_else(|| JsError::new(&format!("invalid orchard address for note {}", i)))?;
-            Option::from(orchard::Note::from_parts(addr, note_value, rho, rseed))
-                .ok_or_else(|| JsError::new(&format!("failed to reconstruct note {} from stored address", i)))?
+            Option::from(orchard::Note::from_parts(addr, note_value, rho, rseed)).ok_or_else(
+                || {
+                    JsError::new(&format!(
+                        "failed to reconstruct note {} from stored address",
+                        i
+                    ))
+                },
+            )?
         } else {
             // fallback: try default addresses (legacy notes without stored recipient)
             let ext_addr = fvk.to_ivk(Scope::External).address_at(0u64);
             let int_addr = fvk.to_ivk(Scope::Internal).address_at(0u64);
             Option::from(orchard::Note::from_parts(ext_addr, note_value, rho, rseed))
-                .or_else(|| Option::from(orchard::Note::from_parts(int_addr, note_value, rho, rseed)))
-                .ok_or_else(|| JsError::new(&format!("failed to reconstruct note {} — rseed/rho/value mismatch", i)))?
+                .or_else(|| {
+                    Option::from(orchard::Note::from_parts(int_addr, note_value, rho, rseed))
+                })
+                .ok_or_else(|| {
+                    JsError::new(&format!(
+                        "failed to reconstruct note {} — rseed/rho/value mismatch",
+                        i
+                    ))
+                })?
         };
 
         // verify the reconstructed note matches the expected cmx
@@ -2433,7 +2622,9 @@ pub fn build_signed_spend_transaction(
         if hex_encode(&reconstructed_cmx.to_bytes()) != hex_encode(&expected_cmx) {
             return Err(JsError::new(&format!(
                 "cmx mismatch for note {}: reconstructed={} expected={}",
-                i, hex_encode(&reconstructed_cmx.to_bytes()), hex_encode(&expected_cmx)
+                i,
+                hex_encode(&reconstructed_cmx.to_bytes()),
+                hex_encode(&expected_cmx)
             )));
         }
 
@@ -2441,7 +2632,9 @@ pub fn build_signed_spend_transaction(
         let mp = &merkle_paths[i];
         if mp.path.len() != 32 {
             return Err(JsError::new(&format!(
-                "merkle path must have 32 elements, got {} for note {}", mp.path.len(), i
+                "merkle path must have 32 elements, got {} for note {}",
+                mp.path.len(),
+                i
             )));
         }
 
@@ -2450,41 +2643,53 @@ pub fn build_signed_spend_transaction(
             let hash_bytes = hex_decode(hash_hex)
                 .ok_or_else(|| JsError::new(&format!("invalid merkle path hash at {}/{}", i, j)))?;
             if hash_bytes.len() != 32 {
-                return Err(JsError::new(&format!("merkle path hash must be 32 bytes at {}/{}", i, j)));
+                return Err(JsError::new(&format!(
+                    "merkle path hash must be 32 bytes at {}/{}",
+                    i, j
+                )));
             }
             auth_path[j].copy_from_slice(&hash_bytes);
         }
 
-        let merkle_hashes: Vec<MerkleHashOrchard> = auth_path.iter()
+        let merkle_hashes: Vec<MerkleHashOrchard> = auth_path
+            .iter()
             .filter_map(|bytes| Option::from(MerkleHashOrchard::from_bytes(bytes)))
             .collect();
 
         if merkle_hashes.len() != 32 {
             return Err(JsError::new(&format!(
-                "invalid merkle path hashes for note {}", i
+                "invalid merkle path hashes for note {}",
+                i
             )));
         }
 
         let merkle_path = OrchardMerklePath::from_parts(
-            u32::try_from(mp.position).map_err(|_| JsError::new(&format!("tree position {} exceeds u32 max", mp.position)))?,
-            merkle_hashes.try_into().map_err(|_| JsError::new("merkle path conversion"))?,
+            u32::try_from(mp.position).map_err(|_| {
+                JsError::new(&format!("tree position {} exceeds u32 max", mp.position))
+            })?,
+            merkle_hashes
+                .try_into()
+                .map_err(|_| JsError::new("merkle path conversion"))?,
         );
 
-        builder.add_spend(fvk.clone(), note, merkle_path)
+        builder
+            .add_spend(fvk.clone(), note, merkle_path)
             .map_err(|e| JsError::new(&format!("add_spend for note {}: {:?}", i, e)))?;
     }
 
     // add recipient output (orchard only — transparent outputs are added to the tx directly)
     if let Some(ref addr) = recipient_addr {
         let memo = [0u8; 512];
-        builder.add_output(None, *addr, NoteValue::from_raw(amount), memo)
+        builder
+            .add_output(None, *addr, NoteValue::from_raw(amount), memo)
             .map_err(|e| JsError::new(&format!("add_output (recipient): {:?}", e)))?;
     }
 
     // add change output if needed (for z→t, all orchard value minus amount+fee goes to change)
     if change > 0 {
         let memo = [0u8; 512];
-        builder.add_output(None, change_addr, NoteValue::from_raw(change), memo)
+        builder
+            .add_output(None, change_addr, NoteValue::from_raw(change), memo)
             .map_err(|e| JsError::new(&format!("add_output (change): {:?}", e)))?;
     }
 
@@ -2567,7 +2772,7 @@ pub fn build_signed_spend_transaction(
 
     // transparent inputs (none)
     tx_bytes.extend_from_slice(&compact_size(0)); // vin
-    // transparent outputs
+                                                  // transparent outputs
     if let Some(ref script) = t_output_script {
         tx_bytes.extend_from_slice(&compact_size(1)); // 1 vout
         tx_bytes.extend_from_slice(&amount.to_le_bytes());
@@ -2596,9 +2801,12 @@ fn test_user_seed_with_real_action() {
 
     // Real action from tx 23803f17eeaa1617fa26c910a4215f618a16f011bf18b81613b0436894f59d76
     // block 3128610 - this is the shielding tx that should have user's notes
-    let nullifier = hex_decode("41291fa8172173e9cc0d205b064e781a4277ceb7736c52dcb9784d2665987438").unwrap();
-    let cmx = hex_decode("72dc616c3019a39216dbf74a240ada0aeac4a5eebae409d46d32fac835848934").unwrap();
-    let epk = hex_decode("9db06408843a4a34686b6d375ad88915eb387787f2a55c01f97e264161e505b5").unwrap();
+    let nullifier =
+        hex_decode("41291fa8172173e9cc0d205b064e781a4277ceb7736c52dcb9784d2665987438").unwrap();
+    let cmx =
+        hex_decode("72dc616c3019a39216dbf74a240ada0aeac4a5eebae409d46d32fac835848934").unwrap();
+    let epk =
+        hex_decode("9db06408843a4a34686b6d375ad88915eb387787f2a55c01f97e264161e505b5").unwrap();
     let enc_ciphertext = hex_decode("cf94455b13ad0d815492fecb913abc26eb9edbc5b06d1ca9d1d08959ad60b63d9267ad7d20c38ba9a323cdefabe8561a0edf2f59ef6cfdfe6927652c5793e3912a64175d27ec35254563a39a77a79075c30edb446ce040f77c73ce60de28ea21f191532e46110867a08f0ef69a37fd208d5f55a6e664c0065fb162c24d5fc906f8f5cddb898a34ffa4b0609d9b6d419dbc099808ee5f644fd619985326a781ed447e5bba88044d2f787bb1d68d186f9e089434b70e090cb18fc466e2949798b7c9363bd3be5411a5c4abfad3fac153565ce37b0db588b890e8f03afffcaa723b6eb2376bdfc1ffe0e64b9f6893229a8b290e05aa478b12841fba2b1c68c8e1ec8ba22b40c27523c67001b57fd426edf3d2180e2a2c6f9cc2b0c5155a1a27272fd58902c8b7eabca6a5e2a8c5597bfc33526ef5dac4db7f841e6d7aa3166e9e7c73b53da12896cfaa88b343ef8d90b7ca5bcdc39fee1609da41efeaefe05cbc2e10682691335c9c772c274b7da3607cf6235a01664d4c330f3fdabeee61216e543919b1216df86d5eb1e395be9afacd760b8ce05ea465cfe3c815cc67cbf96379772a1c71a77462077d096c75e43374aa98b6fa441bdfeb0c7109140303fd57e2470eedc71a0bb5dfdb540731b960d9e17c5cff5c29f228e0056e42c8c30aedac34eb812ddad91613c089a7f8c1ec21393fa5db2cb27dfaf9d0e59f41e4842f5f5d9401d2aec0ebec8e20807524e3c47076f86d945dea492fd0152f8edbf35b0df4cd1aa808eb2945d61ead63e364ceef9aacdd91d76e396da2f8fcb0486d0c89606582c6").unwrap();
 
     // Build compact action (first 52 bytes of ciphertext only)
@@ -2614,7 +2822,10 @@ fn test_user_seed_with_real_action() {
 
     // Try to decrypt with External scope
     let result = keys.try_decrypt_action_binary(&action);
-    println!("Decryption result (External scope): {:?}", result.map(|(v, nf, _, _)| (v, hex_encode(&nf))));
+    println!(
+        "Decryption result (External scope): {:?}",
+        result.map(|(v, nf, _, _)| (v, hex_encode(&nf)))
+    );
 
     // Also try Internal scope
     let mnemonic = bip39::Mnemonic::parse(seed_phrase).unwrap();
@@ -2640,13 +2851,22 @@ fn test_user_seed_with_real_action() {
         ciphertext: action.ciphertext,
     };
     let internal_result = try_compact_note_decryption(&domain, &prepared_internal, &output);
-    println!("Decryption result (Internal scope): {:?}", internal_result.map(|(n, _)| n.value().inner()));
+    println!(
+        "Decryption result (Internal scope): {:?}",
+        internal_result.map(|(n, _)| n.value().inner())
+    );
 
     // Print the addresses for debugging
     let external_addr = fvk.to_ivk(Scope::External).address_at(0u64);
     let internal_addr = fvk.to_ivk(Scope::Internal).address_at(0u64);
-    println!("External address diversifier_index 0: {:?}", hex_encode(&external_addr.to_raw_address_bytes()[..16]));
-    println!("Internal address diversifier_index 0: {:?}", hex_encode(&internal_addr.to_raw_address_bytes()[..16]));
+    println!(
+        "External address diversifier_index 0: {:?}",
+        hex_encode(&external_addr.to_raw_address_bytes()[..16])
+    );
+    println!(
+        "Internal address diversifier_index 0: {:?}",
+        hex_encode(&internal_addr.to_raw_address_bytes()[..16])
+    );
 }
 
 // ============================================================================
@@ -2664,8 +2884,8 @@ fn bip32_master_key(seed: &[u8]) -> Bip32Key {
     use hmac::{Hmac, Mac};
     use sha2::Sha512;
 
-    let mut mac = Hmac::<Sha512>::new_from_slice(b"Bitcoin seed")
-        .expect("HMAC accepts any key length");
+    let mut mac =
+        Hmac::<Sha512>::new_from_slice(b"Bitcoin seed").expect("HMAC accepts any key length");
     mac.update(seed);
     let result = mac.finalize().into_bytes();
 
@@ -2680,12 +2900,12 @@ fn bip32_master_key(seed: &[u8]) -> Bip32Key {
 /// BIP32 child key derivation (hardened or normal)
 fn bip32_derive_child(parent: &Bip32Key, index: u32, hardened: bool) -> Result<Bip32Key, String> {
     use hmac::{Hmac, Mac};
-    use sha2::Sha512;
     use k256::elliptic_curve::sec1::ToEncodedPoint;
     use k256::elliptic_curve::PrimeField;
+    use sha2::Sha512;
 
-    let mut mac = Hmac::<Sha512>::new_from_slice(&parent.chain_code)
-        .expect("HMAC accepts any key length");
+    let mut mac =
+        Hmac::<Sha512>::new_from_slice(&parent.chain_code).expect("HMAC accepts any key length");
 
     let child_index = if hardened { index | 0x80000000 } else { index };
 
@@ -2742,7 +2962,11 @@ fn bip32_derive_child(parent: &Bip32Key, index: u32, hardened: bool) -> Result<B
 /// Returns hex-encoded 32-byte secp256k1 private key for signing transparent inputs.
 /// Path components: purpose=44' (BIP44), coin_type=133' (ZEC), account', change=0, index
 #[wasm_bindgen]
-pub fn derive_transparent_privkey(seed_phrase: &str, account: u32, index: u32) -> Result<String, JsError> {
+pub fn derive_transparent_privkey(
+    seed_phrase: &str,
+    account: u32,
+    index: u32,
+) -> Result<String, JsError> {
     let mnemonic = bip39::Mnemonic::parse(seed_phrase)
         .map_err(|e| JsError::new(&format!("invalid mnemonic: {}", e)))?;
 
@@ -2766,7 +2990,9 @@ pub fn derive_transparent_privkey(seed_phrase: &str, account: u32, index: u32) -
 }
 
 /// Deserialize a u64 from either a JSON number or a string (for BigInt safety)
-fn deserialize_u64_or_string<'de, D: serde::Deserializer<'de>>(deserializer: D) -> std::result::Result<u64, D::Error> {
+fn deserialize_u64_or_string<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<u64, D::Error> {
     use serde::de;
     struct U64OrString;
     impl<'de> de::Visitor<'de> for U64OrString {
@@ -2774,11 +3000,15 @@ fn deserialize_u64_or_string<'de, D: serde::Deserializer<'de>>(deserializer: D) 
         fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
             f.write_str("a u64 or numeric string")
         }
-        fn visit_u64<E: de::Error>(self, v: u64) -> std::result::Result<u64, E> { Ok(v) }
+        fn visit_u64<E: de::Error>(self, v: u64) -> std::result::Result<u64, E> {
+            Ok(v)
+        }
         fn visit_i64<E: de::Error>(self, v: i64) -> std::result::Result<u64, E> {
             u64::try_from(v).map_err(|_| de::Error::custom("negative value"))
         }
-        fn visit_f64<E: de::Error>(self, v: f64) -> std::result::Result<u64, E> { Ok(v as u64) }
+        fn visit_f64<E: de::Error>(self, v: f64) -> std::result::Result<u64, E> {
+            Ok(v as u64)
+        }
         fn visit_str<E: de::Error>(self, v: &str) -> std::result::Result<u64, E> {
             v.parse::<u64>().map_err(de::Error::custom)
         }
@@ -2837,7 +3067,7 @@ pub fn build_shielding_transaction(
     anchor_height: u32,
     mainnet: bool,
 ) -> Result<String, JsError> {
-    use k256::ecdsa::{SigningKey, signature::hazmat::PrehashSigner};
+    use k256::ecdsa::{signature::hazmat::PrehashSigner, SigningKey};
     use orchard::builder::{Builder, BundleType};
     use orchard::bundle::Flags;
     use orchard::tree::Anchor;
@@ -2850,8 +3080,8 @@ pub fn build_shielding_transaction(
         .map_err(|e| JsError::new(&format!("invalid recipient: {}", e)))?;
 
     // --- parse transparent private key ---
-    let privkey_bytes = hex_decode(privkey_hex)
-        .ok_or_else(|| JsError::new("invalid privkey hex"))?;
+    let privkey_bytes =
+        hex_decode(privkey_hex).ok_or_else(|| JsError::new("invalid privkey hex"))?;
     if privkey_bytes.len() != 32 {
         return Err(JsError::new("privkey must be 32 bytes"));
     }
@@ -2869,7 +3099,8 @@ pub fn build_shielding_transaction(
         .map_err(|e| JsError::new(&format!("invalid utxos json: {}", e)))?;
     utxos.sort_by(|a, b| b.value.cmp(&a.value));
 
-    let target = amount.checked_add(fee)
+    let target = amount
+        .checked_add(fee)
         .ok_or_else(|| JsError::new("amount + fee overflow"))?;
 
     let mut selected: Vec<TransparentUtxo> = Vec::new();
@@ -2877,11 +3108,14 @@ pub fn build_shielding_transaction(
     for utxo in &utxos {
         selected.push(utxo.clone());
         total_in += utxo.value;
-        if total_in >= target { break; }
+        if total_in >= target {
+            break;
+        }
     }
     if total_in < target {
         return Err(JsError::new(&format!(
-            "insufficient funds: have {} zat, need {} zat", total_in, target
+            "insufficient funds: have {} zat, need {} zat",
+            total_in, target
         )));
     }
 
@@ -2895,7 +3129,13 @@ pub fn build_shielding_transaction(
     };
     let mut builder = Builder::new(bundle_type, Anchor::empty_tree());
 
-    builder.add_output(None, orchard_addr, NoteValue::from_raw(shielded_value), [0u8; 512])
+    builder
+        .add_output(
+            None,
+            orchard_addr,
+            NoteValue::from_raw(shielded_value),
+            [0u8; 512],
+        )
         .map_err(|e| JsError::new(&format!("add_output: {:?}", e)))?;
 
     let mut rng = OsRng;
@@ -2919,9 +3159,11 @@ pub fn build_shielding_transaction(
     let mut scripts_data = Vec::new();
 
     for utxo in &selected {
-        let txid_be = hex_decode(&utxo.txid)
-            .ok_or_else(|| JsError::new("invalid utxo txid hex"))?;
-        if txid_be.len() != 32 { return Err(JsError::new("txid must be 32 bytes")); }
+        let txid_be =
+            hex_decode(&utxo.txid).ok_or_else(|| JsError::new("invalid utxo txid hex"))?;
+        if txid_be.len() != 32 {
+            return Err(JsError::new("txid must be 32 bytes"));
+        }
         let mut txid_le = txid_be.clone();
         txid_le.reverse();
 
@@ -2930,8 +3172,7 @@ pub fn build_shielding_transaction(
         sequence_data.extend_from_slice(&0xffffffffu32.to_le_bytes());
         amounts_data.extend_from_slice(&utxo.value.to_le_bytes());
 
-        let script_bytes = hex_decode(&utxo.script)
-            .unwrap_or_else(|| our_script_pubkey.clone());
+        let script_bytes = hex_decode(&utxo.script).unwrap_or_else(|| our_script_pubkey.clone());
         scripts_data.extend_from_slice(&compact_size(script_bytes.len() as u64));
         scripts_data.extend_from_slice(&script_bytes);
     }
@@ -2976,8 +3217,7 @@ pub fn build_shielding_transaction(
         let mut txid_le = txid_be.clone();
         txid_le.reverse();
 
-        let script_bytes = hex_decode(&utxo.script)
-            .unwrap_or_else(|| our_script_pubkey.clone());
+        let script_bytes = hex_decode(&utxo.script).unwrap_or_else(|| our_script_pubkey.clone());
 
         let mut txin_data = Vec::new();
         txin_data.extend_from_slice(&txid_le);
@@ -3009,7 +3249,8 @@ pub fn build_shielding_transaction(
 
         let sighash = blake2b_256_personal(&sighash_personal, &sighash_input);
 
-        let sig: k256::ecdsa::Signature = signing_key.sign_prehash(&sighash)
+        let sig: k256::ecdsa::Signature = signing_key
+            .sign_prehash(&sighash)
             .map_err(|e| JsError::new(&format!("ECDSA signing failed: {}", e)))?;
         let sig_der = sig.to_der();
 
@@ -3114,15 +3355,18 @@ pub fn transparent_pubkey_from_ufvk(ufvk_str: &str, address_index: u32) -> Resul
         UnifiedFullViewingKey::decode(&MainNetwork, ufvk_str)
     } else {
         UnifiedFullViewingKey::decode(&TestNetwork, ufvk_str)
-    }.map_err(|e| JsError::new(&format!("invalid UFVK: {}", e)))?;
+    }
+    .map_err(|e| JsError::new(&format!("invalid UFVK: {}", e)))?;
 
-    let account_pubkey = ufvk.transparent()
+    let account_pubkey = ufvk
+        .transparent()
         .ok_or_else(|| JsError::new("UFVK has no transparent component"))?;
 
     let child_index = NonHardenedChildIndex::from_index(address_index)
         .ok_or_else(|| JsError::new("address index out of range"))?;
 
-    let pubkey = account_pubkey.derive_address_pubkey(TransparentKeyScope::EXTERNAL, child_index)
+    let pubkey = account_pubkey
+        .derive_address_pubkey(TransparentKeyScope::EXTERNAL, child_index)
         .map_err(|e| JsError::new(&format!("failed to derive pubkey: {}", e)))?;
 
     Ok(hex_encode(&pubkey.serialize()))
@@ -3159,7 +3403,8 @@ pub fn build_unsigned_shielding_transaction(
         .map_err(|e| JsError::new(&format!("invalid utxos json: {}", e)))?;
     utxos.sort_by(|a, b| b.value.cmp(&a.value));
 
-    let target = amount.checked_add(fee)
+    let target = amount
+        .checked_add(fee)
         .ok_or_else(|| JsError::new("amount + fee overflow"))?;
 
     let mut selected: Vec<TransparentUtxo> = Vec::new();
@@ -3167,11 +3412,14 @@ pub fn build_unsigned_shielding_transaction(
     for utxo in &utxos {
         selected.push(utxo.clone());
         total_in += utxo.value;
-        if total_in >= target { break; }
+        if total_in >= target {
+            break;
+        }
     }
     if total_in < target {
         return Err(JsError::new(&format!(
-            "insufficient funds: have {} zat, need {} zat", total_in, target
+            "insufficient funds: have {} zat, need {} zat",
+            total_in, target
         )));
     }
 
@@ -3184,7 +3432,13 @@ pub fn build_unsigned_shielding_transaction(
     };
     let mut builder = Builder::new(bundle_type, Anchor::empty_tree());
 
-    builder.add_output(None, orchard_addr, NoteValue::from_raw(shielded_value), [0u8; 512])
+    builder
+        .add_output(
+            None,
+            orchard_addr,
+            NoteValue::from_raw(shielded_value),
+            [0u8; 512],
+        )
         .map_err(|e| JsError::new(&format!("add_output: {:?}", e)))?;
 
     let mut rng = OsRng;
@@ -3207,9 +3461,11 @@ pub fn build_unsigned_shielding_transaction(
     let mut scripts_data = Vec::new();
 
     for utxo in &selected {
-        let txid_be = hex_decode(&utxo.txid)
-            .ok_or_else(|| JsError::new("invalid utxo txid hex"))?;
-        if txid_be.len() != 32 { return Err(JsError::new("txid must be 32 bytes")); }
+        let txid_be =
+            hex_decode(&utxo.txid).ok_or_else(|| JsError::new("invalid utxo txid hex"))?;
+        if txid_be.len() != 32 {
+            return Err(JsError::new("txid must be 32 bytes"));
+        }
         let mut txid_le = txid_be.clone();
         txid_le.reverse();
 
@@ -3218,8 +3474,8 @@ pub fn build_unsigned_shielding_transaction(
         sequence_data.extend_from_slice(&0xffffffffu32.to_le_bytes());
         amounts_data.extend_from_slice(&utxo.value.to_le_bytes());
 
-        let script_bytes = hex_decode(&utxo.script)
-            .ok_or_else(|| JsError::new("invalid utxo script hex"))?;
+        let script_bytes =
+            hex_decode(&utxo.script).ok_or_else(|| JsError::new("invalid utxo script hex"))?;
         scripts_data.extend_from_slice(&compact_size(script_bytes.len() as u64));
         scripts_data.extend_from_slice(&script_bytes);
     }
@@ -3260,8 +3516,8 @@ pub fn build_unsigned_shielding_transaction(
         let mut txid_le = txid_be.clone();
         txid_le.reverse();
 
-        let script_bytes = hex_decode(&utxo.script)
-            .ok_or_else(|| JsError::new("invalid utxo script hex"))?;
+        let script_bytes =
+            hex_decode(&utxo.script).ok_or_else(|| JsError::new("invalid utxo script hex"))?;
 
         let mut txin_data = Vec::new();
         txin_data.extend_from_slice(&txid_le);
@@ -3390,8 +3646,8 @@ pub fn complete_shielding_transaction(
     let input_sigs: Vec<InputSig> = serde_json::from_str(signatures_json)
         .map_err(|e| JsError::new(&format!("invalid signatures json: {}", e)))?;
 
-    let tx_bytes = hex_decode(unsigned_tx_hex)
-        .ok_or_else(|| JsError::new("invalid unsigned tx hex"))?;
+    let tx_bytes =
+        hex_decode(unsigned_tx_hex).ok_or_else(|| JsError::new("invalid unsigned tx hex"))?;
 
     if tx_bytes.len() < 20 {
         return Err(JsError::new("unsigned tx too short"));
@@ -3407,7 +3663,8 @@ pub fn complete_shielding_transaction(
     if input_sigs.len() != n_inputs as usize {
         return Err(JsError::new(&format!(
             "signature count {} != input count {}",
-            input_sigs.len(), n_inputs
+            input_sigs.len(),
+            n_inputs
         )));
     }
 
@@ -3431,10 +3688,9 @@ pub fn complete_shielding_transaction(
         pos += cs_len + script_len as usize;
 
         // build P2PKH scriptSig: <sig+hashtype> <pubkey>
-        let sig_bytes = hex_decode(&sig.sig_hex)
-            .ok_or_else(|| JsError::new("invalid sig hex"))?;
-        let pubkey_bytes = hex_decode(&sig.pubkey_hex)
-            .ok_or_else(|| JsError::new("invalid pubkey hex"))?;
+        let sig_bytes = hex_decode(&sig.sig_hex).ok_or_else(|| JsError::new("invalid sig hex"))?;
+        let pubkey_bytes =
+            hex_decode(&sig.pubkey_hex).ok_or_else(|| JsError::new("invalid pubkey hex"))?;
 
         // sig_bytes should be DER signature + SIGHASH_ALL byte (from zigner)
         let mut script_sig = Vec::new();
@@ -3470,20 +3726,33 @@ fn read_compact_size(data: &[u8], pos: usize) -> Result<(u64, usize), JsError> {
     match first {
         0..=0xfc => Ok((first as u64, 1)),
         0xfd => {
-            if pos + 3 > data.len() { return Err(JsError::new("compact size: truncated u16")); }
+            if pos + 3 > data.len() {
+                return Err(JsError::new("compact size: truncated u16"));
+            }
             let v = u16::from_le_bytes([data[pos + 1], data[pos + 2]]);
             Ok((v as u64, 3))
         }
         0xfe => {
-            if pos + 5 > data.len() { return Err(JsError::new("compact size: truncated u32")); }
-            let v = u32::from_le_bytes([data[pos + 1], data[pos + 2], data[pos + 3], data[pos + 4]]);
+            if pos + 5 > data.len() {
+                return Err(JsError::new("compact size: truncated u32"));
+            }
+            let v =
+                u32::from_le_bytes([data[pos + 1], data[pos + 2], data[pos + 3], data[pos + 4]]);
             Ok((v as u64, 5))
         }
         0xff => {
-            if pos + 9 > data.len() { return Err(JsError::new("compact size: truncated u64")); }
+            if pos + 9 > data.len() {
+                return Err(JsError::new("compact size: truncated u64"));
+            }
             let v = u64::from_le_bytes([
-                data[pos + 1], data[pos + 2], data[pos + 3], data[pos + 4],
-                data[pos + 5], data[pos + 6], data[pos + 7], data[pos + 8],
+                data[pos + 1],
+                data[pos + 2],
+                data[pos + 3],
+                data[pos + 4],
+                data[pos + 5],
+                data[pos + 6],
+                data[pos + 7],
+                data[pos + 8],
             ]);
             Ok((v, 9))
         }
@@ -3507,7 +3776,8 @@ fn parse_orchard_address(addr_str: &str, mainnet: bool) -> Result<orchard::Addre
     match decoded {
         Some(ZkAddress::Unified(ua)) => {
             // get raw bytes from the zcash_keys orchard address (orchard 0.11)
-            let orchard_addr_old = ua.orchard()
+            let orchard_addr_old = ua
+                .orchard()
                 .ok_or("unified address has no orchard receiver")?;
             let raw_bytes = orchard_addr_old.to_raw_address_bytes();
             // reconstruct as our orchard 0.12 Address
@@ -3585,10 +3855,10 @@ fn serialize_orchard_bundle(
 
     // each action (without auth)
     for action in actions.iter() {
-        out.extend_from_slice(&action.cv_net().to_bytes());       // 32
-        out.extend_from_slice(&action.nullifier().to_bytes());    // 32
-        out.extend_from_slice(&<[u8; 32]>::from(action.rk()));    // 32
-        out.extend_from_slice(&action.cmx().to_bytes());          // 32
+        out.extend_from_slice(&action.cv_net().to_bytes()); // 32
+        out.extend_from_slice(&action.nullifier().to_bytes()); // 32
+        out.extend_from_slice(&<[u8; 32]>::from(action.rk())); // 32
+        out.extend_from_slice(&action.cmx().to_bytes()); // 32
         out.extend_from_slice(&action.encrypted_note().epk_bytes); // 32
         out.extend_from_slice(&action.encrypted_note().enc_ciphertext); // 580
         out.extend_from_slice(&action.encrypted_note().out_ciphertext); // 80
@@ -3670,7 +3940,9 @@ fn base58_decode(s: &str) -> Result<Vec<u8>, String> {
 
     let mut num: Vec<u8> = vec![0];
     for &c in s.as_bytes() {
-        let val = ALPHABET.iter().position(|&a| a == c)
+        let val = ALPHABET
+            .iter()
+            .position(|&a| a == c)
             .ok_or_else(|| "invalid base58 character".to_string())? as u32;
         let mut carry = val;
         for byte in num.iter_mut().rev() {

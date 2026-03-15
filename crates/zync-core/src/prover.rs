@@ -196,22 +196,18 @@ impl HeaderChainProof {
     }
 
     /// Deserialize full proof. Returns (public_outputs, proof_bytes, log_size).
-    pub fn deserialize_full(
-        bytes: &[u8],
-    ) -> Result<(ProofPublicOutputs, Vec<u8>, u8), ZyncError> {
+    pub fn deserialize_full(bytes: &[u8]) -> Result<(ProofPublicOutputs, Vec<u8>, u8), ZyncError> {
         if bytes.len() < 5 {
             return Err(ZyncError::Serialization("proof too short".into()));
         }
 
-        let public_len =
-            u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize;
+        let public_len = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize;
         if bytes.len() < 4 + public_len + 1 {
             return Err(ZyncError::Serialization("proof truncated".into()));
         }
 
-        let public_outputs: ProofPublicOutputs =
-            bincode::deserialize(&bytes[4..4 + public_len])
-                .map_err(|e| ZyncError::Serialization(format!("bincode: {}", e)))?;
+        let public_outputs: ProofPublicOutputs = bincode::deserialize(&bytes[4..4 + public_len])
+            .map_err(|e| ZyncError::Serialization(format!("bincode: {}", e)))?;
 
         let proof_bytes = bytes[4 + public_len..].to_vec();
         let log_size = if !proof_bytes.is_empty() {

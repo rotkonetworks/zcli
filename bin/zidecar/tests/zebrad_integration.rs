@@ -126,11 +126,7 @@ async fn test_timeout_fast_response() {
     let start = std::time::Instant::now();
     client.get_blockchain_info().await.unwrap();
     let elapsed = start.elapsed();
-    assert!(
-        elapsed.as_secs() < 10,
-        "simple RPC took {:?}",
-        elapsed
-    );
+    assert!(elapsed.as_secs() < 10, "simple RPC took {:?}", elapsed);
 }
 
 // === error classification tests (no zebrad needed) ===

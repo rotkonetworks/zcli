@@ -216,8 +216,7 @@ pub fn encode_trace(
         trace[sentinel_offset + j] = bytes_to_field(&tip_tree_root[j * 4..(j + 1) * 4]);
     }
     for j in 0..8 {
-        trace[sentinel_offset + 8 + j] =
-            bytes_to_field(&tip_nullifier_root[j * 4..(j + 1) * 4]);
+        trace[sentinel_offset + 8 + j] = bytes_to_field(&tip_nullifier_root[j * 4..(j + 1) * 4]);
     }
     for j in 0..8 {
         trace[sentinel_offset + 16 + j] =

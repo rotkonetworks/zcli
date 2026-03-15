@@ -116,9 +116,7 @@ fn bytes_to_32(b: &[u8]) -> Result<[u8; 32], Error> {
         .map_err(|_| Error::Network(format!("expected 32 bytes, got {}", b.len())))
 }
 
-fn proto_to_commitment_proof(
-    p: zidecar_proto::CommitmentProof,
-) -> Result<CommitmentProof, Error> {
+fn proto_to_commitment_proof(p: zidecar_proto::CommitmentProof) -> Result<CommitmentProof, Error> {
     Ok(CommitmentProof {
         cmx: bytes_to_32(&p.cmx)?,
         position: p.position,
@@ -172,7 +170,6 @@ fn grpc_web_decode(body: &[u8]) -> Result<(Vec<u8>, u8), Error> {
     }
     Ok((body[5..5 + len].to_vec(), frame_type))
 }
-
 
 fn check_grpc_status(headers: &reqwest::header::HeaderMap, body: &[u8]) -> Result<(), Error> {
     // check header-level grpc-status first
@@ -315,8 +312,7 @@ impl ZidecarClient {
                     // parse complete frames from buffer
                     while buf.len() >= 5 {
                         let frame_type = buf[0];
-                        let len =
-                            u32::from_be_bytes([buf[1], buf[2], buf[3], buf[4]]) as usize;
+                        let len = u32::from_be_bytes([buf[1], buf[2], buf[3], buf[4]]) as usize;
                         if buf.len() < 5 + len {
                             break; // need more data
                         }

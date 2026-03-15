@@ -54,11 +54,7 @@ impl<U: BinaryFieldElement> EvalSumcheckRound<U> {
 /// where j ranges over [0, N) and z_k is the binary representation of claim indices.
 ///
 /// eq(z, x) = Π_i (z_i·x_i + (1+z_i)(1+x_i)) for binary field
-pub fn compute_batched_eq<T, U>(
-    claims: &[EvalClaim<T>],
-    alphas: &[U],
-    n: usize,
-) -> Vec<U>
+pub fn compute_batched_eq<T, U>(claims: &[EvalClaim<T>], alphas: &[U], n: usize) -> Vec<U>
 where
     T: BinaryFieldElement,
     U: BinaryFieldElement + From<T>,
@@ -85,7 +81,7 @@ where
                 } else {
                     // eq_bit(0, 0) = 1, eq_bit(0, 1) = 0
                     eq_table[j + half] = U::zero(); // x_i = 1: zero
-                    // eq_table[j] unchanged: x_i = 0: keep
+                                                    // eq_table[j] unchanged: x_i = 0: keep
                 }
             }
         }
@@ -240,11 +236,7 @@ where
 /// Compute Q(r) = Σ_k α_k · eq(z_k, r) where r = (r_1,...,r_n).
 ///
 /// eq(z, r) = Π_i (z_i·r_i + (1+z_i)(1+r_i))
-fn compute_eq_at_r<T, U>(
-    claims: &[EvalClaim<T>],
-    alphas: &[U],
-    challenges: &[U],
-) -> U
+fn compute_eq_at_r<T, U>(claims: &[EvalClaim<T>], alphas: &[U], challenges: &[U]) -> U
 where
     T: BinaryFieldElement,
     U: BinaryFieldElement + From<T>,
@@ -332,15 +324,23 @@ mod tests {
 
         // Prover
         let mut prover_fs = FiatShamir::new_sha256(42);
-        let (rounds, _challenges, _p_final) =
-            eval_sumcheck_prove::<BinaryElem32, BinaryElem128>(
-                &poly, &claims, &alphas, 2, &mut prover_fs,
-            );
+        let (rounds, _challenges, _p_final) = eval_sumcheck_prove::<BinaryElem32, BinaryElem128>(
+            &poly,
+            &claims,
+            &alphas,
+            2,
+            &mut prover_fs,
+        );
 
         // Verifier
         let mut verifier_fs = FiatShamir::new_sha256(42);
         let result = eval_sumcheck_verify::<BinaryElem32, BinaryElem128>(
-            &rounds, &claims, &alphas, target, 2, &mut verifier_fs,
+            &rounds,
+            &claims,
+            &alphas,
+            target,
+            2,
+            &mut verifier_fs,
         );
 
         assert!(result.is_some(), "eval sumcheck should verify");
@@ -372,12 +372,21 @@ mod tests {
         // The sumcheck coefficients will be computed from the actual polynomial
         // but target won't match
         let (rounds, _, _) = eval_sumcheck_prove::<BinaryElem32, BinaryElem128>(
-            &poly, &claims, &alphas, 2, &mut prover_fs,
+            &poly,
+            &claims,
+            &alphas,
+            2,
+            &mut prover_fs,
         );
 
         let mut verifier_fs = FiatShamir::new_sha256(42);
         let result = eval_sumcheck_verify::<BinaryElem32, BinaryElem128>(
-            &rounds, &claims, &alphas, target, 2, &mut verifier_fs,
+            &rounds,
+            &claims,
+            &alphas,
+            target,
+            2,
+            &mut verifier_fs,
         );
 
         // The sumcheck should fail because the claimed target doesn't match

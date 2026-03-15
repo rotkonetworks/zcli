@@ -92,7 +92,8 @@ fn read_compact_size(data: &[u8], pos: &mut usize) -> Result<u64, String> {
             if *pos + 4 > data.len() {
                 return Err("compact size: truncated u32".into());
             }
-            let v = u32::from_le_bytes([data[*pos], data[*pos + 1], data[*pos + 2], data[*pos + 3]]);
+            let v =
+                u32::from_le_bytes([data[*pos], data[*pos + 1], data[*pos + 2], data[*pos + 3]]);
             *pos += 4;
             Ok(v as u64)
         }
@@ -215,8 +216,7 @@ pub fn build_merkle_paths_inner(
 
             // update existing witnesses with new leaf
             for w in witnesses.iter_mut().flatten() {
-                if w.witnessed_position()
-                    < incrementalmerkletree::Position::from(position_counter)
+                if w.witnessed_position() < incrementalmerkletree::Position::from(position_counter)
                 {
                     w.append(hash)
                         .map_err(|_| "witness tree full".to_string())?;

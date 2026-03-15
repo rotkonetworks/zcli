@@ -6,9 +6,9 @@ use clap::Parser;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
 
-use zecli::{address, client, key, ops, quic, wallet, witness};
 #[cfg(target_os = "linux")]
 use zecli::cam;
+use zecli::{address, client, key, ops, quic, wallet, witness};
 
 use cli::{Cli, Command, MerchantAction};
 use zecli::error::Error;
@@ -377,16 +377,24 @@ async fn cmd_verify(cli: &Cli, mainnet: bool) -> Result<(), Error> {
     // step 1: trust anchor
     if !cli.json {
         eprintln!("1. trust anchor");
-        eprintln!("   hardcoded orchard activation hash at height {}", activation);
+        eprintln!(
+            "   hardcoded orchard activation hash at height {}",
+            activation
+        );
     }
     if mainnet {
         let blocks = zidecar.get_compact_blocks(activation, activation).await?;
         if blocks.is_empty() || blocks[0].hash != zync_core::ACTIVATION_HASH_MAINNET {
-            return Err(Error::Other("activation block hash mismatch — server not on canonical chain".into()));
+            return Err(Error::Other(
+                "activation block hash mismatch — server not on canonical chain".into(),
+            ));
         }
         if !cli.json {
             eprintln!("   server returned: {}", hex::encode(&blocks[0].hash[..8]));
-            eprintln!("   expected:        {}", hex::encode(&zync_core::ACTIVATION_HASH_MAINNET[..8]));
+            eprintln!(
+                "   expected:        {}",
+                hex::encode(&zync_core::ACTIVATION_HASH_MAINNET[..8])
+            );
             eprintln!("   PASS");
         }
     }
@@ -400,7 +408,11 @@ async fn cmd_verify(cli: &Cli, mainnet: bool) -> Result<(), Error> {
         .collect();
     if !cli.json {
         eprintln!();
-        eprintln!("2. cross-verification ({} independent node{})", endpoints.len(), if endpoints.len() == 1 { "" } else { "s" });
+        eprintln!(
+            "2. cross-verification ({} independent node{})",
+            endpoints.len(),
+            if endpoints.len() == 1 { "" } else { "s" }
+        );
     }
     if !endpoints.is_empty() {
         let mut agree = 0u32;
@@ -440,7 +452,9 @@ async fn cmd_verify(cli: &Cli, mainnet: bool) -> Result<(), Error> {
         }
         let total = agree + disagree;
         if total == 0 {
-            return Err(Error::Other("cross-verification failed: no nodes responded".into()));
+            return Err(Error::Other(
+                "cross-verification failed: no nodes responded".into(),
+            ));
         }
         let threshold = (total * 2).div_ceil(3);
         if agree < threshold {
@@ -474,27 +488,35 @@ async fn cmd_verify(cli: &Cli, mainnet: bool) -> Result<(), Error> {
         return Err(Error::Other("tip proof cryptographically INVALID".into()));
     }
     if !result.continuous {
-        return Err(Error::Other("proof chain DISCONTINUOUS — gap between epoch proof and tip".into()));
+        return Err(Error::Other(
+            "proof chain DISCONTINUOUS — gap between epoch proof and tip".into(),
+        ));
     }
 
     // verify epoch proof anchors to hardcoded activation hash
     if mainnet && result.epoch_outputs.start_hash != zync_core::ACTIVATION_HASH_MAINNET {
-        return Err(Error::Other("epoch proof start_hash doesn't match activation anchor".into()));
+        return Err(Error::Other(
+            "epoch proof start_hash doesn't match activation anchor".into(),
+        ));
     }
 
     let epoch = &result.epoch_outputs;
     let blocks_proven = proof_to - proof_from;
     if !cli.json {
-        eprintln!("   epoch proof: {} -> {} ({} headers, {} KB)",
-            epoch.start_height, epoch.end_height,
+        eprintln!(
+            "   epoch proof: {} -> {} ({} headers, {} KB)",
+            epoch.start_height,
+            epoch.end_height,
             epoch.num_headers,
             proof_bytes.len() / 1024,
         );
         eprintln!("   epoch proof anchored to activation hash: PASS");
         eprintln!("   epoch proof cryptographic verification:  PASS");
         if let Some(ref tip_out) = result.tip_outputs {
-            eprintln!("   tip proof: {} -> {} ({} headers)",
-                tip_out.start_height, tip_out.end_height, tip_out.num_headers);
+            eprintln!(
+                "   tip proof: {} -> {} ({} headers)",
+                tip_out.start_height, tip_out.end_height, tip_out.num_headers
+            );
             eprintln!("   tip proof cryptographic verification:  PASS");
         }
         eprintln!("   chain continuity (tip chains to epoch proof): PASS");
@@ -506,16 +528,26 @@ async fn cmd_verify(cli: &Cli, mainnet: bool) -> Result<(), Error> {
     let staleness = tip.saturating_sub(outputs.end_height);
     if staleness > zync_core::EPOCH_SIZE {
         return Err(Error::Other(format!(
-            "proof too stale: {} blocks behind tip (>1 epoch)", staleness
+            "proof too stale: {} blocks behind tip (>1 epoch)",
+            staleness
         )));
     }
     if !cli.json {
         eprintln!();
         eprintln!("4. cryptographically proven state roots");
         eprintln!("   (extracted from ligerito polynomial trace sentinel row)");
-        eprintln!("   tree_root:          {}", hex::encode(outputs.tip_tree_root));
-        eprintln!("   nullifier_root:     {}", hex::encode(outputs.tip_nullifier_root));
-        eprintln!("   actions_commitment: {}", hex::encode(outputs.final_actions_commitment));
+        eprintln!(
+            "   tree_root:          {}",
+            hex::encode(outputs.tip_tree_root)
+        );
+        eprintln!(
+            "   nullifier_root:     {}",
+            hex::encode(outputs.tip_nullifier_root)
+        );
+        eprintln!(
+            "   actions_commitment: {}",
+            hex::encode(outputs.final_actions_commitment)
+        );
         eprintln!("   proof freshness: {} blocks behind tip", staleness);
     }
 
@@ -1565,9 +1597,7 @@ fn ensure_fvk_cached(seed: &key::WalletSeed, mainnet: bool) {
         Err(_) => return,
     };
     // only write if not already stored
-    if watch.get_fvk_bytes().ok().flatten().is_none()
-        && watch.store_fvk(&fvk_bytes).is_ok()
-    {
+    if watch.get_fvk_bytes().ok().flatten().is_none() && watch.store_fvk(&fvk_bytes).is_ok() {
         watch.flush();
         eprintln!("cached FVK in watch wallet for future non-interactive syncs");
     }

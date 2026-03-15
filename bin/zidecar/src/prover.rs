@@ -188,8 +188,7 @@ impl HeaderChainProof {
         let mut final_actions_commitment = [0u8; 32];
         for j in 0..8 {
             let field_val = trace.trace[sentinel_offset + 16 + j].poly().value();
-            final_actions_commitment[j * 4..(j + 1) * 4]
-                .copy_from_slice(&field_val.to_le_bytes());
+            final_actions_commitment[j * 4..(j + 1) * 4].copy_from_slice(&field_val.to_le_bytes());
         }
 
         Ok(ProofPublicOutputs {

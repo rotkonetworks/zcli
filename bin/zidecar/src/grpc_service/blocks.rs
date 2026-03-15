@@ -23,8 +23,10 @@ impl ZidecarService {
     pub(crate) async fn handle_get_compact_blocks(
         &self,
         request: Request<BlockRange>,
-    ) -> std::result::Result<Response<ReceiverStream<std::result::Result<ProtoCompactBlock, Status>>>, Status>
-    {
+    ) -> std::result::Result<
+        Response<ReceiverStream<std::result::Result<ProtoCompactBlock, Status>>>,
+        Status,
+    > {
         let range = request.into_inner();
         let (tx, rx) = tokio::sync::mpsc::channel(128);
 
@@ -102,8 +104,10 @@ impl ZidecarService {
     pub(crate) async fn handle_get_verified_blocks(
         &self,
         request: Request<BlockRange>,
-    ) -> std::result::Result<Response<ReceiverStream<std::result::Result<VerifiedBlock, Status>>>, Status>
-    {
+    ) -> std::result::Result<
+        Response<ReceiverStream<std::result::Result<VerifiedBlock, Status>>>,
+        Status,
+    > {
         let range = request.into_inner();
         let (tx, rx) = tokio::sync::mpsc::channel(128);
 
@@ -413,8 +417,10 @@ impl ZidecarService {
     pub(crate) async fn handle_get_mempool_stream(
         &self,
         _request: Request<Empty>,
-    ) -> std::result::Result<Response<ReceiverStream<std::result::Result<ProtoCompactBlock, Status>>>, Status>
-    {
+    ) -> std::result::Result<
+        Response<ReceiverStream<std::result::Result<ProtoCompactBlock, Status>>>,
+        Status,
+    > {
         let (tx, rx) = tokio::sync::mpsc::channel(128);
         let zebrad = self.zebrad.clone();
         let cache = self.mempool_cache.clone();
@@ -434,13 +440,17 @@ impl ZidecarService {
                 let proto = ProtoCompactBlock {
                     height: 0,
                     hash: block.hash,
-                    actions: block.actions.into_iter().map(|a| ProtoCompactAction {
-                        cmx: a.cmx,
-                        ephemeral_key: a.ephemeral_key,
-                        ciphertext: a.ciphertext,
-                        nullifier: a.nullifier,
-                        txid: a.txid,
-                    }).collect(),
+                    actions: block
+                        .actions
+                        .into_iter()
+                        .map(|a| ProtoCompactAction {
+                            cmx: a.cmx,
+                            ephemeral_key: a.ephemeral_key,
+                            ciphertext: a.ciphertext,
+                            nullifier: a.nullifier,
+                            txid: a.txid,
+                        })
+                        .collect(),
                     actions_root: vec![],
                 };
                 if tx.send(Ok(proto)).await.is_err() {

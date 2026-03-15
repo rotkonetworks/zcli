@@ -32,9 +32,7 @@ impl ZidecarService {
         // deserialize public outputs from tip proof (if present)
         let tip_outputs = if !tip_proof.is_empty() {
             let (outputs, _, _) = HeaderChainProof::deserialize_full(&tip_proof)
-                .map_err(|e| {
-                    Status::internal(format!("failed to deserialize tip proof: {}", e))
-                })?;
+                .map_err(|e| Status::internal(format!("failed to deserialize tip proof: {}", e)))?;
             Some(outputs)
         } else {
             None

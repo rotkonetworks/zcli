@@ -115,7 +115,15 @@ async fn main() -> anyhow::Result<()> {
     #[cfg(unix)]
     {
         use std::io::Error;
-        let ret = unsafe { libc::setrlimit(libc::RLIMIT_CORE, &libc::rlimit { rlim_cur: 0, rlim_max: 0 }) };
+        let ret = unsafe {
+            libc::setrlimit(
+                libc::RLIMIT_CORE,
+                &libc::rlimit {
+                    rlim_cur: 0,
+                    rlim_max: 0,
+                },
+            )
+        };
         if ret != 0 {
             tracing::warn!("failed to disable core dumps: {}", Error::last_os_error());
         }
@@ -133,8 +141,7 @@ async fn main() -> anyhow::Result<()> {
         let fvk_hex = args.fvk.as_ref().ok_or_else(|| {
             anyhow::anyhow!("--view-only requires --fvk <hex> (use `zcli export --fvk` to get it)")
         })?;
-        let bytes = hex::decode(fvk_hex)
-            .map_err(|e| anyhow::anyhow!("invalid FVK hex: {}", e))?;
+        let bytes = hex::decode(fvk_hex).map_err(|e| anyhow::anyhow!("invalid FVK hex: {}", e))?;
         let fvk_arr: [u8; 96] = bytes
             .try_into()
             .map_err(|_| anyhow::anyhow!("FVK must be 96 bytes"))?;
@@ -153,8 +160,11 @@ async fn main() -> anyhow::Result<()> {
         };
         let coin_type = if mainnet { 133 } else { 1 };
         let sk = orchard::keys::SpendingKey::from_zip32_seed(
-            seed.as_bytes(), coin_type, zip32::AccountId::ZERO,
-        ).map_err(|_| anyhow::anyhow!("failed to derive spending key"))?;
+            seed.as_bytes(),
+            coin_type,
+            zip32::AccountId::ZERO,
+        )
+        .map_err(|_| anyhow::anyhow!("failed to derive spending key"))?;
         let fvk = orchard::keys::FullViewingKey::from(&sk);
         info!("mode: full custody (spending key held)");
         (fvk, Some(sk))
@@ -205,7 +215,10 @@ async fn main() -> anyhow::Result<()> {
     if sp.exists() {
         let meta = std::fs::symlink_metadata(sp)?;
         if meta.file_type().is_symlink() {
-            anyhow::bail!("socket path {} is a symlink — refusing to proceed", socket_path);
+            anyhow::bail!(
+                "socket path {} is a symlink — refusing to proceed",
+                socket_path
+            );
         }
         std::fs::remove_file(sp)?;
     }

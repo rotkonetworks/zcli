@@ -67,7 +67,11 @@ async fn main() -> Result<()> {
 
     let args = Args::parse();
 
-    info!("zidecar v{}-{}", env!("CARGO_PKG_VERSION"), env!("GIT_HASH"));
+    info!(
+        "zidecar v{}-{}",
+        env!("CARGO_PKG_VERSION"),
+        env!("GIT_HASH")
+    );
     info!("zebrad RPC: {}", args.zebrad_rpc);
     info!("gRPC listen: {}", args.listen);
     info!("database: {}", args.db_path);

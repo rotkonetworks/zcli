@@ -716,9 +716,18 @@ mod tests {
 
         // claim: P(0) = 42, P(7) = 99, P(100) = 255
         let claims = vec![
-            EvalClaim { index: 0, value: BinaryElem32::from(42) },
-            EvalClaim { index: 7, value: BinaryElem32::from(99) },
-            EvalClaim { index: 100, value: BinaryElem32::from(255) },
+            EvalClaim {
+                index: 0,
+                value: BinaryElem32::from(42),
+            },
+            EvalClaim {
+                index: 7,
+                value: BinaryElem32::from(99),
+            },
+            EvalClaim {
+                index: 100,
+                value: BinaryElem32::from(255),
+            },
         ];
 
         // prove
@@ -726,12 +735,19 @@ mod tests {
         let proof = prove_with_evaluations(&config, &poly, &claims, fs);
         assert!(proof.is_ok(), "prove_with_evaluations should succeed");
         let proof = proof.unwrap();
-        assert_eq!(proof.eval_rounds.len(), 12, "should have 12 eval sumcheck rounds for 2^12 poly");
+        assert_eq!(
+            proof.eval_rounds.len(),
+            12,
+            "should have 12 eval sumcheck rounds for 2^12 poly"
+        );
 
         // verify
         let fs = FiatShamir::new_sha256(0);
         let result = crate::verifier::verify_with_evaluations::<BinaryElem32, BinaryElem128>(
-            &verifier_config, &proof, &claims, fs,
+            &verifier_config,
+            &proof,
+            &claims,
+            fs,
         );
         assert!(result.is_ok(), "verify_with_evaluations should not error");
         let result = result.unwrap();
@@ -751,9 +767,10 @@ mod tests {
         poly[5] = BinaryElem32::from(77);
 
         // wrong claim: P(5) = 88 (actual is 77)
-        let claims = vec![
-            EvalClaim { index: 5, value: BinaryElem32::from(88) },
-        ];
+        let claims = vec![EvalClaim {
+            index: 5,
+            value: BinaryElem32::from(88),
+        }];
 
         // prove (prover uses actual polynomial, eval sumcheck computes from actual values)
         let fs = FiatShamir::new_sha256(0);
@@ -762,10 +779,17 @@ mod tests {
         // verify with wrong claim — eval sumcheck should fail
         let fs = FiatShamir::new_sha256(0);
         let result = crate::verifier::verify_with_evaluations::<BinaryElem32, BinaryElem128>(
-            &verifier_config, &proof, &claims, fs,
-        ).unwrap();
+            &verifier_config,
+            &proof,
+            &claims,
+            fs,
+        )
+        .unwrap();
 
         // the eval sumcheck should reject because target (α·88) ≠ actual sum (α·77)
-        assert!(result.is_none(), "wrong eval claim should fail verification");
+        assert!(
+            result.is_none(),
+            "wrong eval claim should fail verification"
+        );
     }
 }

@@ -10,9 +10,7 @@ use sha2::{Digest, Sha256};
 /// Each leaf is `SHA256(cmx || nullifier || ephemeral_key)`.
 /// Tree is a standard binary SHA256 merkle tree with zero-padding to next power of 2.
 /// Empty block (no actions) returns all-zeros root.
-pub fn compute_actions_root(
-    actions: &[([u8; 32], [u8; 32], [u8; 32])],
-) -> [u8; 32] {
+pub fn compute_actions_root(actions: &[([u8; 32], [u8; 32], [u8; 32])]) -> [u8; 32] {
     if actions.is_empty() {
         return [0u8; 32];
     }

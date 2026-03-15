@@ -44,8 +44,7 @@ pub fn generate_mnemonic() -> String {
 
 /// validate a BIP-39 mnemonic phrase, returns Ok(()) or error
 pub fn validate_mnemonic(phrase: &str) -> Result<(), Error> {
-    bip39::Mnemonic::parse(phrase)
-        .map_err(|e| Error::Key(format!("invalid mnemonic: {}", e)))?;
+    bip39::Mnemonic::parse(phrase).map_err(|e| Error::Key(format!("invalid mnemonic: {}", e)))?;
     Ok(())
 }
 

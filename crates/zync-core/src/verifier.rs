@@ -162,8 +162,7 @@ pub fn verify_proofs_full(combined_proof: &[u8]) -> Result<VerifyResult> {
     let epoch_outputs_clone = epoch_outputs.clone();
     let tip_raw_clone = tip_raw;
     let tip_outputs_clone = tip_outputs.clone();
-    let epoch_handle =
-        thread::spawn(move || verify_single(&epoch_raw_clone, &epoch_outputs_clone));
+    let epoch_handle = thread::spawn(move || verify_single(&epoch_raw_clone, &epoch_outputs_clone));
     let tip_handle = if !tip_raw_clone.is_empty() {
         let tip_out = tip_outputs_clone.unwrap();
         Some(thread::spawn(move || {
@@ -316,8 +315,8 @@ pub fn verify_chain(segments: &[&[u8]]) -> Result<ChainVerifyResult> {
     // verify each proof individually and collect public outputs
     let mut all_valid = true;
     for (i, segment) in segments.iter().enumerate() {
-        let (outputs, raw) = split_full_proof(segment)
-            .map_err(|e| anyhow::anyhow!("segment {}: {}", i, e))?;
+        let (outputs, raw) =
+            split_full_proof(segment).map_err(|e| anyhow::anyhow!("segment {}: {}", i, e))?;
         let valid = verify_single(&raw, &outputs)
             .map_err(|e| anyhow::anyhow!("segment {} verification: {}", i, e))?;
         if !valid {

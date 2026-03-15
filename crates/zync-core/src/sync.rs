@@ -111,10 +111,7 @@ pub fn verify_header_proof(
     }
 
     // extract proven roots from the most recent proof (tip > epoch proof)
-    let outputs = result
-        .tip_outputs
-        .as_ref()
-        .unwrap_or(&result.epoch_outputs);
+    let outputs = result.tip_outputs.as_ref().unwrap_or(&result.epoch_outputs);
 
     // reject if proof is more than 1 epoch behind tip
     if outputs.end_height + EPOCH_SIZE < tip {

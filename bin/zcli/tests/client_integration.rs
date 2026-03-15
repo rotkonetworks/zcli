@@ -10,8 +10,7 @@ mod tests {
     use zecli::client::ZidecarClient;
 
     fn endpoint() -> String {
-        std::env::var("ZCLI_ENDPOINT")
-            .unwrap_or_else(|_| "https://zcash.rotko.net".into())
+        std::env::var("ZCLI_ENDPOINT").unwrap_or_else(|_| "https://zcash.rotko.net".into())
     }
 
     async fn require_client() -> ZidecarClient {
@@ -35,7 +34,10 @@ mod tests {
     async fn test_get_compact_blocks() {
         let client = require_client().await;
         // fetch 10 blocks near orchard activation
-        let blocks = client.get_compact_blocks(1_687_104, 1_687_113).await.unwrap();
+        let blocks = client
+            .get_compact_blocks(1_687_104, 1_687_113)
+            .await
+            .unwrap();
         assert_eq!(blocks.len(), 10);
         for (i, block) in blocks.iter().enumerate() {
             assert_eq!(block.height, 1_687_104 + i as u32);
@@ -68,9 +70,7 @@ mod tests {
         let client = require_client().await;
         // known funded transparent address (zcash foundation)
         let utxos = client
-            .get_address_utxos(vec![
-                "t1Hsc1LR8yKnbbe3twRp88p6vFfC5t7DLbs".to_string(),
-            ])
+            .get_address_utxos(vec!["t1Hsc1LR8yKnbbe3twRp88p6vFfC5t7DLbs".to_string()])
             .await
             .unwrap();
         // may or may not have utxos, but should not error

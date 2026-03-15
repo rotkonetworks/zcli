@@ -140,7 +140,10 @@ mod tests {
         let data = [0x42; 32];
         let nf_key = key_for_nullifier(&data);
         let note_key = key_for_note(&data);
-        assert_ne!(nf_key, note_key, "different domains must produce different keys");
+        assert_ne!(
+            nf_key, note_key,
+            "different domains must produce different keys"
+        );
     }
 
     #[test]

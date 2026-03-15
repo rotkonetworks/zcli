@@ -347,7 +347,9 @@ impl EpochManager {
         let epoch_proof = self
             .storage
             .get_proof(epoch_proof_start, epoch_proof_to)?
-            .ok_or_else(|| ZidecarError::ProofGeneration("epoch proof not found in cache".into()))?;
+            .ok_or_else(|| {
+                ZidecarError::ProofGeneration("epoch proof not found in cache".into())
+            })?;
 
         // get tip proof (from last epoch proof to current tip)
         let tip_from = epoch_proof_to + 1;

@@ -117,14 +117,18 @@ pub fn compute_actions_root(actions_binary: &[u8]) -> Result<String, JsError> {
     }
 
     let count = u32::from_le_bytes(
-        actions_binary[..4].try_into().map_err(|_| JsError::new("invalid length"))?,
+        actions_binary[..4]
+            .try_into()
+            .map_err(|_| JsError::new("invalid length"))?,
     ) as usize;
 
     let data = &actions_binary[4..];
     if data.len() < count * 96 {
         return Err(JsError::new(&format!(
             "expected {} actions ({}B) but got {}B",
-            count, count * 96, data.len()
+            count,
+            count * 96,
+            data.len()
         )));
     }
 
@@ -205,10 +209,12 @@ pub fn extract_enc_ciphertext(
 // ── helpers ──
 
 fn parse_hex32(hex_str: &str) -> Result<[u8; 32], JsError> {
-    let bytes = hex::decode(hex_str)
-        .map_err(|e| JsError::new(&format!("invalid hex: {}", e)))?;
+    let bytes = hex::decode(hex_str).map_err(|e| JsError::new(&format!("invalid hex: {}", e)))?;
     if bytes.len() != 32 {
-        return Err(JsError::new(&format!("expected 32 bytes, got {}", bytes.len())));
+        return Err(JsError::new(&format!(
+            "expected 32 bytes, got {}",
+            bytes.len()
+        )));
     }
     let mut arr = [0u8; 32];
     arr.copy_from_slice(&bytes);
