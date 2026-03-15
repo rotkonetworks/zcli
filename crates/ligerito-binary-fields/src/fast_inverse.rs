@@ -119,7 +119,7 @@ pub fn batch_invert_gf128(values: &[u128]) -> Vec<u128> {
     let mut result = vec![0u128; n];
 
     // Handle zeros by tracking their positions
-    let mut non_zero_indices: Vec<usize> = values
+    let non_zero_indices: Vec<usize> = values
         .iter()
         .enumerate()
         .filter(|(_, &v)| v != 0)
@@ -183,6 +183,12 @@ fn mul_gf128(a: u128, b: u128) -> u128 {
 /// Precomputed table: table[n][nibble_pos][nibble_val] = (nibble_val << 4*nibble_pos)^(2^(2^(n+1)))
 ///
 /// Generated for GF(2^128) with irreducible x^128 + x^7 + x^2 + x + 1
+///
+/// the const eval warnings from this are harmless — rustc's const evaluator
+/// reports "taking a long time" because const_spread_bits loops 64 times per
+/// squaring and we do 7*32*16 = 3584 entries. the table is computed once at
+/// compile time and cached. can't #[allow] it (not a lint, compiler diagnostic).
+/// could embed as 120KB hex literal but readability isn't worth the tradeoff.
 static NIBBLE_POW_TABLE: [[[u128; 16]; 32]; 7] = generate_nibble_table();
 
 /// Generate the nibble power table at compile time
