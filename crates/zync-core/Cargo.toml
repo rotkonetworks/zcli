@@ -1,6 +1,6 @@
 [package]
 name = "zync-core"
-version = "0.6.0"
+version = "0.6.1"
 edition = "2021"
 license = "MIT"
 description = "Trust-minimized Zcash light client primitives: verification, scanning, proving"
