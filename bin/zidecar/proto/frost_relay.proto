@@ -1,0 +1,69 @@
+syntax = "proto3";
+package frost_relay.v1;
+
+// dumb relay for FROST multisig signing sessions.
+// forwards opaque signed blobs between room participants.
+// does not parse, validate, or understand FROST protocol messages.
+// rooms auto-expire after configurable timeout.
+
+service FrostRelay {
+    // create a new signing/DKG room. returns a human-readable room code.
+    rpc CreateRoom(CreateRoomRequest) returns (CreateRoomResponse);
+
+    // join a room. server streams all existing + new messages.
+    // stream stays open until room expires or client disconnects.
+    rpc JoinRoom(JoinRoomRequest) returns (stream RoomEvent);
+
+    // send a signed message to all participants in a room.
+    rpc SendMessage(SendMessageRequest) returns (SendMessageResponse);
+}
+
+message CreateRoomRequest {
+    uint32 threshold = 1;
+    uint32 max_signers = 2;
+    uint32 ttl_seconds = 3;    // 0 = server default (300s)
+}
+
+message CreateRoomResponse {
+    string room_code = 1;      // human-readable: "alpha-bravo-charlie"
+    uint64 expires_at = 2;     // unix timestamp
+}
+
+message JoinRoomRequest {
+    string room_code = 1;
+    bytes participant_id = 2;  // ephemeral ed25519 pubkey (32 bytes)
+}
+
+message RoomEvent {
+    oneof event {
+        ParticipantJoined joined = 1;
+        RelayedMessage message = 2;
+        RoomClosed closed = 3;
+    }
+}
+
+message ParticipantJoined {
+    bytes participant_id = 1;
+    uint32 participant_count = 2;
+    uint32 max_signers = 3;
+}
+
+message RelayedMessage {
+    bytes sender_id = 1;
+    bytes payload = 2;         // opaque SignedMessage bytes
+    uint64 sequence = 3;
+}
+
+message RoomClosed {
+    string reason = 1;
+}
+
+message SendMessageRequest {
+    string room_code = 1;
+    bytes sender_id = 2;
+    bytes payload = 3;
+}
+
+message SendMessageResponse {
+    uint64 sequence = 1;
+}

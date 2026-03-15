@@ -13,6 +13,7 @@ mod compact;
 mod constants;
 mod epoch;
 mod error;
+mod frost_relay;
 mod grpc_service;
 mod header_chain;
 mod lwd_service;
@@ -184,6 +185,10 @@ async fn main() -> Result<()> {
         mempool_cache_ttl,
     );
 
+    // frost relay service
+    let frost = frost_relay::FrostRelayService::new();
+    info!("frost relay: enabled");
+
     info!("starting gRPC server on {}", args.listen);
     info!("gRPC-web enabled for browser clients");
     info!("lightwalletd CompactTxStreamer compatibility: enabled");
@@ -196,6 +201,9 @@ async fn main() -> Result<()> {
         ))
         .add_service(tonic_web::enable(
             zidecar::zidecar_server::ZidecarServer::new(service),
+        ))
+        .add_service(tonic_web::enable(
+            frost_relay_proto::frost_relay_server::FrostRelayServer::new(frost),
         ))
         .serve(args.listen)
         .await?;
@@ -210,4 +218,8 @@ pub mod zidecar {
 
 pub mod lightwalletd {
     tonic::include_proto!("cash.z.wallet.sdk.rpc");
+}
+
+pub mod frost_relay_proto {
+    tonic::include_proto!("frost_relay.v1");
 }

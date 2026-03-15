@@ -5940,6 +5940,7 @@ dependencies = [
  "futures-core",
  "pin-project-lite",
  "tokio",
+ "tokio-util",
 ]
 
 [[package]]
@@ -7765,6 +7766,7 @@ name = "zidecar"
 version = "0.6.1"
 dependencies = [
  "anyhow",
+ "async-stream",
  "bincode",
  "blake2",
  "clap",
@@ -7775,6 +7777,7 @@ dependencies = [
  "nomt",
  "prost",
  "prost-types",
+ "rand 0.8.5",
  "reqwest 0.11.27",
  "serde",
  "serde_json",

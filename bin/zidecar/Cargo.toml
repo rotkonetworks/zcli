@@ -22,7 +22,7 @@ ligerito-binary-fields = { version = "0.6.1", path = "../../crates/ligerito-bina
 
 # async runtime
 tokio = { version = "1", features = ["full"] }
-tokio-stream = "0.1"
+tokio-stream = { version = "0.1", features = ["sync"] }
 futures = "0.3"
 
 # gRPC (with web support for browser clients)
@@ -51,6 +51,10 @@ sha2 = "0.10"
 # tower middleware
 tower = { version = "0.4", features = ["retry", "timeout", "util", "buffer"] }
 tower-http = { version = "0.4", features = ["trace"] }
+
+# frost relay
+rand = "0.8"
+async-stream = "0.3"
 
 # utilities
 thiserror = "1.0"
