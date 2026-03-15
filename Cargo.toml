@@ -10,6 +10,7 @@ members = [
     "crates/ligerito-merkle",
     "crates/ligerito-reed-solomon",
     "crates/zcash-wasm",
+    "crates/frost-spend",
 ]
 
 [workspace.package]

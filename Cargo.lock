@@ -1747,6 +1747,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "frost-spend"
+version = "0.1.0"
+dependencies = [
+ "ed25519-consensus",
+ "getrandom 0.2.17",
+ "hex",
+ "orchard 0.10.1",
+ "rand_core 0.6.4",
+ "reddsa 0.5.1 (git+https://github.com/ZcashFoundation/reddsa.git?rev=475a552)",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "fs-err"
 version = "2.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3530,6 +3544,40 @@ dependencies = [
  "serde",
  "subtle",
  "tracing",
+ "zcash_note_encryption",
+ "zcash_spec 0.1.2",
+ "zip32 0.1.3",
+]
+
+[[package]]
+name = "orchard"
+version = "0.10.1"
+source = "git+https://github.com/conradoplg/orchard.git?rev=f0c88b78a1d70d55ce6bb480566d132e57d5607b#f0c88b78a1d70d55ce6bb480566d132e57d5607b"
+dependencies = [
+ "aes",
+ "bitvec",
+ "blake2b_simd",
+ "core2",
+ "ff",
+ "fpe",
+ "getset",
+ "group",
+ "halo2_gadgets 0.3.1",
+ "halo2_poseidon",
+ "halo2_proofs",
+ "hex",
+ "incrementalmerkletree 0.7.1",
+ "lazy_static",
+ "memuse",
+ "nonempty 0.7.0",
+ "pasta_curves",
+ "rand 0.8.5",
+ "reddsa 0.5.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "serde",
+ "sinsemilla",
+ "subtle",
+ "tracing",
+ "visibility",
  "zcash_note_encryption",
  "zcash_spec 0.1.2",
  "zip32 0.1.3",
