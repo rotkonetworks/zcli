@@ -38,3 +38,6 @@ serde = { version = "1.0", default-features = false, features = ["derive", "allo
 sha2 = { version = "0.10", default-features = false }
 thiserror = "1.0"
 wide = { version = "0.7", default-features = false }
+
+[patch.crates-io]
+maybe-rayon = { path = "crates/maybe-rayon" }

@@ -1,0 +1,13 @@
+[package]
+name = "maybe-rayon"
+version = "0.1.1"
+edition = "2021"
+description = "Local fork: rayon wrapper compatible with halo2_proofs on wasm32+atomics"
+
+[features]
+default = ["threads"]
+threads = ["rayon"]
+
+[dependencies]
+cfg-if = "1"
+rayon = { version = "1.10", optional = true }
