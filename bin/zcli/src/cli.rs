@@ -218,6 +218,123 @@ pub enum Command {
         #[command(subcommand)]
         action: MerchantAction,
     },
+
+    /// FROST threshold multisig (t-of-n) using rerandomized RedPallas
+    Multisig {
+        #[command(subcommand)]
+        action: MultisigAction,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum MultisigAction {
+    /// generate key shares using trusted dealer (simple, requires trust)
+    Dealer {
+        /// minimum signers required (threshold)
+        #[arg(short = 't', long, default_value_t = 2)]
+        min_signers: u16,
+
+        /// total number of participants
+        #[arg(short = 'n', long, default_value_t = 3)]
+        max_signers: u16,
+    },
+
+    /// DKG round 1: generate commitment to broadcast
+    DkgPart1 {
+        /// your participant index (1-indexed)
+        #[arg(short, long)]
+        index: u16,
+
+        /// total participants
+        #[arg(short = 'n', long)]
+        max_signers: u16,
+
+        /// threshold (minimum signers)
+        #[arg(short = 't', long)]
+        min_signers: u16,
+    },
+
+    /// DKG round 2: process round1 packages from peers
+    DkgPart2 {
+        /// your round1 secret package (hex, from dkg-part1)
+        secret: String,
+
+        /// round1 packages from peers as index:hex pairs (comma-separated, e.g. "1:abc,2:def")
+        #[arg(short, long, value_delimiter = ',')]
+        packages: Vec<String>,
+    },
+
+    /// DKG round 3: finalize key generation
+    DkgPart3 {
+        /// your round2 secret package (hex, from dkg-part2)
+        secret: String,
+
+        /// round1 packages as index:hex pairs (comma-separated)
+        #[arg(short = 'r', long, value_delimiter = ',')]
+        round1_packages: Vec<String>,
+
+        /// round2 packages as index:hex pairs (comma-separated)
+        #[arg(short = 's', long, value_delimiter = ',')]
+        round2_packages: Vec<String>,
+    },
+
+    /// signing round 1: generate nonces and commitments
+    SignRound1 {
+        /// your key package (hex, from dkg-part3 or dealer)
+        key_package: String,
+    },
+
+    /// generate randomizer for a signing session (coordinator does this, shares with signers)
+    Randomize {
+        /// public key package (hex)
+        public_key_package: String,
+
+        /// message to sign (hex)
+        message: String,
+
+        /// all commitments as index:hex pairs (comma-separated)
+        #[arg(short, long, value_delimiter = ',')]
+        commitments: Vec<String>,
+    },
+
+    /// signing round 2: produce signature share
+    SignRound2 {
+        /// your key package (hex)
+        key_package: String,
+
+        /// your nonces from round1 (hex)
+        nonces: String,
+
+        /// message to sign (hex)
+        message: String,
+
+        /// randomizer from coordinator (hex)
+        randomizer: String,
+
+        /// all commitments as index:hex pairs (comma-separated, e.g. "1:abc,2:def")
+        #[arg(short, long, value_delimiter = ',')]
+        commitments: Vec<String>,
+    },
+
+    /// aggregate signature shares into final signature (coordinator)
+    Aggregate {
+        /// public key package (hex)
+        public_key_package: String,
+
+        /// message that was signed (hex)
+        message: String,
+
+        /// randomizer used for signing (hex, from randomize step)
+        randomizer: String,
+
+        /// all commitments as index:hex pairs (comma-separated)
+        #[arg(short, long, value_delimiter = ',')]
+        commitments: Vec<String>,
+
+        /// signature shares as index:hex pairs (comma-separated)
+        #[arg(short, long, value_delimiter = ',')]
+        shares: Vec<String>,
+    },
 }
 
 #[derive(Subcommand)]

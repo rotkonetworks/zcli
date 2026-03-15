@@ -17,3 +17,5 @@ pub mod quic;
 pub mod wallet;
 #[cfg(feature = "cli")]
 pub mod witness;
+#[cfg(feature = "cli")]
+pub mod frost;
