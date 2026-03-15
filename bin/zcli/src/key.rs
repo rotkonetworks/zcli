@@ -107,6 +107,13 @@ fn parse_ssh_ed25519(path: &str) -> Result<([u8; 32], [u8; 32]), Error> {
     Ok((seed, pubkey))
 }
 
+/// load raw ed25519 seed from ssh private key (for FROST identity)
+#[cfg(feature = "cli")]
+pub fn load_ed25519_seed(path: &str) -> Result<[u8; 32], Error> {
+    let (seed, _) = parse_ssh_ed25519(path)?;
+    Ok(seed)
+}
+
 /// load wallet seed from ed25519 ssh private key
 ///
 /// derivation: BLAKE2b-512("ZcliWalletSeed" || ed25519_seed_32bytes)

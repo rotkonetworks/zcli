@@ -1616,14 +1616,8 @@ fn load_seed(cli: &Cli) -> Result<key::WalletSeed, Error> {
     }
 }
 
-fn parse_indexed_hex(items: &[String]) -> Result<Vec<(u16, String)>, Error> {
-    items.iter()
-        .map(|s| {
-            let (idx, hex) = s.split_once(':')
-                .ok_or_else(|| Error::Other(format!("bad format '{}', expected 'index:hex'", s)))?;
-            Ok((idx.parse::<u16>().map_err(|e| Error::Other(format!("bad index: {}", e)))?, hex.to_string()))
-        })
-        .collect()
+fn load_identity_seed(cli: &Cli) -> Result<[u8; 32], Error> {
+    key::load_ed25519_seed(&cli.identity_path())
 }
 
 fn cmd_multisig(cli: &Cli, action: &MultisigAction) -> Result<(), Error> {
@@ -1631,127 +1625,115 @@ fn cmd_multisig(cli: &Cli, action: &MultisigAction) -> Result<(), Error> {
         MultisigAction::Dealer { min_signers, max_signers } => {
             let result = ops::multisig::dealer_keygen(*min_signers, *max_signers)?;
             if cli.json {
-                let shares: Vec<_> = result.shares.iter()
-                    .map(|(idx, hex)| serde_json::json!({"index": idx, "key_package": hex}))
-                    .collect();
                 println!("{}", serde_json::json!({
-                    "shares": shares,
+                    "packages": result.packages,
                     "public_key_package": result.public_key_package_hex,
                 }));
             } else {
-                eprintln!("generated {}-of-{} key shares:", min_signers, max_signers);
-                for (idx, hex) in &result.shares {
-                    eprintln!("  participant {}: {}", idx, hex);
+                eprintln!("generated {}-of-{} key packages:", min_signers, max_signers);
+                for (i, pkg) in result.packages.iter().enumerate() {
+                    eprintln!("  participant {}: {}...", i + 1, &pkg[..40]);
                 }
                 eprintln!("public key package: {}", result.public_key_package_hex);
             }
             Ok(())
         }
-        MultisigAction::DkgPart1 { index, max_signers, min_signers } => {
-            let result = ops::multisig::dkg_part1(*index, *max_signers, *min_signers)?;
+        MultisigAction::DkgPart1 { max_signers, min_signers } => {
+            let seed = load_identity_seed(cli)?;
+            let result = ops::multisig::dkg_part1(&seed, *max_signers, *min_signers)?;
             if cli.json {
                 println!("{}", serde_json::json!({
-                    "secret_package": result.secret_package_hex,
-                    "broadcast_package": result.broadcast_package_hex,
-                    "identifier": result.identifier,
+                    "secret": result.secret_hex,
+                    "broadcast": result.broadcast_hex,
                 }));
             } else {
-                eprintln!("DKG round 1 complete for participant {}", result.identifier);
-                eprintln!("secret (keep safe): {}", result.secret_package_hex);
-                eprintln!("broadcast to all:   {}", result.broadcast_package_hex);
+                eprintln!("DKG round 1 complete");
+                eprintln!("secret (keep safe): {}", result.secret_hex);
+                eprintln!("broadcast to all:   {}", result.broadcast_hex);
             }
             Ok(())
         }
         MultisigAction::DkgPart2 { secret, packages } => {
-            let parsed = parse_indexed_hex(packages)?;
-            let result = ops::multisig::dkg_part2(secret, &parsed)?;
+            let result = ops::multisig::dkg_part2(secret, packages)?;
             if cli.json {
-                let pkgs: Vec<_> = result.peer_packages.iter()
-                    .map(|(idx, hex)| serde_json::json!({"peer": idx, "package": hex}))
-                    .collect();
                 println!("{}", serde_json::json!({
-                    "secret_package": result.secret_package_hex,
-                    "peer_packages": pkgs,
+                    "secret": result.secret_hex,
+                    "peer_packages": result.peer_packages,
                 }));
             } else {
                 eprintln!("DKG round 2 complete");
-                eprintln!("secret (keep safe): {}", result.secret_package_hex);
-                for (idx, hex) in &result.peer_packages {
-                    eprintln!("  send to peer {}: {}", idx, hex);
+                eprintln!("secret (keep safe): {}", result.secret_hex);
+                for (i, pkg) in result.peer_packages.iter().enumerate() {
+                    eprintln!("  peer package {}: {}...", i, &pkg[..40.min(pkg.len())]);
                 }
             }
             Ok(())
         }
         MultisigAction::DkgPart3 { secret, round1_packages, round2_packages } => {
-            let r1 = parse_indexed_hex(round1_packages)?;
-            let r2 = parse_indexed_hex(round2_packages)?;
-            let result = ops::multisig::dkg_part3(secret, &r1, &r2)?;
+            let result = ops::multisig::dkg_part3(secret, round1_packages, round2_packages)?;
             if cli.json {
                 println!("{}", serde_json::json!({
                     "key_package": result.key_package_hex,
                     "public_key_package": result.public_key_package_hex,
+                    "identity_pubkey": result.identity_pubkey,
                 }));
             } else {
                 eprintln!("DKG complete!");
-                eprintln!("key package (SECRET — store securely): {}", result.key_package_hex);
+                eprintln!("identity: {}", result.identity_pubkey);
+                eprintln!("key package (SECRET): {}", result.key_package_hex);
                 eprintln!("public key package: {}", result.public_key_package_hex);
             }
             Ok(())
         }
         MultisigAction::SignRound1 { key_package } => {
-            let (nonces_hex, commitments_hex) = ops::multisig::sign_round1(key_package)?;
+            let seed = load_identity_seed(cli)?;
+            let (nonces_hex, signed_commitments_hex) = ops::multisig::sign_round1(&seed, key_package)?;
             if cli.json {
                 println!("{}", serde_json::json!({
                     "nonces": nonces_hex,
-                    "commitments": commitments_hex,
+                    "commitments": signed_commitments_hex,
                 }));
             } else {
                 eprintln!("signing round 1 complete");
                 eprintln!("nonces (keep safe): {}", nonces_hex);
-                eprintln!("broadcast commitments: {}", commitments_hex);
+                eprintln!("broadcast commitments: {}", signed_commitments_hex);
             }
             Ok(())
         }
-        MultisigAction::Randomize { public_key_package, message, commitments } => {
-            let parsed = parse_indexed_hex(commitments)?;
+        MultisigAction::Randomize { message, commitments } => {
+            let seed = load_identity_seed(cli)?;
             let msg_bytes = hex::decode(message)
                 .map_err(|e| Error::Other(format!("bad message hex: {}", e)))?;
-            let randomizer_hex = ops::multisig::generate_randomizer(
-                public_key_package, &msg_bytes, &parsed,
+            let signed_randomizer = ops::multisig::generate_randomizer(
+                &seed, &msg_bytes, commitments,
             )?;
             if cli.json {
-                println!("{}", serde_json::json!({"randomizer": randomizer_hex}));
+                println!("{}", serde_json::json!({"randomizer": signed_randomizer}));
             } else {
-                eprintln!("randomizer (send to all signers): {}", randomizer_hex);
+                eprintln!("signed randomizer: {}", signed_randomizer);
             }
             Ok(())
         }
         MultisigAction::SignRound2 { key_package, nonces, message, randomizer, commitments } => {
-            let parsed = parse_indexed_hex(commitments)?;
+            let seed = load_identity_seed(cli)?;
             let msg_bytes = hex::decode(message)
                 .map_err(|e| Error::Other(format!("bad message hex: {}", e)))?;
-
-            let share_hex = ops::multisig::sign_round2(
-                key_package, nonces, &msg_bytes, &parsed, randomizer,
+            let signed_share = ops::multisig::sign_round2(
+                &seed, key_package, nonces, &msg_bytes, commitments, randomizer,
             )?;
-
             if cli.json {
-                println!("{}", serde_json::json!({"signature_share": share_hex}));
+                println!("{}", serde_json::json!({"signature_share": signed_share}));
             } else {
-                eprintln!("signature share: {}", share_hex);
+                eprintln!("signed signature share: {}", signed_share);
             }
             Ok(())
         }
         MultisigAction::Aggregate { public_key_package, message, randomizer, commitments, shares } => {
-            let parsed_commits = parse_indexed_hex(commitments)?;
-            let parsed_shares = parse_indexed_hex(shares)?;
             let msg_bytes = hex::decode(message)
                 .map_err(|e| Error::Other(format!("bad message hex: {}", e)))?;
-
             let sig_hex = ops::multisig::aggregate_shares(
-                public_key_package, &msg_bytes, &parsed_commits, &parsed_shares, randomizer,
+                public_key_package, &msg_bytes, commitments, shares, randomizer,
             )?;
-
             if cli.json {
                 println!("{}", serde_json::json!({"signature": sig_hex}));
             } else {
