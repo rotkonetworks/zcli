@@ -2854,7 +2854,7 @@ dependencies = [
 
 [[package]]
 name = "ligerito"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "bincode",
@@ -2893,7 +2893,7 @@ dependencies = [
 
 [[package]]
 name = "ligerito-binary-fields"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "bytemuck",
  "criterion",
@@ -2920,7 +2920,7 @@ dependencies = [
 
 [[package]]
 name = "ligerito-reed-solomon"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "criterion",
  "ligerito-binary-fields",
