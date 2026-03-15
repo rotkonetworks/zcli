@@ -57,23 +57,19 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
-      - name: build zcli
-        run: cargo build --release --target ${{ matrix.target }} -p zecli
-
-      - name: build zidecar
-        run: cargo build --release --target ${{ matrix.target }} -p zidecar
+      - name: build
+        run: |
+          cargo build --release --target ${{ matrix.target }} -p zecli
+          cargo build --release --target ${{ matrix.target }} -p zidecar
+          cargo build --release --target ${{ matrix.target }} -p zclid
+          cargo build --release --target ${{ matrix.target }} -p ligerito
 
       - name: package
         run: |
-          for bin in zcli zidecar; do
+          for bin in zcli zidecar zclid ligerito; do
             name="${bin}-${{ matrix.suffix }}"
             cp "target/${{ matrix.target }}/release/${bin}" "${name}"
             strip "${name}" 2>/dev/null || true
-            if command -v sha256sum &>/dev/null; then
-              sha256sum "${name}" > "${name}.sha256"
-            else
-              shasum -a 256 "${name}" > "${name}.sha256"
-            fi
           done
 
       - uses: actions/upload-artifact@v4
@@ -81,9 +77,9 @@ jobs:
           name: binaries-${{ matrix.suffix }}
           path: |
             zcli-${{ matrix.suffix }}
-            zcli-${{ matrix.suffix }}.sha256
             zidecar-${{ matrix.suffix }}
-            zidecar-${{ matrix.suffix }}.sha256
+            zclid-${{ matrix.suffix }}
+            ligerito-${{ matrix.suffix }}
 
   publish:
     needs: build
@@ -94,24 +90,40 @@ jobs:
         with:
           merge-multiple: true
 
+      - name: generate checksums
+        run: sha256sum zcli-* zidecar-* zclid-* ligerito-* > SHA256SUMS
+
+      - name: import gpg key
+        if: env.GPG_PRIVATE_KEY != ''
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+        run: echo "$GPG_PRIVATE_KEY" | gpg --batch --import
+
+      - name: sign checksums
+        if: env.GPG_PRIVATE_KEY != ''
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+        run: |
+          gpg --batch --yes --armor --detach-sign SHA256SUMS
+          gpg --armor --export > rotko.asc
+
       - name: create release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            zcli-linux-amd64
-            zcli-linux-amd64.sha256
-            zcli-linux-arm64
-            zcli-linux-arm64.sha256
-            zcli-macos-arm64
-            zcli-macos-arm64.sha256
-            zcli-macos-amd64
-            zcli-macos-amd64.sha256
-            zidecar-linux-amd64
-            zidecar-linux-amd64.sha256
-            zidecar-linux-arm64
-            zidecar-linux-arm64.sha256
-            zidecar-macos-arm64
-            zidecar-macos-arm64.sha256
-            zidecar-macos-amd64
-            zidecar-macos-amd64.sha256
+            zcli-*
+            zidecar-*
+            zclid-*
+            ligerito-*
+            SHA256SUMS
+            SHA256SUMS.asc
+            rotko.asc
           generate_release_notes: true
+          body: |
+            ## verify
+
+            ```bash
+            gpg --import rotko.asc
+            gpg --verify SHA256SUMS.asc SHA256SUMS
+            sha256sum -c SHA256SUMS --ignore-missing
+            ```
