@@ -54,96 +54,8 @@ fn pow_2_2_n(value: u128, n: usize, table: &[[[u128; 16]; 32]; 7]) -> u128 {
 /// Square in GF(2^128) with reduction modulo x^128 + x^7 + x^2 + x + 1
 #[inline]
 fn square_gf128(x: u128) -> u128 {
-    // Squaring in binary field: spread bits and reduce
-    // x^2 doubles the bit positions, creating a 256-bit result
-    // then reduce mod the irreducible polynomial
-
-    // Split into two 64-bit halves
-    let lo = x as u64;
-    let hi = (x >> 64) as u64;
-
-    // Spread bits: each bit at position i moves to position 2i
-    let lo_spread = spread_bits(lo);
-    let hi_spread = spread_bits(hi);
-
-    // Combine: hi_spread goes into bits [128..256), lo_spread into [0..128)
-    // But hi_spread bits 0..64 go into result bits 128..192
-    // and hi_spread bits 64..128 go into result bits 192..256
-
-    // The 256-bit result is [hi_spread : lo_spread]
-    // We need to reduce the high 128 bits
-
-    // Actually simpler: just use the polynomial multiplication reduction
-    let result_lo = lo_spread;
-    let result_hi = hi_spread;
-
-    reduce_256_to_128(result_hi, result_lo)
-}
-
-/// Spread 64 bits to 128 bits (bit i -> bit 2i)
-#[inline]
-fn spread_bits(x: u64) -> u128 {
-    // Use BMI2 PDEP instruction when available for ~10x speedup
-    #[cfg(all(target_arch = "x86_64", target_feature = "bmi2"))]
-    {
-        // PDEP deposits bits from x into positions specified by mask
-        // Mask 0x5555...5555 has 1s at even positions (0,2,4,6,...)
-        use core::arch::x86_64::_pdep_u64;
-        const EVEN_BITS_MASK: u64 = 0x5555_5555_5555_5555;
-
-        // Split into two 32-bit halves for 64-bit PDEP
-        let lo = (x & 0xFFFF_FFFF) as u64;
-        let hi = (x >> 32) as u64;
-
-        // Deposit low 32 bits into even positions 0-62
-        let lo_spread = unsafe { _pdep_u64(lo, EVEN_BITS_MASK) };
-        // Deposit high 32 bits into even positions 64-126
-        let hi_spread = unsafe { _pdep_u64(hi, EVEN_BITS_MASK) };
-
-        (lo_spread as u128) | ((hi_spread as u128) << 64)
-    }
-
-    #[cfg(not(all(target_arch = "x86_64", target_feature = "bmi2")))]
-    {
-        // Fallback: parallel bit deposit using magic multiplies
-        // This is ~4x faster than the naive loop
-        spread_bits_parallel(x)
-    }
-}
-
-/// Parallel bit spread without BMI2 (still faster than loop)
-#[inline]
-fn spread_bits_parallel(x: u64) -> u128 {
-    // Spread using parallel prefix technique
-    // Each step doubles the spacing between bits
-    let mut v = x as u128;
-
-    // Step 1: spread bits by 1 (16-bit groups)
-    v = (v | (v << 16)) & 0x0000_FFFF_0000_FFFF_0000_FFFF_0000_FFFF;
-    // Step 2: spread bits by 2 (8-bit groups)
-    v = (v | (v << 8)) & 0x00FF_00FF_00FF_00FF_00FF_00FF_00FF_00FF;
-    // Step 3: spread bits by 4 (4-bit groups)
-    v = (v | (v << 4)) & 0x0F0F_0F0F_0F0F_0F0F_0F0F_0F0F_0F0F_0F0F;
-    // Step 4: spread bits by 8 (2-bit groups)
-    v = (v | (v << 2)) & 0x3333_3333_3333_3333_3333_3333_3333_3333;
-    // Step 5: spread bits by 16 (1-bit groups)
-    v = (v | (v << 1)) & 0x5555_5555_5555_5555_5555_5555_5555_5555;
-
-    v
-}
-
-/// Reduce 256-bit value to 128-bit modulo x^128 + x^7 + x^2 + x + 1
-///
-/// Uses the same algorithm as reduce_gf128 in simd.rs
-#[inline]
-fn reduce_256_to_128(hi: u128, lo: u128) -> u128 {
-    // Irreducible: x^128 + x^7 + x^2 + x + 1
-    // For bits in hi that would overflow when shifted left by 1,2,7,
-    // we compute tmp = bits that wrap around
-    let tmp = hi ^ (hi >> 127) ^ (hi >> 126) ^ (hi >> 121);
-
-    // Then apply the reduction: for each bit i in irreducible (0,1,2,7)
-    lo ^ tmp ^ (tmp << 1) ^ (tmp << 2) ^ (tmp << 7)
+    // Use the proven-correct carryless multiplication for squaring
+    mul_gf128(x, x)
 }
 
 /// Invert a field element in GF(2^128)
@@ -207,7 +119,7 @@ pub fn batch_invert_gf128(values: &[u128]) -> Vec<u128> {
     let mut result = vec![0u128; n];
 
     // Handle zeros by tracking their positions
-    let non_zero_indices: Vec<usize> = values
+    let mut non_zero_indices: Vec<usize> = values
         .iter()
         .enumerate()
         .filter(|(_, &v)| v != 0)
@@ -408,11 +320,7 @@ mod tests {
             let slow_inv = elem.inv();
             let slow_inv_val = slow_inv.poly().value();
 
-            assert_eq!(
-                fast_inv, slow_inv_val,
-                "fast and slow inverse should match for x = 0x{:032x}",
-                x
-            );
+            assert_eq!(fast_inv, slow_inv_val, "fast and slow inverse should match for x = 0x{:032x}", x);
         }
     }
 
@@ -483,23 +391,4 @@ mod tests {
         assert_eq!(batch_inverted[0], invert_gf128(0x12345678));
     }
 
-    #[test]
-    fn test_spread_bits_correctness() {
-        // Verify the optimized spread_bits matches expected behavior
-        let test_cases: [(u64, u128); 4] = [
-            (0b1, 0b1),           // bit 0 -> bit 0
-            (0b10, 0b100),        // bit 1 -> bit 2
-            (0b101, 0b10001),     // bits 0,2 -> bits 0,4
-            (0b11111111, 0x5555), // first 8 bits spread
-        ];
-
-        for (input, expected) in test_cases {
-            let result = spread_bits(input);
-            assert_eq!(
-                result, expected,
-                "spread_bits(0b{:b}) should be 0b{:b}, got 0b{:b}",
-                input, expected, result
-            );
-        }
-    }
 }
