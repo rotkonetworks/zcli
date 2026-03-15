@@ -54,6 +54,11 @@ struct Args {
     /// Enable on public nodes serving many clients to reduce zebrad load.
     #[arg(long, default_value_t = 0)]
     mempool_cache_ttl: u64,
+
+    /// Enable FROST multisig relay (room-based message forwarding for DKG/signing).
+    /// Disabled by default — opt in on public nodes.
+    #[arg(long)]
+    frost_relay: bool,
 }
 
 #[tokio::main]
@@ -185,28 +190,34 @@ async fn main() -> Result<()> {
         mempool_cache_ttl,
     );
 
-    // frost relay service
-    let frost = frost_relay::FrostRelayService::new();
-    info!("frost relay: enabled");
-
     info!("starting gRPC server on {}", args.listen);
     info!("gRPC-web enabled for browser clients");
     info!("lightwalletd CompactTxStreamer compatibility: enabled");
 
-    Server::builder()
-        .accept_http1(true) // required for gRPC-web
-        .layer(middleware::trace_layer())
+    let mut builder = Server::builder()
+        .accept_http1(true)
+        .layer(middleware::trace_layer());
+
+    let router = builder
         .add_service(tonic_web::enable(
             lightwalletd::compact_tx_streamer_server::CompactTxStreamerServer::new(lwd),
         ))
         .add_service(tonic_web::enable(
             zidecar::zidecar_server::ZidecarServer::new(service),
-        ))
-        .add_service(tonic_web::enable(
-            frost_relay_proto::frost_relay_server::FrostRelayServer::new(frost),
-        ))
-        .serve(args.listen)
-        .await?;
+        ));
+
+    if args.frost_relay {
+        let frost = frost_relay::FrostRelayService::new();
+        info!("frost relay: enabled");
+        router
+            .add_service(tonic_web::enable(
+                frost_relay_proto::frost_relay_server::FrostRelayServer::new(frost),
+            ))
+            .serve(args.listen)
+            .await?;
+    } else {
+        router.serve(args.listen).await?;
+    }
 
     Ok(())
 }
