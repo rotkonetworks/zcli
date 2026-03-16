@@ -173,25 +173,16 @@ fn cmd_address(
 }
 
 fn cmd_receive(cli: &Cli, mainnet: bool) -> Result<(), Error> {
-    let (uaddr, taddr) = if cli.watch {
+    let uaddr = if cli.watch {
         let fvk = load_fvk(cli, mainnet)?;
-        let ua = address::orchard_address_from_fvk(&fvk, mainnet)?;
-        (ua, "(watch-only)".to_string())
+        address::orchard_address_from_fvk(&fvk, mainnet)?
     } else {
         let seed = load_seed(cli)?;
-        let ua = address::orchard_address(&seed, mainnet)?;
-        let ta = address::transparent_address(&seed, mainnet)?;
-        (ua, ta)
+        address::orchard_address(&seed, mainnet)?
     };
 
     if cli.json {
-        println!(
-            "{}",
-            serde_json::json!({
-                "orchard": uaddr,
-                "transparent": taddr,
-            })
-        );
+        println!("{}", serde_json::json!({ "address": uaddr }));
         return Ok(());
     }
 
@@ -232,8 +223,7 @@ fn cmd_receive(cli: &Cli, mainnet: bool) -> Result<(), Error> {
     }
 
     println!();
-    println!("unified:     {}", uaddr);
-    println!("transparent: {}", taddr);
+    println!("{}", uaddr);
 
     Ok(())
 }
