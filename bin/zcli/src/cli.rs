@@ -42,13 +42,9 @@ pub struct Cli {
     #[arg(long, global = true, env = "ZCLI_JSON")]
     pub json: bool,
 
-    /// use mainnet (default)
-    #[arg(long, global = true, default_value_t = true)]
+    /// use mainnet (always true — testnet not supported yet)
+    #[arg(long, global = true, default_value_t = true, hide = true)]
     pub mainnet: bool,
-
-    /// use testnet
-    #[arg(long, global = true)]
-    pub testnet: bool,
 
     /// use watch-only (FVK) wallet instead of SSH key wallet
     #[arg(short = 'w', long, global = true, env = "ZCLI_WATCH")]
@@ -57,7 +53,7 @@ pub struct Cli {
 
 impl Cli {
     pub fn is_mainnet(&self) -> bool {
-        !self.testnet
+        true
     }
 
     fn expand_tilde(path: &str) -> String {
