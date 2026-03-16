@@ -16,6 +16,8 @@ pub mod keys;
 pub mod sign;
 pub mod message;
 pub mod orchestrate;
+pub mod memo_codec;
+pub mod transport;
 
 // re-export core types
 pub use reddsa::frost::redpallas::{
