@@ -8,7 +8,7 @@ use tokio::net::TcpListener;
 
 #[cfg(target_os = "linux")]
 use zecli::cam;
-use zecli::{address, client, key, ops, quic, wallet, witness};
+use zecli::{address, client, frost_qr, key, notes_export, ops, quic, wallet, witness};
 
 use cli::{Cli, Command, MerchantAction, MultisigAction};
 use zecli::error::Error;
@@ -127,6 +127,10 @@ async fn run(cli: &Cli) -> Result<(), Error> {
         }
         Command::Merchant { action } => cmd_merchant(cli, mainnet, action).await,
         Command::Multisig { action } => cmd_multisig(cli, action),
+        Command::ExportNotes {
+            interval,
+            fragment_size,
+        } => cmd_export_notes(cli, mainnet, *interval, *fragment_size).await,
     }
 }
 
@@ -1623,6 +1627,92 @@ fn parse_ephemeral_seed(hex_str: &str) -> Result<[u8; 32], Error> {
         .map_err(|_| Error::Other("ephemeral seed must be 32 bytes".into()))
 }
 
+fn parse_32_bytes(hex_str: &str, name: &str) -> Result<[u8; 32], Error> {
+    let bytes = hex::decode(hex_str)
+        .map_err(|e| Error::Other(format!("bad {} hex: {}", name, e)))?;
+    bytes.try_into()
+        .map_err(|_| Error::Other(format!("{} must be 32 bytes", name)))
+}
+
+async fn cmd_export_notes(
+    cli: &Cli,
+    mainnet: bool,
+    interval_ms: u64,
+    fragment_size: usize,
+) -> Result<(), Error> {
+    let wallet_obj = wallet::Wallet::open(&wallet::Wallet::default_path())?;
+    let (balance, notes) = wallet_obj.shielded_balance()?;
+
+    if notes.is_empty() {
+        return Err(Error::Other("no unspent notes to export".into()));
+    }
+
+    if !cli.json {
+        eprintln!(
+            "{} unspent notes, {:.8} ZEC",
+            notes.len(),
+            balance as f64 / 1e8
+        );
+        eprintln!("connecting to {}...", cli.endpoint);
+    }
+
+    let client_obj = client::ZidecarClient::connect(&cli.endpoint).await?;
+    let (tip, _) = client_obj.get_tip().await?;
+
+    if !cli.json {
+        eprintln!("building merkle witnesses (anchor height {})...", tip);
+    }
+
+    let (anchor, paths) =
+        witness::build_witnesses(&client_obj, &notes, tip, mainnet, cli.json).await?;
+
+    let cbor = notes_export::encode_notes_cbor(&anchor, tip, mainnet, &notes, &paths);
+
+    if !cli.json {
+        eprintln!(
+            "encoded {} notes into {} bytes CBOR",
+            notes.len(),
+            cbor.len()
+        );
+    }
+
+    let ur_parts = notes_export::generate_ur_parts(&cbor, fragment_size)?;
+
+    if cli.json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "ur_type": "zcash-notes",
+                "cbor_hex": hex::encode(&cbor),
+                "cbor_bytes": cbor.len(),
+                "notes": notes.len(),
+                "balance_zat": balance,
+                "anchor_height": tip,
+                "anchor": hex::encode(anchor.to_bytes()),
+                "ur_parts": ur_parts,
+                "fragment_count": ur_parts.len(),
+            })
+        );
+        return Ok(());
+    }
+
+    eprintln!(
+        "{} UR frames, showing at {}ms interval (ctrl+c to stop)",
+        ur_parts.len(),
+        interval_ms
+    );
+    eprintln!();
+
+    let status = format!(
+        "{:.8} ZEC  {} notes  anchor {}",
+        balance as f64 / 1e8,
+        notes.len(),
+        tip,
+    );
+
+    notes_export::display_animated_qr(&ur_parts, interval_ms, &status)
+}
+
 fn cmd_multisig(cli: &Cli, action: &MultisigAction) -> Result<(), Error> {
     match action {
         MultisigAction::Dealer { min_signers, max_signers } => {
@@ -1641,7 +1731,19 @@ fn cmd_multisig(cli: &Cli, action: &MultisigAction) -> Result<(), Error> {
             }
             Ok(())
         }
-        MultisigAction::DkgPart1 { max_signers, min_signers } => {
+        MultisigAction::DkgPart1 { max_signers, min_signers, qr, label } => {
+            if *qr {
+                // Display QR for zigner to initiate DKG
+                let json = frost_qr::dkg_init_qr(
+                    *max_signers, *min_signers,
+                    label, cli.is_mainnet(),
+                );
+                eprintln!("scan this QR with zigner to start {}-of-{} DKG:", min_signers, max_signers);
+                frost_qr::display_text_qr(&json);
+                eprintln!("after zigner completes round 1, scan its broadcast QR with:");
+                eprintln!("  zcli multisig dkg-part2 ...");
+                return Ok(());
+            }
             let result = ops::multisig::dkg_part1(*max_signers, *min_signers)?;
             if cli.json {
                 println!("{}", serde_json::json!({
@@ -1740,6 +1842,41 @@ fn cmd_multisig(cli: &Cli, action: &MultisigAction) -> Result<(), Error> {
                 println!("{}", serde_json::json!({"signature": sig_hex}));
             } else {
                 eprintln!("aggregated signature: {}", sig_hex);
+            }
+            Ok(())
+        }
+        MultisigAction::DeriveAddress { public_key_package, index } => {
+            let address = ops::multisig::derive_address(public_key_package, *index)?;
+            if cli.json {
+                println!("{}", serde_json::json!({"address": address}));
+            } else {
+                println!("{}", address);
+            }
+            Ok(())
+        }
+        MultisigAction::SpendSign { key_package, nonces, sighash, alpha, commitments } => {
+            let sighash = parse_32_bytes(sighash, "sighash")?;
+            let alpha = parse_32_bytes(alpha, "alpha")?;
+            let share_hex = ops::multisig::spend_sign_round2(
+                key_package, nonces, &sighash, &alpha, commitments,
+            )?;
+            if cli.json {
+                println!("{}", serde_json::json!({"signature_share": share_hex}));
+            } else {
+                eprintln!("spend signature share: {}", share_hex);
+            }
+            Ok(())
+        }
+        MultisigAction::SpendAggregate { public_key_package, sighash, alpha, commitments, shares } => {
+            let sighash = parse_32_bytes(sighash, "sighash")?;
+            let alpha = parse_32_bytes(alpha, "alpha")?;
+            let sig_hex = ops::multisig::spend_aggregate(
+                public_key_package, &sighash, &alpha, commitments, shares,
+            )?;
+            if cli.json {
+                println!("{}", serde_json::json!({"spend_auth_signature": sig_hex}));
+            } else {
+                eprintln!("Orchard SpendAuth signature: {}", sig_hex);
             }
             Ok(())
         }

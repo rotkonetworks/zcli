@@ -169,6 +169,17 @@ pub enum Command {
     /// list all received notes
     Notes,
 
+    /// export notes + merkle paths as animated QR for zigner (air-gapped note sync)
+    ExportNotes {
+        /// QR frame interval in milliseconds
+        #[arg(long, default_value_t = 250)]
+        interval: u64,
+
+        /// max UR fragment length in bytes (controls QR density vs frame count)
+        #[arg(long, default_value_t = 200)]
+        fragment_size: usize,
+    },
+
     /// show transaction history (received + sent)
     History,
 
@@ -242,6 +253,12 @@ pub enum MultisigAction {
         max_signers: u16,
         #[arg(short = 't', long)]
         min_signers: u16,
+        /// display QR code for air-gapped zigner to scan
+        #[arg(long)]
+        qr: bool,
+        /// label for the multisig wallet (used with --qr)
+        #[arg(long, default_value = "")]
+        label: String,
     },
 
     /// DKG round 2: process signed round1 broadcasts from peers
@@ -313,6 +330,46 @@ pub enum MultisigAction {
         #[arg(short, long, value_delimiter = ',')]
         commitments: Vec<String>,
         /// signed signature shares (hex, comma-separated)
+        #[arg(short, long, value_delimiter = ',')]
+        shares: Vec<String>,
+    },
+
+    /// derive the multisig wallet's Orchard receiving address
+    DeriveAddress {
+        /// public key package (hex, from dealer or dkg-part3)
+        public_key_package: String,
+        /// diversifier index (default 0)
+        #[arg(short, long, default_value_t = 0)]
+        index: u32,
+    },
+
+    /// spend-authorize round 2: produce FROST share bound to sighash + alpha
+    SpendSign {
+        /// your key package (hex)
+        key_package: String,
+        /// your nonces from round1 (hex)
+        nonces: String,
+        /// transaction sighash (32 bytes hex)
+        sighash: String,
+        /// per-action alpha randomizer (32 bytes hex)
+        alpha: String,
+        /// signed commitments from all signers (hex, comma-separated)
+        #[arg(short, long, value_delimiter = ',')]
+        commitments: Vec<String>,
+    },
+
+    /// coordinator: aggregate FROST shares into Orchard SpendAuth signature
+    SpendAggregate {
+        /// public key package (hex)
+        public_key_package: String,
+        /// transaction sighash (32 bytes hex)
+        sighash: String,
+        /// per-action alpha randomizer (32 bytes hex)
+        alpha: String,
+        /// signed commitments from all signers (hex, comma-separated)
+        #[arg(short, long, value_delimiter = ',')]
+        commitments: Vec<String>,
+        /// signature shares (hex, comma-separated)
         #[arg(short, long, value_delimiter = ',')]
         shares: Vec<String>,
     },

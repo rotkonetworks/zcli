@@ -18,4 +18,8 @@ pub mod wallet;
 #[cfg(feature = "cli")]
 pub mod witness;
 #[cfg(feature = "cli")]
+pub mod notes_export;
+#[cfg(feature = "cli")]
 pub mod frost;
+#[cfg(feature = "cli")]
+pub mod frost_qr;
