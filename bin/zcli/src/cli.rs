@@ -319,6 +319,9 @@ pub enum MultisigAction {
         /// signed round1 broadcasts from all other participants (hex, comma-separated)
         #[arg(short, long, value_delimiter = ',')]
         packages: Vec<String>,
+        /// display QR for zigner instead of hex output
+        #[arg(long)]
+        qr: bool,
     },
 
     /// DKG round 3: finalize — produces key package + public key package
@@ -331,6 +334,9 @@ pub enum MultisigAction {
         /// signed round2 packages received from peers (hex, comma-separated)
         #[arg(short = 's', long, value_delimiter = ',')]
         round2_packages: Vec<String>,
+        /// display QR for zigner instead of hex output
+        #[arg(long)]
+        qr: bool,
     },
 
     /// signing round 1: generate ephemeral-signed nonces + commitments

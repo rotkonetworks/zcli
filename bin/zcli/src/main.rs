@@ -1797,7 +1797,13 @@ fn cmd_multisig(cli: &Cli, action: &MultisigAction) -> Result<(), Error> {
             }
             Ok(())
         }
-        MultisigAction::DkgPart2 { secret, packages } => {
+        MultisigAction::DkgPart2 { secret, packages, qr } => {
+            if *qr {
+                let json = frost_qr::dkg_round2_qr(packages);
+                eprintln!("scan this QR with zigner for DKG round 2:");
+                frost_qr::display_text_qr(&json);
+                return Ok(());
+            }
             let result = ops::multisig::dkg_part2(secret, packages)?;
             if cli.json {
                 println!("{}", serde_json::json!({
@@ -1813,7 +1819,13 @@ fn cmd_multisig(cli: &Cli, action: &MultisigAction) -> Result<(), Error> {
             }
             Ok(())
         }
-        MultisigAction::DkgPart3 { secret, round1_packages, round2_packages } => {
+        MultisigAction::DkgPart3 { secret, round1_packages, round2_packages, qr } => {
+            if *qr {
+                let json = frost_qr::dkg_round3_qr(round1_packages, round2_packages);
+                eprintln!("scan this QR with zigner for DKG round 3:");
+                frost_qr::display_text_qr(&json);
+                return Ok(());
+            }
             let result = ops::multisig::dkg_part3(secret, round1_packages, round2_packages)?;
             if cli.json {
                 println!("{}", serde_json::json!({
