@@ -246,6 +246,10 @@ pub enum InitAction {
         /// starting orchard position counter (use with --from to skip full scan)
         #[arg(long)]
         position: Option<u64>,
+
+        /// full rescan from orchard activation (for restoring old wallets)
+        #[arg(long)]
+        full: bool,
     },
 }
 

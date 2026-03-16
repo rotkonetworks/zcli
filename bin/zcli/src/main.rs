@@ -102,8 +102,16 @@ async fn run(cli: &Cli) -> Result<(), Error> {
         },
         Command::Init { action } => match action {
             InitAction::ImportFvk { hex } => cmd_import_fvk(cli, mainnet, hex.as_deref()),
-            InitAction::Sync { from, position } => {
-                cmd_sync(cli, mainnet, *from, *position).await
+            InitAction::Sync { from, position, full } => {
+                if *full {
+                    // Full rescan from activation — for restoring old wallets
+                    if !cli.json {
+                        eprintln!("full rescan from orchard activation...");
+                    }
+                    cmd_sync(cli, mainnet, None, None).await
+                } else {
+                    cmd_sync(cli, mainnet, *from, *position).await
+                }
             }
         },
         Command::Service { action } => match action {
@@ -280,35 +288,51 @@ async fn ensure_synced(cli: &Cli, mainnet: bool) -> Result<(), Error> {
     let wallet = wallet::Wallet::open(&wallet::Wallet::default_path())?;
     let height = wallet.sync_height()?;
     let birth = wallet.birth_height()?;
-
-    if birth == 0 {
-        // Check if wallet has existing notes (migrated from board or another machine)
-        let has_notes = wallet.shielded_balance().map(|(b, _)| b > 0).unwrap_or(false);
-        if has_notes {
-            // Existing wallet with history — don't override birth height
-            if !cli.json {
-                eprintln!("existing wallet detected (has notes), skipping birth height");
-            }
-        } else if height == 0 {
-            // Truly new wallet — record current tip as birth height
-            if let Ok(c) = client::ZidecarClient::connect(&cli.endpoint).await {
-                if let Ok((tip, _)) = c.get_tip().await {
-                    let _ = wallet.set_birth_height(tip);
-                    if !cli.json {
-                        eprintln!("new wallet — birth height set to {} (current tip)", tip);
-                    }
-                }
-            }
-        }
-    }
+    let has_notes = wallet.shielded_balance().map(|(b, _)| b > 0).unwrap_or(false);
     drop(wallet);
 
-    if height == 0 {
-        if !cli.json {
-            eprintln!("wallet has never been synced — syncing now...");
-        }
-        cmd_sync(cli, mainnet, None, None).await?;
+    if height > 0 || has_notes {
+        // Already synced or has notes from board — nothing to do
+        return Ok(());
     }
+
+    // Never synced, no notes — first use
+    if birth == 0 {
+        if cli.json {
+            // Non-interactive: default to new wallet (birth = current tip)
+            if let Ok(c) = client::ZidecarClient::connect(&cli.endpoint).await {
+                if let Ok((tip, _)) = c.get_tip().await {
+                    let w = wallet::Wallet::open(&wallet::Wallet::default_path())?;
+                    let _ = w.set_birth_height(tip);
+                    drop(w);
+                }
+            }
+        } else {
+            // Interactive: ask user
+            eprint!("first use — is this a new wallet? [Y/n] ");
+            let mut input = String::new();
+            let _ = std::io::stdin().read_line(&mut input);
+            let is_new = input.trim().is_empty() || input.trim().to_lowercase().starts_with('y');
+
+            if is_new {
+                if let Ok(c) = client::ZidecarClient::connect(&cli.endpoint).await {
+                    if let Ok((tip, _)) = c.get_tip().await {
+                        let w = wallet::Wallet::open(&wallet::Wallet::default_path())?;
+                        let _ = w.set_birth_height(tip);
+                        drop(w);
+                        eprintln!("birth height set to {} (current tip)", tip);
+                    }
+                }
+            } else {
+                eprintln!("restoring wallet — will scan from orchard activation (this takes a while)");
+            }
+        }
+    }
+
+    if !cli.json {
+        eprintln!("syncing...");
+    }
+    cmd_sync(cli, mainnet, None, None).await?;
     Ok(())
 }
 
