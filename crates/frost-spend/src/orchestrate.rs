@@ -256,12 +256,24 @@ pub fn dkg_part3(
         round1_pkgs.insert(id_from_vk(&vk)?, from_hex(&pkg_hex)?);
     }
 
+    // derive our own identifier to filter round2 packages addressed to us
+    let our_id = id_from_vk(&sk.verification_key())?;
+
     let mut round2_pkgs = BTreeMap::new();
     for hex_str in round2_packages_hex {
         let signed: SignedMessage = from_hex(hex_str)?;
         let (vk, payload) = verify_signed(&signed)?;
         let inner: serde_json::Value = serde_json::from_slice(payload)
             .map_err(|e| Error::Serialize(format!("parse: {}", e)))?;
+
+        // only accept packages addressed to us
+        let recipient_hex = inner["recipient"].as_str()
+            .ok_or_else(|| Error::Serialize("missing recipient".into()))?;
+        let recipient: Identifier = from_hex(recipient_hex)?;
+        if recipient != our_id {
+            continue; // not for us — skip
+        }
+
         let pkg = from_hex(
             inner["package"].as_str()
                 .ok_or_else(|| Error::Serialize("missing package".into()))?
@@ -396,6 +408,7 @@ pub fn derive_address_raw(
 
 /// sighash-bound signing round 2: produce FROST share for one Orchard action.
 /// alpha (per-action randomizer from unsigned tx) IS the FROST randomizer.
+/// share is wrapped in a SignedMessage for sender authentication.
 pub fn spend_sign_round2(
     key_package_hex: &str,
     nonces_hex: &str,
@@ -414,8 +427,36 @@ pub fn spend_sign_round2(
     to_hex(&share)
 }
 
+/// authenticated variant: wraps share in SignedMessage for identity binding.
+/// use this when shares transit an untrusted channel (relay, memos).
+pub fn spend_sign_round2_signed(
+    ephemeral_seed: &[u8; 32],
+    key_package_hex: &str,
+    nonces_hex: &str,
+    sighash: &[u8; 32],
+    alpha: &[u8; 32],
+    signed_commitments_hex: &[String],
+) -> Result<String, Error> {
+    let sk = signing_key_from_seed(ephemeral_seed);
+    let key_pkg: frost_keys::KeyPackage = from_hex(key_package_hex)?;
+    let nonces: round1::SigningNonces = from_hex(nonces_hex)?;
+    let commitment_map = extract_signed_commitments(signed_commitments_hex)?;
+
+    let share = crate::sign::signer_round2(
+        &key_pkg, &nonces, sighash, alpha, &commitment_map,
+    ).map_err(|e| Error::Frost(format!("spend sign round2: {}", e)))?;
+
+    let payload = serde_json::to_vec(&to_hex(&share)?)
+        .map_err(|e| Error::Serialize(e.to_string()))?;
+    to_hex(&SignedMessage::sign(&sk, &payload))
+}
+
 /// coordinator: aggregate FROST shares into final SpendAuth signature [u8; 64].
 /// this signature can be injected directly into the Orchard transaction.
+///
+/// accepts both raw shares (legacy, for local-only use) and signed shares
+/// (authenticated, for relay/memo transport). signed shares are verified
+/// and mapped by sender identity; raw shares use ordinal position.
 pub fn spend_aggregate(
     public_key_package_hex: &str,
     sighash: &[u8; 32],
@@ -428,6 +469,18 @@ pub fn spend_aggregate(
 
     let mut share_map = BTreeMap::new();
     for hex_str in shares_hex {
+        // try to decode as SignedMessage first (authenticated shares)
+        if let Ok(signed) = from_hex::<SignedMessage>(hex_str) {
+            if let Ok((vk, payload)) = verify_signed(&signed) {
+                if let Ok(share_hex) = serde_json::from_slice::<String>(payload) {
+                    if let Ok(share) = from_hex(&share_hex) {
+                        share_map.insert(id_from_vk(&vk)?, share);
+                        continue;
+                    }
+                }
+            }
+        }
+        // fallback: raw share (legacy, positional mapping)
         let share = from_hex(hex_str)?;
         share_map.insert(
             *commitment_map.keys().nth(share_map.len())
@@ -485,13 +538,13 @@ mod tests {
 
         let all_commitments = vec![commitments1.clone(), commitments2.clone()];
 
-        // round 2: spend-auth shares
-        let share1 = spend_sign_round2(&kp1, &nonces1, &sighash, &alpha, &all_commitments)
+        // round 2: spend-auth shares (authenticated — wrapped in SignedMessage)
+        let share1 = spend_sign_round2_signed(&seed1, &kp1, &nonces1, &sighash, &alpha, &all_commitments)
             .expect("p1 spend sign");
-        let share2 = spend_sign_round2(&kp2, &nonces2, &sighash, &alpha, &all_commitments)
+        let share2 = spend_sign_round2_signed(&seed2, &kp2, &nonces2, &sighash, &alpha, &all_commitments)
             .expect("p2 spend sign");
 
-        // aggregate
+        // aggregate (verifies sender identity from SignedMessage, maps by FROST identifier)
         let sig = spend_aggregate(
             &dealer.public_key_package_hex, &sighash, &alpha,
             &all_commitments, &[share1, share2],
@@ -502,7 +555,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires proper round2 package routing by recipient identifier"]
     fn test_full_dkg_and_sign() {
         // simulate 3-party DKG without a trusted dealer
 
@@ -526,32 +578,14 @@ mod tests {
         let r2_b = dkg_part2(&r1_b.secret_hex, &bc_for_b).expect("dkg part2 B");
         let r2_c = dkg_part2(&r1_c.secret_hex, &bc_for_c).expect("dkg part2 C");
 
-        // round 3: each participant needs exactly one round2 package from each other participant
-        // B produces 2 packages (for A and C), C produces 2 packages (for A and B)
-        // A needs: one from B addressed to A, one from C addressed to A
-        // we identify the right package by checking the "recipient" field matches our identity
-        // simpler: dkg_part3 keys by sender vk, so just pass one package per sender
-        // B's package for A = r2_b.peer_packages[0] (first = for the first non-B participant)
-        // since participants are ordered by identifier, we need to match carefully
-        // simplest approach: pass ALL packages, let part3 use sender_id as key (dedupes naturally)
-        // but part3 expects exactly n-1 entries...
-        // each sender sends n-1 packages. A needs one from B and one from C.
-        // B's packages: [for_A, for_C] or [for_C, for_A] depending on identifier ordering
-        // we don't know which is which from the outside, so pass all and let part3 figure it out?
-        // NO — part3 indexes by sender vk and expects one per sender.
-        // if we pass 2 from B it'll overwrite. so just take first from each sender.
-        let r2_for_a: Vec<String> = vec![
-            r2_b.peer_packages[0].clone(), // one from B
-            r2_c.peer_packages[0].clone(), // one from C
-        ];
-        let r2_for_b: Vec<String> = vec![
-            r2_a.peer_packages[0].clone(), // one from A
-            r2_c.peer_packages[1].clone(), // one from C (second = for B)
-        ];
+        // pass ALL round2 packages to each participant — dkg_part3 filters by recipient
+        let all_r2: Vec<String> = r2_a.peer_packages.iter()
+            .chain(r2_b.peer_packages.iter())
+            .chain(r2_c.peer_packages.iter())
+            .cloned().collect();
 
-        // part3 needs ALL round1 broadcasts (including own) and round2 packages from others
-        let r3_a = dkg_part3(&r2_a.secret_hex, &bc_for_a, &r2_for_a).expect("dkg part3 A");
-        let r3_b = dkg_part3(&r2_b.secret_hex, &bc_for_b, &r2_for_b).expect("dkg part3 B");
+        let r3_a = dkg_part3(&r2_a.secret_hex, &bc_for_a, &all_r2).expect("dkg part3 A");
+        let r3_b = dkg_part3(&r2_b.secret_hex, &bc_for_b, &all_r2).expect("dkg part3 B");
 
         // all participants should derive the same public key package
         assert_eq!(r3_a.public_key_package_hex, r3_b.public_key_package_hex,

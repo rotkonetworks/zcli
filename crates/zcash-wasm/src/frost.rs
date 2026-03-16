@@ -163,6 +163,26 @@ pub fn frost_spend_sign_round2(
     ).map_err(|e| JsError::new(&e.to_string()))
 }
 
+/// authenticated variant: wraps share in SignedMessage for relay transport
+#[wasm_bindgen]
+pub fn frost_spend_sign_round2_signed(
+    ephemeral_seed_hex: &str,
+    key_package_hex: &str,
+    nonces_hex: &str,
+    sighash_hex: &str,
+    alpha_hex: &str,
+    commitments_json: &str,
+) -> Result<String, JsError> {
+    let seed = parse_seed(ephemeral_seed_hex)?;
+    let sighash = parse_32(sighash_hex, "sighash")?;
+    let alpha = parse_32(alpha_hex, "alpha")?;
+    let commitments: Vec<String> = serde_json::from_str(commitments_json)
+        .map_err(|e| JsError::new(&format!("bad commitments JSON: {}", e)))?;
+    frost_spend::orchestrate::spend_sign_round2_signed(
+        &seed, key_package_hex, nonces_hex, &sighash, &alpha, &commitments,
+    ).map_err(|e| JsError::new(&e.to_string()))
+}
+
 /// coordinator: aggregate shares into Orchard SpendAuth signature (64 bytes hex)
 #[wasm_bindgen]
 pub fn frost_spend_aggregate(
