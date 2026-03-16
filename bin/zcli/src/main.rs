@@ -37,7 +37,10 @@ async fn run(cli: &Cli) -> Result<(), Error> {
     wallet::set_watch_mode(cli.watch);
 
     match &cli.command {
-        Command::View { action } => match action {
+        Command::View { action } => {
+            // Auto-sync if wallet has never been synced
+            ensure_synced(cli, mainnet).await?;
+            match action {
             ViewAction::Balance => cmd_balance(cli, mainnet).await,
             ViewAction::Address { transparent, ephemeral } => {
                 if *transparent {
@@ -57,7 +60,7 @@ async fn run(cli: &Cli) -> Result<(), Error> {
                 let seed = load_seed(cli)?;
                 ops::export::export(&seed, mainnet, cli.json)
             }
-        },
+        }},
         Command::Transaction { action } => match action {
             TxAction::Send { amount, recipient, memo, airgap } => {
                 if cli.watch {
@@ -269,6 +272,21 @@ async fn cmd_balance(cli: &Cli, mainnet: bool) -> Result<(), Error> {
         println!("total:       {:.8} ZEC", total);
     }
 
+    Ok(())
+}
+
+/// Auto-sync if wallet has never been synced. For view commands.
+async fn ensure_synced(cli: &Cli, mainnet: bool) -> Result<(), Error> {
+    let wallet = wallet::Wallet::open(&wallet::Wallet::default_path())?;
+    let height = wallet.sync_height()?;
+    drop(wallet);
+
+    if height == 0 {
+        if !cli.json {
+            eprintln!("wallet has never been synced — syncing now...");
+        }
+        cmd_sync(cli, mainnet, None, None).await?;
+    }
     Ok(())
 }
 
