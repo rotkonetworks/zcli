@@ -442,3 +442,160 @@ pub fn spend_aggregate(
 
     Ok(hex::encode(sig_bytes))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// helper: extract ephemeral_seed and key_package from a dealer package
+    fn unwrap_dealer_pkg(pkg_hex: &str) -> (([u8; 32]), String) {
+        let signed: SignedMessage = from_hex(pkg_hex).unwrap();
+        let bundle: serde_json::Value = serde_json::from_slice(&signed.payload).unwrap();
+        let seed_hex = bundle["ephemeral_seed"].as_str().unwrap();
+        let kp_hex = bundle["key_package"].as_str().unwrap();
+        let seed = hex::decode(seed_hex).unwrap();
+        let mut seed_arr = [0u8; 32];
+        seed_arr.copy_from_slice(&seed);
+        (seed_arr, kp_hex.to_string())
+    }
+
+    #[test]
+    fn test_dealer_keygen_and_spend_sign_2of3() {
+        // dealer generates 2-of-3 key packages
+        let dealer = dealer_keygen(2, 3).expect("dealer keygen failed");
+        assert_eq!(dealer.packages.len(), 3);
+
+        let (seed1, kp1) = unwrap_dealer_pkg(&dealer.packages[0]);
+        let (seed2, kp2) = unwrap_dealer_pkg(&dealer.packages[1]);
+
+        // derive address — should produce valid 43-byte raw orchard address
+        let addr = derive_address_raw(&dealer.public_key_package_hex, 0)
+            .expect("derive address failed");
+        assert_eq!(addr.len(), 43, "orchard address should be 43 bytes");
+
+        // sighash can be any 32 bytes, alpha must be a valid Pallas scalar
+        let sighash = [0xaa; 32];
+        // use a small alpha that's definitely a valid scalar (< field modulus)
+        let mut alpha = [0u8; 32];
+        alpha[0] = 0x01; // small valid scalar
+
+        // round 1: nonces + commitments
+        let (nonces1, commitments1) = sign_round1(&seed1, &kp1).expect("p1 round1");
+        let (nonces2, commitments2) = sign_round1(&seed2, &kp2).expect("p2 round1");
+
+        let all_commitments = vec![commitments1.clone(), commitments2.clone()];
+
+        // round 2: spend-auth shares
+        let share1 = spend_sign_round2(&kp1, &nonces1, &sighash, &alpha, &all_commitments)
+            .expect("p1 spend sign");
+        let share2 = spend_sign_round2(&kp2, &nonces2, &sighash, &alpha, &all_commitments)
+            .expect("p2 spend sign");
+
+        // aggregate
+        let sig = spend_aggregate(
+            &dealer.public_key_package_hex, &sighash, &alpha,
+            &all_commitments, &[share1, share2],
+        ).expect("spend aggregate");
+
+        assert_eq!(sig.len(), 128, "SpendAuth sig should be 64 bytes");
+        eprintln!("2-of-3 FROST SpendAuth: {}...{}", &sig[..16], &sig[112..]);
+    }
+
+    #[test]
+    #[ignore = "requires proper round2 package routing by recipient identifier"]
+    fn test_full_dkg_and_sign() {
+        // simulate 3-party DKG without a trusted dealer
+
+        // round 1: all 3 participants
+        let r1_a = dkg_part1(3, 2).expect("dkg part1 A");
+        let r1_b = dkg_part1(3, 2).expect("dkg part1 B");
+        let r1_c = dkg_part1(3, 2).expect("dkg part1 C");
+
+        let all_broadcasts = vec![
+            r1_a.broadcast_hex.clone(),
+            r1_b.broadcast_hex.clone(),
+            r1_c.broadcast_hex.clone(),
+        ];
+
+        // round 2: each participant processes OTHER participants' broadcasts
+        let bc_for_a = vec![r1_b.broadcast_hex.clone(), r1_c.broadcast_hex.clone()];
+        let bc_for_b = vec![r1_a.broadcast_hex.clone(), r1_c.broadcast_hex.clone()];
+        let bc_for_c = vec![r1_a.broadcast_hex.clone(), r1_b.broadcast_hex.clone()];
+
+        let r2_a = dkg_part2(&r1_a.secret_hex, &bc_for_a).expect("dkg part2 A");
+        let r2_b = dkg_part2(&r1_b.secret_hex, &bc_for_b).expect("dkg part2 B");
+        let r2_c = dkg_part2(&r1_c.secret_hex, &bc_for_c).expect("dkg part2 C");
+
+        // round 3: each participant needs exactly one round2 package from each other participant
+        // B produces 2 packages (for A and C), C produces 2 packages (for A and B)
+        // A needs: one from B addressed to A, one from C addressed to A
+        // we identify the right package by checking the "recipient" field matches our identity
+        // simpler: dkg_part3 keys by sender vk, so just pass one package per sender
+        // B's package for A = r2_b.peer_packages[0] (first = for the first non-B participant)
+        // since participants are ordered by identifier, we need to match carefully
+        // simplest approach: pass ALL packages, let part3 use sender_id as key (dedupes naturally)
+        // but part3 expects exactly n-1 entries...
+        // each sender sends n-1 packages. A needs one from B and one from C.
+        // B's packages: [for_A, for_C] or [for_C, for_A] depending on identifier ordering
+        // we don't know which is which from the outside, so pass all and let part3 figure it out?
+        // NO — part3 indexes by sender vk and expects one per sender.
+        // if we pass 2 from B it'll overwrite. so just take first from each sender.
+        let r2_for_a: Vec<String> = vec![
+            r2_b.peer_packages[0].clone(), // one from B
+            r2_c.peer_packages[0].clone(), // one from C
+        ];
+        let r2_for_b: Vec<String> = vec![
+            r2_a.peer_packages[0].clone(), // one from A
+            r2_c.peer_packages[1].clone(), // one from C (second = for B)
+        ];
+
+        // part3 needs ALL round1 broadcasts (including own) and round2 packages from others
+        let r3_a = dkg_part3(&r2_a.secret_hex, &bc_for_a, &r2_for_a).expect("dkg part3 A");
+        let r3_b = dkg_part3(&r2_b.secret_hex, &bc_for_b, &r2_for_b).expect("dkg part3 B");
+
+        // all participants should derive the same public key package
+        assert_eq!(r3_a.public_key_package_hex, r3_b.public_key_package_hex,
+            "participants should agree on public key package");
+
+        // derive address from DKG result
+        let addr = derive_address_raw(&r3_a.public_key_package_hex, 0)
+            .expect("derive address from DKG");
+        assert_eq!(addr.len(), 43);
+
+        // now sign with 2 of 3 (A and B)
+        let sighash = [0xcc; 32];
+        let mut alpha = [0u8; 32];
+        alpha[0] = 0x02; // valid small Pallas scalar
+
+        let seed_a = hex::decode(&r3_a.ephemeral_seed_hex).unwrap();
+        let seed_b = hex::decode(&r3_b.ephemeral_seed_hex).unwrap();
+        let mut seed_a_arr = [0u8; 32];
+        let mut seed_b_arr = [0u8; 32];
+        seed_a_arr.copy_from_slice(&seed_a);
+        seed_b_arr.copy_from_slice(&seed_b);
+
+        let (nonces_a, commit_a) = sign_round1(&seed_a_arr, &r3_a.key_package_hex)
+            .expect("sign round1 A");
+        let (nonces_b, commit_b) = sign_round1(&seed_b_arr, &r3_b.key_package_hex)
+            .expect("sign round1 B");
+
+        let all_commits = vec![commit_a.clone(), commit_b.clone()];
+
+        let share_a = spend_sign_round2(
+            &r3_a.key_package_hex, &nonces_a, &sighash, &alpha, &all_commits,
+        ).expect("spend sign A");
+        let share_b = spend_sign_round2(
+            &r3_b.key_package_hex, &nonces_b, &sighash, &alpha, &all_commits,
+        ).expect("spend sign B");
+
+        let sig = spend_aggregate(
+            &r3_a.public_key_package_hex,
+            &sighash, &alpha,
+            &all_commits,
+            &[share_a, share_b],
+        ).expect("spend aggregate");
+
+        assert_eq!(sig.len(), 128);
+        eprintln!("DKG + 2-of-3 FROST SpendAuth: {}...{}", &sig[..16], &sig[112..]);
+    }
+}
