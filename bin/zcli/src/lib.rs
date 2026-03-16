@@ -23,3 +23,5 @@ pub mod notes_export;
 pub mod frost;
 #[cfg(feature = "cli")]
 pub mod frost_qr;
+#[cfg(feature = "cli")]
+pub mod frost_relay;
