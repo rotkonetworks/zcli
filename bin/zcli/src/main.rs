@@ -281,13 +281,22 @@ async fn ensure_synced(cli: &Cli, mainnet: bool) -> Result<(), Error> {
     let height = wallet.sync_height()?;
     let birth = wallet.birth_height()?;
 
-    if height == 0 && birth == 0 {
-        // First ever use — record birth height as current tip
-        if let Ok(c) = client::ZidecarClient::connect(&cli.endpoint).await {
-            if let Ok((tip, _)) = c.get_tip().await {
-                let _ = wallet.set_birth_height(tip);
-                if !cli.json {
-                    eprintln!("new wallet — birth height set to {} (current tip)", tip);
+    if birth == 0 {
+        // Check if wallet has existing notes (migrated from board or another machine)
+        let has_notes = wallet.shielded_balance().map(|(b, _)| b > 0).unwrap_or(false);
+        if has_notes {
+            // Existing wallet with history — don't override birth height
+            if !cli.json {
+                eprintln!("existing wallet detected (has notes), skipping birth height");
+            }
+        } else if height == 0 {
+            // Truly new wallet — record current tip as birth height
+            if let Ok(c) = client::ZidecarClient::connect(&cli.endpoint).await {
+                if let Ok((tip, _)) = c.get_tip().await {
+                    let _ = wallet.set_birth_height(tip);
+                    if !cli.json {
+                        eprintln!("new wallet — birth height set to {} (current tip)", tip);
+                    }
                 }
             }
         }
