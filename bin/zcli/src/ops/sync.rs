@@ -11,8 +11,8 @@ use crate::key::WalletSeed;
 use crate::wallet::{Wallet, WalletNote};
 
 const BATCH_SIZE_MIN: u32 = 500;
-const BATCH_SIZE_MAX: u32 = 5_000;
-const BATCH_ACTIONS_TARGET: usize = 50_000; // aim for ~50k actions per batch
+const BATCH_SIZE_MAX: u32 = 2_000; // reduced from 5k — zidecar chokes on dense blocks
+const BATCH_ACTIONS_TARGET: usize = 20_000; // reduced from 50k
 
 use zync_core::{
     ACTIVATION_HASH_MAINNET, ORCHARD_ACTIVATION_HEIGHT as ORCHARD_ACTIVATION_MAINNET,
