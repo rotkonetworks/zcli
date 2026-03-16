@@ -158,6 +158,10 @@ pub enum ViewAction {
         /// show transparent t-address instead of shielded
         #[arg(short = 't', long)]
         transparent: bool,
+
+        /// print only the address string (no QR), for scripting/piping
+        #[arg(short = 'e', long = "ephemeral")]
+        ephemeral: bool,
     },
 
     /// list all received notes

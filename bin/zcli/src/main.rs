@@ -39,11 +39,11 @@ async fn run(cli: &Cli) -> Result<(), Error> {
     match &cli.command {
         Command::View { action } => match action {
             ViewAction::Balance => cmd_balance(cli, mainnet).await,
-            ViewAction::Address { transparent } => {
+            ViewAction::Address { transparent, ephemeral } => {
                 if *transparent {
                     cmd_address(cli, mainnet, false, true)
                 } else {
-                    cmd_receive(cli, mainnet)
+                    cmd_receive(cli, mainnet, *ephemeral)
                 }
             }
             ViewAction::Notes => cmd_notes(cli),
@@ -172,7 +172,7 @@ fn cmd_address(
     Ok(())
 }
 
-fn cmd_receive(cli: &Cli, mainnet: bool) -> Result<(), Error> {
+fn cmd_receive(cli: &Cli, mainnet: bool, ephemeral: bool) -> Result<(), Error> {
     let uaddr = if cli.watch {
         let fvk = load_fvk(cli, mainnet)?;
         address::orchard_address_from_fvk(&fvk, mainnet)?
@@ -183,6 +183,11 @@ fn cmd_receive(cli: &Cli, mainnet: bool) -> Result<(), Error> {
 
     if cli.json {
         println!("{}", serde_json::json!({ "address": uaddr }));
+        return Ok(());
+    }
+
+    if ephemeral {
+        println!("{}", uaddr);
         return Ok(());
     }
 
