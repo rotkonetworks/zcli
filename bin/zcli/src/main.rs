@@ -10,7 +10,7 @@ use tokio::net::TcpListener;
 use zecli::cam;
 use zecli::{address, client, frost_qr, key, notes_export, ops, quic, wallet, witness};
 
-use cli::{Cli, Command, MerchantAction, MultisigAction};
+use cli::{Cli, Command, InitAction, MerchantAction, MultisigAction, ServiceAction, SignerAction, TxAction, ViewAction};
 use zecli::error::Error;
 
 #[tokio::main]
@@ -37,100 +37,78 @@ async fn run(cli: &Cli) -> Result<(), Error> {
     wallet::set_watch_mode(cli.watch);
 
     match &cli.command {
-        Command::Address {
-            orchard,
-            transparent,
-        } => cmd_address(cli, mainnet, *orchard, *transparent),
-        Command::Receive => cmd_receive(cli, mainnet),
-        Command::Notes => cmd_notes(cli),
-        Command::History => cmd_history(cli),
-        Command::Balance => cmd_balance(cli, mainnet).await,
-        Command::Sync { from, position } => cmd_sync(cli, mainnet, *from, *position).await,
-        Command::Shield { fee } => {
-            if cli.watch {
-                return Err(Error::Other(
-                    "watch-only wallet: shielding requires spending key".into(),
-                ));
+        Command::View { action } => match action {
+            ViewAction::Balance => cmd_balance(cli, mainnet).await,
+            ViewAction::Address { orchard, transparent } => {
+                cmd_address(cli, mainnet, *orchard, *transparent)
             }
-            let seed = load_seed(cli)?;
-            ops::shield::shield(&seed, &cli.endpoint, *fee, mainnet, cli.json).await
-        }
-        Command::Send {
-            amount,
-            recipient,
-            memo,
-            airgap,
-        } => {
-            if cli.watch {
-                // watch mode: always use airgap with FVK
-                let fvk = load_fvk(cli, mainnet)?;
-                ops::airgap::send_airgap_with_fvk(
-                    &fvk,
-                    amount,
-                    recipient,
-                    memo.as_deref(),
-                    &cli.endpoint,
-                    mainnet,
-                    cli.json,
-                )
-                .await
-            } else if *airgap {
-                // airgap mode with seed (hot wallet)
+            ViewAction::Receive => cmd_receive(cli, mainnet),
+            ViewAction::Notes => cmd_notes(cli),
+            ViewAction::History => cmd_history(cli),
+            ViewAction::Export => {
+                if cli.watch {
+                    return Err(Error::Other(
+                        "watch-only wallet: export requires spending key".into(),
+                    ));
+                }
                 let seed = load_seed(cli)?;
-                ops::airgap::send_airgap(
-                    &seed,
-                    amount,
-                    recipient,
-                    memo.as_deref(),
-                    &cli.endpoint,
-                    mainnet,
-                    cli.json,
-                )
-                .await
-            } else {
+                ops::export::export(&seed, mainnet, cli.json)
+            }
+        },
+        Command::Transaction { action } => match action {
+            TxAction::Send { amount, recipient, memo, airgap } => {
+                if cli.watch {
+                    let fvk = load_fvk(cli, mainnet)?;
+                    ops::airgap::send_airgap_with_fvk(
+                        &fvk, amount, recipient, memo.as_deref(),
+                        &cli.endpoint, mainnet, cli.json,
+                    ).await
+                } else if *airgap {
+                    let seed = load_seed(cli)?;
+                    ops::airgap::send_airgap(
+                        &seed, amount, recipient, memo.as_deref(),
+                        &cli.endpoint, mainnet, cli.json,
+                    ).await
+                } else {
+                    let seed = load_seed(cli)?;
+                    ops::send::send(
+                        &seed, amount, recipient, memo.as_deref(),
+                        &cli.endpoint, mainnet, cli.json,
+                    ).await
+                }
+            }
+            TxAction::Shield { fee } => {
+                if cli.watch {
+                    return Err(Error::Other(
+                        "watch-only wallet: shielding requires spending key".into(),
+                    ));
+                }
                 let seed = load_seed(cli)?;
-                ops::send::send(
-                    &seed,
-                    amount,
-                    recipient,
-                    memo.as_deref(),
-                    &cli.endpoint,
-                    mainnet,
-                    cli.json,
-                )
-                .await
+                ops::shield::shield(&seed, &cli.endpoint, *fee, mainnet, cli.json).await
             }
-        }
-        Command::ImportFvk { hex } => {
-            // always store FVK in the watch wallet, regardless of --watch flag
-            cmd_import_fvk(cli, mainnet, hex.as_deref())
-        }
-        Command::Scan { device, timeout } => cmd_scan(cli, device, *timeout),
-        Command::Board {
-            port,
-            interval,
-            dir,
-        } => {
-            let seed = load_seed(cli)?;
-            cmd_board(cli, &seed, mainnet, *port, *interval, dir.as_deref()).await
-        }
-        Command::Verify => cmd_verify(cli, mainnet).await,
-        Command::TreeInfo { height } => cmd_tree_info(cli, *height).await,
-        Command::Export => {
-            if cli.watch {
-                return Err(Error::Other(
-                    "watch-only wallet: export requires spending key".into(),
-                ));
+        },
+        Command::Signer { action } => match action {
+            SignerAction::ExportNotes { interval, fragment_size } => {
+                cmd_export_notes(cli, mainnet, *interval, *fragment_size).await
             }
-            let seed = load_seed(cli)?;
-            ops::export::export(&seed, mainnet, cli.json)
-        }
-        Command::Merchant { action } => cmd_merchant(cli, mainnet, action).await,
+            SignerAction::Scan { device, timeout } => cmd_scan(cli, device, *timeout),
+            SignerAction::Verify => cmd_verify(cli, mainnet).await,
+        },
+        Command::Init { action } => match action {
+            InitAction::ImportFvk { hex } => cmd_import_fvk(cli, mainnet, hex.as_deref()),
+            InitAction::Sync { from, position } => {
+                cmd_sync(cli, mainnet, *from, *position).await
+            }
+        },
+        Command::Service { action } => match action {
+            ServiceAction::Merchant { action } => cmd_merchant(cli, mainnet, action).await,
+            ServiceAction::Board { port, interval, dir } => {
+                let seed = load_seed(cli)?;
+                cmd_board(cli, &seed, mainnet, *port, *interval, dir.as_deref()).await
+            }
+            ServiceAction::TreeInfo { height } => cmd_tree_info(cli, *height).await,
+        },
         Command::Multisig { action } => cmd_multisig(cli, action),
-        Command::ExportNotes {
-            interval,
-            fragment_size,
-        } => cmd_export_notes(cli, mainnet, *interval, *fragment_size).await,
     }
 }
 

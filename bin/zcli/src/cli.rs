@@ -111,6 +111,52 @@ pub enum MnemonicSource {
 
 #[derive(Subcommand)]
 pub enum Command {
+    /// View private chain state: balance, notes, addresses, history [aliases: v]
+    #[command(alias = "v")]
+    View {
+        #[command(subcommand)]
+        action: ViewAction,
+    },
+
+    /// Create and broadcast transactions [aliases: tx]
+    #[command(alias = "tx")]
+    Transaction {
+        #[command(subcommand)]
+        action: TxAction,
+    },
+
+    /// Air-gapped signer interaction: export notes, scan QR, verify proofs [aliases: s]
+    #[command(alias = "s")]
+    Signer {
+        #[command(subcommand)]
+        action: SignerAction,
+    },
+
+    /// FROST threshold multisig (t-of-n) [aliases: ms]
+    #[command(alias = "ms")]
+    Multisig {
+        #[command(subcommand)]
+        action: MultisigAction,
+    },
+
+    /// Initialize wallet: import FVK, sync chain
+    Init {
+        #[command(subcommand)]
+        action: InitAction,
+    },
+
+    /// Background services and debug tools
+    Service {
+        #[command(subcommand)]
+        action: ServiceAction,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum ViewAction {
+    /// show wallet balance
+    Balance,
+
     /// show wallet addresses
     Address {
         /// show orchard (shielded) address
@@ -122,16 +168,21 @@ pub enum Command {
         transparent: bool,
     },
 
-    /// show wallet balance
-    Balance,
+    /// print receiving address
+    Receive,
 
-    /// shield transparent funds (t→z)
-    Shield {
-        /// fee override in zatoshis (auto-computed if omitted)
-        #[arg(long)]
-        fee: Option<u64>,
-    },
+    /// list all received notes
+    Notes,
 
+    /// show transaction history (received + sent)
+    History,
+
+    /// export wallet keys (requires confirmation)
+    Export,
+}
+
+#[derive(Subcommand)]
+pub enum TxAction {
     /// send zcash
     Send {
         /// amount in ZEC (e.g. 0.001)
@@ -144,13 +195,54 @@ pub enum Command {
         #[arg(long)]
         memo: Option<String>,
 
-        /// airgap mode: display QR for zigner signing, wait for response
+        /// airgap mode: display PCZT QR for zigner signing
         #[arg(long)]
         airgap: bool,
     },
 
-    /// print receiving address
-    Receive,
+    /// shield transparent funds (t→z)
+    Shield {
+        /// fee override in zatoshis (auto-computed if omitted)
+        #[arg(long)]
+        fee: Option<u64>,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum SignerAction {
+    /// export notes + merkle paths as animated QR for zigner
+    ExportNotes {
+        /// QR frame interval in milliseconds
+        #[arg(long, default_value_t = 250)]
+        interval: u64,
+
+        /// max UR fragment length in bytes (controls QR density vs frame count)
+        #[arg(long, default_value_t = 200)]
+        fragment_size: usize,
+    },
+
+    /// scan QR code from webcam
+    Scan {
+        /// camera device
+        #[arg(long, default_value = "/dev/video0", env = "ZCLI_CAM")]
+        device: String,
+
+        /// timeout in seconds
+        #[arg(long, default_value_t = 60)]
+        timeout: u64,
+    },
+
+    /// verify proofs: header chain, commitment proofs, nullifier proofs
+    Verify,
+}
+
+#[derive(Subcommand)]
+pub enum InitAction {
+    /// import FVK from zigner QR (watch-only wallet)
+    ImportFvk {
+        /// hex-encoded FVK bytes (or scan from webcam if omitted)
+        hex: Option<String>,
+    },
 
     /// scan chain for wallet notes
     Sync {
@@ -162,26 +254,15 @@ pub enum Command {
         #[arg(long)]
         position: Option<u64>,
     },
+}
 
-    /// export wallet keys (requires confirmation)
-    Export,
-
-    /// list all received notes
-    Notes,
-
-    /// export notes + merkle paths as animated QR for zigner (air-gapped note sync)
-    ExportNotes {
-        /// QR frame interval in milliseconds
-        #[arg(long, default_value_t = 250)]
-        interval: u64,
-
-        /// max UR fragment length in bytes (controls QR density vs frame count)
-        #[arg(long, default_value_t = 200)]
-        fragment_size: usize,
+#[derive(Subcommand)]
+pub enum ServiceAction {
+    /// merchant payment acceptance + cold storage forwarding
+    Merchant {
+        #[command(subcommand)]
+        action: MerchantAction,
     },
-
-    /// show transaction history (received + sent)
-    History,
 
     /// run board: sync loop + HTTP API serving notes as JSON
     Board {
@@ -198,42 +279,10 @@ pub enum Command {
         dir: Option<String>,
     },
 
-    /// scan QR code from webcam
-    Scan {
-        /// camera device
-        #[arg(long, default_value = "/dev/video0", env = "ZCLI_CAM")]
-        device: String,
-
-        /// timeout in seconds
-        #[arg(long, default_value_t = 60)]
-        timeout: u64,
-    },
-
-    /// import FVK from zigner QR (watch-only wallet)
-    ImportFvk {
-        /// hex-encoded FVK bytes (or scan from webcam if omitted)
-        hex: Option<String>,
-    },
-
-    /// verify proofs: header chain, commitment proofs, nullifier proofs
-    Verify,
-
     /// show orchard tree info at a height (for --position)
     TreeInfo {
         /// block height
         height: u32,
-    },
-
-    /// merchant payment acceptance + cold storage forwarding
-    Merchant {
-        #[command(subcommand)]
-        action: MerchantAction,
-    },
-
-    /// FROST threshold multisig (t-of-n) using rerandomized RedPallas
-    Multisig {
-        #[command(subcommand)]
-        action: MultisigAction,
     },
 }
 
