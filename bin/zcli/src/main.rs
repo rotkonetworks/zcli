@@ -39,10 +39,13 @@ async fn run(cli: &Cli) -> Result<(), Error> {
     match &cli.command {
         Command::View { action } => match action {
             ViewAction::Balance => cmd_balance(cli, mainnet).await,
-            ViewAction::Address { orchard, transparent } => {
-                cmd_address(cli, mainnet, *orchard, *transparent)
+            ViewAction::Address { transparent } => {
+                if *transparent {
+                    cmd_address(cli, mainnet, false, true)
+                } else {
+                    cmd_receive(cli, mainnet)
+                }
             }
-            ViewAction::Receive => cmd_receive(cli, mainnet),
             ViewAction::Notes => cmd_notes(cli),
             ViewAction::History => cmd_history(cli),
             ViewAction::Export => {

@@ -157,19 +157,12 @@ pub enum ViewAction {
     /// show wallet balance
     Balance,
 
-    /// show wallet addresses
+    /// show receiving address (default: shielded u1, rotates each call)
     Address {
-        /// show orchard (shielded) address
-        #[arg(long)]
-        orchard: bool,
-
-        /// show transparent address
-        #[arg(long)]
+        /// show transparent t-address instead of shielded
+        #[arg(short = 't', long)]
         transparent: bool,
     },
-
-    /// print receiving address
-    Receive,
 
     /// list all received notes
     Notes,
