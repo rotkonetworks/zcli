@@ -29,12 +29,13 @@ pub struct Cli {
     )]
     pub endpoint: String,
 
-    /// lightwalletd endpoints for cross-verification (comma-separated, empty to disable)
+    /// lightwalletd endpoints for cross-verification (comma-separated)
     #[arg(
         long,
         global = true,
         env = "ZCLI_VERIFY_ENDPOINTS",
-        default_value = "https://na.zec.rocks,https://eu.zec.rocks,https://ap.zec.rocks,https://us.zec.stardust.rest,https://eu.zec.stardust.rest,https://jp.zec.stardust.rest"
+        default_value = "https://na.zec.rocks,https://eu.zec.rocks,https://ap.zec.rocks,https://us.zec.stardust.rest,https://eu.zec.stardust.rest,https://jp.zec.stardust.rest",
+        hide = true
     )]
     pub verify_endpoints: String,
 
@@ -239,17 +240,17 @@ pub enum InitAction {
 
     /// scan chain for wallet notes
     Sync {
-        /// start scanning from this block height
-        #[arg(long)]
-        from: Option<u32>,
-
-        /// starting orchard position counter (use with --from to skip full scan)
-        #[arg(long)]
-        position: Option<u64>,
-
         /// full rescan from orchard activation (for restoring old wallets)
         #[arg(long)]
         full: bool,
+
+        /// resume from specific block height (advanced)
+        #[arg(long, hide = true)]
+        from: Option<u32>,
+
+        /// orchard tree position counter (advanced, internal)
+        #[arg(long, hide = true)]
+        position: Option<u64>,
     },
 }
 
