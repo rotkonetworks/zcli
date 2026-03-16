@@ -244,6 +244,10 @@ pub enum InitAction {
         #[arg(long)]
         full: bool,
 
+        /// skip NOMT commitment proof verification (use if zidecar state is stale)
+        #[arg(long)]
+        no_verify: bool,
+
         /// resume from specific block height (advanced)
         #[arg(long, hide = true)]
         from: Option<u32>,

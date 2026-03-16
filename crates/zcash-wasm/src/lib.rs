@@ -1121,6 +1121,10 @@ pub struct FoundNoteWithMemo {
     pub memo: String,
     /// Whether the memo appears to be text (UTF-8)
     pub memo_is_text: bool,
+    /// Whether this is an outgoing note (decrypted via OVK)
+    pub is_outgoing: bool,
+    /// Raw memo bytes (512 bytes, hex-encoded) for binary/structured memos
+    pub memo_bytes: String,
 }
 
 /// Full action data for decryption (includes full 580-byte ciphertext)
@@ -1251,7 +1255,7 @@ impl WalletKeys {
                 enc_ciphertext: action.enc_ciphertext,
             };
 
-            // Try external scope first
+            // Try external scope first (incoming)
             if let Some((note, _addr, memo)) =
                 try_note_decryption(&domain, &self.prepared_ivk_external, &output)
             {
@@ -1265,11 +1269,13 @@ impl WalletKeys {
                     cmx: hex_encode(&action.cmx),
                     memo: memo_str,
                     memo_is_text: is_text,
+                    is_outgoing: false,
+                    memo_bytes: hex_encode(&memo),
                 });
                 continue;
             }
 
-            // Try internal scope (change)
+            // Try internal scope (change / outgoing)
             if let Some((note, _addr, memo)) =
                 try_note_decryption(&domain, &self.prepared_ivk_internal, &output)
             {
@@ -1283,6 +1289,8 @@ impl WalletKeys {
                     cmx: hex_encode(&action.cmx),
                     memo: memo_str,
                     memo_is_text: is_text,
+                    is_outgoing: true,
+                    memo_bytes: hex_encode(&memo),
                 });
             }
         }
@@ -1333,7 +1341,7 @@ impl WatchOnlyWallet {
                 enc_ciphertext: action.enc_ciphertext,
             };
 
-            // Try external scope
+            // Try external scope (incoming)
             if let Some((note, _addr, memo)) =
                 try_note_decryption(&domain, &self.prepared_ivk_external, &output)
             {
@@ -1347,11 +1355,13 @@ impl WatchOnlyWallet {
                     cmx: hex_encode(&action.cmx),
                     memo: memo_str,
                     memo_is_text: is_text,
+                    is_outgoing: false,
+                    memo_bytes: hex_encode(&memo),
                 });
                 continue;
             }
 
-            // Try internal scope
+            // Try internal scope (outgoing)
             if let Some((note, _addr, memo)) =
                 try_note_decryption(&domain, &self.prepared_ivk_internal, &output)
             {
@@ -1365,6 +1375,8 @@ impl WatchOnlyWallet {
                     cmx: hex_encode(&action.cmx),
                     memo: memo_str,
                     memo_is_text: is_text,
+                    is_outgoing: true,
+                    memo_bytes: hex_encode(&memo),
                 });
             }
         }
@@ -1377,9 +1389,15 @@ impl WatchOnlyWallet {
 /// Parse memo bytes into a string
 /// Returns (memo_string, is_text)
 fn parse_memo_bytes(memo: &[u8; 512]) -> (String, bool) {
-    // Check if memo is empty (all zeros or starts with 0xF6 empty marker)
-    if memo[0] == 0xF6 || memo.iter().all(|&b| b == 0) {
+    // Check if memo is empty (all zeros or starts with 0xF4 no-memo)
+    if memo[0] == 0xF4 || memo.iter().all(|&b| b == 0) {
         return (String::new(), true);
+    }
+
+    // 0xF6 = arbitrary binary data (ZIP-302). Return as hex, not text.
+    // Our structured memo format uses 0xF6 prefix — callers check memo_bytes.
+    if memo[0] == 0xF6 {
+        return (String::new(), false);
     }
 
     // Check if it's a text memo (starts with 0xF5 followed by UTF-8)

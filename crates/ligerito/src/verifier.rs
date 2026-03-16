@@ -452,7 +452,7 @@ where
     );
 
     // Test Lagrange basis computation
-    let _gr = evaluate_lagrange_basis(&partial_evals_0);
+    let gr = evaluate_lagrange_basis(&partial_evals_0);
     debug_println!(
         "Lagrange basis length: {}, first few values: {:?}",
         gr.len(),
@@ -574,7 +574,7 @@ where
         let mut rs = Vec::with_capacity(config.ks[i]);
 
         // Verify sumcheck rounds
-        for _j in 0..config.ks[i] {
+        for j in 0..config.ks[i] {
             // Bounds check for transcript access
             if transcript_idx >= proof.sumcheck_transcript.transcript.len() {
                 debug_println!(

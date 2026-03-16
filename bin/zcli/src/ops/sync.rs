@@ -356,7 +356,8 @@ async fn sync_inner(
     }
 
     // verify commitment proofs (NOMT) for received notes BEFORE storing
-    if !received_cmxs.is_empty() {
+    let skip_verify = std::env::var("ZCLI_NO_VERIFY").is_ok();
+    if !received_cmxs.is_empty() && !skip_verify {
         verify_commitments(
             &client,
             &received_cmxs,
@@ -365,6 +366,8 @@ async fn sync_inner(
             &proven_roots,
         )
         .await?;
+    } else if skip_verify && !received_cmxs.is_empty() {
+        eprintln!("  skipping commitment verification (ZCLI_NO_VERIFY set)");
     }
 
     // now that proofs are verified, persist notes to wallet
@@ -379,7 +382,11 @@ async fn sync_inner(
     wallet.set_actions_commitment(&running_actions_commitment)?;
 
     // verify nullifier proofs (NOMT) for unspent notes
-    verify_nullifiers(&client, &wallet, tip, &proven_roots).await?;
+    if skip_verify {
+        eprintln!("  skipping nullifier verification (ZCLI_NO_VERIFY set)");
+    } else {
+        verify_nullifiers(&client, &wallet, tip, &proven_roots).await?;
+    }
 
     // fetch memos for newly found notes
     if !needs_memo.is_empty() {

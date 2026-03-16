@@ -102,16 +102,16 @@ async fn run(cli: &Cli) -> Result<(), Error> {
         },
         Command::Init { action } => match action {
             InitAction::ImportFvk { hex } => cmd_import_fvk(cli, mainnet, hex.as_deref()),
-            InitAction::Sync { from, position, full } => {
+            InitAction::Sync { from, position, full, no_verify } => {
                 if *full {
-                    // Full rescan from activation — for restoring old wallets
                     if !cli.json {
                         eprintln!("full rescan from orchard activation...");
                     }
-                    cmd_sync(cli, mainnet, None, None).await
-                } else {
-                    cmd_sync(cli, mainnet, *from, *position).await
                 }
+                if *no_verify {
+                    std::env::set_var("ZCLI_NO_VERIFY", "1");
+                }
+                cmd_sync(cli, mainnet, *from, *position).await
             }
         },
         Command::Service { action } => match action {
