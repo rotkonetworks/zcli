@@ -8,6 +8,7 @@
 //! RUSTFLAGS='-C target-feature=+simd128' wasm-pack build --target web --out-dir ../bin/zidecar/www/pkg
 //! ```
 
+mod frost;
 mod witness;
 
 use blake2::{Blake2b512, Digest};

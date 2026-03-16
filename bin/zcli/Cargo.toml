@@ -58,10 +58,9 @@ zcash_note_encryption = "0.4"
 incrementalmerkletree = { version = "0.8", features = ["legacy-api"] }
 
 # FROST threshold multisig (RedPallas, rerandomized)
-# pinned to reddsa main@475a552 (2026-03-01) because 0.5.1 on crates.io
-# doesn't expose DKG or propagate serde to frost-core.
-# tracks ZF's frost-core 2.2.0 + frost-rerandomized 2.2.0 (audited, stable).
-# TODO: switch to crates.io release once reddsa 0.6+ is published.
+# frost-spend wraps ZF's audited libraries for sighash-bound spend authorization.
+# also re-exports reddsa FROST types for DKG and generic signing.
+frost-spend = { path = "../../crates/frost-spend" }
 reddsa = { git = "https://github.com/ZcashFoundation/reddsa.git", rev = "475a552", features = ["frost", "serde"] }
 ed25519-consensus = "2"
 rand_core = "0.6"

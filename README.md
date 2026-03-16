@@ -77,7 +77,7 @@ Include a memo and it shows up on the [donation board](https://zcli.rotko.net/bo
 ## acknowledgments
 
 - [Bain Capital Crypto / ligerito.jl](https://github.com/BainCapitalCrypto/ligerito.jl) — the original polynomial commitment scheme we ported to Rust
-- [thrumdev/nomt](https://github.com/thrumdev/nomt) — New Ordered Merkle Tree, used for commitment and nullifier proofs
+- [thrumdev/nomt](https://github.com/thrumdev/nomt) — Nearly Optimal Merkle Tree, used for commitment and nullifier proofs
 - [Penumbra Labs](https://github.com/penumbra-zone) — client-side sync model we build on
 
 ## license
