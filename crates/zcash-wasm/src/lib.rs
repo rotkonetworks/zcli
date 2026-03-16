@@ -1394,9 +1394,18 @@ fn parse_memo_bytes(memo: &[u8; 512]) -> (String, bool) {
         return (String::new(), true);
     }
 
-    // 0xF6 = arbitrary binary data (ZIP-302). Return as hex, not text.
-    // Our structured memo format uses 0xF6 prefix — callers check memo_bytes.
+    // 0xF6 with remaining all-zeros = no memo (ZIP-302)
+    // 0xF6 with non-zero remaining = reserved ("from the future")
     if memo[0] == 0xF6 {
+        if memo[1..].iter().all(|&b| b == 0) {
+            return (String::new(), true); // no memo
+        }
+        return (String::new(), false); // reserved binary
+    }
+
+    // 0xFF = arbitrary data (ZIP-302). Zafu uses 0xFF 0x5A as magic.
+    // Return empty string; callers inspect memo_bytes for structured data.
+    if memo[0] == 0xFF {
         return (String::new(), false);
     }
 
