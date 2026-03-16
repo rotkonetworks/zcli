@@ -279,6 +279,19 @@ async fn cmd_balance(cli: &Cli, mainnet: bool) -> Result<(), Error> {
 async fn ensure_synced(cli: &Cli, mainnet: bool) -> Result<(), Error> {
     let wallet = wallet::Wallet::open(&wallet::Wallet::default_path())?;
     let height = wallet.sync_height()?;
+    let birth = wallet.birth_height()?;
+
+    if height == 0 && birth == 0 {
+        // First ever use — record birth height as current tip
+        if let Ok(c) = client::ZidecarClient::connect(&cli.endpoint).await {
+            if let Ok((tip, _)) = c.get_tip().await {
+                let _ = wallet.set_birth_height(tip);
+                if !cli.json {
+                    eprintln!("new wallet — birth height set to {} (current tip)", tip);
+                }
+            }
+        }
+    }
     drop(wallet);
 
     if height == 0 {

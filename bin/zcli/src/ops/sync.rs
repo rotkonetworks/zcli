@@ -117,7 +117,13 @@ async fn sync_inner(
         if sh > 0 {
             (sh + 1).max(activation)
         } else {
-            activation
+            // Never synced — use birth height if set, else activation
+            let bh = wallet.birth_height()?;
+            if bh > activation {
+                bh
+            } else {
+                activation
+            }
         }
     };
     let (tip, tip_hash) = client.get_tip().await?;

@@ -9,6 +9,7 @@ use sled::Db;
 use crate::error::Error;
 
 const SYNC_HEIGHT_KEY: &[u8] = b"sync_height";
+const BIRTH_HEIGHT_KEY: &[u8] = b"birth_height";
 const ORCHARD_POSITION_KEY: &[u8] = b"orchard_position";
 const NEXT_REQUEST_ID_KEY: &[u8] = b"next_request_id";
 const FORWARD_ADDRESS_KEY: &[u8] = b"forward_address";
@@ -198,6 +199,31 @@ impl Wallet {
         self.db
             .insert(SYNC_HEIGHT_KEY, &height.to_le_bytes())
             .map_err(|e| Error::Wallet(format!("write sync height: {}", e)))?;
+        Ok(())
+    }
+
+    /// Get wallet birth height (0 if not set — means scan from activation)
+    pub fn birth_height(&self) -> Result<u32, Error> {
+        match self
+            .db
+            .get(BIRTH_HEIGHT_KEY)
+            .map_err(|e| Error::Wallet(format!("read birth height: {}", e)))?
+        {
+            Some(bytes) if bytes.len() == 4 => {
+                Ok(u32::from_le_bytes(bytes.as_ref().try_into().unwrap()))
+            }
+            _ => Ok(0),
+        }
+    }
+
+    /// Set wallet birth height (called once, on first use)
+    pub fn set_birth_height(&self, height: u32) -> Result<(), Error> {
+        // Only set if not already set
+        if self.birth_height()? == 0 {
+            self.db
+                .insert(BIRTH_HEIGHT_KEY, &height.to_le_bytes())
+                .map_err(|e| Error::Wallet(format!("write birth height: {}", e)))?;
+        }
         Ok(())
     }
 
