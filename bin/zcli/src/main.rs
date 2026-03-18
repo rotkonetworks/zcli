@@ -101,6 +101,7 @@ async fn run(cli: &Cli) -> Result<(), Error> {
             SignerAction::Verify => cmd_verify(cli, mainnet).await,
         },
         Command::Init { action } => match action {
+            InitAction::Create { words } => cmd_init_create(cli, *words),
             InitAction::ImportFvk { hex } => cmd_import_fvk(cli, mainnet, hex.as_deref()),
             InitAction::Sync { from, position, full, no_verify } => {
                 if *full {
@@ -1646,6 +1647,78 @@ fn ensure_fvk_cached(seed: &key::WalletSeed, mainnet: bool) {
         watch.flush();
         eprintln!("cached FVK in watch wallet for future non-interactive syncs");
     }
+}
+
+fn cmd_init_create(cli: &Cli, words: usize) -> Result<(), Error> {
+    let age_path = cli::Cli::expand_tilde("~/.config/zcli/mnemonic.age");
+    if std::path::Path::new(&age_path).exists() {
+        return Err(Error::Other(format!(
+            "mnemonic already exists at {}. Delete it first to create a new wallet.",
+            age_path
+        )));
+    }
+
+    // Generate mnemonic
+    let word_count = if words == 12 { 12 } else { 24 };
+    let mnemonic = if word_count == 12 {
+        bip39::Mnemonic::generate(12).expect("valid").to_string()
+    } else {
+        key::generate_mnemonic()
+    };
+
+    if cli.json {
+        println!("{}", serde_json::json!({ "mnemonic": mnemonic }));
+    } else {
+        eprintln!("\n  ╔══════════════════════════════════════════════════════════╗");
+        eprintln!("  ║  WRITE DOWN THESE WORDS. THEY ARE YOUR WALLET.          ║");
+        eprintln!("  ║  Anyone with these words can spend your funds.           ║");
+        eprintln!("  ╚══════════════════════════════════════════════════════════╝\n");
+        for (i, word) in mnemonic.split_whitespace().enumerate() {
+            eprint!("  {:>2}. {:<12}", i + 1, word);
+            if (i + 1) % 4 == 0 { eprintln!(); }
+        }
+        eprintln!();
+    }
+
+    // Encrypt with age using the SSH key
+    let identity_path = cli.identity_path();
+    let config_dir = cli::Cli::expand_tilde("~/.config/zcli");
+    std::fs::create_dir_all(&config_dir)
+        .map_err(|e| Error::Other(format!("create config dir: {}", e)))?;
+
+    // Get the public key from the SSH key for age encryption
+    let pubkey_output = std::process::Command::new("ssh-keygen")
+        .args(["-y", "-f", &identity_path])
+        .output()
+        .map_err(|e| Error::Other(format!("ssh-keygen: {}", e)))?;
+    if !pubkey_output.status.success() {
+        return Err(Error::Other("failed to extract public key from SSH key".into()));
+    }
+    let pubkey = String::from_utf8_lossy(&pubkey_output.stdout).trim().to_string();
+
+    // Encrypt with age
+    let mut child = std::process::Command::new("age")
+        .args(["-r", &pubkey, "-o", &age_path])
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| Error::Other(format!("age not found: {}", e)))?;
+
+    use std::io::Write;
+    child.stdin.take().unwrap().write_all(mnemonic.as_bytes())
+        .map_err(|e| Error::Other(format!("write to age: {}", e)))?;
+
+    let status = child.wait()
+        .map_err(|e| Error::Other(format!("age wait: {}", e)))?;
+    if !status.success() {
+        return Err(Error::Other("age encryption failed".into()));
+    }
+
+    if !cli.json {
+        eprintln!("mnemonic encrypted and saved to {}", age_path);
+        eprintln!("decryptable with: age -d -i {} {}", identity_path, age_path);
+    }
+
+    Ok(())
 }
 
 fn load_seed(cli: &Cli) -> Result<key::WalletSeed, Error> {

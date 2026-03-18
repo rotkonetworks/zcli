@@ -30,6 +30,15 @@ pub fn load_mnemonic_seed(phrase: &str) -> Result<WalletSeed, Error> {
     let mnemonic = bip39::Mnemonic::parse(phrase)
         .map_err(|e| Error::Key(format!("invalid mnemonic: {}", e)))?;
 
+    // Zcash requires 24-word mnemonics (256 bits entropy, ZIP-339)
+    let word_count = mnemonic.word_count();
+    if word_count != 24 {
+        return Err(Error::Key(format!(
+            "Zcash requires a 24-word mnemonic, got {} words",
+            word_count,
+        )));
+    }
+
     let seed = mnemonic.to_seed("");
     let mut bytes = [0u8; 64];
     bytes.copy_from_slice(&seed);

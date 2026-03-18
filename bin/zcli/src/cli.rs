@@ -57,7 +57,7 @@ impl Cli {
         true
     }
 
-    fn expand_tilde(path: &str) -> String {
+    pub fn expand_tilde(path: &str) -> String {
         if let Some(rest) = path.strip_prefix("~/") {
             if let Some(home) = std::env::var_os("HOME") {
                 return format!("{}/{}", home.to_string_lossy(), rest);
@@ -232,6 +232,13 @@ pub enum SignerAction {
 
 #[derive(Subcommand)]
 pub enum InitAction {
+    /// create a new wallet with a BIP39 mnemonic
+    Create {
+        /// number of words (12 or 24)
+        #[arg(short, long, default_value_t = 24)]
+        words: usize,
+    },
+
     /// import FVK from zigner QR (watch-only wallet)
     ImportFvk {
         /// hex-encoded FVK bytes (or scan from webcam if omitted)
