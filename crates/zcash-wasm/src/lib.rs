@@ -127,11 +127,12 @@ impl WalletKeys {
             .enumerate()
             .filter_map(|(idx, action)| {
                 self.try_decrypt_action_binary(action)
-                    .map(|(value, note_nf, rseed, rho, addr)| FoundNote {
+                    .map(|(value, note_nf, rseed, rho, addr, is_change)| FoundNote {
                         index: idx as u32,
                         value,
                         nullifier: hex_encode(&note_nf),
                         cmx: hex_encode(&action.cmx),
+                        is_change,
                         rseed: Some(hex_encode(&rseed)),
                         rho: Some(hex_encode(&rho)),
                         recipient: Some(hex_encode(&addr)),
@@ -145,11 +146,12 @@ impl WalletKeys {
             .enumerate()
             .filter_map(|(idx, action)| {
                 self.try_decrypt_action_binary(action)
-                    .map(|(value, note_nf, rseed, rho, addr)| FoundNote {
+                    .map(|(value, note_nf, rseed, rho, addr, is_change)| FoundNote {
                         index: idx as u32,
                         value,
                         nullifier: hex_encode(&note_nf),
                         cmx: hex_encode(&action.cmx),
+                        is_change,
                         rseed: Some(hex_encode(&rseed)),
                         rho: Some(hex_encode(&rho)),
                         recipient: Some(hex_encode(&addr)),
@@ -177,6 +179,7 @@ impl WalletKeys {
                     value,
                     nullifier: action.nullifier.clone(),
                     cmx: action.cmx.clone(),
+                    is_change: false, // JSON path doesn't distinguish scope yet
                     rseed: None,
                     rho: None,
                     recipient: None,
@@ -194,6 +197,7 @@ impl WalletKeys {
                     value,
                     nullifier: action.nullifier.clone(),
                     cmx: action.cmx.clone(),
+                    is_change: false, // JSON path doesn't distinguish scope yet
                     rseed: None,
                     rho: None,
                     recipient: None,
@@ -230,10 +234,11 @@ impl WalletKeys {
     /// Tries BOTH external and internal scope IVKs
     /// Returns (value, note_nullifier, rseed_bytes, rho_bytes, recipient_address_bytes)
     #[allow(clippy::type_complexity)]
+    /// Returns (value, nullifier, rseed, rho, address, is_change)
     fn try_decrypt_action_binary(
         &self,
         action: &CompactActionBinary,
-    ) -> Option<(u64, [u8; 32], [u8; 32], [u8; 32], [u8; 43])> {
+    ) -> Option<(u64, [u8; 32], [u8; 32], [u8; 32], [u8; 43], bool)> {
         // Parse the nullifier and cmx
         let nullifier = orchard::note::Nullifier::from_bytes(&action.nullifier);
         if nullifier.is_none().into() {
@@ -265,7 +270,7 @@ impl WalletKeys {
             ciphertext: action.ciphertext,
         };
 
-        // Try compact note decryption with EXTERNAL scope IVK first
+        // Try compact note decryption with EXTERNAL scope IVK first (incoming)
         if let Some((note, addr)) =
             try_compact_note_decryption(&domain, &self.prepared_ivk_external, &output)
         {
@@ -278,10 +283,11 @@ impl WalletKeys {
                 rseed,
                 rho,
                 addr.to_raw_address_bytes(),
+                false, // external scope = incoming, not change
             ));
         }
 
-        // If external failed, try INTERNAL scope IVK (for change/shielding outputs)
+        // If external failed, try INTERNAL scope IVK (change/shielding outputs)
         if let Some((note, addr)) =
             try_compact_note_decryption(&domain, &self.prepared_ivk_internal, &output)
         {
@@ -294,6 +300,7 @@ impl WalletKeys {
                 rseed,
                 rho,
                 addr.to_raw_address_bytes(),
+                true, // internal scope = change output
             ));
         }
 
@@ -455,6 +462,9 @@ pub struct FoundNote {
     pub value: u64,
     pub nullifier: String,
     pub cmx: String,
+    /// true if decrypted with internal scope IVK (change/shielding output)
+    #[serde(default)]
+    pub is_change: bool,
     /// rseed bytes for note reconstruction (hex, 32 bytes)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rseed: Option<String>,
@@ -552,6 +562,33 @@ fn hex_decode(s: &str) -> Option<Vec<u8>> {
         .step_by(2)
         .map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok())
         .collect()
+}
+
+/// Decode an optional hex-encoded memo into a 512-byte array.
+///
+/// Zcash memos are exactly 512 bytes (ZIP-302). If `hex` is None or empty,
+/// returns all zeros (the canonical "no memo" value). If provided, the hex
+/// string is decoded and right-padded with zeros to fill 512 bytes.
+///
+/// This is the only place memo bytes enter the transaction builder.
+/// The caller is responsible for the memo content — this function is
+/// encoding-agnostic (works for UTF-8 text, zafu structured memos, or
+/// any other 512-byte payload).
+fn decode_memo_hex(hex: Option<&str>) -> Result<[u8; 512], JsError> {
+    let mut memo = [0u8; 512];
+    if let Some(h) = hex {
+        if !h.is_empty() {
+            let bytes = hex_decode(h)
+                .ok_or_else(|| JsError::new("memo_hex: invalid hex encoding"))?;
+            if bytes.len() > 512 {
+                return Err(JsError::new(&format!(
+                    "memo_hex: {} bytes exceeds 512-byte limit", bytes.len()
+                )));
+            }
+            memo[..bytes.len()].copy_from_slice(&bytes);
+        }
+    }
+    Ok(memo)
 }
 
 // ============================================================================
@@ -743,11 +780,12 @@ impl WatchOnlyWallet {
             .enumerate()
             .filter_map(|(idx, action)| {
                 self.try_decrypt_action(action)
-                    .map(|(value, note_nf, rseed, rho, addr)| FoundNote {
+                    .map(|(value, note_nf, rseed, rho, addr, is_change)| FoundNote {
                         index: idx as u32,
                         value,
                         nullifier: hex_encode(&note_nf),
                         cmx: hex_encode(&action.cmx),
+                        is_change,
                         rseed: Some(hex_encode(&rseed)),
                         rho: Some(hex_encode(&rho)),
                         recipient: Some(hex_encode(&addr)),
@@ -761,11 +799,12 @@ impl WatchOnlyWallet {
             .enumerate()
             .filter_map(|(idx, action)| {
                 self.try_decrypt_action(action)
-                    .map(|(value, note_nf, rseed, rho, addr)| FoundNote {
+                    .map(|(value, note_nf, rseed, rho, addr, is_change)| FoundNote {
                         index: idx as u32,
                         value,
                         nullifier: hex_encode(&note_nf),
                         cmx: hex_encode(&action.cmx),
+                        is_change,
                         rseed: Some(hex_encode(&rseed)),
                         rho: Some(hex_encode(&rho)),
                         recipient: Some(hex_encode(&addr)),
@@ -783,7 +822,7 @@ impl WatchOnlyWallet {
     fn try_decrypt_action(
         &self,
         action: &CompactActionBinary,
-    ) -> Option<(u64, [u8; 32], [u8; 32], [u8; 32], [u8; 43])> {
+    ) -> Option<(u64, [u8; 32], [u8; 32], [u8; 32], [u8; 43], bool)> {
         let nullifier = orchard::note::Nullifier::from_bytes(&action.nullifier);
         if nullifier.is_none().into() {
             return None;
@@ -810,36 +849,24 @@ impl WatchOnlyWallet {
             ciphertext: action.ciphertext,
         };
 
-        // Try external scope first
+        // Try external scope first (incoming)
         if let Some((note, addr)) =
             try_compact_note_decryption(&domain, &self.prepared_ivk_external, &output)
         {
             let note_nf = note.nullifier(&self.fvk);
             let rseed = *note.rseed().as_bytes();
             let rho = note.rho().to_bytes();
-            return Some((
-                note.value().inner(),
-                note_nf.to_bytes(),
-                rseed,
-                rho,
-                addr.to_raw_address_bytes(),
-            ));
+            return Some((note.value().inner(), note_nf.to_bytes(), rseed, rho, addr.to_raw_address_bytes(), false));
         }
 
-        // Try internal scope (change addresses)
+        // Try internal scope (change)
         if let Some((note, addr)) =
             try_compact_note_decryption(&domain, &self.prepared_ivk_internal, &output)
         {
             let note_nf = note.nullifier(&self.fvk);
             let rseed = *note.rseed().as_bytes();
             let rho = note.rho().to_bytes();
-            return Some((
-                note.value().inner(),
-                note_nf.to_bytes(),
-                rseed,
-                rho,
-                addr.to_raw_address_bytes(),
-            ));
+            return Some((note.value().inner(), note_nf.to_bytes(), rseed, rho, addr.to_raw_address_bytes(), true));
         }
 
         None
@@ -1697,6 +1724,7 @@ pub fn build_unsigned_transaction(
     merkle_paths_json: JsValue,
     _account_index: u32,
     mainnet: bool,
+    memo_hex: Option<String>,
 ) -> Result<JsValue, JsError> {
     use group::ff::PrimeField;
     use orchard::builder::{Builder, BundleType};
@@ -1910,19 +1938,23 @@ pub fn build_unsigned_transaction(
             .map_err(|e| JsError::new(&format!("add_spend for note {}: {:?}", i, e)))?;
     }
 
+    // decode memo from hex if provided, otherwise empty (all zeros).
+    // only the recipient output carries the memo — change outputs MUST
+    // have empty memos per zcash convention (prevents memo correlation
+    // between the recipient note and the change note).
+    let recipient_memo = decode_memo_hex(memo_hex.as_deref())?;
+
     // add recipient output (orchard only — transparent outputs are added to the tx directly)
     if let Some(ref addr) = recipient_addr {
-        let memo = [0u8; 512];
         builder
-            .add_output(None, *addr, NoteValue::from_raw(amount), memo)
+            .add_output(None, *addr, NoteValue::from_raw(amount), recipient_memo)
             .map_err(|e| JsError::new(&format!("add_output (recipient): {:?}", e)))?;
     }
 
     // add change output if needed (for z→t, all orchard value minus amount+fee goes to change)
     if change > 0 {
-        let memo = [0u8; 512];
         builder
-            .add_output(None, change_addr, NoteValue::from_raw(change), memo)
+            .add_output(None, change_addr, NoteValue::from_raw(change), [0u8; 512])
             .map_err(|e| JsError::new(&format!("add_output (change): {:?}", e)))?;
     }
 
@@ -2496,6 +2528,7 @@ pub fn build_signed_spend_transaction(
     merkle_paths_json: JsValue,
     account_index: u32,
     mainnet: bool,
+    memo_hex: Option<String>,
 ) -> Result<String, JsError> {
     use orchard::builder::{Builder, BundleType};
     use orchard::bundle::Flags;
@@ -2705,19 +2738,20 @@ pub fn build_signed_spend_transaction(
             .map_err(|e| JsError::new(&format!("add_spend for note {}: {:?}", i, e)))?;
     }
 
+    // decode memo — recipient gets the memo, change output stays empty.
+    let recipient_memo = decode_memo_hex(memo_hex.as_deref())?;
+
     // add recipient output (orchard only — transparent outputs are added to the tx directly)
     if let Some(ref addr) = recipient_addr {
-        let memo = [0u8; 512];
         builder
-            .add_output(None, *addr, NoteValue::from_raw(amount), memo)
+            .add_output(None, *addr, NoteValue::from_raw(amount), recipient_memo)
             .map_err(|e| JsError::new(&format!("add_output (recipient): {:?}", e)))?;
     }
 
     // add change output if needed (for z→t, all orchard value minus amount+fee goes to change)
     if change > 0 {
-        let memo = [0u8; 512];
         builder
-            .add_output(None, change_addr, NoteValue::from_raw(change), memo)
+            .add_output(None, change_addr, NoteValue::from_raw(change), [0u8; 512])
             .map_err(|e| JsError::new(&format!("add_output (change): {:?}", e)))?;
     }
 
@@ -2852,7 +2886,7 @@ fn test_user_seed_with_real_action() {
     let result = keys.try_decrypt_action_binary(&action);
     println!(
         "Decryption result (External scope): {:?}",
-        result.map(|(v, nf, _, _)| (v, hex_encode(&nf)))
+        result.map(|(v, nf, _, _, _, is_change)| (v, hex_encode(&nf), is_change))
     );
 
     // Also try Internal scope
