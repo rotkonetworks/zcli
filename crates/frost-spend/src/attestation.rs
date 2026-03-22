@@ -256,3 +256,17 @@ pub fn verify(group_pubkey: &Point, message: &[u8], signature: &Signature<Point>
     let rhs = signature.r.add(&group_pubkey.mul_scalar(&challenge));
     lhs == rhs
 }
+
+/// Verify from raw bytes — convenience for callers that don't want osst types.
+///
+/// signature_bytes: [R:32][z:32], group_verifying_key: compressed Pallas point.
+/// Returns None on parse failure, Some(bool) on success.
+pub fn verify_from_bytes(
+    signature_bytes: &[u8; 64],
+    group_verifying_key: &[u8; 32],
+    message: &[u8],
+) -> Option<bool> {
+    let group_pubkey = Point::decompress(group_verifying_key)?;
+    let sig = Signature::<Point>::from_bytes(signature_bytes).ok()?;
+    Some(verify(&group_pubkey, message, &sig))
+}
