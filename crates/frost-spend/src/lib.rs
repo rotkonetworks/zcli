@@ -12,12 +12,15 @@
 //
 // zero custom crypto. this crate is glue.
 
+pub mod attestation;
 pub mod keys;
 pub mod sign;
 pub mod message;
 pub mod orchestrate;
 pub mod memo_codec;
 pub mod transport;
+pub mod hierarchical;
+pub mod nested;
 
 // re-export core types
 pub use reddsa::frost::redpallas::{

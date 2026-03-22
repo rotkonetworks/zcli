@@ -20,6 +20,16 @@ rand_core = "0.6"
 # Orchard (conradoplg's fork with from_sk_ak for FROST FVK derivation)
 orchard = { git = "https://github.com/conradoplg/orchard.git", rev = "f0c88b78a1d70d55ce6bb480566d132e57d5607b", features = ["unstable-frost"] }
 
+# Pallas curve
+pasta_curves = "0.5"
+
+# OSST: nested FROST + reshare (from zeratul)
+osst = { path = "../../../zeratul/crates/osst", default-features = false, features = ["pallas"] }
+
+# hashing
+sha2 = "0.10"
+blake2b_simd = "1.0"
+
 # serialization
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
