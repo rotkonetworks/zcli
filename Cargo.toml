@@ -11,6 +11,8 @@ members = [
     "crates/ligerito-reed-solomon",
     "crates/zcash-wasm",
     "crates/frost-spend",
+    "bin/relay",
+    "bin/poker",
 ]
 
 [workspace.package]
@@ -42,3 +44,6 @@ wide = { version = "0.7", default-features = false }
 
 [patch.crates-io]
 maybe-rayon = { path = "crates/maybe-rayon" }
+
+[patch."https://github.com/rotkonetworks/zeratul.git"]
+osst = { path = "../zeratul/crates/osst" }

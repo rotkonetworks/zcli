@@ -24,7 +24,7 @@ orchard = { git = "https://github.com/conradoplg/orchard.git", rev = "f0c88b78a1
 pasta_curves = "0.5"
 
 # OSST: nested FROST + reshare (from zeratul)
-osst = { path = "../../../zeratul/crates/osst", default-features = false, features = ["pallas"] }
+osst = { git = "https://github.com/rotkonetworks/zeratul.git", rev = "90add33", default-features = false, features = ["pallas"] }
 
 # hashing
 sha2 = "0.10"
