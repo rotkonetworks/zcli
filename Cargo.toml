@@ -29,7 +29,7 @@ ligerito-reed-solomon = { path = "crates/ligerito-reed-solomon" }
 zync-core = { path = "crates/zync-core" }
 
 # shared deps inherited by ligerito crates
-bytemuck = { version = "=1.14.0", default-features = false, features = ["extern_crate_alloc"] }
+bytemuck = { version = "1", default-features = false, features = ["extern_crate_alloc"] }
 criterion = "0.5"
 hex = "0.4"
 merlin = "3.0"
