@@ -94,8 +94,8 @@ async fn run(cli: &Cli) -> Result<(), Error> {
             }
         },
         Command::Signer { action } => match action {
-            SignerAction::ExportNotes { interval, fragment_size, attestation, transport, zt_frame_size, zt_redundancy } => {
-                cmd_export_notes(cli, mainnet, *interval, *fragment_size, attestation.as_deref(), transport, *zt_frame_size, *zt_redundancy).await
+            SignerAction::ExportNotes { interval, fragment_size, signing_key, transport, zt_frame_size, zt_redundancy } => {
+                cmd_export_notes(cli, mainnet, *interval, *fragment_size, signing_key.as_deref(), transport, *zt_frame_size, *zt_redundancy).await
             }
             SignerAction::Scan { device, timeout } => cmd_scan(cli, device, *timeout),
             SignerAction::Verify => cmd_verify(cli, mainnet).await,
@@ -1752,7 +1752,7 @@ async fn cmd_export_notes(
     mainnet: bool,
     interval_ms: u64,
     fragment_size: usize,
-    attestation_hex: Option<&str>,
+    signing_key: Option<&str>,
     transport: &str,
     zt_frame_size: usize,
     zt_redundancy: u8,
@@ -1783,28 +1783,61 @@ async fn cmd_export_notes(
     let (anchor, paths) =
         witness::build_witnesses(&client_obj, &notes, tip, mainnet, cli.json).await?;
 
-    let attestation: Option<[u8; 96]> = match attestation_hex {
-        Some(hex_str) => {
-            let bytes = hex::decode(hex_str)
-                .map_err(|e| Error::Other(format!("bad attestation hex: {e}")))?;
-            let arr: [u8; 96] = bytes.try_into().map_err(|v: Vec<u8>| {
-                Error::Other(format!(
-                    "attestation must be 96 bytes (sig 64 + randomizer 32), got {}",
-                    v.len()
-                ))
-            })?;
-            Some(arr)
+    // sign anchor attestation if signing key provided
+    let attestation: Option<[u8; 64]> = match signing_key {
+        Some(key_str) => {
+            use sha2::{Digest, Sha256};
+
+            // parse signing key: hex seed (32 bytes) or 0x-prefixed
+            let key_hex = key_str.strip_prefix("0x").unwrap_or(key_str);
+            let seed_bytes: [u8; 32] = hex::decode(key_hex)
+                .map_err(|e| Error::Other(format!("bad signing key hex: {e}")))?
+                .try_into()
+                .map_err(|v: Vec<u8>| {
+                    Error::Other(format!("signing key must be 32 bytes, got {}", v.len()))
+                })?;
+
+            let signing_key = ed25519_consensus::SigningKey::from(seed_bytes);
+            let verification_key = signing_key.verification_key();
+
+            // compute attestation digest (same as zigner verifier)
+            let mut hasher = Sha256::new();
+            hasher.update(b"zcash-anchor-v1");
+            hasher.update(verification_key.as_ref());
+            hasher.update(&anchor.to_bytes());
+            hasher.update(&tip.to_le_bytes());
+            hasher.update(&[u8::from(mainnet)]);
+            let digest: [u8; 32] = hasher.finalize().into();
+
+            let signature = signing_key.sign(&digest);
+
+            if !cli.json {
+                eprintln!("signed by verifier: {}", hex::encode(verification_key.as_ref()));
+            }
+
+            Some(signature.to_bytes())
         }
         None => None,
     };
-    let cbor = notes_export::encode_notes_cbor(
+    let mut cbor = notes_export::encode_notes_cbor(
         &anchor,
         tip,
         mainnet,
         &notes,
         &paths,
-        attestation.as_ref(),
+        None, // we'll append attestation manually
     );
+    // append attestation as CBOR key 5 if present
+    if let Some(sig) = &attestation {
+        // need to update map length: currently map(5) for versioned, make it map(6)
+        if cbor[0] >= 0xa0 {
+            cbor[0] += 1; // increment map length
+        }
+        cbor.push(0x05); // key 5
+        cbor.push(0x58); // bstr with 1-byte length
+        cbor.push(0x40); // 64 bytes
+        cbor.extend_from_slice(sig);
+    }
 
     if !cli.json {
         eprintln!(
@@ -1846,7 +1879,7 @@ async fn cmd_export_notes(
                 "balance_zat": balance,
                 "anchor_height": tip,
                 "anchor": hex::encode(anchor.to_bytes()),
-                "attested": attestation.is_some(),
+                "signed": attestation.is_some(),
                 "parts": parts,
                 "frame_count": parts.len(),
             })

@@ -214,9 +214,10 @@ pub enum SignerAction {
         #[arg(long, default_value_t = 200)]
         fragment_size: usize,
 
-        /// pre-computed FROST anchor attestation (192 hex chars = 96 bytes: sig(64) + randomizer(32))
-        #[arg(long)]
-        attestation: Option<String>,
+        /// ed25519 signing key for anchor attestation (hex seed, seed phrase, or SURI)
+        /// same format as metadata-portal's SIGNING_KEY [env: ZCLI_SIGNING_KEY=]
+        #[arg(long, env = "ZCLI_SIGNING_KEY")]
+        signing_key: Option<String>,
 
         /// transport: "ur" (fountain codes) or "zt" (zoda verified erasure coding)
         #[arg(long, default_value = "ur")]
