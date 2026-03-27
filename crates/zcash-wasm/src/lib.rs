@@ -2361,6 +2361,205 @@ pub fn tree_root_hex(tree_state_hex: &str) -> Result<String, JsError> {
     Ok(hex::encode(root))
 }
 
+// ============================================================================
+// Note bundle encoding (CBOR for ur:zcash-notes)
+// ============================================================================
+
+/// Encode notes + merkle paths into CBOR bytes for ur:zcash-notes.
+///
+/// This produces the exact format zigner expects: CBOR map with anchor,
+/// height, mainnet flag, notes array with merkle paths, and optional
+/// attestation signature.
+///
+/// # Arguments
+/// * `notes_json` - JSON array of `[{value, nullifier, cmx, position, block_height}]`
+/// * `merkle_result_json` - JSON from build_merkle_paths: `{anchor_hex, paths: [{position, path: [{hash}]}]}`
+/// * `anchor_height` - block height of the anchor
+/// * `mainnet` - true for mainnet, false for testnet
+/// * `attestation_hex` - optional hex-encoded 64-byte FROST attestation signature
+///
+/// # Returns
+/// `Uint8Array` of CBOR bytes ready for UR fountain encoding
+#[wasm_bindgen]
+pub fn encode_notes_bundle(
+    notes_json: &str,
+    merkle_result_json: &str,
+    anchor_height: u32,
+    mainnet: bool,
+    attestation_hex: Option<String>,
+) -> Result<Vec<u8>, JsError> {
+    #[derive(serde::Deserialize)]
+    struct NoteInput {
+        value: u64,
+        nullifier: String,
+        cmx: String,
+        position: u64,
+        block_height: u32,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct PathElement {
+        hash: String,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct MerklePath {
+        #[allow(dead_code)]
+        position: u64,
+        path: Vec<PathElement>,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct MerkleResult {
+        anchor_hex: String,
+        paths: Vec<MerklePath>,
+    }
+
+    let notes: Vec<NoteInput> = serde_json::from_str(notes_json)
+        .map_err(|e| JsError::new(&format!("bad notes JSON: {e}")))?;
+    let merkle: MerkleResult = serde_json::from_str(merkle_result_json)
+        .map_err(|e| JsError::new(&format!("bad merkle JSON: {e}")))?;
+
+    if notes.len() != merkle.paths.len() {
+        return Err(JsError::new(&format!(
+            "notes ({}) and paths ({}) count mismatch",
+            notes.len(),
+            merkle.paths.len()
+        )));
+    }
+
+    let anchor: [u8; 32] = hex::decode(&merkle.anchor_hex)
+        .map_err(|e| JsError::new(&format!("bad anchor hex: {e}")))?
+        .try_into()
+        .map_err(|_| JsError::new("anchor must be 32 bytes"))?;
+
+    let attestation: Option<[u8; 64]> = match attestation_hex {
+        Some(h) if !h.is_empty() => {
+            let bytes: [u8; 64] = hex::decode(&h)
+                .map_err(|e| JsError::new(&format!("bad attestation hex: {e}")))?
+                .try_into()
+                .map_err(|_| JsError::new("attestation must be 64 bytes"))?;
+            Some(bytes)
+        }
+        _ => None,
+    };
+
+    // Build CBOR manually — same format as zcli's notes_export.rs
+    let mut cbor = Vec::new();
+
+    // map(4) or map(5)
+    cbor.push(if attestation.is_some() { 0xa5 } else { 0xa4 });
+
+    // key 1: anchor
+    cbor.push(0x01);
+    cbor.push(0x58);
+    cbor.push(0x20);
+    cbor.extend_from_slice(&anchor);
+
+    // key 2: anchor_height
+    cbor.push(0x02);
+    cbor_uint(&mut cbor, anchor_height as u64);
+
+    // key 3: mainnet
+    cbor.push(0x03);
+    cbor.push(if mainnet { 0xf5 } else { 0xf4 });
+
+    // key 4: notes array
+    cbor.push(0x04);
+    cbor_array_len(&mut cbor, notes.len());
+
+    for (note, mpath) in notes.iter().zip(merkle.paths.iter()) {
+        // map(6) per note
+        cbor.push(0xa6);
+
+        // 1: value
+        cbor.push(0x01);
+        cbor_uint(&mut cbor, note.value);
+
+        // 2: nullifier
+        cbor.push(0x02);
+        cbor.push(0x58);
+        cbor.push(0x20);
+        let nf = hex::decode(&note.nullifier)
+            .map_err(|e| JsError::new(&format!("bad nullifier hex: {e}")))?;
+        cbor.extend_from_slice(&nf);
+
+        // 3: cmx
+        cbor.push(0x03);
+        cbor.push(0x58);
+        cbor.push(0x20);
+        let cm = hex::decode(&note.cmx)
+            .map_err(|e| JsError::new(&format!("bad cmx hex: {e}")))?;
+        cbor.extend_from_slice(&cm);
+
+        // 4: position
+        cbor.push(0x04);
+        cbor_uint(&mut cbor, note.position);
+
+        // 5: block_height
+        cbor.push(0x05);
+        cbor_uint(&mut cbor, note.block_height as u64);
+
+        // 6: merkle_path (array of 32 sibling hashes)
+        cbor.push(0x06);
+        cbor.push(0x98);
+        cbor.push(0x20); // array(32)
+        if mpath.path.len() != 32 {
+            return Err(JsError::new(&format!(
+                "merkle path must have 32 siblings, got {}",
+                mpath.path.len()
+            )));
+        }
+        for elem in &mpath.path {
+            cbor.push(0x58);
+            cbor.push(0x20);
+            let hash = hex::decode(&elem.hash)
+                .map_err(|e| JsError::new(&format!("bad path hash: {e}")))?;
+            cbor.extend_from_slice(&hash);
+        }
+    }
+
+    // key 5: attestation (optional)
+    if let Some(sig) = attestation {
+        cbor.push(0x05);
+        cbor.push(0x58);
+        cbor.push(0x40); // bytes(64)
+        cbor.extend_from_slice(&sig);
+    }
+
+    Ok(cbor)
+}
+
+fn cbor_uint(out: &mut Vec<u8>, val: u64) {
+    if val <= 23 {
+        out.push(val as u8);
+    } else if val <= 0xff {
+        out.push(0x18);
+        out.push(val as u8);
+    } else if val <= 0xffff {
+        out.push(0x19);
+        out.extend_from_slice(&(val as u16).to_be_bytes());
+    } else if val <= 0xffff_ffff {
+        out.push(0x1a);
+        out.extend_from_slice(&(val as u32).to_be_bytes());
+    } else {
+        out.push(0x1b);
+        out.extend_from_slice(&val.to_be_bytes());
+    }
+}
+
+fn cbor_array_len(out: &mut Vec<u8>, len: usize) {
+    if len <= 23 {
+        out.push(0x80 | len as u8);
+    } else if len <= 0xff {
+        out.push(0x98);
+        out.push(len as u8);
+    } else {
+        out.push(0x99);
+        out.extend_from_slice(&(len as u16).to_be_bytes());
+    }
+}
+
 /// Derive an Orchard receiving address from a UFVK string (uview1.../uviewtest1...)
 #[wasm_bindgen]
 pub fn address_from_ufvk(ufvk_str: &str, diversifier_index: u32) -> Result<String, JsError> {
