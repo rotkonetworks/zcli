@@ -107,6 +107,32 @@ impl Frame {
 pub struct Encoder;
 
 impl Encoder {
+    /// Auto-size: compute k and n from payload size and max QR capacity.
+    ///
+    /// - `max_qr_bytes`: max raw bytes per QR code (before hex encoding)
+    ///   For hex-encoded `zt:` frames, use max_qr_alphanumeric / 2 - 15 (prefix overhead).
+    ///   Typical: 1200 bytes for comfortable scanning.
+    /// - `redundancy_pct`: extra frames as percentage (e.g., 30 = 30% parity).
+    ///
+    /// Returns (frames, session_id).
+    pub fn encode_auto(
+        payload: &[u8],
+        max_qr_bytes: usize,
+        redundancy_pct: u8,
+    ) -> (Vec<Frame>, [u8; SESSION_ID_LEN]) {
+        // frame overhead: session_id(8) + index(1) + metadata(39 for frame 0)
+        let usable = max_qr_bytes.saturating_sub(SESSION_ID_LEN + 1 + META_LEN);
+        let k = if usable == 0 {
+            1
+        } else {
+            let raw_k = (payload.len() + usable - 1) / usable;
+            raw_k.max(1).min(254) as u8
+        };
+        let extra = ((k as u16 * redundancy_pct as u16) / 100).max(1) as u8;
+        let n = (k as u16 + extra as u16).min(254) as u8;
+        Self::encode(payload, k, n)
+    }
+
     /// Encode payload into n frames (k-of-n recoverable).
     ///
     /// - `k`: minimum frames needed to reconstruct (threshold)

@@ -94,8 +94,8 @@ async fn run(cli: &Cli) -> Result<(), Error> {
             }
         },
         Command::Signer { action } => match action {
-            SignerAction::ExportNotes { interval, fragment_size, attestation, transport, zt_k, zt_n } => {
-                cmd_export_notes(cli, mainnet, *interval, *fragment_size, attestation.as_deref(), transport, *zt_k, *zt_n).await
+            SignerAction::ExportNotes { interval, fragment_size, attestation, transport, zt_frame_size, zt_redundancy } => {
+                cmd_export_notes(cli, mainnet, *interval, *fragment_size, attestation.as_deref(), transport, *zt_frame_size, *zt_redundancy).await
             }
             SignerAction::Scan { device, timeout } => cmd_scan(cli, device, *timeout),
             SignerAction::Verify => cmd_verify(cli, mainnet).await,
@@ -1754,8 +1754,8 @@ async fn cmd_export_notes(
     fragment_size: usize,
     attestation_hex: Option<&str>,
     transport: &str,
-    zt_k: u8,
-    zt_n: u8,
+    zt_frame_size: usize,
+    zt_redundancy: u8,
 ) -> Result<(), Error> {
     let wallet_obj = wallet::Wallet::open(&wallet::Wallet::default_path())?;
     let (balance, notes) = wallet_obj.shielded_balance()?;
@@ -1817,12 +1817,17 @@ async fn cmd_export_notes(
     let (parts, transport_label) = match transport {
         "zt" => {
             let (frames, _session_id) =
-                zoda_vss::transport::Encoder::encode(&cbor, zt_k, zt_n);
+                zoda_vss::transport::Encoder::encode_auto(&cbor, zt_frame_size, zt_redundancy);
+            let n = frames.len();
             let strings: Vec<String> = frames
                 .iter()
                 .map(|f| format!("zt:zcash-notes/{}", hex::encode(f.to_bytes())))
                 .collect();
-            (strings, format!("zt {}-of-{}", zt_k, zt_n))
+            if !cli.json && !frames.is_empty() {
+                let frame_bytes = frames[0].to_bytes().len();
+                eprintln!("~{} bytes/frame, ~{} hex chars/QR", frame_bytes, frame_bytes * 2 + 15);
+            }
+            (strings, format!("zt {n} frames"))
         }
         _ => {
             let ur = notes_export::generate_ur_parts(&cbor, fragment_size)?;

@@ -222,13 +222,13 @@ pub enum SignerAction {
         #[arg(long, default_value = "ur")]
         transport: String,
 
-        /// zoda transport: minimum frames to reconstruct (k)
-        #[arg(long, default_value_t = 12)]
-        zt_k: u8,
+        /// zoda transport: max raw bytes per QR frame (auto-sizes k/n from payload)
+        #[arg(long, default_value_t = 1200)]
+        zt_frame_size: usize,
 
-        /// zoda transport: total frames to generate (n)
-        #[arg(long, default_value_t = 16)]
-        zt_n: u8,
+        /// zoda transport: parity redundancy percentage (30 = 30% extra frames)
+        #[arg(long, default_value_t = 30)]
+        zt_redundancy: u8,
     },
 
     /// scan QR code from webcam
