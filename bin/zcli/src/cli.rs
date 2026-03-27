@@ -223,11 +223,11 @@ pub enum SignerAction {
         transport: String,
 
         /// zoda transport: minimum frames to reconstruct (k)
-        #[arg(long, default_value_t = 5)]
+        #[arg(long, default_value_t = 12)]
         zt_k: u8,
 
         /// zoda transport: total frames to generate (n)
-        #[arg(long, default_value_t = 8)]
+        #[arg(long, default_value_t = 16)]
         zt_n: u8,
     },
 
