@@ -18,7 +18,7 @@ pub fn encode_notes_cbor(
     mainnet: bool,
     notes: &[WalletNote],
     paths: &[MerklePath],
-    attestation: Option<&[u8; 64]>,
+    attestation: Option<&[u8; 96]>,
 ) -> Vec<u8> {
     let mut cbor = Vec::new();
 
@@ -83,12 +83,12 @@ pub fn encode_notes_cbor(
         }
     }
 
-    // key 5: anchor_attestation (bstr 64) — optional FROST group signature
-    if let Some(sig) = attestation {
+    // key 5: anchor_attestation (bstr 96) — signature(64) || randomizer(32)
+    if let Some(att) = attestation {
         cbor.push(0x05);
         cbor.push(0x58);
-        cbor.push(0x40); // bytes(64)
-        cbor.extend_from_slice(sig);
+        cbor.push(0x60); // bytes(96)
+        cbor.extend_from_slice(att);
     }
 
     cbor

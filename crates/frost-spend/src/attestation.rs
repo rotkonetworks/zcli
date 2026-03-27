@@ -1,281 +1,95 @@
-// attestation.rs — anchor attestation signing and verification
+// attestation.rs — anchor attestation via pre-hashed message + existing RedPallas FROST
 //
-// Produces Schnorr signatures on the Pallas curve with a custom challenge
-// hash ("ZignerAnchorAtH") that is domain-separated from Zcash spend auth
-// ("Zcash_RedPallasH"). This ensures attestation signatures can never be
-// confused with spend authorization signatures, and vice versa.
+// Domain separation: the attestation data is pre-hashed with SHA-256 before
+// signing. The 32-byte digest is signed using the existing reddsa FROST
+// infrastructure — same code path as spend auth. A valid attestation digest
+// can never collide with a sighash because they use different hash functions.
 //
-// The signing side uses osst's RedPallas FROST infrastructure but replaces
-// the challenge computation. The verification side is a standalone Schnorr
-// check using the same custom challenge.
+// The CBOR carries 96 bytes: signature(64) + randomizer(32). The verifier
+// reconstructs rk from vk + randomizer*G and verifies using reddsa.
 //
-// Protocol:
-//   message = "zcash-anchor-v1" || vk(32) || anchor(32) || height(4,LE) || mainnet(1)
-//   c = BLAKE2b-512("ZignerAnchorAtH\0", R || vk || message)
-//   signature = (R, z) where g^z == R + c * vk
+// ZERO custom crypto. All signing uses orchestrate::sign_round1/sign_round2/
+// aggregate_shares. All verification uses reddsa.
 
-use osst::curve::{OsstPoint, OsstScalar};
-use osst::frost::{Nonces, Signature, SignatureShare, SigningCommitments};
-use osst::{compute_lagrange_coefficients, OsstError, SecretShare};
-use pasta_curves::pallas::{Point, Scalar};
+use sha2::{Digest, Sha256};
 
-use alloc::collections::BTreeMap;
-use alloc::vec::Vec;
-
-extern crate alloc;
-
-// ============================================================================
-// Challenge hash
-// ============================================================================
-
-/// BLAKE2b-512 personalized with "ZignerAnchorAtH\0" (16 bytes).
-///
-/// Domain-separated from Zcash spend auth ("Zcash_RedPallasH").
-/// c = H("ZignerAnchorAtH\0", R || vk || msg)
-fn attestation_challenge(group_commitment: &Point, group_pubkey: &Point, message: &[u8]) -> Scalar {
-    let h = blake2b_simd::Params::new()
-        .hash_length(64)
-        .personal(b"ZignerAnchorAtH\0")
-        .to_state()
-        .update(&group_commitment.compress())
-        .update(&group_pubkey.compress())
-        .update(message)
-        .finalize();
-    let hash: [u8; 64] = *h.as_array();
-    Scalar::from_bytes_wide(&hash)
-}
-
-/// Binding factor for attestation FROST (same structure as RedPallas).
-fn attestation_binding_factor(index: u32, message: &[u8], encoded_commitments: &[u8]) -> Scalar {
-    let h = blake2b_simd::Params::new()
-        .hash_length(64)
-        .personal(b"ZignerAttesBind\0")
-        .to_state()
-        .update(&index.to_le_bytes())
-        .update(&(message.len() as u64).to_le_bytes())
-        .update(message)
-        .update(encoded_commitments)
-        .finalize();
-    let hash: [u8; 64] = *h.as_array();
-    Scalar::from_bytes_wide(&hash)
-}
+use crate::orchestrate::{from_hex, Error};
 
 // ============================================================================
 // Message construction
 // ============================================================================
 
-/// Build the attestation message: domain || vk || anchor || height || mainnet.
+/// Compute the attestation digest: SHA-256 of domain-separated attestation data.
 ///
-/// This is the message that gets signed by the FROST group.
-/// Both signer (zcli) and verifier (zigner) must produce identical messages.
-pub fn attestation_message(
+/// This 32-byte digest is what gets signed by the FROST group using the
+/// existing RedPallas signing path (via orchestrate).
+///
+/// digest = SHA-256("zcash-anchor-v1" || vk(32) || anchor(32) || height(4,LE) || mainnet(1))
+pub fn attestation_digest(
     group_verifying_key: &[u8; 32],
     anchor: &[u8; 32],
     height: u32,
     mainnet: bool,
-) -> [u8; 84] {
-    let domain = b"zcash-anchor-v1";
-    let mut msg = [0u8; 84]; // 15 + 32 + 32 + 4 + 1
-    msg[..15].copy_from_slice(domain);
-    msg[15..47].copy_from_slice(group_verifying_key);
-    msg[47..79].copy_from_slice(anchor);
-    msg[79..83].copy_from_slice(&height.to_le_bytes());
-    msg[83] = u8::from(mainnet);
-    msg
+) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(b"zcash-anchor-v1");
+    hasher.update(group_verifying_key);
+    hasher.update(anchor);
+    hasher.update(&height.to_le_bytes());
+    hasher.update(&[u8::from(mainnet)]);
+    hasher.finalize().into()
 }
 
 // ============================================================================
-// Signing package (mirrors osst::redpallas::zcash::RedPallasPackage)
+// Verification (uses reddsa — same library that produced the signature)
 // ============================================================================
 
-/// Attestation signing package — same structure as RedPallasPackage but with
-/// the attestation-specific challenge and binding factor hashes.
-pub struct AttestationPackage {
-    message: Vec<u8>,
-    commitments: BTreeMap<u32, SigningCommitments<Point>>,
-    encoded_commitments: Vec<u8>,
-}
-
-fn encode_commitments(commitments: &BTreeMap<u32, SigningCommitments<Point>>) -> Vec<u8> {
-    let mut buf = Vec::with_capacity(commitments.len() * 68);
-    for (_, c) in commitments {
-        buf.extend_from_slice(&c.index.to_le_bytes());
-        buf.extend_from_slice(&c.hiding.compress());
-        buf.extend_from_slice(&c.binding.compress());
-    }
-    buf
-}
-
-impl AttestationPackage {
-    pub fn new(
-        message: Vec<u8>,
-        commitments: Vec<SigningCommitments<Point>>,
-    ) -> Result<Self, OsstError> {
-        let mut map = BTreeMap::new();
-        for c in commitments {
-            if c.index == 0 {
-                return Err(OsstError::InvalidIndex);
-            }
-            if map.contains_key(&c.index) {
-                return Err(OsstError::DuplicateIndex(c.index));
-            }
-            map.insert(c.index, c);
-        }
-        if map.is_empty() {
-            return Err(OsstError::EmptyContributions);
-        }
-
-        let encoded = encode_commitments(&map);
-
-        Ok(Self {
-            message,
-            commitments: map,
-            encoded_commitments: encoded,
-        })
-    }
-
-    pub fn signer_indices(&self) -> Vec<u32> {
-        self.commitments.keys().copied().collect()
-    }
-
-    pub fn num_signers(&self) -> usize {
-        self.commitments.len()
-    }
-
-    fn binding_factor(&self, index: u32) -> Scalar {
-        attestation_binding_factor(index, &self.message, &self.encoded_commitments)
-    }
-
-    fn group_commitment(&self) -> Point {
-        let mut r = Point::identity();
-        for (_, c) in &self.commitments {
-            let rho = self.binding_factor(c.index);
-            let bound = c.binding.mul_scalar(&rho);
-            r = r.add(&c.hiding);
-            r = r.add(&bound);
-        }
-        r
-    }
-
-    fn challenge(&self, group_commitment: &Point, group_pubkey: &Point) -> Scalar {
-        attestation_challenge(group_commitment, group_pubkey, &self.message)
-    }
-}
-
-// ============================================================================
-// FROST signing (attestation-specific)
-// ============================================================================
-
-/// Round 1: generate nonces and commitments (same as generic FROST).
-pub fn commit<R: rand_core::RngCore + rand_core::CryptoRng>(
-    index: u32,
-    rng: &mut R,
-) -> (Nonces<Scalar>, SigningCommitments<Point>) {
-    osst::frost::commit::<Point, R>(index, rng)
-}
-
-/// Round 2: produce an attestation signature share.
-pub fn sign(
-    package: &AttestationPackage,
-    nonces: Nonces<Scalar>,
-    share: &SecretShare<Scalar>,
-    group_pubkey: &Point,
-) -> Result<SignatureShare<Scalar>, OsstError> {
-    if package.commitments.get(&share.index).is_none() {
-        return Err(OsstError::InvalidIndex);
-    }
-
-    let rho = package.binding_factor(share.index);
-    let group_commitment = package.group_commitment();
-    let challenge = package.challenge(&group_commitment, group_pubkey);
-
-    let indices = package.signer_indices();
-    let lagrange = compute_lagrange_coefficients::<Scalar>(&indices)?;
-    let my_pos = indices
-        .iter()
-        .position(|&i| i == share.index)
-        .ok_or(OsstError::InvalidIndex)?;
-    let lambda = &lagrange[my_pos];
-
-    // z_i = d_i + ρ_i · e_i + λ_i · c · s_i
-    let response = nonces.compute_response(&rho, lambda, &challenge, share.scalar());
-
-    Ok(SignatureShare {
-        index: share.index,
-        response,
-    })
-}
-
-/// Aggregate signature shares into an attestation signature.
+/// Verify an attestation from raw bytes using reddsa.
 ///
-/// No randomization — the signature verifies against the base group key.
-pub fn aggregate(
-    package: &AttestationPackage,
-    shares: &[SignatureShare<Scalar>],
-    group_pubkey: &Point,
-) -> Result<Signature<Point>, OsstError> {
-    if shares.len() < package.num_signers() {
-        return Err(OsstError::InsufficientContributions {
-            got: shares.len(),
-            need: package.num_signers(),
-        });
-    }
-
-    let group_commitment = package.group_commitment();
-
-    // z = Σ z_i
-    let mut z = Scalar::zero();
-    for share in shares {
-        z = z.add(&share.response);
-    }
-
-    let sig = Signature {
-        r: group_commitment,
-        z,
-    };
-
-    // Verify before returning — catch bad shares early
-    if !verify(group_pubkey, &package.message, &sig) {
-        return Err(OsstError::InvalidResponse);
-    }
-
-    Ok(sig)
-}
-
-// ============================================================================
-// Verification
-// ============================================================================
-
-/// Verify an attestation signature against a group public key.
+/// attestation_data: [signature(64) || randomizer(32)] = 96 bytes.
+/// group_verifying_key: 32-byte compressed Pallas point (from PublicKeyPackage).
 ///
-/// This is standalone Schnorr verification with the attestation challenge hash.
-/// Used by both the signer (post-aggregate check) and the verifier (zigner).
-pub fn verify(group_pubkey: &Point, message: &[u8], signature: &Signature<Point>) -> bool {
-    let challenge = attestation_challenge(&signature.r, group_pubkey, message);
-    let lhs = Point::generator().mul_scalar(&signature.z);
-    let rhs = signature.r.add(&group_pubkey.mul_scalar(&challenge));
-    lhs == rhs
-}
-
-/// Verify from raw bytes — convenience for callers that don't want osst types.
-///
-/// signature_bytes: [R:32][z:32], group_verifying_key: compressed Pallas point.
-/// Returns None on parse failure, Some(bool) on success.
+/// Returns Ok(true) if valid, Ok(false) if invalid, Err on parse/deserialization failure.
 pub fn verify_from_bytes(
-    signature_bytes: &[u8; 64],
-    group_verifying_key: &[u8; 32],
-    message: &[u8],
-) -> Option<bool> {
-    let group_pubkey = Point::decompress(group_verifying_key)?;
-    let sig = Signature::<Point>::from_bytes(signature_bytes).ok()?;
-    Some(verify(&group_pubkey, message, &sig))
+    attestation_data: &[u8; 96],
+    public_key_package_hex: &str,
+    anchor: &[u8; 32],
+    height: u32,
+    mainnet: bool,
+) -> Result<bool, Error> {
+    use crate::{frost, RandomizedParams, Randomizer};
+
+    let vk_bytes = extract_group_vk(public_key_package_hex)?;
+
+    // Deserialize signature using frost-core's ciphersuite method
+    let sig = <frost::PallasBlake2b512 as frost::Ciphersuite>::deserialize_signature(
+        &attestation_data[..64],
+    )
+    .map_err(|e| Error::Serialize(format!("deserialize signature: {e}")))?;
+
+    // Deserialize randomizer
+    let randomizer = Randomizer::deserialize(&attestation_data[64..96])
+        .map_err(|e| Error::Serialize(format!("deserialize randomizer: {e}")))?;
+
+    // Get the verifying key from the public key package
+    let pubkeys: crate::frost_keys::PublicKeyPackage = from_hex(public_key_package_hex)?;
+
+    // Compute randomized verifying key: rk = vk + randomizer * G
+    let params = RandomizedParams::from_randomizer(pubkeys.verifying_key(), randomizer);
+
+    // Compute digest
+    let digest = attestation_digest(&vk_bytes, anchor, height, mainnet);
+
+    // Verify using reddsa's own verification
+    match params.randomized_verifying_key().verify(&digest, &sig) {
+        Ok(()) => Ok(true),
+        Err(_) => Ok(false),
+    }
 }
 
 // ============================================================================
-// Orchestration — hex-string API bridging reddsa key types to osst attestation
+// Helpers
 // ============================================================================
-
-use crate::orchestrate::{from_hex, Error};
 
 /// Extract the 32-byte group verifying key from a hex-encoded PublicKeyPackage.
 pub fn extract_group_vk(public_key_package_hex: &str) -> Result<[u8; 32], Error> {
@@ -289,52 +103,110 @@ pub fn extract_group_vk(public_key_package_hex: &str) -> Result<[u8; 32], Error>
         .map_err(|_| Error::Serialize("verifying key is not 32 bytes".into()))
 }
 
-/// Single-party attestation: sign the anchor directly with a raw Schnorr signature.
-///
-/// This bypasses FROST rounds entirely — it's a single-signer shortcut for
-/// dealer-keygen setups or testing. Uses the group secret key directly.
-///
-/// For multi-party FROST attestation, participants use commit() + sign() + aggregate().
-pub fn attest_anchor_local(
-    key_package_hex: &str,
-    public_key_package_hex: &str,
-    anchor: &[u8; 32],
-    anchor_height: u32,
-    mainnet: bool,
-) -> Result<String, Error> {
-    use rand_core::OsRng;
+// ============================================================================
+// Tests
+// ============================================================================
 
-    let vk = extract_group_vk(public_key_package_hex)?;
-    let group_pubkey =
-        Point::decompress(&vk).ok_or_else(|| Error::Serialize("invalid group vk".into()))?;
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    let msg = attestation_message(&vk, anchor, anchor_height, mainnet);
-
-    // For single-signer (1-of-1 dealer keygen), the signing share IS the secret key.
-    // Extract it via the reddsa serialization: JSON(hex(scalar_bytes))
-    let key_pkg: crate::frost_keys::KeyPackage = from_hex(key_package_hex)?;
-    let share_hex: String = serde_json::to_string(key_pkg.signing_share())
-        .and_then(|s| serde_json::from_str(&s))
-        .map_err(|e| Error::Serialize(format!("serialize signing share: {e}")))?;
-    let share_bytes: [u8; 32] = hex::decode(&share_hex)
-        .map_err(|e| Error::Serialize(format!("decode share hex: {e}")))?
-        .try_into()
-        .map_err(|_| Error::Serialize("share not 32 bytes".into()))?;
-    let sk = Scalar::from_canonical_bytes(&share_bytes)
-        .ok_or_else(|| Error::Serialize("invalid share scalar".into()))?;
-
-    // Raw Schnorr sign: k random, R = k*G, c = H(R, Y, m), z = k + c*sk
-    let k = Scalar::random(&mut OsRng);
-    let r = Point::generator().mul_scalar(&k);
-    let challenge = attestation_challenge(&r, &group_pubkey, &msg);
-    let z = k.add(&challenge.mul(&sk));
-
-    let sig = Signature { r, z };
-
-    // Sanity check
-    if !verify(&group_pubkey, &msg, &sig) {
-        return Err(Error::Frost("local attestation verification failed".into()));
+    #[test]
+    fn test_attestation_digest_deterministic() {
+        let vk = [1u8; 32];
+        let anchor = [2u8; 32];
+        let d1 = attestation_digest(&vk, &anchor, 1000, true);
+        let d2 = attestation_digest(&vk, &anchor, 1000, true);
+        assert_eq!(d1, d2);
     }
 
-    Ok(hex::encode(sig.to_bytes()))
+    #[test]
+    fn test_attestation_digest_domain_separation() {
+        let vk = [1u8; 32];
+        let anchor = [2u8; 32];
+        let d1 = attestation_digest(&vk, &anchor, 1000, true);
+        let d2 = attestation_digest(&vk, &anchor, 1001, true);
+        assert_ne!(d1, d2);
+        let d3 = attestation_digest(&vk, &anchor, 1000, false);
+        assert_ne!(d1, d3);
+        let d4 = attestation_digest(&[3u8; 32], &anchor, 1000, true);
+        assert_ne!(d1, d4);
+    }
+
+    #[test]
+    fn test_roundtrip_sign_verify() {
+        // dealer keygen: 2-of-2
+        let keygen = crate::orchestrate::dealer_keygen(2, 2).unwrap();
+        let vk = extract_group_vk(&keygen.public_key_package_hex).unwrap();
+        let anchor = [0xab; 32];
+        let height = 3_000_000u32;
+        let mainnet = true;
+
+        let digest = attestation_digest(&vk, &anchor, height, mainnet);
+
+        // unwrap dealer packages
+        fn unwrap_pkg(pkg_hex: &str) -> ([u8; 32], String) {
+            let signed: crate::message::SignedMessage = from_hex(pkg_hex).unwrap();
+            let bundle: serde_json::Value = serde_json::from_slice(&signed.payload).unwrap();
+            let seed = hex::decode(bundle["ephemeral_seed"].as_str().unwrap()).unwrap();
+            (seed.try_into().unwrap(), bundle["key_package"].as_str().unwrap().to_string())
+        }
+
+        let (seed0, kp0) = unwrap_pkg(&keygen.packages[0]);
+        let (seed1, kp1) = unwrap_pkg(&keygen.packages[1]);
+
+        // round 1
+        let (nonces0, commit0) = crate::orchestrate::sign_round1(&seed0, &kp0).unwrap();
+        let (nonces1, commit1) = crate::orchestrate::sign_round1(&seed1, &kp1).unwrap();
+        let commits = vec![commit0.clone(), commit1.clone()];
+
+        // coordinator generates randomizer
+        let randomizer_hex =
+            crate::orchestrate::generate_randomizer(&[0x42; 32], &digest, &commits).unwrap();
+
+        // round 2
+        let share0 = crate::orchestrate::sign_round2(
+            &seed0, &kp0, &nonces0, &digest, &commits, &randomizer_hex,
+        ).unwrap();
+        let share1 = crate::orchestrate::sign_round2(
+            &seed1, &kp1, &nonces1, &digest, &commits, &randomizer_hex,
+        ).unwrap();
+
+        // aggregate
+        let sig_hex = crate::orchestrate::aggregate_shares(
+            &keygen.public_key_package_hex, &digest, &commits, &[share0, share1], &randomizer_hex,
+        ).unwrap();
+
+        // extract raw bytes: randomizer
+        let signed_rand: crate::message::SignedMessage = from_hex(&randomizer_hex).unwrap();
+        let (_, rand_payload) = signed_rand.verify().unwrap();
+        let rand_to_hex: String = serde_json::from_slice(rand_payload).unwrap();
+        let randomizer: crate::Randomizer = from_hex(&rand_to_hex).unwrap();
+        let rand_json = serde_json::to_vec(&randomizer).unwrap();
+        let rand_hex_str: String = serde_json::from_slice(&rand_json).unwrap();
+        let rand_raw = hex::decode(&rand_hex_str).unwrap();
+
+        // extract raw bytes: signature
+        let sig: reddsa::frost::redpallas::Signature = from_hex(&sig_hex).unwrap();
+        let sig_raw = sig.serialize().unwrap();
+
+        // build attestation: sig(64) || randomizer(32)
+        assert_eq!(sig_raw.len(), 64);
+        assert_eq!(rand_raw.len(), 32);
+        let mut attestation = [0u8; 96];
+        attestation[..64].copy_from_slice(&sig_raw);
+        attestation[64..96].copy_from_slice(&rand_raw);
+
+        // verify
+        let result = verify_from_bytes(
+            &attestation, &keygen.public_key_package_hex, &anchor, height, mainnet,
+        ).unwrap();
+        assert!(result, "attestation should verify");
+
+        // tampered anchor should fail
+        let bad = verify_from_bytes(
+            &attestation, &keygen.public_key_package_hex, &[0xcd; 32], height, mainnet,
+        ).unwrap();
+        assert!(!bad, "tampered anchor should fail");
+    }
 }
