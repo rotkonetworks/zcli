@@ -94,8 +94,8 @@ async fn run(cli: &Cli) -> Result<(), Error> {
             }
         },
         Command::Signer { action } => match action {
-            SignerAction::ExportNotes { interval, fragment_size, attestation } => {
-                cmd_export_notes(cli, mainnet, *interval, *fragment_size, attestation.as_deref()).await
+            SignerAction::ExportNotes { interval, fragment_size, attestation, transport, zt_k, zt_n } => {
+                cmd_export_notes(cli, mainnet, *interval, *fragment_size, attestation.as_deref(), transport, *zt_k, *zt_n).await
             }
             SignerAction::Scan { device, timeout } => cmd_scan(cli, device, *timeout),
             SignerAction::Verify => cmd_verify(cli, mainnet).await,
@@ -1753,6 +1753,9 @@ async fn cmd_export_notes(
     interval_ms: u64,
     fragment_size: usize,
     attestation_hex: Option<&str>,
+    transport: &str,
+    zt_k: u8,
+    zt_n: u8,
 ) -> Result<(), Error> {
     let wallet_obj = wallet::Wallet::open(&wallet::Wallet::default_path())?;
     let (balance, notes) = wallet_obj.shielded_balance()?;
@@ -1811,13 +1814,27 @@ async fn cmd_export_notes(
         );
     }
 
-    let ur_parts = notes_export::generate_ur_parts(&cbor, fragment_size)?;
+    let (parts, transport_label) = match transport {
+        "zt" => {
+            let (frames, _session_id) =
+                zoda_vss::transport::Encoder::encode(&cbor, zt_k, zt_n);
+            let strings: Vec<String> = frames
+                .iter()
+                .map(|f| format!("zt:zcash-notes/{}", hex::encode(f.to_bytes())))
+                .collect();
+            (strings, format!("zt {}-of-{}", zt_k, zt_n))
+        }
+        _ => {
+            let ur = notes_export::generate_ur_parts(&cbor, fragment_size)?;
+            (ur, "ur".to_string())
+        }
+    };
 
     if cli.json {
         println!(
             "{}",
             serde_json::json!({
-                "ur_type": "zcash-notes",
+                "transport": transport,
                 "cbor_hex": hex::encode(&cbor),
                 "cbor_bytes": cbor.len(),
                 "notes": notes.len(),
@@ -1825,28 +1842,30 @@ async fn cmd_export_notes(
                 "anchor_height": tip,
                 "anchor": hex::encode(anchor.to_bytes()),
                 "attested": attestation.is_some(),
-                "ur_parts": ur_parts,
-                "fragment_count": ur_parts.len(),
+                "parts": parts,
+                "frame_count": parts.len(),
             })
         );
         return Ok(());
     }
 
     eprintln!(
-        "{} UR frames, showing at {}ms interval (ctrl+c to stop)",
-        ur_parts.len(),
+        "{} frames ({}), showing at {}ms interval (ctrl+c to stop)",
+        parts.len(),
+        transport_label,
         interval_ms
     );
     eprintln!();
 
     let status = format!(
-        "{:.8} ZEC  {} notes  anchor {}",
+        "{:.8} ZEC  {} notes  anchor {}  [{}]",
         balance as f64 / 1e8,
         notes.len(),
         tip,
+        transport_label,
     );
 
-    notes_export::display_animated_qr(&ur_parts, interval_ms, &status)
+    notes_export::display_animated_qr(&parts, interval_ms, &status)
 }
 
 fn cmd_multisig(cli: &Cli, action: &MultisigAction) -> Result<(), Error> {

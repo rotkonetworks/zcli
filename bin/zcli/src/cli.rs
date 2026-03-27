@@ -217,6 +217,18 @@ pub enum SignerAction {
         /// pre-computed FROST anchor attestation (192 hex chars = 96 bytes: sig(64) + randomizer(32))
         #[arg(long)]
         attestation: Option<String>,
+
+        /// transport: "ur" (fountain codes) or "zt" (zoda verified erasure coding)
+        #[arg(long, default_value = "ur")]
+        transport: String,
+
+        /// zoda transport: minimum frames to reconstruct (k)
+        #[arg(long, default_value_t = 5)]
+        zt_k: u8,
+
+        /// zoda transport: total frames to generate (n)
+        #[arg(long, default_value_t = 8)]
+        zt_n: u8,
     },
 
     /// scan QR code from webcam

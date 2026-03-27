@@ -7978,6 +7978,7 @@ dependencies = [
  "zcash_protocol 0.7.2",
  "zeroize",
  "zip32 0.2.1",
+ "zoda-vss",
  "zync-core",
 ]
 
