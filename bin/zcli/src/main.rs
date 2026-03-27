@@ -1779,7 +1779,9 @@ async fn cmd_export_notes(
     let (anchor, paths) =
         witness::build_witnesses(&client_obj, &notes, tip, mainnet, cli.json).await?;
 
-    let cbor = notes_export::encode_notes_cbor(&anchor, tip, mainnet, &notes, &paths);
+    // TODO: when --frost-wallet is passed, run attestation round here
+    // and pass Some(&sig) instead of None
+    let cbor = notes_export::encode_notes_cbor(&anchor, tip, mainnet, &notes, &paths, None);
 
     if !cli.json {
         eprintln!(

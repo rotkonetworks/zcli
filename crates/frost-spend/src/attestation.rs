@@ -270,3 +270,71 @@ pub fn verify_from_bytes(
     let sig = Signature::<Point>::from_bytes(signature_bytes).ok()?;
     Some(verify(&group_pubkey, message, &sig))
 }
+
+// ============================================================================
+// Orchestration — hex-string API bridging reddsa key types to osst attestation
+// ============================================================================
+
+use crate::orchestrate::{from_hex, Error};
+
+/// Extract the 32-byte group verifying key from a hex-encoded PublicKeyPackage.
+pub fn extract_group_vk(public_key_package_hex: &str) -> Result<[u8; 32], Error> {
+    let pubkeys: crate::frost_keys::PublicKeyPackage = from_hex(public_key_package_hex)?;
+    let vk_vec = pubkeys
+        .verifying_key()
+        .serialize()
+        .map_err(|_| Error::Serialize("serialize verifying key".into()))?;
+    vk_vec
+        .try_into()
+        .map_err(|_| Error::Serialize("verifying key is not 32 bytes".into()))
+}
+
+/// Single-party attestation: sign the anchor directly with a raw Schnorr signature.
+///
+/// This bypasses FROST rounds entirely — it's a single-signer shortcut for
+/// dealer-keygen setups or testing. Uses the group secret key directly.
+///
+/// For multi-party FROST attestation, participants use commit() + sign() + aggregate().
+pub fn attest_anchor_local(
+    key_package_hex: &str,
+    public_key_package_hex: &str,
+    anchor: &[u8; 32],
+    anchor_height: u32,
+    mainnet: bool,
+) -> Result<String, Error> {
+    use rand_core::OsRng;
+
+    let vk = extract_group_vk(public_key_package_hex)?;
+    let group_pubkey =
+        Point::decompress(&vk).ok_or_else(|| Error::Serialize("invalid group vk".into()))?;
+
+    let msg = attestation_message(&vk, anchor, anchor_height, mainnet);
+
+    // For single-signer (1-of-1 dealer keygen), the signing share IS the secret key.
+    // Extract it via the reddsa serialization: JSON(hex(scalar_bytes))
+    let key_pkg: crate::frost_keys::KeyPackage = from_hex(key_package_hex)?;
+    let share_hex: String = serde_json::to_string(key_pkg.signing_share())
+        .and_then(|s| serde_json::from_str(&s))
+        .map_err(|e| Error::Serialize(format!("serialize signing share: {e}")))?;
+    let share_bytes: [u8; 32] = hex::decode(&share_hex)
+        .map_err(|e| Error::Serialize(format!("decode share hex: {e}")))?
+        .try_into()
+        .map_err(|_| Error::Serialize("share not 32 bytes".into()))?;
+    let sk = Scalar::from_canonical_bytes(&share_bytes)
+        .ok_or_else(|| Error::Serialize("invalid share scalar".into()))?;
+
+    // Raw Schnorr sign: k random, R = k*G, c = H(R, Y, m), z = k + c*sk
+    let k = Scalar::random(&mut OsRng);
+    let r = Point::generator().mul_scalar(&k);
+    let challenge = attestation_challenge(&r, &group_pubkey, &msg);
+    let z = k.add(&challenge.mul(&sk));
+
+    let sig = Signature { r, z };
+
+    // Sanity check
+    if !verify(&group_pubkey, &msg, &sig) {
+        return Err(Error::Frost("local attestation verification failed".into()));
+    }
+
+    Ok(hex::encode(sig.to_bytes()))
+}

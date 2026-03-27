@@ -8,18 +8,22 @@ use crate::error::Error;
 use crate::wallet::WalletNote;
 use orchard::tree::{Anchor, MerklePath};
 
-/// Encode notes bundle to CBOR matching zigner's ZcashNotesBundle format
+/// Encode notes bundle to CBOR matching zigner's ZcashNotesBundle format.
+///
+/// If `attestation` is provided, emits map(5) with CBOR key 5 containing
+/// the 64-byte FROST group signature over the anchor. Otherwise emits map(4).
 pub fn encode_notes_cbor(
     anchor: &Anchor,
     anchor_height: u32,
     mainnet: bool,
     notes: &[WalletNote],
     paths: &[MerklePath],
+    attestation: Option<&[u8; 64]>,
 ) -> Vec<u8> {
     let mut cbor = Vec::new();
 
-    // map(4)
-    cbor.push(0xa4);
+    // map(4) or map(5) depending on attestation
+    cbor.push(if attestation.is_some() { 0xa5 } else { 0xa4 });
 
     // key 1: anchor (bstr 32)
     cbor.push(0x01);
@@ -77,6 +81,14 @@ pub fn encode_notes_cbor(
             cbor.push(0x20);
             cbor.extend_from_slice(&hash.to_bytes());
         }
+    }
+
+    // key 5: anchor_attestation (bstr 64) — optional FROST group signature
+    if let Some(sig) = attestation {
+        cbor.push(0x05);
+        cbor.push(0x58);
+        cbor.push(0x40); // bytes(64)
+        cbor.extend_from_slice(sig);
     }
 
     cbor

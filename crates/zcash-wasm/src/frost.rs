@@ -203,6 +203,53 @@ pub fn frost_spend_aggregate(
     ).map_err(|e| JsError::new(&e.to_string()))
 }
 
+// ── anchor attestation (domain-separated from spend auth) ──
+
+/// Single-party attestation: sign the anchor locally with a key package.
+///
+/// For testing or dealer-keygen setups where one party holds all shares.
+/// Returns hex-encoded 64-byte [R:32][z:32] signature.
+#[wasm_bindgen]
+pub fn frost_attest_anchor(
+    key_package_hex: &str,
+    public_key_package_hex: &str,
+    anchor_hex: &str,
+    anchor_height: u32,
+    mainnet: bool,
+) -> Result<String, JsError> {
+    let anchor = parse_32(anchor_hex, "anchor")?;
+    frost_spend::attestation::attest_anchor_local(
+        key_package_hex,
+        public_key_package_hex,
+        &anchor,
+        anchor_height,
+        mainnet,
+    )
+    .map_err(|e| JsError::new(&e.to_string()))
+}
+
+/// Verify an attestation signature.
+#[wasm_bindgen]
+pub fn frost_attestation_verify(
+    signature_hex: &str,
+    public_key_package_hex: &str,
+    anchor_hex: &str,
+    anchor_height: u32,
+    mainnet: bool,
+) -> Result<bool, JsError> {
+    let vk = frost_spend::attestation::extract_group_vk(public_key_package_hex)
+        .map_err(|e| JsError::new(&e.to_string()))?;
+    let anchor = parse_32(anchor_hex, "anchor")?;
+    let sig_bytes: [u8; 64] = hex::decode(signature_hex)
+        .map_err(|e| JsError::new(&format!("bad sig hex: {e}")))?
+        .try_into()
+        .map_err(|_| JsError::new("signature must be 64 bytes"))?;
+
+    let msg = frost_spend::attestation::attestation_message(&vk, &anchor, anchor_height, mainnet);
+    frost_spend::attestation::verify_from_bytes(&sig_bytes, &vk, &msg)
+        .ok_or_else(|| JsError::new("invalid signature or key"))
+}
+
 // ── helpers ──
 
 fn parse_seed(hex_str: &str) -> Result<[u8; 32], JsError> {
