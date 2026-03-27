@@ -74,6 +74,10 @@ service Zidecar {
 
     // Get all epoch boundaries in range (for bulk sync)
     rpc GetEpochBoundaries(EpochRangeRequest) returns (EpochBoundaryList);
+
+    // Sign anchor for zigner attestation (rotko verifier)
+    // Returns ed25519 signature if ZCLI_SIGNING_KEY is configured
+    rpc SignAnchor(SignAnchorRequest) returns (SignAnchorResponse);
 }
 
 // Request proof for height range
@@ -454,4 +458,20 @@ message EpochRangeRequest {
 // List of epoch boundaries
 message EpochBoundaryList {
     repeated EpochBoundary boundaries = 1;
+}
+
+// ===== ANCHOR ATTESTATION =====
+
+// Request anchor signature from rotko verifier
+message SignAnchorRequest {
+    bytes anchor = 1;           // 32-byte orchard tree root
+    uint32 height = 2;          // block height
+    bool mainnet = 3;           // network
+}
+
+// Signed anchor attestation
+message SignAnchorResponse {
+    bytes signature = 1;        // 64-byte ed25519 signature
+    bytes verifier_key = 2;     // 32-byte ed25519 public key
+    bool available = 3;         // false if ZCLI_SIGNING_KEY not configured
 }

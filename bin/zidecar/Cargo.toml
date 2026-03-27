@@ -60,6 +60,7 @@ async-stream = "0.3"
 thiserror = "1.0"
 anyhow = "1.0"
 hex = "0.4"
+ed25519-consensus = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 clap = { version = "4", features = ["derive", "env"] }
