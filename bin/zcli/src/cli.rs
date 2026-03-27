@@ -213,6 +213,10 @@ pub enum SignerAction {
         /// max UR fragment length in bytes (controls QR density vs frame count)
         #[arg(long, default_value_t = 200)]
         fragment_size: usize,
+
+        /// pre-computed FROST anchor attestation (192 hex chars = 96 bytes: sig(64) + randomizer(32))
+        #[arg(long)]
+        attestation: Option<String>,
     },
 
     /// scan QR code from webcam

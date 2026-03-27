@@ -94,8 +94,8 @@ async fn run(cli: &Cli) -> Result<(), Error> {
             }
         },
         Command::Signer { action } => match action {
-            SignerAction::ExportNotes { interval, fragment_size } => {
-                cmd_export_notes(cli, mainnet, *interval, *fragment_size).await
+            SignerAction::ExportNotes { interval, fragment_size, attestation } => {
+                cmd_export_notes(cli, mainnet, *interval, *fragment_size, attestation.as_deref()).await
             }
             SignerAction::Scan { device, timeout } => cmd_scan(cli, device, *timeout),
             SignerAction::Verify => cmd_verify(cli, mainnet).await,
@@ -1752,6 +1752,7 @@ async fn cmd_export_notes(
     mainnet: bool,
     interval_ms: u64,
     fragment_size: usize,
+    attestation_hex: Option<&str>,
 ) -> Result<(), Error> {
     let wallet_obj = wallet::Wallet::open(&wallet::Wallet::default_path())?;
     let (balance, notes) = wallet_obj.shielded_balance()?;
@@ -1779,9 +1780,28 @@ async fn cmd_export_notes(
     let (anchor, paths) =
         witness::build_witnesses(&client_obj, &notes, tip, mainnet, cli.json).await?;
 
-    // TODO: when --frost-wallet is passed, run attestation round here
-    // and pass Some(&sig) instead of None
-    let cbor = notes_export::encode_notes_cbor(&anchor, tip, mainnet, &notes, &paths, None);
+    let attestation: Option<[u8; 96]> = match attestation_hex {
+        Some(hex_str) => {
+            let bytes = hex::decode(hex_str)
+                .map_err(|e| Error::Other(format!("bad attestation hex: {e}")))?;
+            let arr: [u8; 96] = bytes.try_into().map_err(|v: Vec<u8>| {
+                Error::Other(format!(
+                    "attestation must be 96 bytes (sig 64 + randomizer 32), got {}",
+                    v.len()
+                ))
+            })?;
+            Some(arr)
+        }
+        None => None,
+    };
+    let cbor = notes_export::encode_notes_cbor(
+        &anchor,
+        tip,
+        mainnet,
+        &notes,
+        &paths,
+        attestation.as_ref(),
+    );
 
     if !cli.json {
         eprintln!(
@@ -1804,6 +1824,7 @@ async fn cmd_export_notes(
                 "balance_zat": balance,
                 "anchor_height": tip,
                 "anchor": hex::encode(anchor.to_bytes()),
+                "attested": attestation.is_some(),
                 "ur_parts": ur_parts,
                 "fragment_count": ur_parts.len(),
             })

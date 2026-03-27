@@ -22,8 +22,13 @@ pub fn encode_notes_cbor(
 ) -> Vec<u8> {
     let mut cbor = Vec::new();
 
-    // map(4) or map(5) depending on attestation
-    cbor.push(if attestation.is_some() { 0xa5 } else { 0xa4 });
+    // map(5) or map(6) depending on attestation (version + 4 fields + optional attestation)
+    let map_len = 5 + if attestation.is_some() { 1 } else { 0 };
+    cbor.push(0xa0 | map_len as u8);
+
+    // key 0: version (uint 1)
+    cbor.push(0x00);
+    cbor.push(0x01);
 
     // key 1: anchor (bstr 32)
     cbor.push(0x01);

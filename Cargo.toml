@@ -11,6 +11,7 @@ members = [
     "crates/ligerito-reed-solomon",
     "crates/zcash-wasm",
     "crates/frost-spend",
+    "crates/zoda-vss",
     "bin/relay",
     "bin/poker",
 ]

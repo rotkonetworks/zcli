@@ -66,6 +66,12 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde-wasm-bindgen = "0.6"
 
+# UR encoding for QR transport
+ur = "0.4"
+
+# Verified erasure-coded QR transport
+zoda-vss = { path = "../zoda-vss", default-features = false }
+
 # parallel processing (optional, enabled by default)
 rayon = { version = ">=1.10, <1.11", optional = true }
 wasm-bindgen-rayon = { version = "1.2", optional = true }

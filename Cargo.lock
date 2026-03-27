@@ -3097,7 +3097,7 @@ dependencies = [
 
 [[package]]
 name = "ligerito"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "anyhow",
  "bincode",
@@ -3136,7 +3136,7 @@ dependencies = [
 
 [[package]]
 name = "ligerito-binary-fields"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "bytemuck",
  "criterion",
@@ -3150,7 +3150,7 @@ dependencies = [
 
 [[package]]
 name = "ligerito-merkle"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "blake3",
  "bytemuck",
@@ -3163,7 +3163,7 @@ dependencies = [
 
 [[package]]
 name = "ligerito-reed-solomon"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "criterion",
  "ligerito-binary-fields",
@@ -7633,6 +7633,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "subtle",
+ "ur",
  "wasm-bindgen",
  "wasm-bindgen-rayon",
  "wasm-bindgen-test",
@@ -7642,6 +7643,7 @@ dependencies = [
  "zcash_protocol 0.7.2",
  "zcash_transparent 0.6.3",
  "zip32 0.2.1",
+ "zoda-vss",
 ]
 
 [[package]]
@@ -8139,6 +8141,17 @@ name = "zmij"
 version = "1.0.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b8848ee67ecc8aedbaf3e4122217aff892639231befc6a1b58d29fff4c2cabaa"
+
+[[package]]
+name = "zoda-vss"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "rand 0.8.5",
+ "rand_core 0.6.4",
+ "serde",
+ "sha2 0.10.9",
+]
 
 [[package]]
 name = "zync-core"

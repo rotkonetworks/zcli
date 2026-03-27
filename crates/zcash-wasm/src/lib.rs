@@ -2433,12 +2433,12 @@ pub fn encode_notes_bundle(
         .try_into()
         .map_err(|_| JsError::new("anchor must be 32 bytes"))?;
 
-    let attestation: Option<[u8; 64]> = match attestation_hex {
+    let attestation: Option<[u8; 96]> = match attestation_hex {
         Some(h) if !h.is_empty() => {
-            let bytes: [u8; 64] = hex::decode(&h)
+            let bytes: [u8; 96] = hex::decode(&h)
                 .map_err(|e| JsError::new(&format!("bad attestation hex: {e}")))?
                 .try_into()
-                .map_err(|_| JsError::new("attestation must be 64 bytes"))?;
+                .map_err(|_| JsError::new("attestation must be 96 bytes (sig 64 + randomizer 32)"))?;
             Some(bytes)
         }
         _ => None,
@@ -2447,8 +2447,13 @@ pub fn encode_notes_bundle(
     // Build CBOR manually — same format as zcli's notes_export.rs
     let mut cbor = Vec::new();
 
-    // map(4) or map(5)
-    cbor.push(if attestation.is_some() { 0xa5 } else { 0xa4 });
+    // map(5) or map(6): version + anchor + height + mainnet + notes [+ attestation]
+    let map_len = 5 + if attestation.is_some() { 1 } else { 0 };
+    cbor.push(0xa0 | map_len as u8);
+
+    // key 0: version
+    cbor.push(0x00);
+    cbor.push(0x01); // version 1
 
     // key 1: anchor
     cbor.push(0x01);
@@ -2519,15 +2524,64 @@ pub fn encode_notes_bundle(
         }
     }
 
-    // key 5: attestation (optional)
-    if let Some(sig) = attestation {
+    // key 5: attestation (optional, 96 bytes: signature(64) + randomizer(32))
+    if let Some(att) = attestation {
         cbor.push(0x05);
         cbor.push(0x58);
-        cbor.push(0x40); // bytes(64)
-        cbor.extend_from_slice(&sig);
+        cbor.push(0x60); // bytes(96)
+        cbor.extend_from_slice(&att);
     }
 
     Ok(cbor)
+}
+
+/// Encode CBOR bytes as UR-encoded animated QR string frames.
+/// Returns JSON array of UR strings suitable for QR display.
+/// ur_type: e.g. "zcash-notes", "zigner-contacts", "zigner-backup"
+/// fragment_size: max bytes per QR frame (200-500 typical, 0 = single QR)
+#[wasm_bindgen]
+pub fn ur_encode_frames(
+    cbor_data: &[u8],
+    ur_type: &str,
+    fragment_size: u32,
+) -> Result<String, JsError> {
+    let frames = if fragment_size == 0 || cbor_data.len() <= fragment_size as usize {
+        let single = ur::ur::encode(cbor_data, &ur::ur::Type::Custom(ur_type));
+        vec![single]
+    } else {
+        let mut encoder =
+            ur::ur::Encoder::new(cbor_data, fragment_size as usize, ur_type)
+                .map_err(|e| JsError::new(&format!("UR encoder: {e:?}")))?;
+        let count = encoder.fragment_count();
+        let mut parts = Vec::with_capacity(count * 2);
+        // Generate 2x fragments for fountain code redundancy
+        for _ in 0..count * 2 {
+            let part = encoder
+                .next_part()
+                .map_err(|e| JsError::new(&format!("UR part: {e:?}")))?;
+            parts.push(part);
+        }
+        parts
+    };
+    serde_json::to_string(&frames).map_err(|e| JsError::new(&format!("JSON: {e}")))
+}
+
+/// Encode CBOR bytes as zoda transport QR frames (verified erasure coding).
+/// Returns JSON array of `zt:type/hex` strings.
+/// k = minimum frames to reconstruct, n = total frames.
+#[wasm_bindgen]
+pub fn zt_encode_frames(
+    cbor_data: &[u8],
+    zt_type: &str,
+    k: u8,
+    n: u8,
+) -> Result<String, JsError> {
+    let (frames, _) = zoda_vss::transport::Encoder::encode(cbor_data, k, n);
+    let strings: Vec<String> = frames
+        .iter()
+        .map(|f| format!("zt:{}/{}", zt_type, hex::encode(f.to_bytes())))
+        .collect();
+    serde_json::to_string(&strings).map_err(|e| JsError::new(&format!("JSON: {e}")))
 }
 
 fn cbor_uint(out: &mut Vec<u8>, val: u64) {
