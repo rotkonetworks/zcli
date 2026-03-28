@@ -11,6 +11,8 @@ use crate::error::Error;
 const SYNC_HEIGHT_KEY: &[u8] = b"sync_height";
 const BIRTH_HEIGHT_KEY: &[u8] = b"birth_height";
 const ORCHARD_POSITION_KEY: &[u8] = b"orchard_position";
+const TREE_FRONTIER_KEY: &[u8] = b"tree_frontier";
+const TREE_FRONTIER_HEIGHT_KEY: &[u8] = b"tree_frontier_height";
 const NEXT_REQUEST_ID_KEY: &[u8] = b"next_request_id";
 const FORWARD_ADDRESS_KEY: &[u8] = b"forward_address";
 const NOTES_TREE: &str = "notes";
@@ -298,6 +300,40 @@ impl Wallet {
         self.db
             .insert(ORCHARD_POSITION_KEY, &pos.to_le_bytes())
             .map_err(|e| Error::Wallet(format!("write orchard position: {}", e)))?;
+        Ok(())
+    }
+
+    /// cached orchard tree frontier (hex-encoded) for fast witness building
+    pub fn tree_frontier(&self) -> Result<Option<(String, u32)>, Error> {
+        let frontier = self
+            .db
+            .get(TREE_FRONTIER_KEY)
+            .map_err(|e| Error::Wallet(format!("read tree frontier: {}", e)))?;
+        let height = self
+            .db
+            .get(TREE_FRONTIER_HEIGHT_KEY)
+            .map_err(|e| Error::Wallet(format!("read tree frontier height: {}", e)))?;
+        match (frontier, height) {
+            (Some(f), Some(h)) if h.len() == 4 => {
+                let hex = String::from_utf8(f.to_vec())
+                    .map_err(|e| Error::Wallet(format!("invalid frontier utf8: {}", e)))?;
+                let height = u32::from_le_bytes(h.as_ref().try_into().expect("len checked"));
+                Ok(Some((hex, height)))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    pub fn set_tree_frontier(&self, hex: &str, height: u32) -> Result<(), Error> {
+        self.db
+            .insert(TREE_FRONTIER_KEY, hex.as_bytes())
+            .map_err(|e| Error::Wallet(format!("write tree frontier: {}", e)))?;
+        self.db
+            .insert(TREE_FRONTIER_HEIGHT_KEY, &height.to_le_bytes())
+            .map_err(|e| Error::Wallet(format!("write tree frontier height: {}", e)))?;
+        self.db
+            .flush()
+            .map_err(|e| Error::Wallet(format!("flush frontier: {}", e)))?;
         Ok(())
     }
 

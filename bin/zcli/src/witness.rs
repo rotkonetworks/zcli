@@ -15,7 +15,19 @@ use orchard::tree::{Anchor, MerkleHashOrchard, MerklePath};
 
 use crate::client::{CompactBlock, ZidecarClient};
 use crate::error::Error;
-use crate::wallet::WalletNote;
+use crate::wallet::{Wallet, WalletNote};
+
+/// load cached frontier from wallet for witness building
+pub fn load_frontier_from_wallet() -> (Option<(String, u32)>, u32) {
+    match Wallet::open(&Wallet::default_path()) {
+        Ok(w) => {
+            let frontier = w.tree_frontier().ok().flatten();
+            let sh = w.sync_height().unwrap_or(0);
+            (frontier, sh)
+        }
+        Err(_) => (None, 0),
+    }
+}
 
 /// retry compact block fetch with backoff
 async fn retry_compact_blocks(
@@ -154,96 +166,53 @@ pub fn frontier_tree_size(data: &[u8]) -> Result<u64, Error> {
     Ok(tree.size() as u64)
 }
 
-/// find a checkpoint height whose tree size is just before `target_position`.
-/// uses binary search over GetTreeState RPCs.
-async fn find_checkpoint_height(
-    client: &ZidecarClient,
-    target_position: u64,
-    activation: u32,
-    tip: u32,
-) -> Result<(u32, u64), Error> {
-    let mut lo = activation;
-    let mut hi = tip;
-    let mut best_height = activation;
-    let mut best_size = 0u64;
-
-    while lo + 100 < hi {
-        let mid = lo + (hi - lo) / 2;
-        let (tree_hex, actual_height) = client.get_tree_state(mid).await?;
-        let tree_bytes =
-            hex::decode(&tree_hex).map_err(|e| Error::Other(format!("invalid tree hex: {}", e)))?;
-        let size = frontier_tree_size(&tree_bytes)?;
-
-        if size <= target_position {
-            best_height = actual_height;
-            best_size = size;
-            lo = mid + 1;
-        } else {
-            hi = mid;
-        }
-    }
-
-    Ok((best_height, best_size))
-}
 
 /// build merkle witnesses for a set of notes.
 ///
-/// uses tree state checkpoints to avoid replaying from activation.
-/// finds a checkpoint before the earliest note, deserializes the frontier,
-/// then replays only the blocks between checkpoint and anchor_height.
+/// uses the cached tree frontier from sync to avoid the binary search
+/// (which leaks note position via RPC access pattern). only replays
+/// the gap between cached frontier and anchor_height.
+///
+/// if no cached frontier, falls back to fetching tree state at sync_height
+/// (single RPC, no position leak).
 pub async fn build_witnesses(
     client: &ZidecarClient,
     notes: &[WalletNote],
     anchor_height: u32,
-    mainnet: bool,
+    _mainnet: bool,
     json: bool,
+    cached_frontier: Option<(String, u32)>,
+    sync_height: u32,
 ) -> Result<(Anchor, Vec<MerklePath>), Error> {
-    let activation = if mainnet { 1_687_104 } else { 1_842_420 };
-
-    if anchor_height < activation {
+    // resolve frontier: cached > fetch at sync_height (single RPC, no position leak)
+    let (frontier_hex, frontier_height) = if let Some((hex, h)) = cached_frontier {
+        if !json {
+            eprintln!("using cached tree frontier at height {}", h);
+        }
+        (hex, h)
+    } else if sync_height > 0 && sync_height <= anchor_height {
+        if !json {
+            eprintln!("no cached frontier, fetching at sync height {}", sync_height);
+        }
+        let (hex, _) = client.get_tree_state(sync_height).await?;
+        (hex, sync_height)
+    } else {
         return Err(Error::Other(
-            "anchor height before orchard activation".into(),
+            "wallet must be synced before spending - no tree frontier available".into(),
         ));
-    }
+    };
 
-    // find earliest note position - we need a checkpoint before this
-    let earliest_position = notes
-        .iter()
-        .map(|n| n.position)
-        .min()
-        .ok_or_else(|| Error::Other("no notes to build witnesses for".into()))?;
-
-    if !json {
-        eprintln!("earliest note position: {}", earliest_position);
-    }
-
-    // find a checkpoint height whose tree size is just before our earliest note
-    let (checkpoint_height, checkpoint_size) =
-        find_checkpoint_height(client, earliest_position, activation, anchor_height).await?;
+    let frontier_bytes = hex::decode(&frontier_hex)
+        .map_err(|e| Error::Other(format!("invalid frontier hex: {}", e)))?;
+    let mut tree = deserialize_tree(&frontier_bytes)?;
+    let mut position_counter = tree.size() as u64;
 
     if !json {
         eprintln!(
-            "checkpoint: height={} size={} (target={})",
-            checkpoint_height, checkpoint_size, earliest_position
+            "frontier: height={} size={} gap={} blocks",
+            frontier_height, position_counter, anchor_height - frontier_height
         );
     }
-
-    // get tree state at checkpoint and deserialize
-    let (tree_hex, _) = client.get_tree_state(checkpoint_height).await?;
-    let tree_bytes =
-        hex::decode(&tree_hex).map_err(|e| Error::Other(format!("invalid tree hex: {}", e)))?;
-    let mut tree = deserialize_tree(&tree_bytes)?;
-
-    // verify size matches
-    let actual_size = tree.size() as u64;
-    if actual_size != checkpoint_size && !json {
-        eprintln!(
-            "warning: tree.size()={} vs computed={}",
-            actual_size, checkpoint_size
-        );
-    }
-
-    let mut position_counter = checkpoint_size;
 
     // build position → note index map
     let mut position_map: HashMap<u64, usize> = HashMap::new();
@@ -251,10 +220,10 @@ pub async fn build_witnesses(
         position_map.insert(note.position, i);
     }
 
-    // start replay from checkpoint_height + 1 since the tree state
-    // at checkpoint_height already includes that block's actions
-    let replay_start = checkpoint_height + 1;
-    let replay_blocks = anchor_height - replay_start;
+    // start replay from frontier_height + 1 since the tree state
+    // at frontier_height already includes that block's actions
+    let replay_start = frontier_height + 1;
+    let replay_blocks = if anchor_height >= replay_start { anchor_height - replay_start + 1 } else { 0 };
     let pb = if !json && is_terminal::is_terminal(std::io::stderr()) {
         let pb = ProgressBar::new(replay_blocks as u64);
         pb.set_style(
@@ -346,8 +315,8 @@ pub async fn build_witnesses(
     for (i, w) in witnesses.into_iter().enumerate() {
         let witness = w.ok_or_else(|| {
             Error::Other(format!(
-                "note at position {} not found in tree replay (checkpoint started at {})",
-                notes[i].position, checkpoint_size,
+                "note at position {} not found in tree replay (frontier at height {})",
+                notes[i].position, frontier_height,
             ))
         })?;
 

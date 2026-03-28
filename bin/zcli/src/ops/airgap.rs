@@ -228,7 +228,8 @@ async fn send_airgap_shielded_fvk(
     if !json {
         eprintln!("building merkle witnesses...");
     }
-    let (anchor, paths) = witness::build_witnesses(&client, &selected, tip, mainnet, json).await?;
+    let (cached_frontier, sync_height) = witness::load_frontier_from_wallet();
+    let (anchor, paths) = witness::build_witnesses(&client, &selected, tip, mainnet, json, cached_frontier, sync_height).await?;
 
     let spends: Vec<(orchard::Note, orchard::tree::MerklePath)> =
         orchard_notes.into_iter().zip(paths).collect();
@@ -415,7 +416,8 @@ async fn send_airgap_to_transparent_fvk(
     if !json {
         eprintln!("building merkle witnesses...");
     }
-    let (anchor, paths) = witness::build_witnesses(&client, &selected, tip, mainnet, json).await?;
+    let (cached_frontier, sync_height) = witness::load_frontier_from_wallet();
+    let (anchor, paths) = witness::build_witnesses(&client, &selected, tip, mainnet, json, cached_frontier, sync_height).await?;
 
     let spends: Vec<(orchard::Note, orchard::tree::MerklePath)> =
         orchard_notes.into_iter().zip(paths).collect();

@@ -365,8 +365,9 @@ pub async fn process_withdrawals(
             }
         };
 
+        let (cached_frontier, sync_height) = witness::load_frontier_from_wallet();
         let (anchor, paths) =
-            match witness::build_witnesses(&client, &selected, tip, mainnet, json).await {
+            match witness::build_witnesses(&client, &selected, tip, mainnet, json, cached_frontier, sync_height).await {
                 Ok(ap) => ap,
                 Err(e) => {
                     let mut wr = wallet.get_withdrawal_request(wr.id)?;
@@ -522,8 +523,9 @@ async fn forward_single_note(
         );
     }
 
+    let (cached_frontier, sync_height) = witness::load_frontier_from_wallet();
     let (anchor, paths) =
-        witness::build_witnesses(&client, std::slice::from_ref(note), tip, mainnet, json).await?;
+        witness::build_witnesses(&client, std::slice::from_ref(note), tip, mainnet, json, cached_frontier, sync_height).await?;
 
     let spends = vec![(orchard_note, paths.into_iter().next().unwrap())];
 

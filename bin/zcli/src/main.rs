@@ -1780,8 +1780,9 @@ async fn cmd_export_notes(
         eprintln!("building merkle witnesses (anchor height {})...", tip);
     }
 
+    let (cached_frontier, sync_height) = witness::load_frontier_from_wallet();
     let (anchor, paths) =
-        witness::build_witnesses(&client_obj, &notes, tip, mainnet, cli.json).await?;
+        witness::build_witnesses(&client_obj, &notes, tip, mainnet, cli.json, cached_frontier, sync_height).await?;
 
     // sign anchor attestation if signing key provided
     let attestation: Option<[u8; 64]> = match signing_key {

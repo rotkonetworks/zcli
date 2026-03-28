@@ -196,7 +196,21 @@ async fn sync_inner(
         wallet.set_orchard_position(pos)?;
         pos
     } else {
-        wallet.orchard_position()?
+        let stored = wallet.orchard_position()?;
+        if stored == 0 && start > activation {
+            // first sync from birthday — fetch tree state to get correct global position
+            let (tree_hex, _) = client.get_tree_state(start - 1).await?;
+            let tree_bytes = hex::decode(&tree_hex)
+                .map_err(|e| Error::Other(format!("invalid tree hex: {}", e)))?;
+            let pos = crate::witness::frontier_tree_size(&tree_bytes)?;
+            if !json {
+                eprintln!("initial position from tree state at height {}: {}", start - 1, pos);
+            }
+            wallet.set_orchard_position(pos)?;
+            pos
+        } else {
+            stored
+        }
     };
 
     // collect new notes that need memo fetching
@@ -337,26 +351,35 @@ async fn sync_inner(
     }
 
     // verify actions commitment chain against proven value
-    running_actions_commitment = zync_core::sync::verify_actions_commitment(
-        &running_actions_commitment,
-        &proven_roots.actions_commitment,
-        actions_commitment_available,
-    )
-    .map_err(|e| Error::Other(e.to_string()))?;
-    if !actions_commitment_available {
+    let skip_verify = std::env::var("ZCLI_NO_VERIFY").is_ok();
+    if skip_verify {
+        // when skipping verification (e.g. resync with --from), adopt the proven commitment
+        running_actions_commitment = proven_roots.actions_commitment;
         eprintln!(
-            "actions commitment: migrating from pre-0.5.1 wallet, saving proven {}...",
+            "  skipping actions commitment verification (ZCLI_NO_VERIFY set), adopting proven {}...",
             hex::encode(&running_actions_commitment[..8]),
         );
     } else {
-        eprintln!(
-            "actions commitment verified: {}...",
-            hex::encode(&running_actions_commitment[..8])
-        );
+        running_actions_commitment = zync_core::sync::verify_actions_commitment(
+            &running_actions_commitment,
+            &proven_roots.actions_commitment,
+            actions_commitment_available,
+        )
+        .map_err(|e| Error::Other(e.to_string()))?;
+        if !actions_commitment_available {
+            eprintln!(
+                "actions commitment: migrating from pre-0.5.1 wallet, saving proven {}...",
+                hex::encode(&running_actions_commitment[..8]),
+            );
+        } else {
+            eprintln!(
+                "actions commitment verified: {}...",
+                hex::encode(&running_actions_commitment[..8])
+            );
+        }
     }
 
     // verify commitment proofs (NOMT) for received notes BEFORE storing
-    let skip_verify = std::env::var("ZCLI_NO_VERIFY").is_ok();
     if !received_cmxs.is_empty() && !skip_verify {
         verify_commitments(
             &client,
@@ -380,6 +403,16 @@ async fn sync_inner(
     wallet.set_sync_height(tip)?;
     wallet.set_orchard_position(position_counter)?;
     wallet.set_actions_commitment(&running_actions_commitment)?;
+
+    // cache tree frontier at sync height for fast witness building (no binary search)
+    match client.get_tree_state(tip).await {
+        Ok((tree_hex, _)) => {
+            if let Err(e) = wallet.set_tree_frontier(&tree_hex, tip) {
+                eprintln!("warning: failed to cache tree frontier: {}", e);
+            }
+        }
+        Err(e) => eprintln!("warning: failed to fetch tree state for caching: {}", e),
+    }
 
     // verify nullifier proofs (NOMT) for unspent notes
     if skip_verify {

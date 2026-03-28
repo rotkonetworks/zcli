@@ -56,7 +56,7 @@ async fn send_to_transparent(
     mainnet: bool,
     json: bool,
 ) -> Result<(), Error> {
-    let selected = {
+    let (selected, cached_frontier, sync_height) = {
         let wallet = Wallet::open(&Wallet::default_path())?;
         let (balance, notes) = wallet.shielded_balance()?;
 
@@ -70,8 +70,11 @@ async fn send_to_transparent(
             });
         }
 
+        let frontier = wallet.tree_frontier().ok().flatten();
+        let sh = wallet.sync_height().unwrap_or(0);
+
         // select notes (largest first until we cover amount + fee)
-        select_notes(&notes, needed)?
+        (select_notes(&notes, needed)?, frontier, sh)
     }; // drop wallet before later re-open
 
     // compute exact fee based on selected notes
@@ -108,7 +111,7 @@ async fn send_to_transparent(
     if !json {
         eprintln!("building merkle witnesses (replaying chain)...");
     }
-    let (anchor, paths) = witness::build_witnesses(&client, &selected, tip, mainnet, json).await?;
+    let (anchor, paths) = witness::build_witnesses(&client, &selected, tip, mainnet, json, cached_frontier.clone(), sync_height).await?;
 
     // build spends vec
     let spends: Vec<(orchard::Note, orchard::tree::MerklePath)> =
@@ -197,7 +200,7 @@ async fn send_to_shielded(
     // parse recipient
     let recipient_addr = tx::parse_orchard_address(recipient, mainnet)?;
 
-    let selected = {
+    let (selected, cached_frontier, sync_height) = {
         let wallet = Wallet::open(&Wallet::default_path())?;
         let (balance, notes) = wallet.shielded_balance()?;
 
@@ -210,7 +213,9 @@ async fn send_to_shielded(
             });
         }
 
-        select_notes(&notes, needed)?
+        let frontier = wallet.tree_frontier().ok().flatten();
+        let sh = wallet.sync_height().unwrap_or(0);
+        (select_notes(&notes, needed)?, frontier, sh)
     }; // drop wallet before later re-open
 
     let total_in: u64 = selected.iter().map(|n| n.value).sum();
@@ -251,7 +256,7 @@ async fn send_to_shielded(
     if !json {
         eprintln!("building merkle witnesses (replaying chain)...");
     }
-    let (anchor, paths) = witness::build_witnesses(&client, &selected, tip, mainnet, json).await?;
+    let (anchor, paths) = witness::build_witnesses(&client, &selected, tip, mainnet, json, cached_frontier.clone(), sync_height).await?;
 
     let spends: Vec<(orchard::Note, orchard::tree::MerklePath)> =
         orchard_notes.into_iter().zip(paths.into_iter()).collect();
@@ -339,7 +344,9 @@ pub(crate) fn select_notes(
     target: u64,
 ) -> Result<Vec<crate::wallet::WalletNote>, Error> {
     let mut sorted: Vec<_> = notes.to_vec();
-    sorted.sort_by(|a, b| b.value.cmp(&a.value));
+    // sort by value descending, then by position descending (prefer recent notes
+    // to minimize merkle witness replay distance from stale checkpoints)
+    sorted.sort_by(|a, b| b.value.cmp(&a.value).then(b.position.cmp(&a.position)));
 
     let mut selected = Vec::new();
     let mut total = 0u64;
