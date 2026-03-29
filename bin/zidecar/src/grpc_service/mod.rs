@@ -258,13 +258,51 @@ impl Zidecar for ZidecarService {
 
         let signing_key = ed25519_consensus::SigningKey::from(seed);
 
-        // TODO: check blockchain for payment from this ZID
-        // for now, issue a 30-day pro license to any requester (beta mode)
-        let expires = std::time::SystemTime::now()
+        // check board memos.json for payment with "zid<pubkey>" memo
+        // board writes this file when running: zcli service board --dir /var/lib/zidecar
+        let memos_path = std::env::var("ZCLI_MEMOS_PATH")
+            .unwrap_or_else(|_| "/var/lib/zidecar/memos.json".into());
+
+        let zid_prefix = format!("zid{}", req.zid_pubkey);
+        let rate_per_30d: u64 = 1_000_000; // 0.01 ZEC = 30 days
+
+        let total_zat = match std::fs::read_to_string(&memos_path) {
+            Ok(json) => {
+                // parse memos.json: [{ "zat": N, "memo": "...", "spent": bool }, ...]
+                #[derive(serde::Deserialize)]
+                struct MemoEntry {
+                    zat: u64,
+                    memo: Option<String>,
+                    #[serde(default)]
+                    spent: bool,
+                }
+                let entries: Vec<MemoEntry> = serde_json::from_str(&json).unwrap_or_default();
+                entries.iter()
+                    .filter(|e| !e.spent)
+                    .filter(|e| e.memo.as_deref().map_or(false, |m| m.starts_with(&zid_prefix)))
+                    .map(|e| e.zat)
+                    .sum::<u64>()
+            }
+            Err(_) => 0,
+        };
+
+        if total_zat == 0 {
+            return Ok(Response::new(LicenseResponse {
+                zid: req.zid_pubkey,
+                plan: "free".into(),
+                expires: 0,
+                signature: vec![],
+                valid: false,
+            }));
+        }
+
+        // credit time proportionally: total_zat / rate * 30 days
+        let days = (total_zat as f64 / rate_per_30d as f64 * 30.0) as u64;
+        let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
-            .as_secs()
-            + 30 * 86400; // 30 days
+            .as_secs();
+        let expires = now + days * 86400;
 
         let payload = format!("zafu-license-v1\n{}\npro\n{}", req.zid_pubkey, expires);
         let signature = signing_key.sign(payload.as_bytes());
