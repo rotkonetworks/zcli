@@ -75,6 +75,10 @@ service Zidecar {
     // Get all epoch boundaries in range (for bulk sync)
     rpc GetEpochBoundaries(EpochRangeRequest) returns (EpochBoundaryList);
 
+    // Check or issue a pro license for a ZID
+    // Returns signed license if payment detected, or current license status
+    rpc GetLicense(LicenseRequest) returns (LicenseResponse);
+
     // Sign anchor for zigner attestation (rotko verifier)
     // Returns ed25519 signature if ZCLI_SIGNING_KEY is configured
     rpc SignAnchor(SignAnchorRequest) returns (SignAnchorResponse);
@@ -458,6 +462,20 @@ message EpochRangeRequest {
 // List of epoch boundaries
 message EpochBoundaryList {
     repeated EpochBoundary boundaries = 1;
+}
+
+// ===== PRO LICENSE =====
+
+message LicenseRequest {
+    string zid_pubkey = 1;    // hex-encoded ed25519 public key
+}
+
+message LicenseResponse {
+    string zid = 1;           // echoed back
+    string plan = 2;          // "free" or "pro"
+    uint64 expires = 3;       // unix timestamp (seconds)
+    bytes signature = 4;      // ed25519 signature over license payload
+    bool valid = 5;           // whether a valid paid license exists
 }
 
 // ===== ANCHOR ATTESTATION =====

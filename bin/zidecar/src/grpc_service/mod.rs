@@ -16,7 +16,8 @@ use crate::{
         FrostCheckpoint as ProtoFrostCheckpoint, GetCommitmentProofsRequest,
         GetCommitmentProofsResponse, GetNullifierProofsRequest, GetNullifierProofsResponse,
         HeaderProof, NullifierProof, NullifierQuery, ProofRequest, RawTransaction, SendResponse,
-        SignAnchorRequest, SignAnchorResponse, SyncStatus, TransparentAddressFilter, TreeState,
+        LicenseRequest, LicenseResponse, SignAnchorRequest, SignAnchorResponse, SyncStatus,
+        TransparentAddressFilter, TreeState,
         TrustlessStateProof, TxFilter, TxidList, UtxoList, VerifiedBlock,
     },
 };
@@ -227,6 +228,54 @@ impl Zidecar for ZidecarService {
         request: Request<EpochRangeRequest>,
     ) -> std::result::Result<Response<EpochBoundaryList>, Status> {
         self.handle_get_epoch_boundaries(request).await
+    }
+
+    async fn get_license(
+        &self,
+        request: Request<LicenseRequest>,
+    ) -> std::result::Result<Response<LicenseResponse>, Status> {
+        let req = request.into_inner();
+
+        // read signing key
+        let key_hex = match std::env::var("ZCLI_SIGNING_KEY") {
+            Ok(k) if !k.is_empty() => k,
+            _ => {
+                return Ok(Response::new(LicenseResponse {
+                    zid: req.zid_pubkey,
+                    plan: "free".into(),
+                    expires: 0,
+                    signature: vec![],
+                    valid: false,
+                }));
+            }
+        };
+
+        let key_hex = key_hex.strip_prefix("0x").unwrap_or(&key_hex);
+        let seed: [u8; 32] = hex::decode(key_hex)
+            .map_err(|e| Status::internal(format!("bad signing key: {e}")))?
+            .try_into()
+            .map_err(|_| Status::internal("signing key must be 32 bytes"))?;
+
+        let signing_key = ed25519_consensus::SigningKey::from(seed);
+
+        // TODO: check blockchain for payment from this ZID
+        // for now, issue a 30-day pro license to any requester (beta mode)
+        let expires = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+            + 30 * 86400; // 30 days
+
+        let payload = format!("zafu-license-v1\n{}\npro\n{}", req.zid_pubkey, expires);
+        let signature = signing_key.sign(payload.as_bytes());
+
+        Ok(Response::new(LicenseResponse {
+            zid: req.zid_pubkey,
+            plan: "pro".into(),
+            expires,
+            signature: signature.to_bytes().to_vec(),
+            valid: true,
+        }))
     }
 
     async fn sign_anchor(
