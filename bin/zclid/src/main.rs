@@ -71,6 +71,14 @@ pub struct DaemonState {
     pub pending_events: Vec<proto::PendingEvent>,
     pub started_at: u64,
     pub endpoint: String,
+    /// prepared transactions awaiting external signatures (keyed by random ID)
+    /// entries expire after 10 minutes to prevent memory leaks
+    pub prepared_txs: std::collections::HashMap<[u8; 32], PreparedTxEntry>,
+}
+
+pub struct PreparedTxEntry {
+    pub pczt_state: zecli::pczt::PcztState,
+    pub created_at: u64,
 }
 
 impl DaemonState {
@@ -87,7 +95,17 @@ impl DaemonState {
                 .unwrap_or_default()
                 .as_secs(),
             endpoint: endpoint.to_string(),
+            prepared_txs: std::collections::HashMap::new(),
         }
+    }
+
+    /// remove prepared transactions older than 10 minutes
+    pub fn gc_prepared_txs(&mut self) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        self.prepared_txs.retain(|_, entry| now - entry.created_at < 600);
     }
 }
 

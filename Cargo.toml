@@ -14,6 +14,8 @@ members = [
     "crates/zoda-vss",
     "bin/relay",
     "bin/poker",
+    "crates/ring-vrf-wasm",
+    "bin/license-server",
 ]
 
 [workspace.package]

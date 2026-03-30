@@ -13,12 +13,14 @@ mod compact;
 mod constants;
 mod epoch;
 mod error;
+mod chat_relay;
 mod frost_relay;
 mod grpc_service;
 mod header_chain;
 mod lwd_service;
 mod middleware;
 mod prover;
+mod ring_vrf;
 mod storage;
 mod witness;
 mod zebrad;
@@ -59,6 +61,11 @@ struct Args {
     /// blobs between room participants without reading them.
     #[arg(long)]
     no_frost_relay: bool,
+
+    /// Disable zitadel chat relay. The chat relay forwards opaque
+    /// encrypted messages between channel participants.
+    #[arg(long)]
+    no_chat_relay: bool,
 }
 
 #[tokio::main]
@@ -206,19 +213,29 @@ async fn main() -> Result<()> {
             zidecar::zidecar_server::ZidecarServer::new(service),
         ));
 
-    if args.no_frost_relay {
+    let router = if args.no_frost_relay {
         info!("frost relay: disabled");
-        router.serve(args.listen).await?;
+        router
     } else {
         let frost = frost_relay::FrostRelayService::new();
         info!("frost relay: enabled");
+        router.add_service(tonic_web::enable(
+            frost_relay_proto::frost_relay_server::FrostRelayServer::new(frost),
+        ))
+    };
+
+    let router = if args.no_chat_relay {
+        info!("chat relay: disabled");
         router
-            .add_service(tonic_web::enable(
-                frost_relay_proto::frost_relay_server::FrostRelayServer::new(frost),
-            ))
-            .serve(args.listen)
-            .await?;
-    }
+    } else {
+        let chat = chat_relay::ChatRelayService::new();
+        info!("chat relay: enabled (zitadel)");
+        router.add_service(tonic_web::enable(
+            chat_relay_proto::chat_relay_server::ChatRelayServer::new(chat),
+        ))
+    };
+
+    router.serve(args.listen).await?;
 
     Ok(())
 }
@@ -234,4 +251,12 @@ pub mod lightwalletd {
 
 pub mod frost_relay_proto {
     tonic::include_proto!("frost_relay.v1");
+}
+
+pub mod chat_relay_proto {
+    tonic::include_proto!("chat_relay.v1");
+}
+
+pub mod relay_proto {
+    tonic::include_proto!("relay.v1");
 }

@@ -27,6 +27,9 @@ tower = "0.4"
 # orchard (same version as zecli)
 orchard = { version = "0.12", default-features = false }
 zip32 = "0.2"
+pasta_curves = "0.5"
+ff = "0.13"
+rand = "0.8"
 
 # security
 subtle = "2.5"      # constant-time comparisons

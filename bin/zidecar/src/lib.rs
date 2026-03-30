@@ -14,6 +14,7 @@ pub mod header_chain;
 pub mod lwd_service;
 pub mod middleware;
 pub mod prover;
+pub mod ring_vrf;
 pub mod storage;
 pub mod witness;
 pub mod zebrad;

@@ -91,6 +91,7 @@
 #![allow(dead_code)]
 
 pub mod actions;
+pub mod auth;
 pub mod endpoints;
 pub mod error;
 pub mod nomt;

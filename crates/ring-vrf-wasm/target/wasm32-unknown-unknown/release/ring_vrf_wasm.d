@@ -1,0 +1,1 @@
+/steam/rotko/zafu/packages/ring-vrf-wasm/target/wasm32-unknown-unknown/release/ring_vrf_wasm.wasm: /steam/rotko/zafu/packages/ring-vrf-wasm/data/bls12-381-srs-2-11-uncompressed-zcash.bin /steam/rotko/zafu/packages/ring-vrf-wasm/src/lib.rs

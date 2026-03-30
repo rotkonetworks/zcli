@@ -16,7 +16,7 @@ use crate::{
         FrostCheckpoint as ProtoFrostCheckpoint, GetCommitmentProofsRequest,
         GetCommitmentProofsResponse, GetNullifierProofsRequest, GetNullifierProofsResponse,
         HeaderProof, NullifierProof, NullifierQuery, ProofRequest, RawTransaction, SendResponse,
-        LicenseRequest, LicenseResponse, SignAnchorRequest, SignAnchorResponse, SyncStatus,
+        LicenseRequest, LicenseResponse, ProRing, SignAnchorRequest, SignAnchorResponse, SyncStatus,
         TransparentAddressFilter, TreeState,
         TrustlessStateProof, TxFilter, TxidList, UtxoList, VerifiedBlock,
     },
@@ -28,6 +28,7 @@ use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
 
 use crate::compact::CompactBlock as InternalCompactBlock;
+use crate::ring_vrf::RingVrfManager;
 
 /// cached mempool scan result
 pub(crate) struct MempoolCache {
@@ -42,6 +43,7 @@ pub struct ZidecarService {
     pub(crate) start_height: u32,
     pub(crate) mempool_cache: Arc<RwLock<Option<MempoolCache>>>,
     pub(crate) mempool_cache_ttl: Duration,
+    pub(crate) ring_vrf: Arc<RingVrfManager>,
 }
 
 impl ZidecarService {
@@ -52,6 +54,8 @@ impl ZidecarService {
         start_height: u32,
         mempool_cache_ttl: Duration,
     ) -> Self {
+        let license_url = std::env::var("ZCLI_LICENSE_URL")
+            .unwrap_or_else(|_| "http://127.0.0.1:3334".into());
         Self {
             zebrad,
             storage,
@@ -59,7 +63,28 @@ impl ZidecarService {
             start_height,
             mempool_cache: Arc::new(RwLock::new(None)),
             mempool_cache_ttl,
+            ring_vrf: Arc::new(RingVrfManager::new(license_url)),
         }
+    }
+}
+
+impl ZidecarService {
+    /// check if a request has a valid ring VRF proof (pro tier).
+    /// returns true for pro, false for free. never fails - free tier is default.
+    pub(crate) async fn is_pro_request<T>(&self, request: &Request<T>) -> bool {
+        let meta = request.metadata();
+        let proof = match meta.get("x-zafu-ring-proof") {
+            Some(v) => v.to_str().unwrap_or(""),
+            None => return false,
+        };
+        let context = match meta.get("x-zafu-ring-context") {
+            Some(v) => v.to_str().unwrap_or(""),
+            None => return false,
+        };
+        if proof.is_empty() || context.is_empty() {
+            return false;
+        }
+        self.ring_vrf.verify_proof(proof, context).await
     }
 }
 
@@ -236,84 +261,89 @@ impl Zidecar for ZidecarService {
     ) -> std::result::Result<Response<LicenseResponse>, Status> {
         let req = request.into_inner();
 
-        // read signing key
-        let key_hex = match std::env::var("ZCLI_SIGNING_KEY") {
-            Ok(k) if !k.is_empty() => k,
-            _ => {
-                return Ok(Response::new(LicenseResponse {
+        // proxy to license-server HTTP endpoint
+        let license_url = std::env::var("ZCLI_LICENSE_URL")
+            .unwrap_or_else(|_| "http://127.0.0.1:3334".into());
+
+        let url = format!("{}/license/{}", license_url, req.zid_pubkey);
+
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(5))
+            .build()
+            .map_err(|e| Status::internal(format!("http client: {e}")))?;
+
+        match client.get(&url).send().await {
+            Ok(resp) => {
+                #[derive(serde::Deserialize)]
+                struct LicResp {
+                    zid: String,
+                    plan: String,
+                    expires: u64,
+                    #[serde(default)]
+                    signature: String,
+                    #[serde(default)]
+                    valid: bool,
+                    #[serde(default)]
+                    pending_zat: u64,
+                    #[serde(default)]
+                    pending_confs: u32,
+                    #[serde(default)]
+                    required_confs: u32,
+                }
+
+                let body: LicResp = resp.json().await
+                    .map_err(|e| Status::internal(format!("parse license response: {e}")))?;
+
+                let sig_bytes = hex::decode(&body.signature).unwrap_or_default();
+
+                Ok(Response::new(LicenseResponse {
+                    zid: body.zid,
+                    plan: body.plan,
+                    expires: body.expires,
+                    signature: sig_bytes,
+                    valid: body.valid,
+                    pending_zat: body.pending_zat,
+                    pending_confs: body.pending_confs,
+                    required_confs: body.required_confs,
+                }))
+            }
+            Err(e) => {
+                // license-server unavailable — return free plan (graceful degradation)
+                tracing::warn!("license-server unreachable: {}", e);
+                Ok(Response::new(LicenseResponse {
                     zid: req.zid_pubkey,
                     plan: "free".into(),
                     expires: 0,
                     signature: vec![],
                     valid: false,
-                }));
+                    pending_zat: 0,
+                    pending_confs: 0,
+                    required_confs: 0,
+                }))
             }
-        };
-
-        let key_hex = key_hex.strip_prefix("0x").unwrap_or(&key_hex);
-        let seed: [u8; 32] = hex::decode(key_hex)
-            .map_err(|e| Status::internal(format!("bad signing key: {e}")))?
-            .try_into()
-            .map_err(|_| Status::internal("signing key must be 32 bytes"))?;
-
-        let signing_key = ed25519_consensus::SigningKey::from(seed);
-
-        // check board memos.json for payment with "zid<pubkey>" memo
-        // board writes this file when running: zcli service board --dir /var/lib/zidecar
-        let memos_path = std::env::var("ZCLI_MEMOS_PATH")
-            .unwrap_or_else(|_| "/var/lib/zidecar/memos.json".into());
-
-        let zid_prefix = format!("zid{}", req.zid_pubkey);
-        let rate_per_30d: u64 = 1_000_000; // 0.01 ZEC = 30 days
-
-        let total_zat = match std::fs::read_to_string(&memos_path) {
-            Ok(json) => {
-                // parse memos.json: [{ "zat": N, "memo": "...", "spent": bool }, ...]
-                #[derive(serde::Deserialize)]
-                struct MemoEntry {
-                    zat: u64,
-                    memo: Option<String>,
-                    #[serde(default)]
-                    spent: bool,
-                }
-                let entries: Vec<MemoEntry> = serde_json::from_str(&json).unwrap_or_default();
-                entries.iter()
-                    .filter(|e| !e.spent)
-                    .filter(|e| e.memo.as_deref().map_or(false, |m| m.starts_with(&zid_prefix)))
-                    .map(|e| e.zat)
-                    .sum::<u64>()
-            }
-            Err(_) => 0,
-        };
-
-        if total_zat == 0 {
-            return Ok(Response::new(LicenseResponse {
-                zid: req.zid_pubkey,
-                plan: "free".into(),
-                expires: 0,
-                signature: vec![],
-                valid: false,
-            }));
         }
+    }
 
-        // credit time proportionally: total_zat / rate * 30 days
-        let days = (total_zat as f64 / rate_per_30d as f64 * 30.0) as u64;
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        let expires = now + days * 86400;
-
-        let payload = format!("zafu-license-v1\n{}\npro\n{}", req.zid_pubkey, expires);
-        let signature = signing_key.sign(payload.as_bytes());
-
-        Ok(Response::new(LicenseResponse {
-            zid: req.zid_pubkey,
-            plan: "pro".into(),
-            expires,
-            signature: signature.to_bytes().to_vec(),
-            valid: true,
-        }))
+    async fn get_pro_ring(
+        &self,
+        _request: Request<Empty>,
+    ) -> std::result::Result<Response<ProRing>, Status> {
+        match self.ring_vrf.get_ring().await {
+            Some(ring) => Ok(Response::new(ProRing {
+                ring_keys: ring.ring_keys.clone(),
+                commitment: ring.commitment.clone(),
+                epoch: ring.epoch.clone(),
+                context: ring.context.clone(),
+                ring_size: ring.ring_keys.len() as u32,
+            })),
+            None => Ok(Response::new(ProRing {
+                ring_keys: vec![],
+                commitment: vec![],
+                epoch: String::new(),
+                context: String::new(),
+                ring_size: 0,
+            })),
+        }
     }
 
     async fn sign_anchor(
