@@ -123,7 +123,7 @@ pub fn hash_row<F: BinaryFieldElement>(row: &[F]) -> Hash {
     // Hash entire row at once using bytemuck for zero-copy byte slice
     // This is much faster than per-element hashing
     let row_bytes = unsafe {
-        core::slice::from_raw_parts(row.as_ptr() as *const u8, std::mem::size_of_val(row))
+        core::slice::from_raw_parts(row.as_ptr() as *const u8, core::mem::size_of_val(row))
     };
     hasher.update(row_bytes);
 

@@ -186,6 +186,9 @@ pub use verifier::{
     verify_with_evaluations, verify_with_transcript, EvalVerifyResult,
 };
 
+#[cfg(feature = "postcard-serde")]
+pub use verifier::{verify_bytes, proof_to_bytes};
+
 #[cfg(feature = "transcript-merlin")]
 pub use transcript::MerlinTranscript;
 
