@@ -1,0 +1,71 @@
+syntax = "proto3";
+package relay.v1;
+
+// dumb relay. forwards opaque bytes between room participants.
+// does not parse, validate, or understand message contents.
+// rooms auto-expire after configurable timeout (0 = persistent).
+//
+// use cases: FROST signing, DKG rounds, chat, poker, OSST proofs,
+// or anything else. the relay doesn't know which.
+
+service Relay {
+    // create a new room. returns a human-readable room code.
+    rpc CreateRoom(CreateRoomRequest) returns (CreateRoomResponse);
+
+    // join a room. server streams all existing + new messages.
+    // stream stays open until room expires or client disconnects.
+    rpc JoinRoom(JoinRoomRequest) returns (stream RoomEvent);
+
+    // send an opaque message to all participants in a room.
+    rpc SendMessage(SendMessageRequest) returns (SendMessageResponse);
+}
+
+message CreateRoomRequest {
+    uint32 max_participants = 1;
+    uint32 ttl_seconds = 2;    // 0 = persistent (no expiry)
+}
+
+message CreateRoomResponse {
+    string room_code = 1;      // human-readable: "alpha-bravo-charlie"
+    uint64 expires_at = 2;     // unix timestamp (0 = never)
+}
+
+message JoinRoomRequest {
+    string room_code = 1;
+    bytes participant_id = 2;  // ephemeral pubkey (32 bytes)
+}
+
+message RoomEvent {
+    oneof event {
+        ParticipantJoined joined = 1;
+        RelayedMessage message = 2;
+        RoomClosed closed = 3;
+    }
+}
+
+message ParticipantJoined {
+    bytes participant_id = 1;
+    uint32 participant_count = 2;
+    uint32 max_participants = 3;
+}
+
+message RelayedMessage {
+    bytes sender_id = 1;
+    bytes payload = 2;         // opaque bytes
+    uint64 sequence = 3;
+    uint64 timestamp_ms = 4;   // relay-assigned unix ms (for turn timeouts)
+}
+
+message RoomClosed {
+    string reason = 1;
+}
+
+message SendMessageRequest {
+    string room_code = 1;
+    bytes sender_id = 2;
+    bytes payload = 3;
+}
+
+message SendMessageResponse {
+    uint64 sequence = 1;
+}
