@@ -121,6 +121,14 @@ async fn run(cli: &Cli) -> Result<(), Error> {
                 let seed = load_seed(cli)?;
                 cmd_board(cli, &seed, mainnet, *port, *interval, dir.as_deref()).await
             }
+            ServiceAction::LicenseServer { port, interval, dir, signing_key, confirmations, instant_threshold } => {
+                let seed = load_seed(cli)?;
+                let config = ops::license::LicenseConfig {
+                    required_confs: *confirmations,
+                    instant_threshold_zat: *instant_threshold,
+                };
+                cmd_license_server(cli, &seed, mainnet, *port, *interval, dir.as_deref(), signing_key.as_deref(), &config).await
+            }
             ServiceAction::TreeInfo { height } => cmd_tree_info(cli, *height).await,
         },
         Command::Multisig { action } => cmd_multisig(cli, action),
@@ -979,6 +987,153 @@ async fn cmd_board(
             json,
         );
         let _ = stream.write_all(response.as_bytes()).await;
+    }
+}
+
+async fn cmd_license_server(
+    cli: &Cli,
+    seed: &key::WalletSeed,
+    mainnet: bool,
+    port: u16,
+    interval: u64,
+    dir: Option<&str>,
+    signing_key_hex: Option<&str>,
+    config: &ops::license::LicenseConfig,
+) -> Result<(), Error> {
+    // resolve signing key: CLI flag > env var
+    let key_hex = match signing_key_hex {
+        Some(k) => k.to_string(),
+        None => std::env::var("ZCLI_SIGNING_KEY")
+            .map_err(|_| Error::Other(
+                "signing key required: pass --signing-key or set ZCLI_SIGNING_KEY".into()
+            ))?,
+    };
+    let signing_key = ops::license::parse_signing_key(&key_hex)?;
+    let vk = signing_key.verification_key();
+    eprintln!("license-server: verifier key = {}", hex::encode(vk.as_ref()));
+
+    // open license database
+    let license_dir = dir
+        .map(String::from)
+        .unwrap_or_else(|| {
+            let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+            format!("{}/.zcli/license", home)
+        });
+    let license_db = ops::license::open_license_db(&license_dir)?;
+    eprintln!("license-server: db at {}/license-db", license_dir);
+
+    // initial sync + process
+    eprintln!("license-server: initial sync...");
+    let _ = ops::sync::sync(
+        seed,
+        &cli.endpoint,
+        &cli.verify_endpoints,
+        mainnet,
+        true,
+        None,
+        None,
+    )
+    .await;
+    match ops::license::process_payments(&license_db, &signing_key, config) {
+        Ok(n) => eprintln!("license-server: processed {} payments on startup", n),
+        Err(e) => eprintln!("license-server: process error: {}", e),
+    }
+    eprintln!(
+        "license-server: instant credit < {} zat, {} confs for larger",
+        config.instant_threshold_zat, config.required_confs
+    );
+
+    eprintln!("license-server: serving on :{}", port);
+
+    // background sync + process loop
+    let sync_db = license_db.clone();
+    let endpoint = cli.endpoint.clone();
+    let verify_endpoints = cli.verify_endpoints.clone();
+    let seed_bytes: [u8; 64] = *seed.as_bytes();
+    let sync_key_hex = key_hex.clone();
+    let sync_config = config.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(interval)).await;
+            let seed = key::WalletSeed::from_bytes(seed_bytes);
+            match ops::sync::sync(
+                &seed,
+                &endpoint,
+                &verify_endpoints,
+                mainnet,
+                true,
+                None,
+                None,
+            )
+            .await
+            {
+                Ok(found) => {
+                    eprintln!("license-server: synced, {} new notes", found);
+                    if let Ok(sk) = ops::license::parse_signing_key(&sync_key_hex) {
+                        match ops::license::process_payments(&sync_db, &sk, &sync_config) {
+                            Ok(n) if n > 0 => {
+                                eprintln!("license-server: processed {} new payments", n)
+                            }
+                            Ok(_) => {}
+                            Err(e) => eprintln!("license-server: process error: {}", e),
+                        }
+                    }
+                }
+                Err(e) => eprintln!("license-server: sync error: {}", e),
+            }
+        }
+    });
+
+    // HTTP server
+    let state = Arc::new(ops::license::LicenseState {
+        db: license_db,
+        config: config.clone(),
+    });
+    let listener = TcpListener::bind(format!("0.0.0.0:{}", port))
+        .await
+        .map_err(|e| Error::Other(format!("bind :{}: {}", port, e)))?;
+
+    loop {
+        let (mut stream, _) = listener
+            .accept()
+            .await
+            .map_err(|e| Error::Other(format!("accept: {}", e)))?;
+
+        let state = Arc::clone(&state);
+        tokio::spawn(async move {
+            let mut buf = [0u8; 4096];
+            let n = match tokio::io::AsyncReadExt::read(&mut stream, &mut buf).await {
+                Ok(n) if n > 0 => n,
+                _ => return,
+            };
+
+            // parse HTTP request line: "GET /path HTTP/1.1\r\n..."
+            let request = String::from_utf8_lossy(&buf[..n]);
+            let path = request
+                .split_whitespace()
+                .nth(1)
+                .unwrap_or("/");
+
+            let (status, body) = state.handle_request(path);
+            let status_text = match status {
+                200 => "OK",
+                400 => "Bad Request",
+                404 => "Not Found",
+                _ => "Internal Server Error",
+            };
+
+            let response = format!(
+                "HTTP/1.1 {} {}\r\n\
+                 Content-Type: application/json\r\n\
+                 Access-Control-Allow-Origin: *\r\n\
+                 Cache-Control: no-cache\r\n\
+                 Content-Length: {}\r\n\
+                 \r\n\
+                 {}",
+                status, status_text, body.len(), body,
+            );
+            let _ = stream.write_all(response.as_bytes()).await;
+        });
     }
 }
 

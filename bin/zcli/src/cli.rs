@@ -305,6 +305,34 @@ pub enum ServiceAction {
         dir: Option<String>,
     },
 
+    /// license server: sync wallet, detect ZEC payments, issue pro licenses
+    LicenseServer {
+        /// HTTP port for license lookups
+        #[arg(long, default_value_t = 3334)]
+        port: u16,
+
+        /// wallet sync interval in seconds
+        #[arg(long, default_value_t = 60)]
+        interval: u64,
+
+        /// directory for license sled database (default: ~/.zcli/license)
+        #[arg(long)]
+        dir: Option<String>,
+
+        /// ed25519 signing key hex (overrides ZCLI_SIGNING_KEY env var)
+        #[arg(long)]
+        signing_key: Option<String>,
+
+        /// confirmations required for large payments (default: 10)
+        #[arg(long, default_value_t = 10)]
+        confirmations: u32,
+
+        /// payments under this amount (in zatoshi) are credited instantly with 0 confs
+        /// default: 10000000 (0.1 ZEC)
+        #[arg(long, default_value_t = 10_000_000)]
+        instant_threshold: u64,
+    },
+
     /// show orchard tree info at a height (for --position)
     TreeInfo {
         /// block height

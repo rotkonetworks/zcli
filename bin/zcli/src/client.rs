@@ -284,7 +284,7 @@ impl ZidecarClient {
             .post(&url)
             .header("content-type", "application/grpc-web+proto")
             .header("x-grpc-web", "1")
-            .timeout(std::time::Duration::from_secs(30))
+            .timeout(std::time::Duration::from_secs(120))
             .body(body)
             .send()
             .await
