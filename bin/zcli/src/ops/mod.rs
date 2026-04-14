@@ -1,6 +1,8 @@
 pub mod airgap;
 pub mod balance;
+pub mod bridge;
 pub mod export;
+pub mod license;
 pub mod merchant;
 pub mod multisig;
 pub mod send;
