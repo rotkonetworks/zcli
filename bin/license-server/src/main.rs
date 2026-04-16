@@ -177,9 +177,12 @@ async fn main() {
         }
     });
 
+    let cors = tower_http::cors::CorsLayer::permissive();
+
     let app = Router::new()
-        .route("/license/{zid}", get(get_license))
+        .route("/license/:zid", get(get_license))
         .route("/ring-keys", get(get_ring_keys))
+        .layer(cors)
         .with_state(state);
 
     info!("license-server listening on {}", args.listen);
@@ -208,16 +211,18 @@ async fn get_license(
     }
 
     // friends get permanent pro
+    // use JS-safe max (2^53 - 1) instead of u64::MAX to avoid JSON precision loss
+    const PERMANENT_EXPIRES: u64 = 9_007_199_254_740_991;
     if state.friends.contains(&zid) {
         let mut sig = String::new();
         if let Some(ref sk) = state.signing_key {
-            let payload = format!("zafu-license-v1\n{}\npro\n{}", zid, u64::MAX);
+            let payload = format!("zafu-license-v1\n{}\npro\n{}", zid, PERMANENT_EXPIRES);
             sig = hex::encode(sk.sign(payload.as_bytes()).to_bytes());
         }
         return Json(LicenseResp {
             zid,
             plan: "pro".into(),
-            expires: u64::MAX,
+            expires: PERMANENT_EXPIRES,
             signature: sig,
             valid: true,
             pending_zat: 0,
