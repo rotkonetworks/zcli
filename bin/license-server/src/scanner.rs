@@ -28,6 +28,9 @@ const BATCH_SIZE: u32 = 1_000;
 pub struct ReceivedMemo {
     pub txid: Vec<u8>,
     pub block_height: u32,
+    /// unix seconds of the block this memo landed in — authoritative source
+    /// for license expiry so db wipes + rescans don't refresh the clock.
+    pub block_time: u64,
     pub value_zat: u64,
     pub memo: String,
 }
@@ -151,9 +154,17 @@ pub async fn scan(
                 else { continue };
 
                 let memo = strip_null_padding(&memo_bytes);
+
+                // fetch this block's on-chain timestamp — authoritative source
+                // for license expiry. one extra RPC per credited memo, which
+                // is rare in practice.
+                let block_time = client.get_block_time(block.height).await
+                    .map_err(|e| anyhow::anyhow!("get_block_time {}: {e}", block.height))?;
+
                 found.push(ReceivedMemo {
                     txid: action.txid.clone(),
                     block_height: block.height,
+                    block_time,
                     value_zat: note.value().inner(),
                     memo,
                 });

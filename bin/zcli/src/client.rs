@@ -451,6 +451,21 @@ impl ZidecarClient {
         Ok((state.orchard_tree, state.height))
     }
 
+    /// Fetch just the block timestamp (unix seconds) at the given height.
+    /// Used where block-time matters but the tree state does not.
+    pub async fn get_block_time(&self, height: u32) -> Result<u64, Error> {
+        let state: zidecar_proto::TreeState = self
+            .call_unary(
+                "zidecar.v1.Zidecar/GetTreeState",
+                &zidecar_proto::BlockId {
+                    height,
+                    hash: vec![],
+                },
+            )
+            .await?;
+        Ok(state.time)
+    }
+
     pub async fn get_transaction(&self, txid: &[u8]) -> Result<Vec<u8>, Error> {
         let resp: zidecar_proto::RawTransaction = self
             .call_unary(

@@ -284,9 +284,17 @@ async fn sync_once(
         if entry.seen_txids.contains(&txid_hex) { continue; }
         entry.seen_txids.push(txid_hex.clone());
 
+        // stacking model: each payment adds its worth of days on top of the
+        // user's CURRENT expiry (or the block time if already expired). this
+        // prevents the "re-anchor to latest block" bug where early renewers
+        // would get previously-elapsed time refunded.
+        //
+        // total_paid_zat and seen_txids are still tracked for bookkeeping
+        // and idempotency (no double-credit on rescan).
         entry.total_paid_zat += memo.value_zat;
-        let total_days = (entry.total_paid_zat as f64 / ZAT_PER_30_DAYS as f64 * 30.0) as u64;
-        let expires = now + total_days * 86400;
+        let added_days = (memo.value_zat as f64 / ZAT_PER_30_DAYS as f64 * 30.0) as u64;
+        let base = std::cmp::max(entry.expires, memo.block_time);
+        let expires = base + added_days * 86400;
 
         entry.plan = "pro".into();
         entry.expires = expires;
@@ -303,8 +311,8 @@ async fn sync_once(
 
         changed = true;
         info!(
-            "license: {} = {} days ({} zat) at block {}",
-            &zid[..12.min(zid.len())], total_days, entry.total_paid_zat, memo.block_height,
+            "license: {} +{} days ({} zat) at block {} → expires {}",
+            &zid[..12.min(zid.len())], added_days, memo.value_zat, memo.block_height, expires,
         );
     }
 
