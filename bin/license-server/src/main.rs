@@ -17,9 +17,20 @@
 //!   GET /license/{zid}   - check/issue license for a Bandersnatch pubkey
 //!   GET /ring-keys       - all active pro ring member pubkeys
 //!
-//! env:
-//!   ZCLI_SIGNING_KEY     - 32-byte hex ed25519 seed (required for signing)
-//!   LICENSE_FVK          - 96-byte hex Orchard FullViewingKey for license wallet
+//! env (see .env.example for the full list and how to obtain each value):
+//!   ZCLI_SIGNING_KEY        - 32-byte hex ed25519 seed. its derived pubkey
+//!                             MUST equal zafu's ROTKO_ZCASH_VERIFIER — that
+//!                             constant is what verifies the licenses we sign.
+//!   LICENSE_FVK             - 96-byte hex Orchard FullViewingKey for the
+//!                             wallet that owns zafu's ROTKO_LICENSE_ADDRESS
+//!                             (the address users send their ZEC payment to).
+//!   ZIDECAR_URL             - zidecar gRPC endpoint. defaults to
+//!                             https://zcash.rotko.net.
+//!   LICENSE_LISTEN          - HTTP listen address. default 0.0.0.0:3334.
+//!   LICENSE_DB_PATH         - sled DB path. default ./license.db.
+//!   LICENSE_FRIENDS_FILE    - friends list path. default ./friends.txt.
+//!   LICENSE_SCAN_INTERVAL   - rescan seconds. default 30.
+//!   LICENSE_SYNC_FROM       - start-block height for first sync. optional.
 
 mod scanner;
 
@@ -81,11 +92,11 @@ struct AppState {
 #[command(about = "ZEC-paid pro license oracle for zafu")]
 struct Args {
     /// listen address
-    #[arg(long, default_value = "0.0.0.0:3334")]
+    #[arg(long, env = "LICENSE_LISTEN", default_value = "0.0.0.0:3334")]
     listen: String,
 
     /// zidecar gRPC-Web endpoint (HTTP/2)
-    #[arg(long, env = "ZIDECAR_URL", default_value = "http://127.0.0.1:50051")]
+    #[arg(long, env = "ZIDECAR_URL", default_value = "https://zcash.rotko.net")]
     zidecar_url: String,
 
     /// orchard full viewing key for the license wallet (96 bytes hex)
@@ -97,21 +108,21 @@ struct Args {
     signing_key: String,
 
     /// scan interval in seconds
-    #[arg(long, default_value_t = 30)]
+    #[arg(long, env = "LICENSE_SCAN_INTERVAL", default_value_t = 30)]
     scan_interval: u64,
 
     /// database path for license persistence
-    #[arg(long, default_value = "./license.db")]
+    #[arg(long, env = "LICENSE_DB_PATH", default_value = "./license.db")]
     db_path: String,
 
     /// path to friends file (one zpro pubkey per line, # comments)
-    #[arg(long, default_value = "./friends.txt")]
+    #[arg(long, env = "LICENSE_FRIENDS_FILE", default_value = "./friends.txt")]
     friends_file: String,
 
     /// initial sync start block (skips earlier blocks). useful for testing
     /// or when the license wallet has a known birthday height. ignored after
     /// first sync (resumes from saved sync height).
-    #[arg(long)]
+    #[arg(long, env = "LICENSE_SYNC_FROM")]
     sync_from: Option<u32>,
 }
 
@@ -119,6 +130,9 @@ struct Args {
 
 #[tokio::main]
 async fn main() {
+    // load .env if present, then env vars take precedence over clap defaults.
+    let _ = dotenvy::dotenv();
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
