@@ -4034,6 +4034,7 @@ dependencies = [
 [[package]]
 name = "osst"
 version = "0.1.1"
+source = "git+https://github.com/rotkonetworks/zeratul.git?rev=90add33#90add33172c189f6bc54dc5a16b4cb7049e89d5a"
 dependencies = [
  "blake2b_simd",
  "pasta_curves",
