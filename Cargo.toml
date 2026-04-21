@@ -48,5 +48,8 @@ wide = { version = "0.7", default-features = false }
 [patch.crates-io]
 maybe-rayon = { path = "crates/maybe-rayon" }
 
-[patch."https://github.com/rotkonetworks/zeratul.git"]
-osst = { path = "../zeratul/crates/osst" }
+
+# Optional local dev: uncomment to develop against a sibling zeratul checkout.
+# Do NOT commit this uncommented — it breaks CI, which only clones zcli.
+# [patch."https://github.com/rotkonetworks/zeratul.git"]
+# osst = { path = "../zeratul/crates/osst" }
