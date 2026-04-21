@@ -1,0 +1,45 @@
+[package]
+name = "relay"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "dumb relay. rooms, participants, opaque bytes."
+
+[[bin]]
+name = "relay"
+path = "src/main.rs"
+
+[dependencies]
+# async runtime
+tokio = { version = "1", features = ["full"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+
+# grpc
+tonic = "0.11"
+tonic-web = "0.11"
+prost = "0.12"
+
+# tower middleware
+tower = { version = "0.4", features = ["util"] }
+tower-http = { version = "0.4", features = ["trace", "cors"] }
+
+# relay
+async-stream = "0.3"
+rand = "0.8"
+
+# websocket (for browser clients)
+axum = { version = "0.8", features = ["ws"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+futures = "0.3"
+
+# utils
+hex = "0.4"
+
+# cli + logging
+clap = { version = "4", features = ["derive", "env"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[build-dependencies]
+tonic-build = "0.11"

@@ -102,13 +102,11 @@ impl Scanner {
 
     /// scan a single action, returning decrypted note if owned
     pub fn try_decrypt(&self, action: &ScanAction) -> Option<DecryptedNote> {
-        // construct domain from nullifier
-        let nullifier: CtOption<Nullifier> = Nullifier::from_bytes(&action.nullifier);
-        let nullifier = Option::from(nullifier)?;
-        let domain = OrchardDomain::for_nullifier(nullifier);
-
         // construct compact action for decryption
         let compact = compact_action_from_scan(action)?;
+
+        // construct domain from compact action
+        let domain = OrchardDomain::for_compact_action(&compact);
 
         // trial decrypt
         let (note, recipient) = try_compact_note_decryption(&domain, &self.prepared_ivk, &compact)?;

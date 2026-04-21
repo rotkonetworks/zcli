@@ -2974,15 +2974,6 @@ dependencies = [
 
 [[package]]
 name = "incrementalmerkletree"
-version = "0.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eb1872810fb725b06b8c153dde9e86f3ec26747b9b60096da7a869883b549cbe"
-dependencies = [
- "either",
-]
-
-[[package]]
-name = "incrementalmerkletree"
 version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "216c71634ac6f6ed13c2102d64354c0a04dcbdc30e31692c5972d3974d8b6d97"
@@ -3364,6 +3355,7 @@ dependencies = [
  "merlin",
  "parity-scale-codec",
  "pollster",
+ "postcard",
  "rand 0.8.5",
  "rand_chacha 0.3.1",
  "rayon",
@@ -3523,9 +3515,6 @@ name = "memuse"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3d97bbf43eb4f088f8ca469930cde17fa036207c9a5e02ccc5107c4e8b17c964"
-dependencies = [
- "nonempty 0.7.0",
-]
 
 [[package]]
 name = "merlin"
@@ -3830,36 +3819,6 @@ name = "openssl-probe"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe"
-
-[[package]]
-name = "orchard"
-version = "0.7.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1fb255c3ffdccd3c84fe9ebed72aef64fdc72e6a3e4180dd411002d47abaad42"
-dependencies = [
- "aes",
- "bitvec",
- "blake2b_simd",
- "ff",
- "fpe",
- "group",
- "halo2_gadgets 0.3.1",
- "halo2_proofs",
- "hex",
- "incrementalmerkletree 0.5.1",
- "lazy_static",
- "memuse",
- "nonempty 0.7.0",
- "pasta_curves",
- "rand 0.8.5",
- "reddsa 0.5.1 (registry+https://github.com/rust-lang/crates.io-index)",
- "serde",
- "subtle",
- "tracing",
- "zcash_note_encryption",
- "zcash_spec 0.1.2",
- "zip32 0.1.3",
-]
 
 [[package]]
 name = "orchard"
@@ -8376,7 +8335,7 @@ dependencies = [
  "ligerito",
  "ligerito-binary-fields",
  "nomt-core",
- "orchard 0.7.1",
+ "orchard 0.10.1",
  "pasta_curves",
  "prost",
  "rand 0.8.5",

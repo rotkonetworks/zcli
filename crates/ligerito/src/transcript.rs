@@ -92,7 +92,7 @@ impl Transcript for MerlinTranscript {
 
     fn absorb_elems<F: BinaryFieldElement>(&mut self, elems: &[F]) {
         let bytes = unsafe {
-            core::slice::from_raw_parts(elems.as_ptr() as *const u8, std::mem::size_of_val(elems))
+            core::slice::from_raw_parts(elems.as_ptr() as *const u8, core::mem::size_of_val(elems))
         };
         self.transcript.append_message(b"field_elements", bytes);
     }
@@ -313,7 +313,7 @@ impl Transcript for Sha256Transcript {
 
     fn absorb_elems<F: BinaryFieldElement>(&mut self, elems: &[F]) {
         let bytes = unsafe {
-            core::slice::from_raw_parts(elems.as_ptr() as *const u8, std::mem::size_of_val(elems))
+            core::slice::from_raw_parts(elems.as_ptr() as *const u8, core::mem::size_of_val(elems))
         };
         if self.domain_separated {
             self.hasher.update(b"field_elements");
@@ -523,7 +523,7 @@ impl Transcript for Blake2bTranscript {
 
     fn absorb_elems<F: BinaryFieldElement>(&mut self, elems: &[F]) {
         let bytes = unsafe {
-            core::slice::from_raw_parts(elems.as_ptr() as *const u8, std::mem::size_of_val(elems))
+            core::slice::from_raw_parts(elems.as_ptr() as *const u8, core::mem::size_of_val(elems))
         };
         self.absorb(b"field_elements", bytes);
     }

@@ -1,0 +1,42 @@
+[package]
+name = "poker"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "heads-up poker CLI with frostito escrow via relay"
+
+[[bin]]
+name = "poker"
+path = "src/main.rs"
+
+[dependencies]
+# grpc client
+tonic = { version = "0.11", features = ["tls", "tls-roots"] }
+prost = "0.12"
+tokio = { version = "1", features = ["full"] }
+tokio-stream = "0.1"
+
+# frostito (nested FROST + OSST)
+osst = { path = "../../../zeratul/crates/osst", package = "osst", default-features = false, features = ["std", "pallas"] }
+
+# crypto
+rand = "0.8"
+sha2 = "0.10"
+blake2b_simd = "1.0"
+pasta_curves = { version = "0.5", default-features = false, features = ["alloc"] }
+
+# zcash address derivation
+orchard = { version = "0.12", default-features = false }
+zcash_address = "0.7"
+zip32 = { version = "0.2", default-features = false }
+
+# cli
+clap = { version = "4", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+hex = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[build-dependencies]
+tonic-build = "0.11"

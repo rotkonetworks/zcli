@@ -72,6 +72,10 @@ transcript-blake2b = ["blake2"]  # BLAKE2b transcript (optimized for Substrate)
 # Substrate runtime support - uses BLAKE2b with sp_io host functions
 substrate = ["transcript-blake2b", "sp-io"]
 
+# no_std proof deserialization via postcard (no atomics, no alloc::sync::Arc)
+# use this for on-chain verification on targets without atomic support (e.g. riscv32em)
+postcard-serde = ["dep:postcard", "serde"]
+
 # WASM support (full - includes serde/bincode for proof serialization)
 wasm = [
     "std",                          # Need std for WASM
@@ -155,6 +159,9 @@ bytemuck = { workspace = true }
 # SCALE codec for Substrate runtime support
 codec = { package = "parity-scale-codec", version = "3.6", default-features = false, features = ["derive"], optional = true }
 scale-info = { version = "2.11", default-features = false, features = ["derive"], optional = true }
+
+# postcard: no_std serde-compatible binary format (no atomics needed)
+postcard = { version = "1.1", default-features = false, features = ["alloc"], optional = true }
 
 # Crypto (sha256 always available for no_std)
 sha2 = { workspace = true, default-features = false }

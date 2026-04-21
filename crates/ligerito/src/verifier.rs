@@ -1080,6 +1080,54 @@ where
     verify_complete_with_transcript(config, proof, fs)
 }
 
+// ============================================================================
+// bytes-based verification (no_std, no atomics, no SCALE codec)
+// ============================================================================
+
+/// Verify a proof from serialized bytes using postcard (no_std serde format).
+///
+/// This function handles deserialization internally, avoiding the need for
+/// parity-scale-codec (which requires Arc/atomics). Suitable for on-chain
+/// verification on targets like riscv32em (PolkaVM/JAM).
+///
+/// The proof bytes must be serialized with `postcard::to_allocvec()` by the prover.
+/// Public outputs bytes are absorbed into the transcript before verification.
+///
+/// Returns Ok(true) if the proof is valid, Ok(false) if invalid, Err on deserialize failure.
+#[cfg(feature = "postcard-serde")]
+pub fn verify_bytes<T, U>(
+    config: &VerifierConfig,
+    proof_bytes: &[u8],
+    public_outputs_bytes: &[u8],
+) -> crate::Result<bool>
+where
+    T: BinaryFieldElement + Send + Sync + serde::de::DeserializeOwned,
+    U: BinaryFieldElement + Send + Sync + From<T> + serde::de::DeserializeOwned,
+{
+    let proof: FinalizedLigeritoProof<T, U> = postcard::from_bytes(proof_bytes)
+        .map_err(|_| crate::LigeritoError::InvalidProof)?;
+
+    let mut fs = FiatShamir::new_sha256(0);
+    fs.absorb_bytes(b"public_outputs", public_outputs_bytes);
+
+    verify_with_transcript(config, &proof, fs)
+}
+
+/// Serialize a proof to bytes using postcard (for prover side).
+///
+/// The resulting bytes can be verified with `verify_bytes()`.
+#[cfg(feature = "postcard-serde")]
+pub fn proof_to_bytes<T, U>(
+    proof: &FinalizedLigeritoProof<T, U>,
+) -> crate::Result<alloc::vec::Vec<u8>>
+where
+    T: BinaryFieldElement + Send + Sync + serde::Serialize,
+    U: BinaryFieldElement + Send + Sync + serde::Serialize,
+{
+    postcard::to_allocvec(proof)
+        .map_err(|_| crate::LigeritoError::InvalidProof)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
