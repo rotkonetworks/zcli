@@ -62,7 +62,7 @@ incrementalmerkletree = { version = "0.8", features = ["legacy-api"] }
 # also re-exports reddsa FROST types for DKG and generic signing.
 frost-spend = { path = "../../crates/frost-spend" }
 zoda-vss = { path = "../../crates/zoda-vss" }
-osst = { path = "../../../zeratul/crates/osst", default-features = false, features = ["pallas"] }
+osst = { git = "https://github.com/rotkonetworks/zeratul.git", rev = "90add33", default-features = false, features = ["pallas"] }
 pasta_curves = "0.5"
 reddsa = { git = "https://github.com/ZcashFoundation/reddsa.git", rev = "475a552", features = ["frost", "serde"] }
 ed25519-consensus = "2"
