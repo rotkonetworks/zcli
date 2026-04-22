@@ -4023,7 +4023,7 @@ dependencies = [
 [[package]]
 name = "osst"
 version = "0.1.1"
-source = "git+https://github.com/rotkonetworks/zeratul.git?rev=90add33#90add33172c189f6bc54dc5a16b4cb7049e89d5a"
+source = "git+https://github.com/rotkonetworks/frostito?rev=ae5b415e#ae5b415e5cb7fc08a588f34b4edcd84fa67ccc8e"
 dependencies = [
  "blake2b_simd",
  "pasta_curves",

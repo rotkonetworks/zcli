@@ -23,8 +23,8 @@ orchard = { git = "https://github.com/conradoplg/orchard.git", rev = "f0c88b78a1
 # Pallas curve
 pasta_curves = "0.5"
 
-# OSST: nested FROST + reshare (from zeratul)
-osst = { git = "https://github.com/rotkonetworks/zeratul.git", rev = "90add33", default-features = false, features = ["pallas"] }
+# OSST: nested FROST + reshare (public extract from zeratul)
+osst = { git = "https://github.com/rotkonetworks/frostito", rev = "ae5b415e", default-features = false, features = ["pallas"] }
 
 # hashing
 sha2 = "0.10"
