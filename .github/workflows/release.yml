@@ -3,47 +3,60 @@ name: release
 on:
   push:
     tags:
-      - 'v*'
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Version tag to build (e.g. v0.3.0). Used only for artifact naming.'
+        required: true
+        default: 'v0.0.0-dev'
 
 permissions:
   contents: write
 
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
   build:
+    name: build ${{ matrix.target }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - target: x86_64-unknown-linux-gnu
-            os: ubuntu-22.04
-            suffix: linux-amd64
+            os: ubuntu-latest
+            cross: false
           - target: aarch64-unknown-linux-gnu
-            os: ubuntu-22.04
-            suffix: linux-arm64
-          - target: aarch64-apple-darwin
-            os: macos-14
-            suffix: macos-arm64
+            os: ubuntu-latest
+            cross: true
           - target: x86_64-apple-darwin
-            os: macos-14
-            suffix: macos-amd64
+            os: macos-latest
+            cross: false
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            cross: false
 
     runs-on: ${{ matrix.os }}
 
     steps:
-      - uses: actions/checkout@v4
+      - name: checkout
+        uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@stable
+      - name: resolve version
+        id: version
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: install rust toolchain
+        uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
-
-      - name: install cross-compilation tools
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
-          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
-          echo "CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
-          echo "CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++" >> $GITHUB_ENV
 
       - name: install protoc (linux)
         if: runner.os == 'Linux'
@@ -53,77 +66,140 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install protobuf
 
-      - uses: Swatinem/rust-cache@v2
+      - name: install aarch64 cross toolchain
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu binutils-aarch64-linux-gnu
+          {
+            echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc"
+            echo "CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc"
+            echo "CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++"
+            echo "AR_aarch64_unknown_linux_gnu=aarch64-linux-gnu-ar"
+          } >> "$GITHUB_ENV"
+
+      - name: cache cargo registry
+        uses: actions/cache@v4
         with:
-          key: ${{ matrix.target }}
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: ${{ runner.os }}-${{ matrix.target }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.target }}-cargo-registry-
 
-      - name: build
-        run: |
-          cargo build --release --target ${{ matrix.target }} -p zecli
-          cargo build --release --target ${{ matrix.target }} -p zidecar
-          cargo build --release --target ${{ matrix.target }} -p zclid
-          cargo build --release --target ${{ matrix.target }} -p ligerito
+      - name: cache build target
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ runner.os }}-${{ matrix.target }}-target-release-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.target }}-target-release-
 
-      - name: package
+      - name: build binaries
+        shell: bash
         run: |
-          for bin in zcli zidecar zclid ligerito; do
-            name="${bin}-${{ matrix.suffix }}"
-            cp "target/${{ matrix.target }}/release/${bin}" "${name}"
-            strip "${name}" 2>/dev/null || true
+          cargo build --release --locked --target ${{ matrix.target }} \
+            -p zecli \
+            -p zclid \
+            -p zidecar \
+            -p license-server \
+            -p poker \
+            -p relay
+
+      - name: strip + package binaries
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          bins=(zcli zclid zidecar license-server poker relay)
+          mkdir -p dist
+
+          strip_cmd="strip"
+          if [ "$TARGET" = "aarch64-unknown-linux-gnu" ]; then
+            strip_cmd="aarch64-linux-gnu-strip"
+          fi
+
+          for bin in "${bins[@]}"; do
+            src="target/${TARGET}/release/${bin}"
+            if [ ! -f "$src" ]; then
+              echo "missing binary: $src" >&2
+              exit 1
+            fi
+
+            stage="stage/${bin}-${TAG}-${TARGET}"
+            mkdir -p "$stage"
+            cp "$src" "$stage/${bin}"
+            "$strip_cmd" "$stage/${bin}" 2>/dev/null || true
+            if [ -f LICENSE ]; then
+              cp LICENSE "$stage/LICENSE"
+            fi
+
+            tar -C stage -czf "dist/${bin}-${TAG}-${TARGET}.tar.gz" "${bin}-${TAG}-${TARGET}"
           done
 
-      - uses: actions/upload-artifact@v4
+          ls -lah dist/
+
+      - name: upload artifacts
+        uses: actions/upload-artifact@v4
         with:
-          name: binaries-${{ matrix.suffix }}
-          path: |
-            zcli-${{ matrix.suffix }}
-            zidecar-${{ matrix.suffix }}
-            zclid-${{ matrix.suffix }}
-            ligerito-${{ matrix.suffix }}
+          name: release-${{ matrix.target }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 7
 
   publish:
+    name: publish release
     needs: build
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/download-artifact@v4
+      - name: checkout
+        uses: actions/checkout@v4
+
+      - name: resolve version
+        id: version
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: download all artifacts
+        uses: actions/download-artifact@v4
         with:
+          path: dist
+          pattern: release-*
           merge-multiple: true
 
-      - name: generate checksums
-        run: sha256sum zcli-* zidecar-* zclid-* ligerito-* > SHA256SUMS
-
-      - name: import gpg key
-        if: env.GPG_PRIVATE_KEY != ''
-        env:
-          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
-        run: echo "$GPG_PRIVATE_KEY" | gpg --batch --import
-
-      - name: sign checksums
-        if: env.GPG_PRIVATE_KEY != ''
-        env:
-          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+      - name: generate sha256sums
+        shell: bash
+        working-directory: dist
         run: |
-          gpg --batch --yes --armor --detach-sign SHA256SUMS
-          gpg --armor --export > rotko.asc
+          set -euo pipefail
+          ls -lah
+          sha256sum *.tar.gz | tee sha256sums.txt
 
-      - name: create release
+      - name: create github release
+        if: github.event_name == 'push'
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            zcli-*
-            zidecar-*
-            zclid-*
-            ligerito-*
-            SHA256SUMS
-            SHA256SUMS.asc
-            rotko.asc
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: ${{ steps.version.outputs.tag }}
           generate_release_notes: true
           body: |
-            ## verify
+            Binaries below; see CHANGELOG.md / commit log for changes.
+
+            Verify with:
 
             ```bash
-            gpg --import rotko.asc
-            gpg --verify SHA256SUMS.asc SHA256SUMS
-            sha256sum -c SHA256SUMS --ignore-missing
+            sha256sum -c sha256sums.txt --ignore-missing
             ```
+          files: |
+            dist/*.tar.gz
+            dist/sha256sums.txt
