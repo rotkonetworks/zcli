@@ -13,7 +13,6 @@ mod compact;
 mod constants;
 mod epoch;
 mod error;
-mod chat_relay;
 mod frost_relay;
 mod grpc_service;
 mod header_chain;
@@ -61,11 +60,6 @@ struct Args {
     /// blobs between room participants without reading them.
     #[arg(long)]
     no_frost_relay: bool,
-
-    /// Disable zitadel chat relay. The chat relay forwards opaque
-    /// encrypted messages between channel participants.
-    #[arg(long)]
-    no_chat_relay: bool,
 }
 
 #[tokio::main]
@@ -224,17 +218,6 @@ async fn main() -> Result<()> {
         ))
     };
 
-    let router = if args.no_chat_relay {
-        info!("chat relay: disabled");
-        router
-    } else {
-        let chat = chat_relay::ChatRelayService::new();
-        info!("chat relay: enabled (zitadel)");
-        router.add_service(tonic_web::enable(
-            chat_relay_proto::chat_relay_server::ChatRelayServer::new(chat),
-        ))
-    };
-
     router.serve(args.listen).await?;
 
     Ok(())
@@ -251,12 +234,4 @@ pub mod lightwalletd {
 
 pub mod frost_relay_proto {
     tonic::include_proto!("frost_relay.v1");
-}
-
-pub mod chat_relay_proto {
-    tonic::include_proto!("chat_relay.v1");
-}
-
-pub mod relay_proto {
-    tonic::include_proto!("relay.v1");
 }
