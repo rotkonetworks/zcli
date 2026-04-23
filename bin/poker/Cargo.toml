@@ -17,7 +17,7 @@ tokio = { version = "1", features = ["full"] }
 tokio-stream = "0.1"
 
 # frostito (nested FROST + OSST)
-osst = { git = "https://github.com/rotkonetworks/zeratul.git", rev = "90add33", package = "osst", default-features = false, features = ["std", "pallas"] }
+osst = { git = "https://github.com/rotkonetworks/frostito", rev = "ae5b415e", package = "osst", default-features = false, features = ["std", "pallas"] }
 
 # crypto
 rand = "0.8"

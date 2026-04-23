@@ -2361,6 +2361,79 @@ pub fn tree_root_hex(tree_state_hex: &str) -> Result<String, JsError> {
     Ok(hex::encode(root))
 }
 
+/// Advance tracked witnesses over a range of compact blocks, optionally
+/// seeding new ones. Returns JSON
+/// `{end_frontier_hex, anchor_hex, witnesses: [{id, position, witness_hex}], seeded_ids: [...], end_position}`.
+///
+/// # Arguments
+/// * `start_frontier_hex` - tree state BEFORE the first block
+/// * `compact_blocks_json` - `[{height, actions: [{cmx_hex}]}]` in order
+/// * `existing_witnesses_json` - `[{id, witness_hex}]` - witnesses to advance
+/// * `new_notes_json` - `[{id, position}]` - witnesses to seed within this range
+#[wasm_bindgen]
+pub fn witness_sync_update(
+    start_frontier_hex: &str,
+    compact_blocks_json: &str,
+    existing_witnesses_json: &str,
+    new_notes_json: &str,
+) -> Result<JsValue, JsError> {
+    let blocks: Vec<witness::CompactBlockData> = serde_json::from_str(compact_blocks_json)
+        .map_err(|e| JsError::new(&format!("invalid compact_blocks_json: {}", e)))?;
+    let existing: Vec<witness::ExistingWitnessInput> = serde_json::from_str(existing_witnesses_json)
+        .map_err(|e| JsError::new(&format!("invalid existing_witnesses_json: {}", e)))?;
+    let new_notes: Vec<witness::NewNoteInput> = serde_json::from_str(new_notes_json)
+        .map_err(|e| JsError::new(&format!("invalid new_notes_json: {}", e)))?;
+
+    let result = witness::witness_sync_update_inner(
+        start_frontier_hex,
+        &blocks,
+        &existing,
+        &new_notes,
+    )
+    .map_err(|e| JsError::new(&e.to_string()))?;
+
+    let json = serde_json::to_string(&result)
+        .map_err(|e| JsError::new(&format!("failed to serialize result: {}", e)))?;
+    Ok(JsValue::from_str(&json))
+}
+
+/// Extract a merkle path from a stored per-note witness. Returns JSON
+/// `{position, root_hex, path: [{hash}]}`. The caller must cross-check
+/// `root_hex` against the anchor they intend to sign over.
+#[wasm_bindgen]
+pub fn witness_extract_path(witness_hex: &str) -> Result<JsValue, JsError> {
+    let result = witness::witness_extract_path_inner(witness_hex)
+        .map_err(|e| JsError::new(&e.to_string()))?;
+    let json = serde_json::to_string(&result)
+        .map_err(|e| JsError::new(&format!("failed to serialize result: {}", e)))?;
+    Ok(JsValue::from_str(&json))
+}
+
+/// One-shot witness + path builder used for initial backfill: replays blocks
+/// the same way `build_merkle_paths` does but also returns serialized
+/// witnesses and the resulting frontier so the caller can cache them.
+///
+/// Returns JSON
+/// `{anchor_hex, end_frontier_hex, entries: [{position, witness_hex, path: [{hash}]}]}`.
+#[wasm_bindgen]
+pub fn build_witnesses_and_paths(
+    tree_state_hex: &str,
+    compact_blocks_json: &str,
+    note_positions_json: &str,
+) -> Result<JsValue, JsError> {
+    let blocks: Vec<witness::CompactBlockData> = serde_json::from_str(compact_blocks_json)
+        .map_err(|e| JsError::new(&format!("invalid compact_blocks_json: {}", e)))?;
+    let positions: Vec<u64> = serde_json::from_str(note_positions_json)
+        .map_err(|e| JsError::new(&format!("invalid note_positions_json: {}", e)))?;
+
+    let result = witness::build_witnesses_and_paths_inner(tree_state_hex, &blocks, &positions)
+        .map_err(|e| JsError::new(&e.to_string()))?;
+
+    let json = serde_json::to_string(&result)
+        .map_err(|e| JsError::new(&format!("failed to serialize result: {}", e)))?;
+    Ok(JsValue::from_str(&json))
+}
+
 // ============================================================================
 // Note bundle encoding (CBOR for ur:zcash-notes)
 // ============================================================================
