@@ -7964,6 +7964,7 @@ dependencies = [
  "hex",
  "hmac 0.12.1",
  "incrementalmerkletree 0.8.2",
+ "indexmap 1.9.3",
  "js-sys",
  "k256",
  "orchard 0.12.0",

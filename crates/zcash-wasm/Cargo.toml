@@ -30,6 +30,12 @@ zip32 = { version = "0.2", default-features = false }
 incrementalmerkletree = { version = "0.8", features = ["legacy-api"] }
 hex = "0.4"
 
+# force indexmap's `std` feature across the dep graph so halo2_proofs
+# (which pulls indexmap with default-features = false) can use
+# IndexMap::new() — otherwise `has_std` cfg isn't set under `-Z build-std`
+# and the build fails with "struct takes 3 generic arguments".
+indexmap = { version = "1", features = ["std"] }
+
 # note encryption (no heavy circuit deps)
 zcash_note_encryption = "0.4"
 
