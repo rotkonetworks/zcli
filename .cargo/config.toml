@@ -12,3 +12,11 @@ rustflags = [
 ]
 # wasm parallel build requires nightly:
 # RUSTUP_TOOLCHAIN=nightly cargo build --target wasm32-unknown-unknown -Zbuild-std=panic_abort,std
+
+[alias]
+# Rebuild just the .wasm for the parallel zafu bundle. Assumes nightly is
+# selected (RUSTUP_TOOLCHAIN=nightly or `cargo +nightly wasm-parallel`).
+wasm-parallel = "build -p zafu-wasm --target wasm32-unknown-unknown --release -Zbuild-std=panic_abort,std"
+
+# Single-threaded variant — stable-Rust OK, no -Z build-std.
+wasm-single = "build -p zafu-wasm --target wasm32-unknown-unknown --release --no-default-features"
