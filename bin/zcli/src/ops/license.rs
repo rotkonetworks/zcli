@@ -108,7 +108,7 @@ pub fn process_payments(
     for note in &notes {
         // skip already-processed nullifiers
         if processed_tree
-            .contains_key(&note.nullifier)
+            .contains_key(note.nullifier)
             .map_err(|e| Error::Other(format!("check nullifier: {}", e)))?
         {
             continue;
@@ -150,7 +150,7 @@ pub fn process_payments(
             let json = serde_json::to_vec(&pending)
                 .map_err(|e| Error::Other(format!("serialize pending: {}", e)))?;
             pending_tree
-                .insert(&note.nullifier, json)
+                .insert(note.nullifier, json)
                 .map_err(|e| Error::Other(format!("store pending: {}", e)))?;
 
             eprintln!(
@@ -171,9 +171,9 @@ pub fn process_payments(
 
         // mark nullifier as processed, remove from pending
         processed_tree
-            .insert(&note.nullifier, &[1u8])
+            .insert(note.nullifier, &[1u8])
             .map_err(|e| Error::Other(format!("mark processed: {}", e)))?;
-        let _ = pending_tree.remove(&note.nullifier);
+        let _ = pending_tree.remove(note.nullifier);
 
         credited += 1;
         let days = (note.value as f64 / RATE_ZAT_PER_30_DAYS as f64 * 30.0) as u64;

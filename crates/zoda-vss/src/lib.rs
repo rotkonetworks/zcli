@@ -69,6 +69,7 @@ impl GF256 {
     pub const ONE: Self = Self(1);
 
     /// multiply in GF(2^8)
+    #[allow(clippy::should_implement_trait)] // intentional: inherent + trait impl share the name
     pub fn mul(self, other: Self) -> Self {
         let mut a = self.0;
         let mut b = other.0;
@@ -120,15 +121,17 @@ impl GF256 {
 
 impl Add for GF256 {
     type Output = Self;
+    #[allow(clippy::suspicious_arithmetic_impl)] // XOR is addition in GF(2^8)
     fn add(self, other: Self) -> Self {
-        Self(self.0 ^ other.0) // XOR in GF(2^8)
+        Self(self.0 ^ other.0)
     }
 }
 
 impl Sub for GF256 {
     type Output = Self;
+    #[allow(clippy::suspicious_arithmetic_impl)] // subtraction == addition in GF(2^8)
     fn sub(self, other: Self) -> Self {
-        Self(self.0 ^ other.0) // same as add in GF(2^8)
+        Self(self.0 ^ other.0)
     }
 }
 
@@ -175,7 +178,7 @@ impl Header {
     /// note: full verification requires polynomial evaluation
     /// this is a lightweight check that the share format is valid
     pub fn verify_format(&self, share: &Share) -> bool {
-        share.index > 0 && share.index <= self.total && share.data.len() > 0
+        share.index > 0 && share.index <= self.total && !share.data.is_empty()
     }
 }
 

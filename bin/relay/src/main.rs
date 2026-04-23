@@ -42,6 +42,7 @@ use proto::*;
 
 const MAX_ROOMS: usize = 10_000;
 const MAX_MESSAGES_PER_ROOM: usize = 10_000;
+#[allow(dead_code)] // referenced by config for room expiry; not yet wired
 const DEFAULT_TTL: Duration = Duration::from_secs(3600);
 
 pub(crate) fn now_ms() -> u64 {
@@ -248,7 +249,7 @@ impl RoomManager {
         let now = Instant::now();
         let expired: Vec<String> = rooms
             .iter()
-            .filter(|(_, r)| r.expires_at.map_or(false, |e| e < now))
+            .filter(|(_, r)| r.expires_at.is_some_and(|e| e < now))
             .map(|(k, _)| k.clone())
             .collect();
         for code in &expired {
@@ -326,7 +327,7 @@ impl Relay for RelayService {
             .manager
             .create_room(req.max_participants, req.ttl_seconds)
             .await
-            .map_err(|e| Status::resource_exhausted(e))?;
+            .map_err(Status::resource_exhausted)?;
 
         info!("room created: {} (max={}, ttl={}s)",
             code, req.max_participants, req.ttl_seconds);
@@ -350,7 +351,7 @@ impl Relay for RelayService {
             .manager
             .join_room(&req.room_code, req.participant_id.clone())
             .await
-            .map_err(|e| Status::not_found(e))?;
+            .map_err(Status::not_found)?;
 
         info!("joined: {} ({}...)", room.code,
             hex::encode(&req.participant_id[..4.min(req.participant_id.len())]));
@@ -438,7 +439,7 @@ impl Relay for RelayService {
             .manager
             .send_message(&req.room_code, req.sender_id, req.payload)
             .await
-            .map_err(|e| Status::failed_precondition(e))?;
+            .map_err(Status::failed_precondition)?;
 
         Ok(Response::new(SendMessageResponse { sequence: seq }))
     }

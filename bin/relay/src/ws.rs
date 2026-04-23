@@ -25,10 +25,9 @@ use axum::{
 };
 use futures::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
-use tokio::sync::broadcast;
 use tracing::info;
 
-use crate::{RoomManager, RoomBroadcast, StoredMessage, now_ms};
+use crate::{RoomManager, RoomBroadcast};
 
 #[derive(Deserialize)]
 #[serde(tag = "t")]
@@ -45,6 +44,7 @@ enum ClientMsg {
 
 #[derive(Serialize, Clone)]
 #[serde(tag = "t")]
+#[allow(dead_code)] // Left variant reserved for leave-room protocol, not yet emitted
 enum ServerMsg {
     #[serde(rename = "created")]
     Created { room: String },

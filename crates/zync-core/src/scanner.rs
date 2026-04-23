@@ -31,7 +31,6 @@ use orchard::{
     note_encryption::{CompactAction, OrchardDomain},
     Address,
 };
-use subtle::CtOption;
 use zcash_note_encryption::{try_compact_note_decryption, EphemeralKeyBytes};
 
 #[cfg(feature = "wasm")]

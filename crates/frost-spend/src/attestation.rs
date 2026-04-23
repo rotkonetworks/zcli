@@ -35,8 +35,8 @@ pub fn attestation_digest(
     hasher.update(b"zcash-anchor-v1");
     hasher.update(group_verifying_key);
     hasher.update(anchor);
-    hasher.update(&height.to_le_bytes());
-    hasher.update(&[u8::from(mainnet)]);
+    hasher.update(height.to_le_bytes());
+    hasher.update([u8::from(mainnet)]);
     hasher.finalize().into()
 }
 

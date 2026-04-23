@@ -211,7 +211,7 @@ async fn main() -> anyhow::Result<()> {
         wallet_path: wallet_path.clone(),
         endpoint: args.endpoint.clone(),
         fvk: svc_fvk,
-        spending_key: spending_key.map(|sk| Arc::new(sk)),
+        spending_key: spending_key.map(Arc::new),
         mainnet,
     };
 
