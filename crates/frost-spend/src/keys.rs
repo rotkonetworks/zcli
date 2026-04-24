@@ -39,6 +39,29 @@ pub fn derive_fvk(
     Some(FullViewingKey::from_sk_ak(&sk, ak))
 }
 
+/// derive an Orchard FullViewingKey from a caller-supplied SpendingKey and
+/// the FROST group verifying key.
+///
+/// this is the interactive-DKG counterpart to `derive_fvk`: instead of
+/// sampling fresh randomness (which would leave every participant with a
+/// different FVK), a single party rolls the SpendingKey and broadcasts its
+/// 32 bytes to peers, and every participant reconstructs the same FVK via
+/// this function. safety identical to `derive_fvk` — nk/rivk don't
+/// participate in spend authorization.
+///
+/// returns `None` if the supplied `sk_bytes` is outside the Pallas scalar
+/// range, or if `pubkey_package`'s verifying key isn't a valid ak. callers
+/// that control sk generation should retry with fresh bytes on `None`.
+pub fn derive_fvk_from_sk(
+    sk_bytes: [u8; 32],
+    pubkey_package: &PublicKeyPackage,
+) -> Option<FullViewingKey> {
+    let ak_bytes = pubkey_package.verifying_key().serialize().ok()?;
+    let ak = SpendValidatingKey::from_bytes(&ak_bytes)?;
+    let sk: SpendingKey = Option::from(SpendingKey::from_bytes(sk_bytes))?;
+    Some(FullViewingKey::from_sk_ak(&sk, ak))
+}
+
 /// extract the SpendValidatingKey (ak) from a FROST key package.
 /// this is the participant's view of the group public key.
 pub fn group_ak(pubkey_package: &PublicKeyPackage) -> Option<SpendValidatingKey> {
