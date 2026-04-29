@@ -18,5 +18,6 @@ rustflags = [
 # selected (RUSTUP_TOOLCHAIN=nightly or `cargo +nightly wasm-parallel`).
 wasm-parallel = "build -p zafu-wasm --target wasm32-unknown-unknown --release -Zbuild-std=panic_abort,std"
 
-# Single-threaded variant — stable-Rust OK, no -Z build-std.
-wasm-single = "build -p zafu-wasm --target wasm32-unknown-unknown --release --no-default-features"
+# Single-threaded — needs build-std because global RUSTFLAGS force +atomics
+# and prebuilt stable std lacks them. Output still requires SharedArrayBuffer.
+wasm-single = "build -p zafu-wasm --target wasm32-unknown-unknown --release --no-default-features -Zbuild-std=panic_abort,std"

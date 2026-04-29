@@ -10,7 +10,9 @@ crate-type = ["cdylib", "rlib"]
 
 [features]
 default = ["parallel"]
-parallel = ["rayon", "wasm-bindgen-rayon"]
+# Gate orchard/multicore here so wasm-single (no parallel) skips halo2's
+# multicore code paths — keeps the single artifact ~3% smaller.
+parallel = ["rayon", "wasm-bindgen-rayon", "orchard/multicore"]
 
 [dependencies]
 # crypto primitives (WASM-compatible)
@@ -21,7 +23,7 @@ group = "0.13"
 
 # Orchard protocol - real key derivation and note encryption
 # Use latest versions to avoid halo2_proofs/indexmap conflict
-orchard = { version = "0.12", default-features = false, features = ["circuit", "multicore"] }
+orchard = { version = "0.12", default-features = false, features = ["circuit"] }
 zcash_keys = { version = "0.12", default-features = false, features = ["orchard", "transparent-inputs"] }
 zcash_address = { version = "0.10", default-features = false }
 zcash_protocol = { version = "0.7", default-features = false }
