@@ -41,7 +41,21 @@ use proto::*;
 // ============================================================================
 
 const MAX_ROOMS: usize = 10_000;
-const MAX_MESSAGES_PER_ROOM: usize = 10_000;
+/// Per-room storage budget. The relay is in-memory only, so this caps
+/// per-room memory regardless of message count or size variance. When
+/// a new message would push a room over budget, the oldest stored
+/// messages are dropped one at a time until it fits.
+///
+/// 1 MiB is large enough for thousands of typical chat messages or
+/// hundreds of FROST DKG / signing messages, and small enough that
+/// MAX_ROOMS * MAX_ROOM_BYTES = ~10 GB worst case (which is fine for
+/// a process with no persistence).
+const MAX_ROOM_BYTES: usize = 1024 * 1024;
+/// Approximate constant overhead per StoredMessage on top of the
+/// payload bytes - accounts for sender_id, sequence, timestamp_ms and
+/// Vec heap overhead. Used for computing the storage budget without
+/// having to introspect heap allocations.
+const MESSAGE_OVERHEAD_BYTES: usize = 80;
 #[allow(dead_code)] // referenced by config for room expiry; not yet wired
 const DEFAULT_TTL: Duration = Duration::from_secs(3600);
 
@@ -254,10 +268,18 @@ impl RoomManager {
         drop(participants);
 
         let mut messages = room.messages.write().await;
-        if messages.len() >= MAX_MESSAGES_PER_ROOM {
-            let drain_count = MAX_MESSAGES_PER_ROOM / 10;
-            messages.drain(..drain_count);
+
+        // byte-budgeted eviction: drop oldest messages until the new
+        // one fits within MAX_ROOM_BYTES. computed on demand because
+        // sends are not in a hot loop.
+        let msg_cost = |m: &StoredMessage| m.payload.len() + MESSAGE_OVERHEAD_BYTES;
+        let new_cost = payload.len() + MESSAGE_OVERHEAD_BYTES;
+        let mut total: usize = messages.iter().map(msg_cost).sum();
+        while total + new_cost > MAX_ROOM_BYTES && !messages.is_empty() {
+            let dropped = messages.remove(0);
+            total -= msg_cost(&dropped);
         }
+
         let seq = room.next_sequence.fetch_add(1, Ordering::Relaxed);
         let msg = StoredMessage {
             sender_id,
