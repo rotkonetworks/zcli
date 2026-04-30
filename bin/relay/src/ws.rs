@@ -29,6 +29,18 @@ use tracing::info;
 
 use crate::{RoomManager, RoomBroadcast};
 
+/// Don't replay messages older than this when a client joins. Avoids
+/// dragging stale ciphertext from earlier client/key versions into the
+/// scrollback of new joiners.
+const HISTORY_REPLAY_TTL_MS: u64 = 24 * 60 * 60 * 1000;
+
+fn now_ms_local() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 #[derive(Deserialize)]
 #[serde(tag = "t")]
 enum ClientMsg {
@@ -44,7 +56,6 @@ enum ClientMsg {
 
 #[derive(Serialize, Clone)]
 #[serde(tag = "t")]
-#[allow(dead_code)] // Left variant reserved for leave-room protocol, not yet emitted
 enum ServerMsg {
     #[serde(rename = "created")]
     Created { room: String },
@@ -130,9 +141,14 @@ async fn handle_socket(socket: WebSocket, manager: Arc<RoomManager>) {
                         let count = r.participants.read().await.len() as u32;
                         info!("ws: {} joined {} ({})", nick, room, count);
 
-                        // send existing messages
+                        // send existing messages, filtered by TTL so stale
+                        // ciphertext from prior client/key versions doesn't
+                        // pollute new joiners' scrollback. messages stay in
+                        // the room (other clients can still see them) but
+                        // aren't replayed to fresh joiners after the cutoff.
+                        let cutoff_ms = now_ms_local().saturating_sub(HISTORY_REPLAY_TTL_MS);
                         let existing = r.messages.read().await.clone();
-                        for m in &existing {
+                        for m in existing.iter().filter(|m| m.timestamp_ms >= cutoff_ms) {
                             let payload = String::from_utf8_lossy(&m.payload);
                             let (msg_nick, msg_text) = match payload.find('\0') {
                                 Some(pos) => (payload[..pos].to_string(), payload[pos+1..].to_string()),
@@ -175,6 +191,12 @@ async fn handle_socket(socket: WebSocket, manager: Arc<RoomManager>) {
                                             text: format!("{}... joined ({})", hex::encode(&participant_id[..4]), count),
                                         });
                                     }
+                                    RoomBroadcast::Left { participant_id, count } => {
+                                        let _ = out_tx2.send(ServerMsg::Left {
+                                            nick: format!("{}...", hex::encode(&participant_id[..4])),
+                                            count,
+                                        });
+                                    }
                                     RoomBroadcast::Closed(reason) => {
                                         let _ = out_tx2.send(ServerMsg::System { text: format!("room closed: {}", reason) });
                                         break;
@@ -201,10 +223,20 @@ async fn handle_socket(socket: WebSocket, manager: Arc<RoomManager>) {
             }
 
             ClientMsg::Part => {
+                if let Some(ref room) = current_room {
+                    let _ = manager.leave_room(room, participant_id.clone()).await;
+                }
                 current_room = None;
                 let _ = out_tx.send(ServerMsg::System { text: "left channel".into() });
             }
         }
+    }
+
+    // socket closed - clean up the participant from the room so the
+    // user count actually decrements. without this, every reconnect
+    // appears as a fresh user and the count grows monotonically.
+    if let Some(ref room) = current_room {
+        let _ = manager.leave_room(room, participant_id).await;
     }
 
     write_task.abort();

@@ -72,6 +72,10 @@ pub(crate) enum RoomBroadcast {
         count: u32,
         max_participants: u32,
     },
+    Left {
+        participant_id: Vec<u8>,
+        count: u32,
+    },
     Message(StoredMessage),
     Closed(String),
 }
@@ -206,6 +210,30 @@ impl RoomManager {
         });
 
         Ok(room)
+    }
+
+    pub(crate) async fn leave_room(
+        &self,
+        code: &str,
+        participant_id: Vec<u8>,
+    ) -> Result<(), &'static str> {
+        // get_room may return None if the room has expired or been GC'd
+        // between the join and the leave. that's a normal case for a
+        // disconnect path - just no-op rather than erroring.
+        let Some(room) = self.get_room(code).await else {
+            return Ok(());
+        };
+        let mut participants = room.participants.write().await;
+        if let Some(pos) = participants.iter().position(|p| p.id == participant_id) {
+            participants.remove(pos);
+            let count = participants.len() as u32;
+            drop(participants);
+            let _ = room.tx.send(RoomBroadcast::Left {
+                participant_id,
+                count,
+            });
+        }
+        Ok(())
     }
 
     async fn send_message(
@@ -396,6 +424,14 @@ impl Relay for RelayService {
                                 participant_id,
                                 participant_count: count,
                                 max_participants,
+                            })),
+                        });
+                    }
+                    Ok(RoomBroadcast::Left { participant_id, count }) => {
+                        yield Ok(RoomEvent {
+                            event: Some(room_event::Event::Left(ParticipantLeft {
+                                participant_id,
+                                participant_count: count,
                             })),
                         });
                     }

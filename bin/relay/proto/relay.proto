@@ -40,6 +40,7 @@ message RoomEvent {
         ParticipantJoined joined = 1;
         RelayedMessage message = 2;
         RoomClosed closed = 3;
+        ParticipantLeft left = 4;
     }
 }
 
@@ -47,6 +48,11 @@ message ParticipantJoined {
     bytes participant_id = 1;
     uint32 participant_count = 2;
     uint32 max_participants = 3;
+}
+
+message ParticipantLeft {
+    bytes participant_id = 1;
+    uint32 participant_count = 2;
 }
 
 message RelayedMessage {
