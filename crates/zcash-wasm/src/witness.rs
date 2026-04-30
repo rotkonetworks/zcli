@@ -442,7 +442,7 @@ pub struct WitnessUpdateResult {
 ///   * `compact_blocks`     - blocks in order (empty list is a no-op)
 ///   * `existing`           - witnesses to advance (all will receive every cmx)
 ///   * `new_notes`          - ids/positions to seed; each position must land
-///                             somewhere in the block range (or == starting size)
+///     somewhere in the block range (or == starting size)
 ///
 /// Output: updated witnesses (existing + newly seeded), the new frontier, and
 /// the anchor matching all witnesses.

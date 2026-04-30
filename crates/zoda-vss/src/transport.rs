@@ -125,8 +125,7 @@ impl Encoder {
         let k = if usable == 0 {
             1
         } else {
-            let raw_k = (payload.len() + usable - 1) / usable;
-            raw_k.max(1).min(254) as u8
+            payload.len().div_ceil(usable).clamp(1, 254) as u8
         };
         let extra = ((k as u16 * redundancy_pct as u16) / 100).max(1) as u8;
         let n = (k as u16 + extra as u16).min(254) as u8;
@@ -148,7 +147,7 @@ impl Encoder {
         session_id.copy_from_slice(&hash[..SESSION_ID_LEN]);
 
         // chunk size: ceil(payload_len / k)
-        let chunk_size = (payload.len() + k as usize - 1) / k as usize;
+        let chunk_size = payload.len().div_ceil(k as usize);
 
         // split payload into k data chunks (pad last with zeros)
         let mut chunks: Vec<Vec<u8>> = Vec::with_capacity(k as usize);
@@ -235,6 +234,12 @@ pub struct Decoder {
     received_count: usize,
 }
 
+impl Default for Decoder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Decoder {
     pub fn new() -> Self {
         Self {
@@ -261,7 +266,7 @@ impl Decoder {
 
     /// Whether we have enough frames to reconstruct.
     pub fn complete(&self) -> bool {
-        self.k.map_or(false, |k| self.received_count >= k as usize)
+        self.k.is_some_and(|k| self.received_count >= k as usize)
     }
 
     /// Receive a frame. Returns Ok(true) if accepted, Ok(false) if duplicate.

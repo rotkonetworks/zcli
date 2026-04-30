@@ -104,10 +104,8 @@ async fn run(cli: &Cli) -> Result<(), Error> {
             InitAction::Create { words } => cmd_init_create(cli, *words),
             InitAction::ImportFvk { hex } => cmd_import_fvk(cli, mainnet, hex.as_deref()),
             InitAction::Sync { from, position, full, no_verify } => {
-                if *full {
-                    if !cli.json {
-                        eprintln!("full rescan from orchard activation...");
-                    }
+                if *full && !cli.json {
+                    eprintln!("full rescan from orchard activation...");
                 }
                 if *no_verify {
                     std::env::set_var("ZCLI_NO_VERIFY", "1");
@@ -990,6 +988,7 @@ async fn cmd_board(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn cmd_license_server(
     cli: &Cli,
     seed: &key::WalletSeed,
@@ -1902,6 +1901,7 @@ fn parse_32_bytes(hex_str: &str, name: &str) -> Result<[u8; 32], Error> {
         .map_err(|_| Error::Other(format!("{} must be 32 bytes", name)))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn cmd_export_notes(
     cli: &Cli,
     mainnet: bool,
@@ -1960,9 +1960,9 @@ async fn cmd_export_notes(
             let mut hasher = Sha256::new();
             hasher.update(b"zcash-anchor-v1");
             hasher.update(verification_key.as_ref());
-            hasher.update(&anchor.to_bytes());
-            hasher.update(&tip.to_le_bytes());
-            hasher.update(&[u8::from(mainnet)]);
+            hasher.update(anchor.to_bytes());
+            hasher.update(tip.to_le_bytes());
+            hasher.update([u8::from(mainnet)]);
             let digest: [u8; 32] = hasher.finalize().into();
 
             let signature = signing_key.sign(&digest);

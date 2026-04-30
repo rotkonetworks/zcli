@@ -39,6 +39,7 @@ fn compute_fee(n_spends: usize, n_z_outputs: usize, n_t_outputs: usize, has_chan
 }
 
 /// select notes covering target (largest-first, prefer recent positions)
+#[allow(clippy::result_large_err)] // tonic::Status is the idiomatic error; worth the size
 fn select_notes(
     notes: &[zecli::wallet::WalletNote],
     target: u64,
@@ -68,6 +69,7 @@ fn select_notes(
 }
 
 /// validate a TransactionIntent at the gRPC boundary
+#[allow(clippy::result_large_err)]
 fn validate_intent(intent: &proto::TransactionIntent) -> Result<(), Status> {
     if intent.to_address.is_empty() {
         return Err(Status::invalid_argument("to_address is required"));
@@ -654,6 +656,7 @@ fn sign_with_ask(
     let rsk = ask.randomize(&alpha);
 
     // sign the sighash with the randomized key
+    #[allow(clippy::needless_borrows_for_generic_args)]
     let sig = rsk.sign(&mut rand::rngs::OsRng, sighash);
     <[u8; 64]>::from(&sig)
 }

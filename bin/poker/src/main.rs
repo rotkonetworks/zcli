@@ -347,7 +347,7 @@ async fn host_game(
         room_code: room.room_code.clone(),
         sender_id: my_id.clone(),
         payload: encode_msg(&Msg::Escrow {
-            address: hex::encode(&escrow.address),
+            address: hex::encode(escrow.address),
             unified_address: escrow.unified_address.clone(),
             jury_n: 5, jury_t: 3,
         }),
@@ -389,7 +389,7 @@ async fn host_game(
 
     let stdin = io::stdin();
     let line = stdin.lock().lines().next().unwrap_or(Ok("check".into()))?;
-    let parts: Vec<&str> = line.trim().split_whitespace().collect();
+    let parts: Vec<&str> = line.split_whitespace().collect();
     let (action, amount) = match parts.first().map(|s| s.to_lowercase()).as_deref() {
         Some("bet") => ("bet".to_string(), parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(100)),
         Some("fold") => ("fold".to_string(), 0u64),
@@ -412,26 +412,21 @@ async fn host_game(
     while let Some(Ok(event)) = stream.next().await {
         if let Some(proto::room_event::Event::Message(m)) = event.event {
             if m.sender_id != my_id {
-                if let Some(msg) = decode_msg(&m.payload) {
-                    match msg {
-                        Msg::Action { action: ref a, .. } => {
-                            println!("opponent: {}", a);
-                            if a == "fold" {
-                                println!("opponent folded. you win!");
-                                // settle
-                                let settle_msg = format!("settle:A={},B=0", buyin * 2);
-                                if let Some((r, z)) = escrow.settle(settle_msg.as_bytes()) {
-                                    println!("\nfrostito signature (happy path):");
-                                    println!("  R: {}...", &r[..32]);
-                                    println!("  z: {}...", &z[..32]);
-                                    println!("  verified: true");
-                                }
-                                return Ok(());
-                            }
-                            break;
+                if let Some(Msg::Action { action: ref a, .. }) = decode_msg(&m.payload) {
+                    println!("opponent: {}", a);
+                    if a == "fold" {
+                        println!("opponent folded. you win!");
+                        // settle
+                        let settle_msg = format!("settle:A={},B=0", buyin * 2);
+                        if let Some((r, z)) = escrow.settle(settle_msg.as_bytes()) {
+                            println!("\nfrostito signature (happy path):");
+                            println!("  R: {}...", &r[..32]);
+                            println!("  z: {}...", &z[..32]);
+                            println!("  verified: true");
                         }
-                        _ => {}
+                        return Ok(());
                     }
+                    break;
                 }
             }
         }
@@ -544,7 +539,7 @@ async fn join_game(
                                 print!("your action (bet <amount> / call / fold): ");
                                 io::stdout().flush()?;
                                 let line = stdin.lock().lines().next().unwrap_or(Ok("call".into()))?;
-                                let parts: Vec<&str> = line.trim().split_whitespace().collect();
+                                let parts: Vec<&str> = line.split_whitespace().collect();
                                 let (act, amt) = match parts.first().map(|s| s.to_lowercase()).as_deref() {
                                     Some("fold") => ("fold", 0u64),
                                     Some("bet") => ("bet", parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(100)),

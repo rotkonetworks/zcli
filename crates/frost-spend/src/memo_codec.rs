@@ -141,7 +141,7 @@ pub fn encode_fragmented(
     memo_type: MemoType,
     payload: &[u8],
 ) -> Result<Vec<[u8; MEMO_SIZE]>, String> {
-    let total_parts = (payload.len() + PAYLOAD_FRAGMENT - 1) / PAYLOAD_FRAGMENT;
+    let total_parts = payload.len().div_ceil(PAYLOAD_FRAGMENT);
     if total_parts > MAX_FRAGMENTS {
         return Err(format!(
             "message too large: {} fragments (max {})",

@@ -28,15 +28,10 @@
 // the outer aggregator sums them into a valid RedPallas SpendAuth signature
 // indistinguishable from single-signer.
 
-use std::collections::BTreeMap;
-
-use rand_core::{OsRng, RngCore};
-
 use crate::{
-    frost_keys, round1,
-    Identifier, RandomizedParams, Randomizer, SigningPackage,
-    message::{SignedMessage, identifier_from_vk},
-    orchestrate::{self, Error, to_hex, from_hex},
+    frost_keys,
+    message::SignedMessage,
+    orchestrate::{self, Error, from_hex},
 };
 
 // ── bridge key material ──

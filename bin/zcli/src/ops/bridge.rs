@@ -25,6 +25,7 @@ use frost_spend::hierarchical::{
 /// routed through narsild for nested inner FROST among validators.
 ///
 /// takes fvk_bytes (96 bytes) to avoid orchard crate version conflicts.
+#[allow(clippy::too_many_arguments)]
 pub async fn bridge_spend(
     osst_pkg: &BridgeKeyPackage,
     validator_pkg: &BridgeKeyPackage,
