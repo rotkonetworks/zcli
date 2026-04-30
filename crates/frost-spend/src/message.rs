@@ -22,10 +22,18 @@ pub fn identifier_from_vk(vk: &VerificationKey) -> Result<Identifier, String> {
 }
 
 /// ed25519-signed message envelope. ephemeral pubkey, not long-lived.
+///
+/// `Vec<u8>` fields are serialized as hex strings instead of serde's default
+/// JSON-array-of-decimals (~3.5 chars/byte) — the latter inflates a ~750-byte
+/// FROST round envelope to ~5200 hex chars on the wire, overflowing the
+/// 2953-byte single-QR cap used in cold-multisig DKG.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct SignedMessage {
+    #[serde(with = "hex::serde")]
     pub pk: Vec<u8>,
+    #[serde(with = "hex::serde")]
     pub sig: Vec<u8>,
+    #[serde(with = "hex::serde")]
     pub payload: Vec<u8>,
 }
 

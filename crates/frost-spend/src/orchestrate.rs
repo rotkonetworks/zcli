@@ -395,6 +395,13 @@ pub fn aggregate_shares(
 
 /// derive the raw Orchard address bytes for the FROST multisig wallet.
 /// returns 43-byte raw address. caller is responsible for UA encoding.
+///
+/// NOTE: uses a fresh random SpendingKey for nk/rivk derivation — every
+/// call produces a different address. this is only safe to use when a
+/// single party derives-and-broadcasts (as in the hierarchical/bridge
+/// trusted-dealer flow). the interactive-DKG flow must use
+/// `derive_address_from_sk` so all participants converge on the same
+/// address from the shared broadcast sk.
 pub fn derive_address_raw(
     public_key_package_hex: &str,
     diversifier_index: u32,
@@ -402,6 +409,22 @@ pub fn derive_address_raw(
     let pubkeys: frost_keys::PublicKeyPackage = from_hex(public_key_package_hex)?;
     let fvk = crate::keys::derive_fvk(&mut OsRng, &pubkeys)
         .ok_or_else(|| Error::Frost("failed to derive FVK from group key".into()))?;
+    let addr = crate::keys::derive_address(&fvk, diversifier_index);
+    Ok(addr.to_raw_address_bytes())
+}
+
+/// derive the raw Orchard address bytes using a caller-supplied `sk`.
+/// every participant that calls this with the same `sk` + pkg lands on
+/// byte-identical output — this is what the interactive DKG flow uses
+/// so both sides agree on the wallet's address.
+pub fn derive_address_from_sk(
+    public_key_package_hex: &str,
+    sk_bytes: [u8; 32],
+    diversifier_index: u32,
+) -> Result<[u8; 43], Error> {
+    let pubkeys: frost_keys::PublicKeyPackage = from_hex(public_key_package_hex)?;
+    let fvk = crate::keys::derive_fvk_from_sk(sk_bytes, &pubkeys)
+        .ok_or_else(|| Error::Frost("failed to derive FVK from group key + sk".into()))?;
     let addr = crate::keys::derive_address(&fvk, diversifier_index);
     Ok(addr.to_raw_address_bytes())
 }

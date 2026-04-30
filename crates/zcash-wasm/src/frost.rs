@@ -134,7 +134,10 @@ pub fn frost_aggregate_shares(
 
 // ── spend authorization (sighash + alpha bound) ──
 
-/// derive the multisig wallet's Orchard address (raw 43-byte address, hex-encoded)
+/// derive the multisig wallet's Orchard address (raw 43-byte address, hex-encoded).
+/// non-deterministic — internally generates a random nk/rivk. only safe when a
+/// single party derives-and-broadcasts. interactive DKG should use
+/// `frost_derive_address_from_sk` instead.
 #[wasm_bindgen]
 pub fn frost_derive_address_raw(
     public_key_package_hex: &str,
@@ -143,6 +146,80 @@ pub fn frost_derive_address_raw(
     let raw = frost_spend::orchestrate::derive_address_raw(public_key_package_hex, diversifier_index)
         .map_err(|e| JsError::new(&e.to_string()))?;
     Ok(hex::encode(raw))
+}
+
+/// derive the multisig wallet's Orchard address (raw 43-byte address, hex-encoded)
+/// from the group public key package and a caller-supplied `sk`. deterministic —
+/// every participant computing this with the same inputs lands on byte-identical
+/// output. pair with `frost_derive_ufvk(pkg, sk, mainnet)` so the stored address
+/// and stored UFVK share a single source of truth for nk/rivk.
+#[wasm_bindgen]
+pub fn frost_derive_address_from_sk(
+    public_key_package_hex: &str,
+    sk_hex: &str,
+    diversifier_index: u32,
+) -> Result<String, JsError> {
+    let sk_bytes = parse_32(sk_hex, "address sk")?;
+    let raw = frost_spend::orchestrate::derive_address_from_sk(
+        public_key_package_hex, sk_bytes, diversifier_index,
+    )
+    .map_err(|e| JsError::new(&e.to_string()))?;
+    Ok(hex::encode(raw))
+}
+
+/// host-only: sample a random 32-byte SpendingKey for nk/rivk derivation.
+/// retries until the sampled bytes land in the Pallas scalar range.
+/// returns hex-encoded 32-byte `sk` that the host broadcasts to peers in R1.
+#[wasm_bindgen]
+pub fn frost_sample_fvk_sk() -> String {
+    use rand_core::{OsRng, RngCore};
+    let mut rng = OsRng;
+    // SpendingKey::from_bytes validates the scalar range; retry on the
+    // vanishingly rare out-of-range case. we don't care which sk we land
+    // on, only that all peers use the same one (which is why the host
+    // broadcasts it rather than each peer generating their own).
+    loop {
+        let mut bytes = [0u8; 32];
+        rng.fill_bytes(&mut bytes);
+        let maybe_sk: Option<orchard::keys::SpendingKey> =
+            Option::from(orchard::keys::SpendingKey::from_bytes(bytes));
+        if maybe_sk.is_some() {
+            return hex::encode(bytes);
+        }
+    }
+}
+
+/// derive the Orchard-only UFVK string (`uview1…` / `uviewtest1…`) from a
+/// caller-supplied 32-byte SpendingKey and a FROST public key package.
+/// every participant, given the same `sk_hex` + `public_key_package_hex`,
+/// lands on byte-identical output.
+#[wasm_bindgen]
+pub fn frost_derive_ufvk(
+    public_key_package_hex: &str,
+    sk_hex: &str,
+    mainnet: bool,
+) -> Result<String, JsError> {
+    use zcash_address::unified::{Encoding, Fvk, Ufvk};
+    use zcash_protocol::consensus::NetworkType;
+
+    let sk_bytes = parse_32(sk_hex, "fvk sk")?;
+
+    let pubkeys: frost_spend::frost_keys::PublicKeyPackage =
+        frost_spend::orchestrate::from_hex(public_key_package_hex)
+            .map_err(|e| JsError::new(&e.to_string()))?;
+
+    let fvk = frost_spend::keys::derive_fvk_from_sk(sk_bytes, &pubkeys)
+        .ok_or_else(|| JsError::new("failed to derive FVK from group key + sk"))?;
+
+    // zcash_keys uses orchard-0.11 (registry) while frost-spend uses the ZF
+    // orchard fork. both share the 96-byte FVK wire format, so we cross the
+    // type boundary by going through bytes + zcash_address::unified::Ufvk
+    // (byte-tagged items), bypassing zcash_keys::UnifiedFullViewingKey.
+    let ufvk = Ufvk::try_from_items(vec![Fvk::Orchard(fvk.to_bytes())])
+        .map_err(|e| JsError::new(&format!("build UFVK: {e}")))?;
+
+    let network = if mainnet { NetworkType::Main } else { NetworkType::Test };
+    Ok(ufvk.encode(&network))
 }
 
 /// sighash-bound round 2: produce FROST share for one Orchard action
