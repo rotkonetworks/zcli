@@ -92,6 +92,19 @@ pub(crate) enum RoomBroadcast {
     },
     Message(StoredMessage),
     Closed(String),
+    /// Forwarded zid-auth-v1 identity claim. Relay does not verify -
+    /// clients do, under the zid-auth-v1 protocol. Carrying every
+    /// field as Option so the relay does not enforce a particular
+    /// announce schema; future protocol versions add fields without
+    /// requiring a relay rebuild.
+    Announce {
+        v: Option<String>,
+        server: Option<String>,
+        pubkey: String,
+        nick: Option<String>,
+        ts: Option<u64>,
+        sig: Option<String>,
+    },
 }
 
 struct Room {
@@ -466,6 +479,13 @@ impl Relay for RelayService {
                                 timestamp_ms: msg.timestamp_ms,
                             })),
                         });
+                    }
+                    Ok(RoomBroadcast::Announce { .. }) => {
+                        // gRPC subscribers do not currently receive
+                        // zid-auth-v1 announces - they're a chat-layer
+                        // (websocket) concern. proto extension is left
+                        // for a future iteration if a gRPC client
+                        // needs them.
                     }
                     Ok(RoomBroadcast::Closed(reason)) => {
                         yield Ok(RoomEvent {

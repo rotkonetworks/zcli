@@ -52,6 +52,25 @@ enum ClientMsg {
     Msg { text: String },
     #[serde(rename = "part")]
     Part,
+    /// `announce` forwards a signed identity claim to other room
+    /// participants. The relay does not interpret or verify the
+    /// fields - it just relays the JSON object to peers as a
+    /// ServerMsg::Announce. Verification is done client-side under
+    /// the zid-auth-v1 protocol.
+    #[serde(rename = "announce")]
+    Announce {
+        v: Option<String>,
+        server: Option<String>,
+        pubkey: String,
+        nick: Option<String>,
+        ts: Option<u64>,
+        sig: Option<String>,
+    },
+    /// keepalive heartbeat sent by clients every ~30s. relay just
+    /// drops it on receipt - the bytes-on-the-wire are enough to
+    /// reset idle timeouts on intermediate proxies.
+    #[serde(rename = "ping")]
+    Ping,
 }
 
 #[derive(Serialize, Clone)]
@@ -69,6 +88,17 @@ enum ServerMsg {
     Error { msg: String },
     #[serde(rename = "system")]
     System { text: String },
+    /// relayed identity claim. forwarded as-is to other room members.
+    /// receivers verify the proof under zid-auth-v1.
+    #[serde(rename = "announce")]
+    Announce {
+        v: Option<String>,
+        server: Option<String>,
+        pubkey: String,
+        nick: Option<String>,
+        ts: Option<u64>,
+        sig: Option<String>,
+    },
 }
 
 pub fn ws_router(manager: Arc<RoomManager>) -> Router {
@@ -197,6 +227,13 @@ async fn handle_socket(socket: WebSocket, manager: Arc<RoomManager>) {
                                             count,
                                         });
                                     }
+                                    RoomBroadcast::Announce { v, server, pubkey, nick, ts, sig } => {
+                                        // forward verbatim to client; verification
+                                        // is done client-side under zid-auth-v1.
+                                        let _ = out_tx2.send(ServerMsg::Announce {
+                                            v, server, pubkey, nick, ts, sig,
+                                        });
+                                    }
                                     RoomBroadcast::Closed(reason) => {
                                         let _ = out_tx2.send(ServerMsg::System { text: format!("room closed: {}", reason) });
                                         break;
@@ -228,6 +265,28 @@ async fn handle_socket(socket: WebSocket, manager: Arc<RoomManager>) {
                 }
                 current_room = None;
                 let _ = out_tx.send(ServerMsg::System { text: "left channel".into() });
+            }
+
+            ClientMsg::Announce { v, server, pubkey, nick, ts, sig } => {
+                // forward the announce to other room members. relay does
+                // not verify signatures - clients verify under
+                // zid-auth-v1 (see apps/extension/src/zitadel/main.tsx).
+                // an announce sent before the client has joined a room
+                // is dropped silently rather than being held in pre-room
+                // state.
+                if let Some(ref room) = current_room {
+                    if let Some(r) = manager.get_room(room).await {
+                        let _ = r.tx.send(crate::RoomBroadcast::Announce {
+                            v, server, pubkey, nick, ts, sig,
+                        });
+                    }
+                }
+            }
+
+            ClientMsg::Ping => {
+                // keepalive heartbeat - no work to do, the bytes already
+                // arrived which is enough to reset idle timeouts on
+                // intermediate proxies. clients send these every ~30s.
             }
         }
     }
