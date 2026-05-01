@@ -1944,17 +1944,26 @@ pub fn build_unsigned_transaction(
     // between the recipient note and the change note).
     let recipient_memo = decode_memo_hex(memo_hex.as_deref())?;
 
+    // OVK for outputs: bind out_ciphertext to the wallet's own OVK so the
+    // FVK holder (every FROST co-signer in multisig, the user in single-key)
+    // can OVK-decrypt and recover (recipient, amount). This unlocks the
+    // multisig verifier on co-signers and outgoing-tx history on the
+    // sending wallet. Network-layer privacy is unchanged — the ciphertext
+    // is still opaque to anyone without the FVK.
+    let ovk_external = fvk.to_ovk(Scope::External);
+    let ovk_internal = fvk.to_ovk(Scope::Internal);
+
     // add recipient output (orchard only — transparent outputs are added to the tx directly)
     if let Some(ref addr) = recipient_addr {
         builder
-            .add_output(None, *addr, NoteValue::from_raw(amount), recipient_memo)
+            .add_output(Some(ovk_external.clone()), *addr, NoteValue::from_raw(amount), recipient_memo)
             .map_err(|e| JsError::new(&format!("add_output (recipient): {:?}", e)))?;
     }
 
     // add change output if needed (for z→t, all orchard value minus amount+fee goes to change)
     if change > 0 {
         builder
-            .add_output(None, change_addr, NoteValue::from_raw(change), [0u8; 512])
+            .add_output(Some(ovk_internal.clone()), change_addr, NoteValue::from_raw(change), [0u8; 512])
             .map_err(|e| JsError::new(&format!("add_output (change): {:?}", e)))?;
     }
 
@@ -3067,17 +3076,23 @@ pub fn build_signed_spend_transaction(
     // decode memo — recipient gets the memo, change output stays empty.
     let recipient_memo = decode_memo_hex(memo_hex.as_deref())?;
 
+    // OVK for outputs: bind out_ciphertext to the wallet's OVK so the FVK
+    // holder can recover (recipient, amount) — outgoing-tx history without
+    // re-querying the chain. Network privacy unchanged.
+    let ovk_external = fvk.to_ovk(Scope::External);
+    let ovk_internal = fvk.to_ovk(Scope::Internal);
+
     // add recipient output (orchard only — transparent outputs are added to the tx directly)
     if let Some(ref addr) = recipient_addr {
         builder
-            .add_output(None, *addr, NoteValue::from_raw(amount), recipient_memo)
+            .add_output(Some(ovk_external.clone()), *addr, NoteValue::from_raw(amount), recipient_memo)
             .map_err(|e| JsError::new(&format!("add_output (recipient): {:?}", e)))?;
     }
 
     // add change output if needed (for z→t, all orchard value minus amount+fee goes to change)
     if change > 0 {
         builder
-            .add_output(None, change_addr, NoteValue::from_raw(change), [0u8; 512])
+            .add_output(Some(ovk_internal.clone()), change_addr, NoteValue::from_raw(change), [0u8; 512])
             .map_err(|e| JsError::new(&format!("add_output (change): {:?}", e)))?;
     }
 
@@ -3419,7 +3434,7 @@ struct TransparentUtxo {
 }
 
 /// Personalized Blake2b-256 hash (ZIP-244 style)
-fn blake2b_256_personal(personalization: &[u8; 16], data: &[u8]) -> [u8; 32] {
+pub(crate) fn blake2b_256_personal(personalization: &[u8; 16], data: &[u8]) -> [u8; 32] {
     let h = blake2b_simd::Params::new()
         .hash_length(32)
         .personal(personalization)
@@ -4304,7 +4319,7 @@ fn make_p2pkh_script(pubkey_hash: &[u8; 20]) -> Vec<u8> {
 }
 
 /// Bitcoin-style CompactSize encoding
-fn compact_size(n: u64) -> Vec<u8> {
+pub(crate) fn compact_size(n: u64) -> Vec<u8> {
     if n < 0xfd {
         vec![n as u8]
     } else if n <= 0xffff {
