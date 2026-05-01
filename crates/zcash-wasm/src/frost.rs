@@ -328,8 +328,27 @@ pub fn frost_parse_tx_outputs(
     use zcash_primitives::transaction::Transaction;
     use zcash_protocol::consensus::{MainNetwork, TestNetwork};
 
-    let tx_bytes = hex::decode(unsigned_tx_hex)
+    let mut tx_bytes = hex::decode(unsigned_tx_hex)
         .map_err(|e| JsError::new(&format!("bad tx hex: {}", e)))?;
+
+    // zcash_primitives 0.21 ships zcash_protocol 0.4 whose BranchId enum
+    // tops out at NU6 (0xc8e7_1055). Mainnet tx builds today use NU6.1
+    // (0x4dec_4df0) and the parser rejects it with "Unknown consensus
+    // branch ID". The orchard bundle layout is identical across
+    // NU5/NU6/NU6.1, so we rewrite the branch-id field (bytes 8..12 of a
+    // v5 tx header: version(4) + version_group_id(4) + branch_id(4)) to
+    // NU5 just for parsing. We never re-serialize, so the original bytes
+    // (including the real branch id committed to in sighash) are unaffected
+    // outside this function.
+    if tx_bytes.len() >= 12 {
+        let branch = u32::from_le_bytes([tx_bytes[8], tx_bytes[9], tx_bytes[10], tx_bytes[11]]);
+        if !matches!(branch, 0 | 0x5ba8_1b19 | 0x76b8_09bb | 0x2bb4_0e60
+            | 0xf5b9_230b | 0xe9ff_75a6 | 0xc2d6_d0b4 | 0xc8e7_1055)
+        {
+            let nu5 = 0xc2d6_d0b4u32.to_le_bytes();
+            tx_bytes[8..12].copy_from_slice(&nu5);
+        }
+    }
 
     let mut cursor = Cursor::new(&tx_bytes);
     let tx = Transaction::read(&mut cursor, BranchId::Nu5)
