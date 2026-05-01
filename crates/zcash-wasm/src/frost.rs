@@ -280,6 +280,168 @@ pub fn frost_spend_aggregate(
     ).map_err(|e| JsError::new(&e.to_string()))
 }
 
+// ── WYSIWYS Layer 4: parse outputs from unsigned tx using spender's UFVK ──
+
+/// Parse the unsigned v5 transaction and recover what each Orchard action
+/// is sending, using the FROST wallet's UFVK to OVK-decrypt outputs.
+///
+/// The spender (= each FROST joiner) owns the OVK that was used to encrypt
+/// every action's output, so OVK decryption yields:
+///   - external scope hits → real recipients of the spend
+///   - internal scope hits → change back to our own multisig
+///   - non-decryptable     → dummy padding action (zero value by construction)
+///
+/// Each joiner runs this on the unsigned tx bytes the host claims to have
+/// built and compares the derived summary to the host's claimed
+/// (recipient, amount, fee). A mismatch means the host lied.
+///
+/// `orchard_fvk_uview` is the ZIP-316 unified viewing key string
+/// (`uview1…` / `uviewtest1…`) stored alongside the wallet.
+///
+/// Returns JSON:
+/// {
+///   "actions": [
+///     { "index": u32,
+///       "amount_zat": u64,
+///       "recipient_raw_hex": "<43-byte hex>" | null,
+///       "is_change": bool,
+///       "decrypted": bool }
+///   ],
+///   "summary": {
+///     "total_send_zat": u64,
+///     "total_change_zat": u64,
+///     "decrypted_count": u32,
+///     "action_count": u32
+///   }
+/// }
+#[wasm_bindgen]
+pub fn frost_parse_tx_outputs(
+    unsigned_tx_hex: &str,
+    orchard_fvk_uview: &str,
+) -> Result<String, JsError> {
+    use std::io::Cursor;
+    use orchard_legacy::keys::Scope;
+    use orchard_legacy::note_encryption::OrchardDomain;
+    use zcash_keys::keys::UnifiedFullViewingKey;
+    use zcash_note_encryption::try_output_recovery_with_ovk;
+    use zcash_primitives::consensus::BranchId;
+    use zcash_primitives::transaction::Transaction;
+    use zcash_protocol::consensus::{MainNetwork, TestNetwork};
+
+    let tx_bytes = hex::decode(unsigned_tx_hex)
+        .map_err(|e| JsError::new(&format!("bad tx hex: {}", e)))?;
+
+    let mut cursor = Cursor::new(&tx_bytes);
+    let tx = Transaction::read(&mut cursor, BranchId::Nu5)
+        .map_err(|e| JsError::new(&format!("parse v5 tx: {:?}", e)))?;
+
+    // testnet uview prefix is `uviewtest1`, mainnet is `uview1`.
+    let mainnet = !orchard_fvk_uview.starts_with("uviewtest");
+    let ufvk = if mainnet {
+        UnifiedFullViewingKey::decode(&MainNetwork, orchard_fvk_uview)
+    } else {
+        UnifiedFullViewingKey::decode(&TestNetwork, orchard_fvk_uview)
+    }
+    .map_err(|e| JsError::new(&format!("invalid UFVK: {}", e)))?;
+
+    let orchard_fvk_keys = ufvk
+        .orchard()
+        .ok_or_else(|| JsError::new("UFVK has no orchard component"))?;
+
+    // The zcash_keys orchard FVK comes from a different orchard version than
+    // the one zcash_primitives uses for tx parsing. Cross through the 96-byte
+    // wire format so OVK derivation, OrchardDomain, and the Action all share
+    // a single orchard crate version (orchard_legacy = orchard 0.10).
+    let fvk_bytes = orchard_fvk_keys.to_bytes();
+    let fvk = orchard_legacy::keys::FullViewingKey::from_bytes(&fvk_bytes)
+        .ok_or_else(|| JsError::new("invalid orchard FVK in UFVK"))?;
+
+    let ovk_external = fvk.to_ovk(Scope::External);
+    let ovk_internal = fvk.to_ovk(Scope::Internal);
+
+    let bundle = match tx.orchard_bundle() {
+        Some(b) => b,
+        None => {
+            return Ok(serde_json::json!({
+                "actions": [],
+                "summary": {
+                    "total_send_zat": 0u64,
+                    "total_change_zat": 0u64,
+                    "decrypted_count": 0u32,
+                    "action_count": 0u32,
+                },
+            })
+            .to_string());
+        }
+    };
+
+    let actions: Vec<_> = bundle.actions().iter().collect();
+    let mut actions_json = Vec::with_capacity(actions.len());
+    let mut total_send: u64 = 0;
+    let mut total_change: u64 = 0;
+    let mut decrypted_count: u32 = 0;
+
+    for (idx, action) in actions.iter().enumerate() {
+        let domain = OrchardDomain::for_action(*action);
+        let cv = action.cv_net();
+        let out_ct = action.encrypted_note().out_ciphertext;
+
+        // external: real recipient of a spend
+        if let Some((note, addr, _memo)) =
+            try_output_recovery_with_ovk(&domain, &ovk_external, *action, cv, &out_ct)
+        {
+            let amount = note.value().inner();
+            total_send = total_send.saturating_add(amount);
+            decrypted_count += 1;
+            actions_json.push(serde_json::json!({
+                "index": idx as u32,
+                "amount_zat": amount,
+                "recipient_raw_hex": hex::encode(addr.to_raw_address_bytes()),
+                "is_change": false,
+                "decrypted": true,
+            }));
+            continue;
+        }
+
+        // internal: change back to our own multisig
+        if let Some((note, addr, _memo)) =
+            try_output_recovery_with_ovk(&domain, &ovk_internal, *action, cv, &out_ct)
+        {
+            let amount = note.value().inner();
+            total_change = total_change.saturating_add(amount);
+            decrypted_count += 1;
+            actions_json.push(serde_json::json!({
+                "index": idx as u32,
+                "amount_zat": amount,
+                "recipient_raw_hex": hex::encode(addr.to_raw_address_bytes()),
+                "is_change": true,
+                "decrypted": true,
+            }));
+            continue;
+        }
+
+        // could not decrypt — dummy action, zero-value by construction
+        actions_json.push(serde_json::json!({
+            "index": idx as u32,
+            "amount_zat": 0u64,
+            "recipient_raw_hex": serde_json::Value::Null,
+            "is_change": false,
+            "decrypted": false,
+        }));
+    }
+
+    Ok(serde_json::json!({
+        "actions": actions_json,
+        "summary": {
+            "total_send_zat": total_send,
+            "total_change_zat": total_change,
+            "decrypted_count": decrypted_count,
+            "action_count": actions.len() as u32,
+        },
+    })
+    .to_string())
+}
+
 // ── anchor attestation (domain-separated from spend auth) ──
 //
 // Signing uses the existing orchestrate::sign_round1/sign_round2/aggregate_shares
