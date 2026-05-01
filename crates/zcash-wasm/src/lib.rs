@@ -1946,8 +1946,8 @@ pub fn build_unsigned_transaction(
 
     // OVK for outputs: bind out_ciphertext to the wallet's own OVK so the
     // FVK holder (every FROST co-signer in multisig, the user in single-key)
-    // can OVK-decrypt and recover (recipient, amount). This unlocks WYSIWYS
-    // Layer 4 verification on co-signers and outgoing-tx history on the
+    // can OVK-decrypt and recover (recipient, amount). This unlocks the
+    // multisig verifier on co-signers and outgoing-tx history on the
     // sending wallet. Network-layer privacy is unchanged — the ciphertext
     // is still opaque to anyone without the FVK.
     let ovk_external = fvk.to_ovk(Scope::External);
@@ -3434,7 +3434,7 @@ struct TransparentUtxo {
 }
 
 /// Personalized Blake2b-256 hash (ZIP-244 style)
-fn blake2b_256_personal(personalization: &[u8; 16], data: &[u8]) -> [u8; 32] {
+pub(crate) fn blake2b_256_personal(personalization: &[u8; 16], data: &[u8]) -> [u8; 32] {
     let h = blake2b_simd::Params::new()
         .hash_length(32)
         .personal(personalization)
@@ -4319,7 +4319,7 @@ fn make_p2pkh_script(pubkey_hash: &[u8; 20]) -> Vec<u8> {
 }
 
 /// Bitcoin-style CompactSize encoding
-fn compact_size(n: u64) -> Vec<u8> {
+pub(crate) fn compact_size(n: u64) -> Vec<u8> {
     if n < 0xfd {
         vec![n as u8]
     } else if n <= 0xffff {
