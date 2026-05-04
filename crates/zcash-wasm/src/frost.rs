@@ -320,13 +320,14 @@ pub fn frost_parse_tx_outputs(
     orchard_fvk_uview: &str,
 ) -> Result<String, JsError> {
     use std::io::Cursor;
-    use orchard_legacy::keys::Scope;
-    use orchard_legacy::note_encryption::OrchardDomain;
+    use orchard::keys::Scope;
+    use orchard::note_encryption::OrchardDomain;
     use zcash_keys::keys::UnifiedFullViewingKey;
     use zcash_note_encryption::try_output_recovery_with_ovk;
-    use zcash_primitives::consensus::BranchId;
     use zcash_primitives::transaction::Transaction;
-    use zcash_protocol::consensus::{MainNetwork, TestNetwork};
+    // zcash_primitives 0.26 (librustzcash 5333c01b) moved consensus types
+    // into zcash_protocol; BranchId is re-exported there.
+    use zcash_protocol::consensus::{BranchId, MainNetwork, TestNetwork};
 
     let mut tx_bytes = hex::decode(unsigned_tx_hex)
         .map_err(|e| JsError::new(&format!("bad tx hex: {}", e)))?;
@@ -380,9 +381,10 @@ pub fn frost_parse_tx_outputs(
     // The zcash_keys orchard FVK comes from a different orchard version than
     // the one zcash_primitives uses for tx parsing. Cross through the 96-byte
     // wire format so OVK derivation, OrchardDomain, and the Action all share
-    // a single orchard crate version (orchard_legacy = orchard 0.10).
+    // a single orchard crate (the registry 0.12 we depend on directly,
+    // which librustzcash 5333c01b also resolves to).
     let fvk_bytes = orchard_fvk_keys.to_bytes();
-    let fvk = orchard_legacy::keys::FullViewingKey::from_bytes(&fvk_bytes)
+    let fvk = orchard::keys::FullViewingKey::from_bytes(&fvk_bytes)
         .ok_or_else(|| JsError::new("invalid orchard FVK in UFVK"))?;
 
     let ovk_external = fvk.to_ovk(Scope::External);
@@ -522,12 +524,11 @@ pub fn frost_parse_tx_outputs(
     .to_string())
 }
 
-/// ZIP-244 orchard tx body digest (T.4) for an orchard_legacy bundle.
-/// Mirrors `compute_orchard_digest` in `lib.rs` byte-for-byte but uses
-/// orchard 0.10 types so it can consume what `tx.orchard_bundle()` returns
-/// from zcash_primitives 0.21.
-fn compute_orchard_digest_legacy<A: orchard_legacy::bundle::Authorization>(
-    bundle: &orchard_legacy::Bundle<A, zcash_primitives::transaction::components::Amount>,
+/// ZIP-244 orchard tx body digest (T.4). Mirrors `compute_orchard_digest`
+/// in `lib.rs` byte-for-byte; consumes what `tx.orchard_bundle()` returns
+/// from the librustzcash 5333c01b zcash_primitives.
+fn compute_orchard_digest_legacy<A: orchard::bundle::Authorization>(
+    bundle: &orchard::Bundle<A, zcash_protocol::value::ZatBalance>,
 ) -> [u8; 32] {
     let mut compact_data = Vec::new();
     let mut memos_data = Vec::new();

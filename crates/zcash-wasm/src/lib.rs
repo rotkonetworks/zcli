@@ -1195,8 +1195,10 @@ impl zcash_note_encryption::ShieldedOutput<OrchardDomain, ORCHARD_NOTE_PLAINTEXT
 /// Uses zcash_primitives for proper v5 transaction parsing
 fn parse_orchard_actions_from_tx(tx_bytes: &[u8]) -> Result<Vec<FullOrchardAction>, String> {
     use std::io::Cursor;
-    use zcash_primitives::consensus::BranchId;
+    // zcash_primitives 0.26 moved consensus types into zcash_protocol;
+    // BranchId is re-exported there for callers like us.
     use zcash_primitives::transaction::Transaction;
+    use zcash_protocol::consensus::BranchId;
 
     // Parse transaction using zcash_primitives
     let mut cursor = Cursor::new(tx_bytes);
@@ -2304,6 +2306,438 @@ pub fn complete_transaction(
     Ok(hex_encode(&tx_bytes))
 }
 
+// ============================================================================
+// Cold-signer PCZT redaction
+// ============================================================================
+
+/// Strip fields the cold signer doesn't need before serializing the PCZT.
+///
+/// Mirrors zashi's `redactPcztForSigner` and matters for Keystone-class
+/// hardware whose RAM budget can't fit an un-redacted PCZT. Zigner is
+/// memory-rich and tolerates either form, but emitting the redacted form
+/// unconditionally keeps the QR payload smaller (fewer animated frames)
+/// and exercises the same code path for both targets.
+///
+/// **What we keep** (signer needs every one of these):
+/// - `alpha` — spend-auth randomizer; signing requires it.
+/// - `fvk` — signer derives the spend authorizing key against this FVK.
+/// - `value`, `recipient` — UI display on cold device must come from PCZT
+///   contents (not a separate "summary" field) to bind display to sighash.
+/// - `nullifier` — signer cross-checks against owned-notes set.
+/// - `zkproof`, `bsk` — TransactionExtractor needs both downstream of signing.
+/// - `output_value`, `output_recipient`, `cv_net`, `cmx`, `enc/out_ciphertext`
+///   — needed for display + sighash recomputation.
+///
+/// **What we drop**:
+/// - `spend_witness` — light-client artifact; the binding into the anchor
+///   is locked in once IoFinalizer runs, so the witness is no longer load-bearing.
+/// - `spend_zip32_derivation` — signer derives via its own seed; the hint
+///   is just metadata.
+/// - `spend_dummy_sk` — zashi convention; the signer never uses it because
+///   IoFinalizer already attached the dummy spend's auth sig.
+/// - all proprietary fields — zafu doesn't carry any; defensive clear so
+///   future code can't silently leak metadata into the signing payload.
+///
+/// Extracted as a standalone helper (rather than inlined in `build_unsigned_pczt`)
+/// so behavioral tests can exercise it without spinning up the full Halo 2
+/// proving pipeline.
+pub fn redact_pczt_for_signer(pczt: pczt::Pczt) -> pczt::Pczt {
+    pczt::roles::redactor::Redactor::new(pczt)
+        .redact_global_with(|mut g| {
+            g.clear_proprietary();
+        })
+        .redact_orchard_with(|mut o| {
+            o.redact_actions(|mut a| {
+                a.clear_spend_witness();
+                a.clear_spend_zip32_derivation();
+                a.clear_spend_dummy_sk();
+                a.clear_spend_proprietary();
+            });
+        })
+        .finish()
+}
+
+// ============================================================================
+// PCZT (Partially Created Zcash Transaction) signing flow.
+//
+// Trust binding rationale:
+// Zigner's PCZT signing path recomputes the ZIP-244 sighash from the PCZT
+// contents itself (`v5_signature_hash` over `pczt_to_tx_data(global,
+// transparent, sapling, orchard)`). The displayed action set, the verified
+// nullifier match, and the signed bytes all derive from the same byte stream.
+// A compromised hot wallet cannot decouple "what the user sees" from "what
+// gets signed" the way the legacy `[sighash][alphas][summary]` simple format
+// permits.
+//
+// Producer (this side): build a real `pczt::Pczt` via the canonical
+//   zcash_primitives::transaction::builder::Builder::build_for_pczt
+//   → Creator::build_from_parts
+//   → Prover::create_orchard_proof
+//   → IoFinalizer::finalize_io
+//   → Pczt::serialize.
+// Consumer (zigner): Pczt::parse → verification gates (anchor, known spend,
+//   value consistency) → Signer::sign_orchard → serialize.
+// Extractor (this side, after sign): Pczt::parse →
+//   TransactionExtractor::with_orchard(vk).extract → broadcast-ready v5 tx.
+// ============================================================================
+
+/// Build a PCZT for cold-wallet signing via QR.
+///
+/// `target_height` selects the consensus branch; pass any height ≥ NU6.1
+/// activation for current mainnet operations. The tx version is derived from
+/// network upgrade rules (currently V5).
+///
+/// Returns JSON: `{ pczt_hex, summary, action_count }`.
+/// The TS layer wraps `pczt_hex` in CBOR `{1: bytes}` and UR-encodes as
+/// `zcash-pczt` for animated QR transport.
+#[wasm_bindgen]
+pub fn build_unsigned_pczt(
+    ufvk_str: &str,
+    notes_json: JsValue,
+    recipient: &str,
+    amount: u64,
+    fee: u64,
+    anchor_hex: &str,
+    merkle_paths_json: JsValue,
+    target_height: u32,
+    mainnet: bool,
+    memo_hex: Option<String>,
+) -> Result<JsValue, JsError> {
+    use orchard::note::{RandomSeed, Rho};
+    use orchard::tree::{Anchor, MerkleHashOrchard, MerklePath as OrchardMerklePath};
+    use orchard::value::NoteValue;
+    use rand::rngs::OsRng;
+    use zcash_keys::keys::UnifiedFullViewingKey;
+    use zcash_primitives::transaction::builder::{BuildConfig, Builder};
+    use zcash_primitives::transaction::fees::fixed::FeeRule as FixedFeeRule;
+    use zcash_protocol::consensus::{BlockHeight, MainNetwork, TestNetwork};
+    use zcash_protocol::memo::MemoBytes;
+    use zcash_keys::encoding::AddressCodec;
+    use zcash_protocol::value::Zatoshis;
+    use ::zcash_transparent as transparent;
+
+    // ── decode FVK from UFVK ───────────────────────────────────────────────
+    // zcash_keys 5333c01b uses the same orchard 0.12 we do, so no byte
+    // round-trip is needed any more.
+    let fvk = {
+        let ufvk = if mainnet {
+            UnifiedFullViewingKey::decode(&MainNetwork, ufvk_str)
+        } else {
+            UnifiedFullViewingKey::decode(&TestNetwork, ufvk_str)
+        }
+        .map_err(|e| JsError::new(&format!("invalid UFVK: {}", e)))?;
+        ufvk.orchard()
+            .ok_or_else(|| JsError::new("UFVK has no orchard component"))?
+            .clone()
+    };
+    let change_addr = fvk.to_ivk(Scope::Internal).address_at(0u64);
+
+    // ── recipient parse ────────────────────────────────────────────────────
+    let is_transparent = recipient.starts_with("t1") || recipient.starts_with("tm");
+    let orchard_recipient = if is_transparent {
+        None
+    } else {
+        Some(
+            parse_orchard_address(recipient, mainnet)
+                .map_err(|e| JsError::new(&format!("invalid recipient: {}", e)))?,
+        )
+    };
+
+    // ── anchor ─────────────────────────────────────────────────────────────
+    let anchor_bytes = hex_decode(anchor_hex).ok_or_else(|| JsError::new("invalid anchor hex"))?;
+    if anchor_bytes.len() != 32 {
+        return Err(JsError::new("anchor must be 32 bytes"));
+    }
+    let mut anchor_arr = [0u8; 32];
+    anchor_arr.copy_from_slice(&anchor_bytes);
+    let orchard_anchor = Option::from(Anchor::from_bytes(anchor_arr))
+        .ok_or_else(|| JsError::new("invalid anchor"))?;
+
+    // ── notes + paths ──────────────────────────────────────────────────────
+    let notes: Vec<SpendableNote> = serde_wasm_bindgen::from_value(notes_json)
+        .map_err(|e| JsError::new(&format!("invalid notes: {}", e)))?;
+    let merkle_paths: Vec<MerklePathInfo> = serde_wasm_bindgen::from_value(merkle_paths_json)
+        .map_err(|e| JsError::new(&format!("invalid merkle paths: {}", e)))?;
+    if notes.len() != merkle_paths.len() {
+        return Err(JsError::new("notes and merkle paths count mismatch"));
+    }
+
+    // ── balance check (also enforced by the builder, but earlier here) ─────
+    let total_input: u64 = notes.iter().map(|n| n.value).sum();
+    if total_input < amount + fee {
+        return Err(JsError::new(&format!(
+            "insufficient funds: {} < {} + {}",
+            total_input, amount, fee
+        )));
+    }
+    let change = total_input - amount - fee;
+    let num_spends = notes.len();
+
+    // ── memo (recipient only — change uses empty per zcash convention) ─────
+    let memo_arr = decode_memo_hex(memo_hex.as_deref())?;
+    let recipient_memo = MemoBytes::from_bytes(&memo_arr)
+        .map_err(|e| JsError::new(&format!("memo: {:?}", e)))?;
+
+    // ── reconstruct each owned note from raw fields, verify cmx ────────────
+    // Same logic as build_unsigned_transaction. Verifying cmx defends against
+    // a caller passing `value`/`rho` that don't actually commit to the note
+    // they're claiming.
+    let mut prepared: Vec<(orchard::Note, OrchardMerklePath)> = Vec::with_capacity(num_spends);
+    for (i, n) in notes.iter().enumerate() {
+        let rho = {
+            let b = hex_decode(&n.rho_hex)
+                .ok_or_else(|| JsError::new(&format!("invalid rho hex for note {}", i)))?;
+            if b.len() != 32 {
+                return Err(JsError::new(&format!("rho must be 32 bytes for note {}", i)));
+            }
+            let mut a = [0u8; 32];
+            a.copy_from_slice(&b);
+            Option::from(Rho::from_bytes(&a))
+                .ok_or_else(|| JsError::new(&format!("invalid rho for note {}", i)))?
+        };
+        let rseed = {
+            let b = hex_decode(&n.rseed_hex)
+                .ok_or_else(|| JsError::new(&format!("invalid rseed hex for note {}", i)))?;
+            if b.len() != 32 {
+                return Err(JsError::new(&format!(
+                    "rseed must be 32 bytes for note {}",
+                    i
+                )));
+            }
+            let mut a = [0u8; 32];
+            a.copy_from_slice(&b);
+            Option::from(RandomSeed::from_bytes(a, &rho))
+                .ok_or_else(|| JsError::new(&format!("invalid rseed for note {}", i)))?
+        };
+        let value = NoteValue::from_raw(n.value);
+        let note: orchard::Note = if !n.recipient_hex.is_empty() {
+            let b = hex_decode(&n.recipient_hex)
+                .ok_or_else(|| JsError::new(&format!("invalid recipient hex for note {}", i)))?;
+            let arr: [u8; 43] = b
+                .try_into()
+                .map_err(|_| JsError::new(&format!("recipient must be 43 bytes for note {}", i)))?;
+            let addr = Option::from(orchard::Address::from_raw_address_bytes(&arr))
+                .ok_or_else(|| JsError::new(&format!("invalid orchard address for note {}", i)))?;
+            Option::from(orchard::Note::from_parts(addr, value, rho, rseed))
+                .ok_or_else(|| JsError::new(&format!("note {} reconstruction failed", i)))?
+        } else {
+            let ext = fvk.to_ivk(Scope::External).address_at(0u64);
+            let int = fvk.to_ivk(Scope::Internal).address_at(0u64);
+            Option::from(orchard::Note::from_parts(ext, value, rho, rseed))
+                .or_else(|| Option::from(orchard::Note::from_parts(int, value, rho, rseed)))
+                .ok_or_else(|| {
+                    JsError::new(&format!("note {} reconstruction failed (rseed/rho/value)", i))
+                })?
+        };
+        let expected = hex_decode(&n.cmx)
+            .ok_or_else(|| JsError::new(&format!("invalid cmx hex for note {}", i)))?;
+        let computed = orchard::note::ExtractedNoteCommitment::from(note.commitment()).to_bytes();
+        if computed[..] != expected[..] {
+            return Err(JsError::new(&format!(
+                "cmx mismatch for note {}: computed={} expected={}",
+                i,
+                hex_encode(&computed),
+                hex_encode(&expected)
+            )));
+        }
+
+        let mp = &merkle_paths[i];
+        if mp.path.len() != 32 {
+            return Err(JsError::new(&format!(
+                "merkle path must have 32 elements, got {} for note {}",
+                mp.path.len(),
+                i
+            )));
+        }
+        let mut hashes = [MerkleHashOrchard::from_bytes(&[0u8; 32]).unwrap(); 32];
+        for (j, h_hex) in mp.path.iter().enumerate() {
+            let b = hex_decode(h_hex)
+                .ok_or_else(|| JsError::new(&format!("invalid merkle hash {}/{}", i, j)))?;
+            if b.len() != 32 {
+                return Err(JsError::new(&format!(
+                    "merkle hash must be 32 bytes at {}/{}",
+                    i, j
+                )));
+            }
+            let mut a = [0u8; 32];
+            a.copy_from_slice(&b);
+            hashes[j] = Option::from(MerkleHashOrchard::from_bytes(&a))
+                .ok_or_else(|| JsError::new(&format!("invalid merkle hash at {}/{}", i, j)))?;
+        }
+        let merkle_path = OrchardMerklePath::from_parts(
+            u32::try_from(mp.position).map_err(|_| {
+                JsError::new(&format!("position {} exceeds u32 max", mp.position))
+            })?,
+            hashes,
+        );
+        prepared.push((note, merkle_path));
+    }
+
+    // ── drive zcash_primitives Builder, branched on network ────────────────
+    // Builder<P, ()> is monomorphic in P; we build_for_pczt inside each branch
+    // and unify on the network-erased PcztParts via Creator. A macro avoids
+    // duplicating ~30 lines.
+    let build_config = BuildConfig::Standard {
+        sapling_anchor: None,
+        orchard_anchor: Some(orchard_anchor),
+    };
+    let fee_amount = Zatoshis::from_u64(fee)
+        .map_err(|_| JsError::new("invalid fee amount"))?;
+    let amount_zat = Zatoshis::from_u64(amount)
+        .map_err(|_| JsError::new("invalid send amount"))?;
+    let fee_rule = FixedFeeRule::non_standard(fee_amount);
+    let target = BlockHeight::from(target_height);
+
+    macro_rules! build_pczt_for {
+        ($params:expr) => {{
+            let params = $params;
+            let mut builder = Builder::new(params, target, build_config);
+            for (note, mp) in &prepared {
+                builder
+                    .add_orchard_spend::<<FixedFeeRule as zcash_primitives::transaction::fees::FeeRule>::Error>(
+                        fvk.clone(),
+                        note.clone(),
+                        mp.clone(),
+                    )
+                    .map_err(|e| JsError::new(&format!("add_orchard_spend: {:?}", e)))?;
+            }
+            if let Some(addr) = orchard_recipient {
+                builder
+                    .add_orchard_output::<<FixedFeeRule as zcash_primitives::transaction::fees::FeeRule>::Error>(
+                        None,
+                        addr,
+                        amount_zat,
+                        recipient_memo.clone(),
+                    )
+                    .map_err(|e| JsError::new(&format!("add_orchard_output: {:?}", e)))?;
+            }
+            if change > 0 {
+                let change_zat = Zatoshis::from_u64(change)
+                    .map_err(|_| JsError::new("invalid change amount"))?;
+                builder
+                    .add_orchard_output::<<FixedFeeRule as zcash_primitives::transaction::fees::FeeRule>::Error>(
+                        None,
+                        change_addr,
+                        change_zat,
+                        MemoBytes::empty(),
+                    )
+                    .map_err(|e| JsError::new(&format!("add_orchard_output (change): {:?}", e)))?;
+            }
+            if is_transparent {
+                let t_addr = transparent::address::TransparentAddress::decode(&params, recipient)
+                    .map_err(|e| JsError::new(&format!("invalid transparent address: {:?}", e)))?;
+                builder
+                    .add_transparent_output(&t_addr, amount_zat)
+                    .map_err(|e| JsError::new(&format!("add_transparent_output: {:?}", e)))?;
+            }
+            builder
+                .build_for_pczt(OsRng, &fee_rule)
+                .map_err(|e| JsError::new(&format!("build_for_pczt: {:?}", e)))?
+                .pczt_parts
+        }};
+    }
+
+    let pczt = if mainnet {
+        let parts = build_pczt_for!(MainNetwork);
+        pczt::roles::creator::Creator::build_from_parts(parts)
+            .ok_or_else(|| JsError::new("Creator::build_from_parts: incompatible tx version"))?
+    } else {
+        let parts = build_pczt_for!(TestNetwork);
+        pczt::roles::creator::Creator::build_from_parts(parts)
+            .ok_or_else(|| JsError::new("Creator::build_from_parts: incompatible tx version"))?
+    };
+
+    // ── orchard Halo 2 proof (expensive — seconds on a phone CPU) ──────────
+    let pczt = with_proving_key(|pk| {
+        pczt::roles::prover::Prover::new(pczt)
+            .create_orchard_proof(pk)
+            .map(|p| p.finish())
+    })
+    .map_err(|e| JsError::new(&format!("create_orchard_proof: {:?}", e)))?;
+
+    // ── finalize IO (canonical sighash → bsk + dummy spend auth sigs) ──────
+    // After this step the orchard bundle is bound to a sighash that zigner
+    // recomputes identically when it parses the PCZT.
+    let pczt = pczt::roles::io_finalizer::IoFinalizer::new(pczt)
+        .finalize_io()
+        .map_err(|e| JsError::new(&format!("io_finalize: {:?}", e)))?;
+
+    // ── redact for cold signer ────────────────────────────────────────────
+    let pczt = redact_pczt_for_signer(pczt);
+
+    let action_count = pczt.orchard().actions().len() as u32;
+    let pczt_bytes = pczt.serialize();
+
+    let recipient_short = if recipient.len() > 20 {
+        &recipient[..20]
+    } else {
+        recipient
+    };
+    let summary = format!(
+        "Send {:.8} ZEC to {}\nFee: {:.8} ZEC\nSpending {} note(s)",
+        amount as f64 / 100_000_000.0,
+        recipient_short,
+        fee as f64 / 100_000_000.0,
+        num_spends
+    );
+
+    #[derive(Serialize)]
+    struct Out {
+        pczt_hex: String,
+        summary: String,
+        action_count: u32,
+    }
+    serde_wasm_bindgen::to_value(&Out {
+        pczt_hex: hex_encode(&pczt_bytes),
+        summary,
+        action_count,
+    })
+    .map_err(|e| JsError::new(&format!("serialization failed: {}", e)))
+}
+
+/// Extract a broadcast-ready v5 transaction from a signed PCZT.
+///
+/// This is the testable inner core: takes raw bytes, returns raw bytes, and
+/// uses `String` for errors so it's callable from regular cargo tests
+/// without dragging in `JsError`. The `#[wasm_bindgen]` wrapper below just
+/// adds hex marshaling and JS error mapping.
+pub fn extract_signed_tx_from_pczt_bytes(pczt_bytes: &[u8]) -> Result<Vec<u8>, String> {
+    use orchard::circuit::VerifyingKey as OrchardVk;
+
+    let pczt = pczt::Pczt::parse(pczt_bytes)
+        .map_err(|e| format!("pczt parse failed: {:?}", e))?;
+
+    // Orchard verifying key. Cached across calls — building it costs hash-table
+    // construction, cheap relative to proving but worth amortizing.
+    static ORCHARD_VK: std::sync::OnceLock<OrchardVk> = std::sync::OnceLock::new();
+    let vk = ORCHARD_VK.get_or_init(OrchardVk::build);
+
+    let tx = pczt::roles::tx_extractor::TransactionExtractor::new(pczt)
+        .with_orchard(vk)
+        .extract()
+        .map_err(|e| format!("tx extract failed: {:?}", e))?;
+
+    let mut tx_bytes = Vec::new();
+    tx.write(&mut tx_bytes)
+        .map_err(|e| format!("tx serialize failed: {}", e))?;
+    Ok(tx_bytes)
+}
+
+/// Extract a broadcast-ready v5 transaction from a signed PCZT returned by zigner.
+///
+/// Replaces the legacy `parse_signature_response` + `complete_transaction` pair.
+/// Instead of patching raw signature bytes into a hand-serialized tx, we let the
+/// pczt crate's `TransactionExtractor` reassemble the canonical v5 transaction
+/// from the signed PCZT (collecting all auth sigs and validating the proof).
+///
+/// Returns hex-encoded transaction bytes ready for broadcast.
+#[wasm_bindgen]
+pub fn extract_signed_tx_from_pczt(pczt_hex: &str) -> Result<String, JsError> {
+    let bytes = hex_decode(pczt_hex).ok_or_else(|| JsError::new("invalid pczt hex"))?;
+    let tx_bytes = extract_signed_tx_from_pczt_bytes(&bytes).map_err(|e| JsError::new(&e))?;
+    Ok(hex_encode(&tx_bytes))
+}
+
 /// Get the commitment proof request data for a note
 /// Returns the cmx that should be sent to zidecar's GetCommitmentProof
 #[wasm_bindgen]
@@ -2646,6 +3080,56 @@ pub fn ur_encode_frames(
         parts
     };
     serde_json::to_string(&frames).map_err(|e| JsError::new(&format!("JSON: {e}")))
+}
+
+/// Decode UR-encoded animated QR string frames back into CBOR bytes.
+///
+/// Accepts a JSON array of UR strings (each `ur:<type>/...`) collected from
+/// successive scans of an animated QR. Returns the reconstructed payload bytes
+/// once the fountain decoder has enough frames (deduplicated internally), or an
+/// error if the parts are malformed or the fountain code can't yet reconstruct.
+///
+/// `expected_type` is a sanity check: if non-empty, parts whose UR type doesn't
+/// match are rejected. Pass `""` to accept any type.
+///
+/// Returns hex-encoded payload bytes (caller can hex_decode if it wants raw).
+/// We return hex (rather than `Vec<u8>` directly) to avoid a wasm-bindgen
+/// `Uint8Array` allocation pattern that's been flaky for us in some browsers.
+#[wasm_bindgen]
+pub fn ur_decode_frames(parts_json: &str, expected_type: &str) -> Result<String, JsError> {
+    let parts: Vec<String> = serde_json::from_str(parts_json)
+        .map_err(|e| JsError::new(&format!("ur parts JSON: {e}")))?;
+    if parts.is_empty() {
+        return Err(JsError::new("no UR parts provided"));
+    }
+    let mut decoder = ur::ur::Decoder::default();
+    for (i, p) in parts.iter().enumerate() {
+        // Optional type guard. Reject parts whose `ur:<type>/...` doesn't match
+        // the expected type — defends against scanner pulling in an unrelated
+        // QR mid-stream and confusing the fountain decoder.
+        if !expected_type.is_empty() {
+            let lower = p.to_ascii_lowercase();
+            let prefix = format!("ur:{}/", expected_type.to_ascii_lowercase());
+            if !lower.starts_with(&prefix) {
+                return Err(JsError::new(&format!(
+                    "UR part {i} has wrong type (expected ur:{expected_type}/…)"
+                )));
+            }
+        }
+        decoder
+            .receive(p)
+            .map_err(|e| JsError::new(&format!("UR receive part {i}: {e:?}")))?;
+    }
+    if !decoder.complete() {
+        return Err(JsError::new(
+            "UR fountain decoder still incomplete — need more frames",
+        ));
+    }
+    let bytes = decoder
+        .message()
+        .map_err(|e| JsError::new(&format!("UR message: {e:?}")))?
+        .ok_or_else(|| JsError::new("UR decoder reported complete but produced no message"))?;
+    Ok(hex_encode(&bytes))
 }
 
 /// Encode CBOR bytes as zoda transport QR frames (verified erasure coding).
