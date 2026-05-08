@@ -846,19 +846,35 @@ fn run_schema_migrations(sled: &sled::Db) -> Result<()> {
         stored, SCHEMA_VERSION
     );
 
-    // Wipe state_roots cache (b'r' prefix). On v1→v2, those entries hold the
-    // sha placeholder instead of the real orchard tree root; better to drop
-    // and let zidecar refetch from zebrad than to serve a wrong anchor.
-    let mut wiped = 0usize;
+    // v1→v2 wipes:
+    //  - b'r' (state_roots): held sha placeholder, not real orchard root
+    //  - b'p' (proof cache): cached epoch proofs bake `tip_tree_root` from
+    //    the placeholder values into their public outputs. Keeping them would
+    //    serve stale anchors until natural regeneration (30+ epochs behind).
+    //
+    // Headers (b'h') are unaffected — they're raw chain data, not derived.
+    let mut wiped_state_roots = 0usize;
     for entry in sled.scan_prefix(b"r") {
         let (k, _) = entry.map_err(|e| ZidecarError::Storage(format!("sled: {}", e)))?;
         if k.len() == 5 && k[0] == b'r' {
             sled.remove(&k)
                 .map_err(|e| ZidecarError::Storage(format!("sled: {}", e)))?;
-            wiped += 1;
+            wiped_state_roots += 1;
         }
     }
-    info!("sled schema migration: wiped {} state_roots entries", wiped);
+    let mut wiped_proofs = 0usize;
+    for entry in sled.scan_prefix(b"p") {
+        let (k, _) = entry.map_err(|e| ZidecarError::Storage(format!("sled: {}", e)))?;
+        if k.len() == 9 && k[0] == b'p' {
+            sled.remove(&k)
+                .map_err(|e| ZidecarError::Storage(format!("sled: {}", e)))?;
+            wiped_proofs += 1;
+        }
+    }
+    info!(
+        "sled schema migration: wiped {} state_roots, {} cached proofs",
+        wiped_state_roots, wiped_proofs
+    );
 
     sled.insert(SCHEMA_VERSION_KEY, &SCHEMA_VERSION.to_le_bytes())
         .map_err(|e| ZidecarError::Storage(format!("sled: {}", e)))?;
@@ -896,15 +912,18 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
-    fn schema_migration_wipes_stale_state_roots() {
+    fn schema_migration_wipes_state_roots_and_proofs_keeps_headers() {
         let dir = tempdir().unwrap();
         let path = dir.path().to_str().unwrap();
 
         // First open: empty DB, migration writes current version, nothing to wipe.
         let storage = Storage::open(path).unwrap();
-        // Seed a stale-looking state_roots entry + a header (which must survive).
+        // Seed: stale state_root + cached proof (both must die) + header (must survive).
         storage
             .store_state_roots(1_700_000, &[0xaa; 32], &[0xbb; 32])
+            .unwrap();
+        storage
+            .store_proof(1_687_104, 3_000_000, b"stale epoch proof bytes")
             .unwrap();
         storage
             .store_header(1_700_000, "deadbeef", "feedface", "1d00ffff")
@@ -916,9 +935,10 @@ mod tests {
             .unwrap();
         drop(storage);
 
-        // Reopen → migration should wipe state_roots, keep headers.
+        // Reopen → migration wipes b'r' and b'p', keeps b'h'.
         let storage = Storage::open(path).unwrap();
         assert_eq!(storage.get_state_roots(1_700_000).unwrap(), None);
+        assert_eq!(storage.get_proof(1_687_104, 3_000_000).unwrap(), None);
         assert!(storage.get_header(1_700_000).unwrap().is_some());
         let v = storage.sled.get(SCHEMA_VERSION_KEY).unwrap().unwrap();
         assert_eq!(u32::from_le_bytes([v[0], v[1], v[2], v[3]]), SCHEMA_VERSION);
