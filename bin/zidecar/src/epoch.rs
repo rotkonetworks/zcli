@@ -632,16 +632,11 @@ fn hex_to_bytes32(hex: &str) -> Result<[u8; 32]> {
     Ok(result)
 }
 
-/// parse tree root from zebrad hex-encoded final state
+/// Parse the canonical orchard tree root from zebrad's hex-encoded frontier.
+/// This is the value the proof's `tip_tree_root` commits to and what
+/// `SignAnchor` signs — must match the anchor consensus-built txs reference.
 fn parse_tree_root(final_state: &str) -> [u8; 32] {
-    use sha2::{Digest, Sha256};
-
-    // zebrad returns a hex-encoded frontier, we hash it to get a 32-byte root
-    // (in production, properly parse the Orchard Frontier)
-    let mut hasher = Sha256::new();
-    hasher.update(b"ZIDECAR_TREE_ROOT");
-    hasher.update(final_state.as_bytes());
-    hasher.finalize().into()
+    crate::orchard_tree::parse_orchard_tree_root(final_state)
 }
 
 /// Nullifier extracted from a shielded spend

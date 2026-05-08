@@ -31,10 +31,10 @@ tonic-web = "0.11"
 prost = "0.12"
 prost-types = "0.12"
 
-# zcash primitives (will add later when needed for tx building)
-# zcash_primitives = { version = "0.13", features = ["transparent-inputs"] }
-# zcash_client_backend = "0.11"
-# orchard = "0.7"
+# orchard tree — needed to compute the canonical orchard tree root
+# from zebrad's frontier hex (the "anchor" we sign + bind in the proof).
+orchard = { version = "0.12", default-features = false }
+incrementalmerkletree = { version = "0.8", features = ["legacy-api"] }
 
 # http client for zebrad RPC
 reqwest = { version = "0.11", default-features = false, features = ["json", "rustls-tls"] }

@@ -18,6 +18,7 @@ mod grpc_service;
 mod header_chain;
 mod lwd_service;
 mod middleware;
+mod orchard_tree;
 mod prover;
 mod ring_vrf;
 mod storage;

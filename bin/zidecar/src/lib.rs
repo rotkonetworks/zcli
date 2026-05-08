@@ -13,6 +13,7 @@ pub mod grpc_service;
 pub mod header_chain;
 pub mod lwd_service;
 pub mod middleware;
+pub mod orchard_tree;
 pub mod prover;
 pub mod ring_vrf;
 pub mod storage;
