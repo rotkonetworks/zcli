@@ -49,6 +49,7 @@ impl Storage {
         let sled = sled::open(format!("{}/sled", path))
             .map_err(|e| ZidecarError::Storage(format!("sled: {}", e)))?;
 
+        run_schema_migrations(&sled)?;
         Ok(Self { nomt, sled })
     }
 
@@ -813,6 +814,59 @@ pub struct EpochBoundary {
     pub last_hash: [u8; 32],
 }
 
+/// Current sled schema version. Bump whenever the *meaning* of a stored value
+/// changes (so older entries become incorrect, not just outdated). The migration
+/// step at startup wipes affected key prefixes and writes the current version.
+///
+/// History:
+///   1 — initial: state_roots stored a sha-256 placeholder, not the real
+///       orchard tree root. Wipe `b'r'` on bump → 2.
+///   2 — current: state_roots store the real orchard tree root.
+const SCHEMA_VERSION: u32 = 2;
+const SCHEMA_VERSION_KEY: &[u8] = b"_schema_version";
+
+fn run_schema_migrations(sled: &sled::Db) -> Result<()> {
+    let stored = sled
+        .get(SCHEMA_VERSION_KEY)
+        .map_err(|e| ZidecarError::Storage(format!("sled: {}", e)))?
+        .and_then(|iv| {
+            if iv.len() == 4 {
+                Some(u32::from_le_bytes([iv[0], iv[1], iv[2], iv[3]]))
+            } else {
+                None
+            }
+        });
+
+    if stored == Some(SCHEMA_VERSION) {
+        return Ok(());
+    }
+
+    info!(
+        "sled schema migration: stored={:?} -> current={}",
+        stored, SCHEMA_VERSION
+    );
+
+    // Wipe state_roots cache (b'r' prefix). On v1→v2, those entries hold the
+    // sha placeholder instead of the real orchard tree root; better to drop
+    // and let zidecar refetch from zebrad than to serve a wrong anchor.
+    let mut wiped = 0usize;
+    for entry in sled.scan_prefix(b"r") {
+        let (k, _) = entry.map_err(|e| ZidecarError::Storage(format!("sled: {}", e)))?;
+        if k.len() == 5 && k[0] == b'r' {
+            sled.remove(&k)
+                .map_err(|e| ZidecarError::Storage(format!("sled: {}", e)))?;
+            wiped += 1;
+        }
+    }
+    info!("sled schema migration: wiped {} state_roots entries", wiped);
+
+    sled.insert(SCHEMA_VERSION_KEY, &SCHEMA_VERSION.to_le_bytes())
+        .map_err(|e| ZidecarError::Storage(format!("sled: {}", e)))?;
+    sled.flush()
+        .map_err(|e| ZidecarError::Storage(format!("sled: {}", e)))?;
+    Ok(())
+}
+
 /// convert nomt Root to bytes
 fn root_to_bytes(root: &Root) -> [u8; 32] {
     let mut bytes = [0u8; 32];
@@ -840,6 +894,35 @@ impl From<String> for ZidecarError {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn schema_migration_wipes_stale_state_roots() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().to_str().unwrap();
+
+        // First open: empty DB, migration writes current version, nothing to wipe.
+        let storage = Storage::open(path).unwrap();
+        // Seed a stale-looking state_roots entry + a header (which must survive).
+        storage
+            .store_state_roots(1_700_000, &[0xaa; 32], &[0xbb; 32])
+            .unwrap();
+        storage
+            .store_header(1_700_000, "deadbeef", "feedface", "1d00ffff")
+            .unwrap();
+        // Manually downgrade the version to simulate an old DB.
+        storage
+            .sled
+            .insert(SCHEMA_VERSION_KEY, &1u32.to_le_bytes())
+            .unwrap();
+        drop(storage);
+
+        // Reopen → migration should wipe state_roots, keep headers.
+        let storage = Storage::open(path).unwrap();
+        assert_eq!(storage.get_state_roots(1_700_000).unwrap(), None);
+        assert!(storage.get_header(1_700_000).unwrap().is_some());
+        let v = storage.sled.get(SCHEMA_VERSION_KEY).unwrap().unwrap();
+        assert_eq!(u32::from_le_bytes([v[0], v[1], v[2], v[3]]), SCHEMA_VERSION);
+    }
 
     #[test]
     fn test_storage_proof_roundtrip() {
