@@ -161,6 +161,43 @@ impl Storage {
         Ok(root)
     }
 
+    /// Batch insert orchard cmxs with block height (for commitment sync).
+    /// Value = block height (4 bytes LE); NOMT hashes this to derive value_hash.
+    /// Existence in NOMT is what the wallet's verify_commitment_proof checks.
+    pub fn batch_insert_commitments(
+        &self,
+        cmxs: &[[u8; 32]],
+        block_height: u32,
+    ) -> Result<Root> {
+        if cmxs.is_empty() {
+            return Ok(self.nomt.root());
+        }
+
+        let session = self.nomt.begin_session(SessionParams::default());
+
+        let mut ops = Vec::with_capacity(cmxs.len());
+        let height_bytes = block_height.to_le_bytes().to_vec();
+
+        for cmx in cmxs {
+            let key = key_for_note(cmx);
+            session.warm_up(key);
+            ops.push((key, KeyReadWrite::Write(Some(height_bytes.clone()))));
+        }
+
+        ops.sort_by_key(|(k, _)| *k);
+
+        let finished = session
+            .finish(ops)
+            .map_err(|e| ZidecarError::Storage(format!("nomt finish: {:?}", e)))?;
+
+        let root = finished.root();
+        finished
+            .commit(&self.nomt)
+            .map_err(|e| ZidecarError::Storage(format!("nomt commit: {}", e)))?;
+
+        Ok(root)
+    }
+
     /// insert nullifier into sparse merkle tree
     /// returns new root after insertion
     pub fn insert_nullifier(&self, nullifier: &[u8; 32]) -> Result<Root> {
@@ -821,8 +858,12 @@ pub struct EpochBoundary {
 /// History:
 ///   1 — initial: state_roots stored a sha-256 placeholder, not the real
 ///       orchard tree root. Wipe `b'r'` on bump → 2.
-///   2 — current: state_roots store the real orchard tree root.
-const SCHEMA_VERSION: u32 = 2;
+///   2 — state_roots store the real orchard tree root.
+///   3 — current: nullifier_sync_height is reset so the sync also backfills
+///       orchard cmxs into NOMT (commitment-proof RPC was previously hitting
+///       an empty tree). NOMT nullifier keys are re-inserted idempotently;
+///       the cost is re-fetching historical blocks once.
+const SCHEMA_VERSION: u32 = 3;
 const SCHEMA_VERSION_KEY: &[u8] = b"_schema_version";
 
 fn run_schema_migrations(sled: &sled::Db) -> Result<()> {
@@ -846,11 +887,12 @@ fn run_schema_migrations(sled: &sled::Db) -> Result<()> {
         stored, SCHEMA_VERSION
     );
 
-    // v1→v2 wipes:
-    //  - b'r' (state_roots): held sha placeholder, not real orchard root
-    //  - b'p' (proof cache): cached epoch proofs bake `tip_tree_root` from
-    //    the placeholder values into their public outputs. Keeping them would
-    //    serve stale anchors until natural regeneration (30+ epochs behind).
+    // Cumulative wipes covering all jumps from any prior version to current:
+    //  - b'r' (state_roots): v1 held sha placeholder, not real orchard root
+    //  - b'p' (proof cache): epoch proofs baked stale tip_tree_root values
+    //  - nullifier_sync_height: v2 only tracked nullifier inserts; v3 also
+    //    inserts cmxs. Reset so the sync loop backfills cmxs into NOMT from
+    //    start_height. Nullifier re-insertion is idempotent.
     //
     // Headers (b'h') are unaffected — they're raw chain data, not derived.
     let mut wiped_state_roots = 0usize;
@@ -871,9 +913,20 @@ fn run_schema_migrations(sled: &sled::Db) -> Result<()> {
             wiped_proofs += 1;
         }
     }
+
+    // Reset sync-progress markers introduced before v3 awareness of cmxs.
+    let mut reset_sync = false;
+    if sled
+        .remove(b"nullifier_sync_height")
+        .map_err(|e| ZidecarError::Storage(format!("sled: {}", e)))?
+        .is_some()
+    {
+        reset_sync = true;
+    }
+
     info!(
-        "sled schema migration: wiped {} state_roots, {} cached proofs",
-        wiped_state_roots, wiped_proofs
+        "sled schema migration: wiped {} state_roots, {} cached proofs, sync_reset={}",
+        wiped_state_roots, wiped_proofs, reset_sync
     );
 
     sled.insert(SCHEMA_VERSION_KEY, &SCHEMA_VERSION.to_le_bytes())
@@ -918,7 +971,8 @@ mod tests {
 
         // First open: empty DB, migration writes current version, nothing to wipe.
         let storage = Storage::open(path).unwrap();
-        // Seed: stale state_root + cached proof (both must die) + header (must survive).
+        // Seed: stale state_root + cached proof (both must die) + header (must survive)
+        // + nullifier_sync_height (must be reset on v→3 to force cmx backfill).
         storage
             .store_state_roots(1_700_000, &[0xaa; 32], &[0xbb; 32])
             .unwrap();
@@ -928,6 +982,7 @@ mod tests {
         storage
             .store_header(1_700_000, "deadbeef", "feedface", "1d00ffff")
             .unwrap();
+        storage.set_nullifier_sync_height(3_000_000).unwrap();
         // Manually downgrade the version to simulate an old DB.
         storage
             .sled
@@ -935,11 +990,12 @@ mod tests {
             .unwrap();
         drop(storage);
 
-        // Reopen → migration wipes b'r' and b'p', keeps b'h'.
+        // Reopen → migration wipes b'r', b'p', and nullifier_sync_height; keeps b'h'.
         let storage = Storage::open(path).unwrap();
         assert_eq!(storage.get_state_roots(1_700_000).unwrap(), None);
         assert_eq!(storage.get_proof(1_687_104, 3_000_000).unwrap(), None);
         assert!(storage.get_header(1_700_000).unwrap().is_some());
+        assert_eq!(storage.get_nullifier_sync_height().unwrap(), None);
         let v = storage.sled.get(SCHEMA_VERSION_KEY).unwrap().unwrap();
         assert_eq!(u32::from_le_bytes([v[0], v[1], v[2], v[3]]), SCHEMA_VERSION);
     }

@@ -654,17 +654,18 @@ pub enum NullifierPool {
 }
 
 impl EpochManager {
-    /// Extract all nullifiers from a block.
+    /// Extract all nullifiers and orchard cmxs from a block.
     /// Uses verbosity=1 (txid list) + per-tx fetch to avoid zebrad response size limits
     /// on blocks with many shielded transactions.
-    pub async fn extract_nullifiers_from_block(
+    pub async fn extract_block_state(
         &self,
         height: u32,
-    ) -> Result<Vec<ExtractedNullifier>> {
+    ) -> Result<(Vec<ExtractedNullifier>, Vec<[u8; 32]>)> {
         let hash = self.zebrad.get_block_hash(height).await?;
         let block = self.zebrad.get_block(&hash, 1).await?;
 
         let mut nullifiers = Vec::new();
+        let mut cmxs = Vec::new();
 
         for txid in &block.tx {
             let tx = self.zebrad.get_raw_transaction(txid).await?;
@@ -688,19 +689,32 @@ impl EpochManager {
                             pool: NullifierPool::Orchard,
                         });
                     }
+                    if let Some(cmx) = action.cmx_bytes() {
+                        cmxs.push(cmx);
+                    }
                 }
             }
         }
 
+        Ok((nullifiers, cmxs))
+    }
+
+    /// Backwards-compatible wrapper — returns only nullifiers.
+    pub async fn extract_nullifiers_from_block(
+        &self,
+        height: u32,
+    ) -> Result<Vec<ExtractedNullifier>> {
+        let (nullifiers, _) = self.extract_block_state(height).await?;
         Ok(nullifiers)
     }
 
-    /// Sync nullifiers from a range of blocks into nomt
+    /// Sync nullifiers and orchard commitments from a range of blocks into nomt
     pub async fn sync_nullifiers(&self, from_height: u32, to_height: u32) -> Result<u32> {
         let mut total_nullifiers = 0u32;
+        let mut total_cmxs = 0u32;
 
         for height in from_height..=to_height {
-            let nullifiers = self.extract_nullifiers_from_block(height).await?;
+            let (nullifiers, cmxs) = self.extract_block_state(height).await?;
 
             if !nullifiers.is_empty() {
                 let nf_bytes: Vec<[u8; 32]> = nullifiers.iter().map(|n| n.nullifier).collect();
@@ -708,14 +722,19 @@ impl EpochManager {
                 total_nullifiers += nullifiers.len() as u32;
             }
 
-            // Update sync progress
+            if !cmxs.is_empty() {
+                self.storage.batch_insert_commitments(&cmxs, height)?;
+                total_cmxs += cmxs.len() as u32;
+            }
+
+            // Update sync progress (covers both nullifiers and commitments)
             self.storage.set_nullifier_sync_height(height)?;
 
             // Log progress every 1000 blocks
             if height % 1000 == 0 {
                 info!(
-                    "nullifier sync progress: height {}/{} ({} nullifiers so far)",
-                    height, to_height, total_nullifiers
+                    "state sync progress: height {}/{} ({} nullifiers, {} commitments so far)",
+                    height, to_height, total_nullifiers, total_cmxs
                 );
             }
         }
