@@ -655,21 +655,20 @@ pub enum NullifierPool {
 
 impl EpochManager {
     /// Extract all nullifiers and orchard cmxs from a block.
-    /// Uses verbosity=1 (txid list) + per-tx fetch to avoid zebrad response size limits
-    /// on blocks with many shielded transactions.
+    /// Uses verbosity=2 to get the full block + all transactions in a single
+    /// zebrad RPC, avoiding the N×getrawtransaction fan-out which dominates
+    /// sync time on dense blocks.
     pub async fn extract_block_state(
         &self,
         height: u32,
     ) -> Result<(Vec<ExtractedNullifier>, Vec<[u8; 32]>)> {
         let hash = self.zebrad.get_block_hash(height).await?;
-        let block = self.zebrad.get_block(&hash, 1).await?;
+        let block = self.zebrad.get_block_verbose(&hash).await?;
 
         let mut nullifiers = Vec::new();
         let mut cmxs = Vec::new();
 
-        for txid in &block.tx {
-            let tx = self.zebrad.get_raw_transaction(txid).await?;
-
+        for tx in &block.tx {
             if let Some(ref spends) = tx.sapling_spends {
                 for spend in spends {
                     if let Some(nf) = spend.nullifier_bytes() {

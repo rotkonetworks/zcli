@@ -171,6 +171,16 @@ impl ZebradClient {
         serde_json::from_value(result).map_err(|e| ZidecarError::ZebradRpc(e.to_string()))
     }
 
+    /// Fetch a block with full transaction data inline (verbosity=2).
+    /// Avoids the N×getrawtransaction fan-out for blocks with many shielded
+    /// transactions during nullifier/commitment sync.
+    pub async fn get_block_verbose(&self, hash: &str) -> Result<BlockVerbose> {
+        let result = self
+            .call("getblock", vec![json!(hash), json!(2)])
+            .await?;
+        serde_json::from_value(result).map_err(|e| ZidecarError::ZebradRpc(e.to_string()))
+    }
+
     pub async fn get_block_header(&self, hash: &str) -> Result<BlockHeader> {
         let block = self.get_block(hash, 1).await?;
         Ok(BlockHeader {
@@ -307,6 +317,15 @@ pub struct Block {
     pub previousblockhash: Option<String>,
     pub nextblockhash: Option<String>,
     pub tx: Vec<String>,
+}
+
+/// Block fetched with verbosity=2 — transactions inlined as full objects
+/// so we avoid one getrawtransaction RPC per tx.
+#[derive(Debug, Deserialize)]
+pub struct BlockVerbose {
+    pub hash: String,
+    pub height: u32,
+    pub tx: Vec<RawTransaction>,
 }
 
 /// Sapling shielded spend
