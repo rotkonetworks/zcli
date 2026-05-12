@@ -186,7 +186,7 @@ async fn main() -> Result<()> {
     }
     let service = ZidecarService::new(
         zebrad,
-        storage_arc,
+        storage_arc.clone(),
         epoch_manager,
         args.start_height,
         mempool_cache_ttl,
@@ -219,7 +219,41 @@ async fn main() -> Result<()> {
         ))
     };
 
-    router.serve(args.listen).await?;
+    // graceful shutdown: catch SIGINT/SIGTERM, let tonic drain in-flight
+    // requests, then drop the Storage explicitly so NOMT flushes its WAL
+    // and bbn before the process exits. Without this, ctrl-C corrupts
+    // the on-disk state.
+    let shutdown = async {
+        #[cfg(unix)]
+        {
+            use tokio::signal::unix::{signal, SignalKind};
+            let mut sigterm = match signal(SignalKind::terminate()) {
+                Ok(s) => s,
+                Err(e) => {
+                    warn!("failed to register SIGTERM handler: {}", e);
+                    return;
+                }
+            };
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => info!("SIGINT received, draining server"),
+                _ = sigterm.recv() => info!("SIGTERM received, draining server"),
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = tokio::signal::ctrl_c().await;
+            info!("ctrl-c received, draining server");
+        }
+    };
+
+    router.serve_with_shutdown(args.listen, shutdown).await?;
+
+    info!("server stopped; flushing storage…");
+    // explicit drop forces Nomt::Drop to run (sled flushes on drop too).
+    // Holding `storage_arc` to here keeps Storage alive across the await;
+    // dropping it now is the last write before exit.
+    drop(storage_arc);
+    info!("storage flushed; goodbye");
 
     Ok(())
 }
