@@ -924,9 +924,30 @@ fn run_schema_migrations(sled: &sled::Db) -> Result<()> {
         reset_sync = true;
     }
 
+    // Wiping b'p' removed the cached epoch-proof bytes, but the
+    // `epoch_proof_epoch` / `epoch_proof_start` counters still point at the
+    // now-missing entry. Leaving them dangling makes get_proofs() return
+    // "epoch proof not found in cache" intermittently. Clear them so the
+    // background prover regenerates from scratch.
+    let mut reset_epoch_meta = false;
+    if sled
+        .remove(b"epoch_proof_epoch")
+        .map_err(|e| ZidecarError::Storage(format!("sled: {}", e)))?
+        .is_some()
+    {
+        reset_epoch_meta = true;
+    }
+    if sled
+        .remove(b"epoch_proof_start")
+        .map_err(|e| ZidecarError::Storage(format!("sled: {}", e)))?
+        .is_some()
+    {
+        reset_epoch_meta = true;
+    }
+
     info!(
-        "sled schema migration: wiped {} state_roots, {} cached proofs, sync_reset={}",
-        wiped_state_roots, wiped_proofs, reset_sync
+        "sled schema migration: wiped {} state_roots, {} cached proofs, sync_reset={}, epoch_meta_reset={}",
+        wiped_state_roots, wiped_proofs, reset_sync, reset_epoch_meta
     );
 
     sled.insert(SCHEMA_VERSION_KEY, &SCHEMA_VERSION.to_le_bytes())
