@@ -29,16 +29,15 @@ impl Storage {
         // file) supports ~1.8M pages before degradation. Only takes effect on
         // fresh database creation — existing dbs keep their original size.
         nomt_opts.hashtable_buckets(2_000_000);
-        // use 50% of CPU threads for NOMT (leaves room for other ops)
-        let all_threads = std::thread::available_parallelism()
-            .map(|p| p.get())
-            .unwrap_or(8);
-        let nomt_threads = (all_threads / 2).max(4);
+        // NOMT v1.0.3 has a concurrency issue at commit_concurrency > 1:
+        // concurrent commit workers can leave page parent/child hash
+        // inconsistency that surfaces on restart as a panic at
+        // src/merkle/page_walker.rs:1013 ("assertion left == right failed",
+        // empty subtree vs non-empty stored hash). NOMT's own test suite
+        // uses commit_concurrency(1). Stay at 1 until upstream addresses it.
+        let nomt_threads: usize = 1;
         nomt_opts.commit_concurrency(nomt_threads);
-        info!(
-            "nomt commit_concurrency: {} threads (50% of {})",
-            nomt_threads, all_threads
-        );
+        info!("nomt commit_concurrency: {} thread (pinned for v1.0.3 safety)", nomt_threads);
 
         let nomt = Nomt::<Blake3Hasher>::open(nomt_opts)
             .map_err(|e| ZidecarError::Storage(format!("nomt: {}", e)))?;
