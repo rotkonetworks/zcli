@@ -149,28 +149,43 @@ async fn main() -> Result<()> {
     // start background tasks
     info!("starting background tasks...");
 
+    // Shutdown signal: flipped to `true` after the gRPC server drains, used
+    // by every background task to exit its loop cooperatively so NOMT/sled
+    // writes complete cleanly instead of being torn down mid-commit.
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+
     // start background epoch proof generator (regenerates hourly when epochs complete)
     let epoch_manager_bg = epoch_manager.clone();
-    tokio::spawn(async move {
-        epoch_manager_bg.run_background_prover().await;
+    let shutdown_bg = shutdown_rx.clone();
+    let h_bg = tokio::spawn(async move {
+        epoch_manager_bg.run_background_prover(shutdown_bg).await;
     });
 
     // start background state root tracker (for trustless proofs)
     let epoch_manager_state = epoch_manager.clone();
-    tokio::spawn(async move {
-        epoch_manager_state.run_background_state_tracker().await;
+    let shutdown_state = shutdown_rx.clone();
+    let h_state = tokio::spawn(async move {
+        epoch_manager_state
+            .run_background_state_tracker(shutdown_state)
+            .await;
     });
 
     // start background tip proof generator (real-time proving)
     let epoch_manager_tip = epoch_manager.clone();
-    tokio::spawn(async move {
-        epoch_manager_tip.run_background_tip_prover().await;
+    let shutdown_tip = shutdown_rx.clone();
+    let h_tip = tokio::spawn(async move {
+        epoch_manager_tip
+            .run_background_tip_prover(shutdown_tip)
+            .await;
     });
 
     // start background nullifier sync (indexes all shielded spends into nomt)
     let epoch_manager_nf = epoch_manager.clone();
-    tokio::spawn(async move {
-        epoch_manager_nf.run_background_nullifier_sync().await;
+    let shutdown_nf = shutdown_rx.clone();
+    let h_nf = tokio::spawn(async move {
+        epoch_manager_nf
+            .run_background_nullifier_sync(shutdown_nf)
+            .await;
     });
 
     info!("  epoch proof generator: running (60s check)");
@@ -187,7 +202,7 @@ async fn main() -> Result<()> {
     let service = ZidecarService::new(
         zebrad,
         storage_arc.clone(),
-        epoch_manager,
+        epoch_manager.clone(),
         args.start_height,
         mempool_cache_ttl,
     );
@@ -248,10 +263,47 @@ async fn main() -> Result<()> {
 
     router.serve_with_shutdown(args.listen, shutdown).await?;
 
-    info!("server stopped; flushing storage…");
-    // explicit drop forces Nomt::Drop to run (sled flushes on drop too).
-    // Holding `storage_arc` to here keeps Storage alive across the await;
-    // dropping it now is the last write before exit.
+    info!("server stopped, signalling background tasks…");
+    // Signal all background tasks to drain. Each task wraps its sleeps in
+    // tokio::select! with shutdown.changed(), so they wake immediately,
+    // finish any in-flight batch, then return cleanly.
+    let _ = shutdown_tx.send(true);
+
+    info!("awaiting background tasks…");
+    // Join all background tasks. nullifier_sync may be mid-batch (~100
+    // blocks of NOMT writes) — wait it out so NOMT's commit completes
+    // before the runtime tears down. The other three tasks exit fast.
+    let _ = tokio::join!(h_bg, h_state, h_tip, h_nf);
+
+    info!("flushing storage (no-op commit + sled)…");
+    if let Err(e) = storage_arc.flush() {
+        error!("storage flush failed: {}", e);
+    }
+
+    // Hold Arc alive while NOMT's detached fsyncer workers finish their
+    // in-flight fsyncs. Fsyncer::Drop signals workers to die but does not
+    // wait — if we drop too fast they exit before the last commit's
+    // post-meta writes hit disk.
+    info!("waiting for NOMT fsyncer workers to drain…");
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+    // Explicitly fsync the NOMT files. NOMT v1.0.3's post-meta phase writes
+    // pages without fsyncing them; this catches anything still in the OS
+    // page cache for bbn / ln / ht / meta / wal.
+    if let Err(e) = storage::Storage::fsync_nomt_files(&args.db_path) {
+        error!("fsync nomt files failed: {}", e);
+    }
+
+    // Final sync() syscall as last-resort filesystem flush.
+    unsafe {
+        extern "C" {
+            fn sync();
+        }
+        sync();
+    }
+
+    info!("dropping storage references…");
+    drop(epoch_manager);
     drop(storage_arc);
     info!("storage flushed; goodbye");
 

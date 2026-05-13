@@ -58,6 +58,55 @@ impl Storage {
         self.nomt.root()
     }
 
+    /// Drain in-flight NOMT writes and force the underlying files to disk.
+    ///
+    /// NOMT v1.0.3 has a known issue where commit()'s post-meta phase writes
+    /// pages without fsyncing them; those writes are only durable after the
+    /// *next* commit's pre-meta wait. With a single trailing commit, post-meta
+    /// writes can be lost on process exit → bbn ends up torn on restart
+    /// ("failed to reconstruct btree from bbn store file").
+    ///
+    /// Belt-and-suspenders approach:
+    /// 1. One no-op commit to flush prior commit's post-meta into a fresh pre-meta
+    /// 2. sled.flush()
+    /// 3. Caller should fsync the NOMT files directly via the db_path
+    pub fn flush(&self) -> Result<()> {
+        let session = self.nomt.begin_session(SessionParams::default());
+        let finished = session
+            .finish(Vec::new())
+            .map_err(|e| ZidecarError::Storage(format!("flush nomt finish: {:?}", e)))?;
+        finished
+            .commit(&self.nomt)
+            .map_err(|e| ZidecarError::Storage(format!("flush nomt commit: {}", e)))?;
+        self.sled
+            .flush()
+            .map_err(|e| ZidecarError::Storage(format!("flush sled: {}", e)))?;
+        Ok(())
+    }
+
+    /// Explicitly fsync NOMT's on-disk files. Call this AFTER `flush()` and
+    /// BEFORE drop, to force any post-meta writes still in the OS page cache
+    /// to actually hit disk. Belt-and-suspenders for NOMT v1.0.3's missing
+    /// post-meta fsync.
+    pub fn fsync_nomt_files(db_path: &str) -> Result<()> {
+        let nomt_dir = format!("{}/nomt", db_path);
+        for name in &["bbn", "ln", "ht", "meta", "wal"] {
+            let path = format!("{}/{}", nomt_dir, name);
+            match std::fs::File::open(&path) {
+                Ok(f) => {
+                    if let Err(e) = f.sync_all() {
+                        // log but don't fail — file may not exist or be locked
+                        tracing::warn!("fsync {} failed: {}", path, e);
+                    }
+                }
+                Err(e) => {
+                    tracing::debug!("open {} for fsync skipped: {}", path, e);
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// store proof for height range (simple cache)
     pub fn store_proof(&self, from_height: u32, to_height: u32, proof_bytes: &[u8]) -> Result<()> {
         let key = proof_key(from_height, to_height);
