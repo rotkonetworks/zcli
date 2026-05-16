@@ -1915,16 +1915,28 @@ pub fn build_unsigned_transaction(
             auth_path[j].copy_from_slice(&hash_bytes);
         }
 
-        let merkle_hashes: Vec<MerkleHashOrchard> = auth_path
-            .iter()
-            .filter_map(|bytes| Option::from(MerkleHashOrchard::from_bytes(bytes)))
-            .collect();
-        if merkle_hashes.len() != 32 {
-            return Err(JsError::new(&format!(
-                "invalid merkle path hashes for note {}",
-                i
-            )));
+        // Decode each sibling positionally. The previous `filter_map` +
+        // `len() != 32` form silently dropped a non-canonical sibling and
+        // then reported a generic "invalid merkle path hashes" - which
+        // erased *which* sibling and *why*, exactly when someone is
+        // debugging an anchor mismatch on hardware. A wrong path is still
+        // caught downstream by orchard's `has_matching_anchor`
+        // (AnchorMismatch), so this was never a silent-corruption hole, but
+        // the lossy collapse made the failure undiagnosable. Fail precisely.
+        let mut merkle_hashes_arr: [MerkleHashOrchard; 32] =
+            [MerkleHashOrchard::from_bytes(&[0u8; 32]).unwrap(); 32];
+        for (j, bytes) in auth_path.iter().enumerate() {
+            merkle_hashes_arr[j] = Option::from(MerkleHashOrchard::from_bytes(bytes))
+                .ok_or_else(|| {
+                    JsError::new(&format!(
+                        "merkle sibling {}/{} is not a canonical Pallas base element: {}",
+                        i,
+                        j,
+                        hex_encode(bytes),
+                    ))
+                })?;
         }
+        let merkle_hashes: Vec<MerkleHashOrchard> = merkle_hashes_arr.to_vec();
 
         let merkle_path = OrchardMerklePath::from_parts(
             u32::try_from(mp.position).map_err(|_| {
@@ -3180,6 +3192,31 @@ fn cbor_array_len(out: &mut Vec<u8>, len: usize) {
     }
 }
 
+/// Authoritatively validate a Unified Full Viewing Key string.
+///
+/// Returns `true` iff the string decodes via the *same*
+/// `zcash_keys::UnifiedFullViewingKey::decode` the signing path uses. This
+/// is deliberately the one and only UFVK decoder: a separate hand-rolled
+/// bech32m/checksum validator at the import boundary would be a second
+/// implementation that can disagree with the authority, which is worse than
+/// no check. Structural pre-screening (HRP/charset/length) still happens in
+/// the pure `@repo/wallet` parser for cheap fail-fast and to keep that
+/// package wasm-free; this is the cryptographic gate the import dispatch
+/// calls before persisting a wallet record.
+///
+/// Network is inferred from the HRP (`uview1` = mainnet, else testnet),
+/// matching every other UFVK entry point in this module.
+#[wasm_bindgen]
+pub fn validate_ufvk(ufvk_str: &str) -> bool {
+    use zcash_keys::keys::UnifiedFullViewingKey;
+    use zcash_protocol::consensus::{MainNetwork, TestNetwork};
+    if ufvk_str.starts_with("uview1") {
+        UnifiedFullViewingKey::decode(&MainNetwork, ufvk_str).is_ok()
+    } else {
+        UnifiedFullViewingKey::decode(&TestNetwork, ufvk_str).is_ok()
+    }
+}
+
 /// Derive an Orchard receiving address from a UFVK string (uview1.../uviewtest1...)
 #[wasm_bindgen]
 pub fn address_from_ufvk(ufvk_str: &str, diversifier_index: u32) -> Result<String, JsError> {
@@ -3531,17 +3568,25 @@ pub fn build_signed_spend_transaction(
             auth_path[j].copy_from_slice(&hash_bytes);
         }
 
-        let merkle_hashes: Vec<MerkleHashOrchard> = auth_path
-            .iter()
-            .filter_map(|bytes| Option::from(MerkleHashOrchard::from_bytes(bytes)))
-            .collect();
-
-        if merkle_hashes.len() != 32 {
-            return Err(JsError::new(&format!(
-                "invalid merkle path hashes for note {}",
-                i
-            )));
+        // Positional decode with a precise per-sibling error. See the
+        // matching comment at the other call site for the rationale (lossy
+        // filter_map collapse erased which sibling failed, undiagnosable on
+        // hardware; a wrong path is still caught downstream by orchard's
+        // has_matching_anchor).
+        let mut merkle_hashes_arr: [MerkleHashOrchard; 32] =
+            [MerkleHashOrchard::from_bytes(&[0u8; 32]).unwrap(); 32];
+        for (j, bytes) in auth_path.iter().enumerate() {
+            merkle_hashes_arr[j] = Option::from(MerkleHashOrchard::from_bytes(bytes))
+                .ok_or_else(|| {
+                    JsError::new(&format!(
+                        "merkle sibling {}/{} is not a canonical Pallas base element: {}",
+                        i,
+                        j,
+                        hex_encode(bytes),
+                    ))
+                })?;
         }
+        let merkle_hashes: Vec<MerkleHashOrchard> = merkle_hashes_arr.to_vec();
 
         let merkle_path = OrchardMerklePath::from_parts(
             u32::try_from(mp.position).map_err(|_| {
