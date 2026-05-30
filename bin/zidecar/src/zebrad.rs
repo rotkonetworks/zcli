@@ -239,6 +239,14 @@ impl ZebradClient {
         serde_json::from_value(result).map_err(|e| ZidecarError::ZebradRpc(e.to_string()))
     }
 
+    /// aggregate balance and received total for a list of transparent addresses
+    pub async fn get_address_balance(&self, addresses: &[String]) -> Result<AddressBalance> {
+        let result = self
+            .call("getaddressbalance", vec![json!({"addresses": addresses})])
+            .await?;
+        serde_json::from_value(result).map_err(|e| ZidecarError::ZebradRpc(e.to_string()))
+    }
+
     /// get subtrees by index for sapling/orchard commitment trees
     /// returns precomputed subtree roots for efficient witness reconstruction
     pub async fn get_subtrees_by_index(
@@ -433,6 +441,14 @@ pub struct AddressUtxo {
     pub script: String,
     pub satoshis: u64,
     pub height: u32,
+}
+
+/// aggregate balance from getaddressbalance
+#[derive(Debug, Deserialize)]
+pub struct AddressBalance {
+    pub balance: i64,
+    #[serde(default)]
+    pub received: u64,
 }
 
 /// response from z_getsubtreesbyindex

@@ -5,16 +5,20 @@
 //! zidecar without a separate lightwalletd instance.
 
 use crate::lightwalletd::{
-    compact_tx_streamer_server::CompactTxStreamer, BlockId, BlockRange, ChainMetadata, ChainSpec,
-    CompactBlock, CompactOrchardAction, CompactTx, Empty, GetAddressUtxosArg, GetAddressUtxosReply,
-    GetAddressUtxosReplyList, GetSubtreeRootsArg, LightdInfo, RawTransaction, SendResponse,
-    SubtreeRoot, TreeState, TxFilter,
+    compact_tx_streamer_server::CompactTxStreamer, Address, AddressList, Balance, BlockId,
+    BlockRange, ChainMetadata, ChainSpec, CompactBlock, CompactOrchardAction, CompactTx,
+    Duration as LwdDuration, Empty, GetAddressUtxosArg, GetAddressUtxosReply,
+    GetAddressUtxosReplyList, GetSubtreeRootsArg, LightdInfo, PingResponse, RawTransaction,
+    SendResponse, SubtreeRoot, TransparentAddressBlockFilter, TreeState, TxFilter,
 };
 use crate::{compact::CompactBlock as InternalBlock, storage::Storage, zebrad::ZebradClient};
+use std::collections::HashSet;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
-use tonic::{Request, Response, Status};
+use tokio_stream::StreamExt;
+use tonic::{Request, Response, Status, Streaming};
 use tracing::{debug, warn};
 
 pub struct LwdService {
@@ -128,6 +132,8 @@ impl CompactTxStreamer for LwdService {
     type GetBlockRangeStream = ReceiverStream<Result<CompactBlock, Status>>;
     type GetAddressUtxosStreamStream = ReceiverStream<Result<GetAddressUtxosReply, Status>>;
     type GetSubtreeRootsStream = ReceiverStream<Result<SubtreeRoot, Status>>;
+    type GetTaddressTxidsStream = ReceiverStream<Result<RawTransaction, Status>>;
+    type GetMempoolStreamStream = ReceiverStream<Result<RawTransaction, Status>>;
 
     async fn get_latest_block(&self, _: Request<ChainSpec>) -> Result<Response<BlockId>, Status> {
         let info = self
@@ -406,5 +412,186 @@ impl CompactTxStreamer for LwdService {
             zcashd_build: String::new(),
             zcashd_subversion: String::new(),
         }))
+    }
+
+    async fn get_taddress_txids(
+        &self,
+        req: Request<TransparentAddressBlockFilter>,
+    ) -> Result<Response<Self::GetTaddressTxidsStream>, Status> {
+        let filter = req.into_inner();
+        let range = filter
+            .range
+            .ok_or_else(|| Status::invalid_argument("block range is required"))?;
+        let start = range.start.map(|b| b.height as u32).unwrap_or(0);
+        let end = range.end.map(|b| b.height as u32).unwrap_or(start);
+        let addresses = vec![filter.address];
+
+        let (tx, rx) = mpsc::channel(32);
+        let zebrad = self.zebrad.clone();
+
+        tokio::spawn(async move {
+            let txids = match zebrad.get_address_txids(&addresses, start, end).await {
+                Ok(t) => t,
+                Err(e) => {
+                    let _ = tx.send(Err(Status::internal(e.to_string()))).await;
+                    return;
+                }
+            };
+            for txid in txids {
+                let raw = match zebrad.get_raw_transaction(&txid).await {
+                    Ok(r) => r,
+                    Err(e) => {
+                        let _ = tx.send(Err(Status::internal(e.to_string()))).await;
+                        return;
+                    }
+                };
+                let data = match hex::decode(&raw.hex) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        let _ = tx.send(Err(Status::internal(e.to_string()))).await;
+                        return;
+                    }
+                };
+                let msg = RawTransaction {
+                    data,
+                    height: raw.height.unwrap_or(0) as u64,
+                };
+                if tx.send(Ok(msg)).await.is_err() {
+                    return;
+                }
+            }
+        });
+
+        Ok(Response::new(ReceiverStream::new(rx)))
+    }
+
+    async fn get_taddress_balance(
+        &self,
+        req: Request<AddressList>,
+    ) -> Result<Response<Balance>, Status> {
+        let addresses = req.into_inner().addresses;
+        let bal = self
+            .zebrad
+            .get_address_balance(&addresses)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+        Ok(Response::new(Balance {
+            value_zat: bal.balance,
+        }))
+    }
+
+    async fn get_taddress_balance_stream(
+        &self,
+        req: Request<Streaming<Address>>,
+    ) -> Result<Response<Balance>, Status> {
+        let mut inbound = req.into_inner();
+        let mut addresses: Vec<String> = Vec::new();
+        while let Some(item) = inbound.next().await {
+            let a = item.map_err(|e| Status::internal(e.to_string()))?;
+            addresses.push(a.address);
+        }
+        let bal = self
+            .zebrad
+            .get_address_balance(&addresses)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+        Ok(Response::new(Balance {
+            value_zat: bal.balance,
+        }))
+    }
+
+    async fn get_mempool_stream(
+        &self,
+        _req: Request<Empty>,
+    ) -> Result<Response<Self::GetMempoolStreamStream>, Status> {
+        let initial = self
+            .zebrad
+            .get_blockchain_info()
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+        let stay_hash = initial.bestblockhash;
+
+        let (tx, rx) = mpsc::channel(32);
+        let zebrad = self.zebrad.clone();
+
+        tokio::spawn(async move {
+            let mut seen: HashSet<String> = HashSet::new();
+            loop {
+                // Tip moved — end the stream so the client refreshes.
+                match zebrad.get_blockchain_info().await {
+                    Ok(i) if i.bestblockhash != stay_hash => return,
+                    Ok(_) => {}
+                    Err(e) => {
+                        let _ = tx.send(Err(Status::internal(e.to_string()))).await;
+                        return;
+                    }
+                }
+
+                let txids = match zebrad.get_raw_mempool().await {
+                    Ok(t) => t,
+                    Err(e) => {
+                        let _ = tx.send(Err(Status::internal(e.to_string()))).await;
+                        return;
+                    }
+                };
+                for txid in txids {
+                    if !seen.insert(txid.clone()) {
+                        continue;
+                    }
+                    // Tx may have evicted between getrawmempool and the fetch.
+                    let raw = match zebrad.get_raw_transaction(&txid).await {
+                        Ok(r) => r,
+                        Err(_) => continue,
+                    };
+                    // Skip anything that got mined since the snapshot.
+                    if raw.height.unwrap_or(0) != 0 {
+                        continue;
+                    }
+                    let data = match hex::decode(&raw.hex) {
+                        Ok(b) => b,
+                        Err(_) => continue,
+                    };
+                    let msg = RawTransaction { data, height: 0 };
+                    if tx.send(Ok(msg)).await.is_err() {
+                        return;
+                    }
+                }
+
+                tokio::time::sleep(Duration::from_secs(2)).await;
+            }
+        });
+
+        Ok(Response::new(ReceiverStream::new(rx)))
+    }
+
+    async fn get_latest_tree_state(
+        &self,
+        _req: Request<Empty>,
+    ) -> Result<Response<TreeState>, Status> {
+        let info = self
+            .zebrad
+            .get_blockchain_info()
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+        let ts = self
+            .zebrad
+            .get_tree_state(&info.blocks.to_string())
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+        Ok(Response::new(TreeState {
+            network: self.chain_name().to_string(),
+            height: ts.height as u64,
+            hash: ts.hash,
+            time: ts.time as u32,
+            sapling_tree: ts.sapling.commitments.final_state,
+            orchard_tree: ts.orchard.commitments.final_state,
+        }))
+    }
+
+    async fn ping(&self, req: Request<LwdDuration>) -> Result<Response<PingResponse>, Status> {
+        let dur = req.into_inner();
+        let micros: u64 = dur.interval_us.try_into().unwrap_or(0);
+        tokio::time::sleep(Duration::from_micros(micros)).await;
+        Ok(Response::new(PingResponse { entry: 1, exit: 1 }))
     }
 }
