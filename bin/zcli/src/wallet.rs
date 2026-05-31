@@ -389,7 +389,7 @@ impl Wallet {
             txs.push(tx);
         }
 
-        txs.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+        txs.sort_by_key(|t| std::cmp::Reverse(t.timestamp));
         Ok(txs)
     }
 
@@ -410,7 +410,7 @@ impl Wallet {
             }
         }
 
-        notes.sort_by(|a, b| b.block_height.cmp(&a.block_height));
+        notes.sort_by_key(|n| std::cmp::Reverse(n.block_height));
         Ok(notes)
     }
 

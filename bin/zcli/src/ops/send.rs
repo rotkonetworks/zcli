@@ -115,7 +115,7 @@ async fn send_to_transparent(
 
     // build spends vec
     let spends: Vec<(orchard::Note, orchard::tree::MerklePath)> =
-        orchard_notes.into_iter().zip(paths.into_iter()).collect();
+        orchard_notes.into_iter().zip(paths).collect();
 
     let t_outputs = vec![(recipient.to_string(), amount)];
 
@@ -259,7 +259,7 @@ async fn send_to_shielded(
     let (anchor, paths) = witness::build_witnesses(&client, &selected, tip, mainnet, json, cached_frontier.clone(), sync_height).await?;
 
     let spends: Vec<(orchard::Note, orchard::tree::MerklePath)> =
-        orchard_notes.into_iter().zip(paths.into_iter()).collect();
+        orchard_notes.into_iter().zip(paths).collect();
 
     // build memo (512 bytes, text padded with zeros)
     let mut memo_bytes = [0u8; 512];

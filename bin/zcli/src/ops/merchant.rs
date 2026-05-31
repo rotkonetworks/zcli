@@ -380,7 +380,7 @@ pub async fn process_withdrawals(
             };
 
         let spends: Vec<(orchard::Note, orchard::tree::MerklePath)> =
-            orchard_notes.into_iter().zip(paths.into_iter()).collect();
+            orchard_notes.into_iter().zip(paths).collect();
 
         let seed_bytes = *seed.as_bytes();
         let anchor_height = tip;

@@ -172,7 +172,7 @@ pub fn build_shielding_tx(
 
     // sort utxos by value descending, select enough to cover fee
     let mut selected = utxos.to_vec();
-    selected.sort_by(|a, b| b.value.cmp(&a.value));
+    selected.sort_by_key(|u| std::cmp::Reverse(u.value));
 
     let total_in: u64 = selected.iter().map(|u| u.value).sum();
     if total_in < fee {
