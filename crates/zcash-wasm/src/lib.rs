@@ -3500,7 +3500,7 @@ pub fn build_shielding_transaction(
     // --- parse and select UTXOs ---
     let mut utxos: Vec<TransparentUtxo> = serde_json::from_str(utxos_json)
         .map_err(|e| JsError::new(&format!("invalid utxos json: {}", e)))?;
-    utxos.sort_by(|a, b| b.value.cmp(&a.value));
+    utxos.sort_by_key(|u| std::cmp::Reverse(u.value));
 
     let target = amount
         .checked_add(fee)
@@ -3804,7 +3804,7 @@ pub fn build_unsigned_shielding_transaction(
     // --- parse and select UTXOs ---
     let mut utxos: Vec<TransparentUtxo> = serde_json::from_str(utxos_json)
         .map_err(|e| JsError::new(&format!("invalid utxos json: {}", e)))?;
-    utxos.sort_by(|a, b| b.value.cmp(&a.value));
+    utxos.sort_by_key(|u| std::cmp::Reverse(u.value));
 
     let target = amount
         .checked_add(fee)

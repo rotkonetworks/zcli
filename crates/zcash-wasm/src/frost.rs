@@ -471,7 +471,7 @@ pub fn frost_parse_tx_outputs(
     // as "unverified — sighash check unavailable for this shape".
     let pure_orchard = tx
         .transparent_bundle()
-        .map_or(true, |t| t.vin.is_empty() && t.vout.is_empty())
+        .is_none_or(|t| t.vin.is_empty() && t.vout.is_empty())
         && tx.sapling_bundle().is_none();
 
     let computed_sighash_hex: Option<String> = if let (Some(branch_id), true) =
