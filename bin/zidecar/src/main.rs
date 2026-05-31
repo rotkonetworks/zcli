@@ -200,6 +200,9 @@ async fn main() -> Result<()> {
         .layer(middleware::trace_layer())
         .layer(middleware::timeout_layer(
             middleware::DEFAULT_INBOUND_TIMEOUT,
+        ))
+        .layer(middleware::concurrency_limit_layer(
+            middleware::DEFAULT_MAX_CONCURRENT_RPCS,
         ));
 
     let router = builder

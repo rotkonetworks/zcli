@@ -52,7 +52,7 @@ ark-serialize = { version = "0.5", features = ["derive"] }
 hkdf = "0.12"
 
 # tower middleware
-tower = { version = "0.4", features = ["retry", "timeout", "util", "buffer"] }
+tower = { version = "0.4", features = ["retry", "timeout", "util", "buffer", "limit"] }
 tower-http = { version = "0.4", features = ["trace"] }
 
 # frost relay
