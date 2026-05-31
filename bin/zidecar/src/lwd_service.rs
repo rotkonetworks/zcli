@@ -85,6 +85,21 @@ fn rev_into(mut v: Vec<u8>) -> Vec<u8> {
     v
 }
 
+/// Run `$fut` to completion, or bail out of the enclosing async block with
+/// `return` if the receiver attached to `$tx` (an `mpsc::Sender`) is dropped
+/// first. Used to make streaming handlers observe client cancellation
+/// between upstream Zebra RPCs instead of completing one more full
+/// round-trip per loop iteration before the next `tx.send` detects the drop.
+macro_rules! select_or_cancel {
+    ($tx:expr, $fut:expr) => {{
+        tokio::select! {
+            biased;
+            _ = $tx.closed() => return,
+            res = $fut => res,
+        }
+    }};
+}
+
 /// Convert internal compact block to lightwalletd wire format.
 ///
 /// Three pool-specific input vectors are grouped per-txid into a single
@@ -188,7 +203,11 @@ fn to_lwd_block(
         hash: rev_bytes(&block.hash),
         prev_hash: rev_into(prev_hash),
         time,
-        header: block.header_bytes.clone(),
+        // Canonical compact_formats.proto:27-30 says this field "should always
+        // be unset (empty)". InternalBlock still carries the parsed bytes so
+        // future internal uses (chain validation, eventual full-header wire
+        // option) have them; we just don't ship them by default.
+        header: Vec::new(),
         vtx,
         chain_metadata: Some(ChainMetadata {
             sapling_commitment_tree_size: sapling_tree_size,
@@ -219,6 +238,9 @@ async fn build_compact_block_for(
 
 /// Strip everything except spend nullifiers from a CompactBlock — wire form
 /// expected by GetBlockNullifiers / GetBlockRangeNullifiers callers.
+/// Matches canonical lightwalletd's `frontend/service.go` behavior: drop
+/// outputs, zero out non-nullifier fields on each Orchard action, and clear
+/// `chain_metadata` (the nullifier path explicitly suppresses tree sizes).
 fn strip_to_nullifiers(mut block: CompactBlock) -> CompactBlock {
     for tx in &mut block.vtx {
         tx.outputs.clear();
@@ -228,6 +250,15 @@ fn strip_to_nullifiers(mut block: CompactBlock) -> CompactBlock {
             action.ciphertext.clear();
         }
     }
+    // Match Zaino: keep the ChainMetadata message present but zero its tree
+    // sizes (canonical lwd's nullifier path also returns zeros). Proto3
+    // defaults make `None` and `Some({0, 0})` wire-equivalent for clients
+    // that use generated stubs, but mirroring Zaino keeps the message shape
+    // identical across implementations.
+    block.chain_metadata = Some(ChainMetadata {
+        sapling_commitment_tree_size: 0,
+        orchard_commitment_tree_size: 0,
+    });
     block
 }
 
@@ -307,30 +338,32 @@ impl CompactTxStreamer for LwdService {
 
         tokio::spawn(async move {
             for height in start..=end {
-                let hash_str = match zebrad.get_block_hash(height).await {
+                let hash_str = match select_or_cancel!(tx, zebrad.get_block_hash(height)) {
                     Ok(h) => h,
                     Err(e) => {
                         let _ = tx.send(Err(Status::internal(e.to_string()))).await;
-                        break;
+                        return;
                     }
                 };
-                let block_meta = match zebrad.get_block(&hash_str, 1).await {
+                let block_meta = match select_or_cancel!(tx, zebrad.get_block(&hash_str, 1)) {
                     Ok(b) => b,
                     Err(e) => {
                         let _ = tx.send(Err(Status::internal(e.to_string()))).await;
-                        break;
+                        return;
                     }
                 };
-                let block = match InternalBlock::from_zebrad(&zebrad, height).await {
-                    Ok(b) => b,
-                    Err(e) => {
-                        warn!("lwd range height {}: {}", height, e);
-                        let _ = tx.send(Err(Status::internal(e.to_string()))).await;
-                        break;
-                    }
-                };
-                let prev_hash = prev_hash_for(&zebrad, height).await;
-                let (sapling_size, orchard_size) = tree_sizes_at(&zebrad, height).await;
+                let block =
+                    match select_or_cancel!(tx, InternalBlock::from_zebrad(&zebrad, height)) {
+                        Ok(b) => b,
+                        Err(e) => {
+                            warn!("lwd range height {}: {}", height, e);
+                            let _ = tx.send(Err(Status::internal(e.to_string()))).await;
+                            return;
+                        }
+                    };
+                let prev_hash = select_or_cancel!(tx, prev_hash_for(&zebrad, height));
+                let (sapling_size, orchard_size) =
+                    select_or_cancel!(tx, tree_sizes_at(&zebrad, height));
                 if tx
                     .send(Ok(to_lwd_block(
                         &block,
@@ -342,7 +375,7 @@ impl CompactTxStreamer for LwdService {
                     .await
                     .is_err()
                 {
-                    break;
+                    return;
                 }
             }
         });
@@ -578,7 +611,7 @@ impl CompactTxStreamer for LwdService {
             let mut seen: HashSet<String> = HashSet::new();
             loop {
                 // Tip moved — end the stream so the client refreshes.
-                match zebrad.get_blockchain_info().await {
+                match select_or_cancel!(tx, zebrad.get_blockchain_info()) {
                     Ok(i) if i.bestblockhash != stay_hash => return,
                     Ok(_) => {}
                     Err(e) => {
@@ -598,7 +631,7 @@ impl CompactTxStreamer for LwdService {
                     return;
                 }
 
-                let txids = match zebrad.get_raw_mempool().await {
+                let txids = match select_or_cancel!(tx, zebrad.get_raw_mempool()) {
                     Ok(t) => t,
                     Err(e) => {
                         let _ = tx.send(Err(Status::internal(e.to_string()))).await;
@@ -610,7 +643,7 @@ impl CompactTxStreamer for LwdService {
                         continue;
                     }
                     // Tx may have evicted between getrawmempool and the fetch.
-                    let raw = match zebrad.get_raw_transaction(&txid).await {
+                    let raw = match select_or_cancel!(tx, zebrad.get_raw_transaction(&txid)) {
                         Ok(r) => r,
                         Err(_) => continue,
                     };
@@ -714,7 +747,7 @@ impl CompactTxStreamer for LwdService {
         let zebrad = self.zebrad.clone();
 
         tokio::spawn(async move {
-            let txids = match zebrad.get_raw_mempool().await {
+            let txids = match select_or_cancel!(tx, zebrad.get_raw_mempool()) {
                 Ok(t) => t,
                 Err(e) => {
                     let _ = tx.send(Err(Status::internal(e.to_string()))).await;
@@ -735,7 +768,7 @@ impl CompactTxStreamer for LwdService {
                 }) {
                     continue;
                 }
-                let raw = match zebrad.get_raw_transaction(&txid_str).await {
+                let raw = match select_or_cancel!(tx, zebrad.get_raw_transaction(&txid_str)) {
                     Ok(r) => r,
                     Err(_) => continue,
                 };
@@ -835,7 +868,7 @@ impl CompactTxStreamer for LwdService {
         let zebrad = self.zebrad.clone();
         tokio::spawn(async move {
             for height in start..=end {
-                match build_compact_block_for(&zebrad, height).await {
+                match select_or_cancel!(tx, build_compact_block_for(&zebrad, height)) {
                     Ok(block) => {
                         if tx.send(Ok(strip_to_nullifiers(block))).await.is_err() {
                             return;
@@ -895,7 +928,7 @@ async fn stream_address_raw_txns(
     end: u32,
     tx: mpsc::Sender<Result<RawTransaction, Status>>,
 ) {
-    let txids = match zebrad.get_address_txids(&addresses, start, end).await {
+    let txids = match select_or_cancel!(tx, zebrad.get_address_txids(&addresses, start, end)) {
         Ok(t) => t,
         Err(e) => {
             let _ = tx.send(Err(Status::internal(e.to_string()))).await;
@@ -903,7 +936,7 @@ async fn stream_address_raw_txns(
         }
     };
     for txid in txids {
-        let raw = match zebrad.get_raw_transaction(&txid).await {
+        let raw = match select_or_cancel!(tx, zebrad.get_raw_transaction(&txid)) {
             Ok(r) => r,
             Err(e) => {
                 let _ = tx.send(Err(Status::internal(e.to_string()))).await;
@@ -997,7 +1030,8 @@ mod tests {
         assert_eq!(out.hash, vec![0x11; 32]); // symmetric → reversed equals self
         assert_eq!(out.prev_hash, prev);
         assert_eq!(out.time, 1234);
-        assert_eq!(out.header, vec![0x22; 1487]);
+        // CompactBlock.header is intentionally empty per canonical lwd proto.
+        assert!(out.header.is_empty());
         let cm = out.chain_metadata.expect("chain_metadata populated");
         assert_eq!(cm.sapling_commitment_tree_size, 100);
         assert_eq!(cm.orchard_commitment_tree_size, 200);
@@ -1099,7 +1133,8 @@ mod tests {
         let block = make_internal(vec![], vec![], vec![]);
         let out = to_lwd_block(&block, vec![0x12; 32], 1234, 0, 0);
         assert!(out.vtx.is_empty());
-        assert_eq!(out.header, vec![0x22; 1487]);
+        // CompactBlock.header is intentionally empty per canonical lwd proto.
+        assert!(out.header.is_empty());
     }
 
     /// Multiple actions in the same tx end up grouped into one CompactTx
