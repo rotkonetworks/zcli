@@ -78,14 +78,22 @@ struct ZebradRetryPolicy {
     max_retries: usize,
 }
 
+/// Non-idempotent JSON-RPC methods that MUST NOT be retried — replaying these
+/// would re-submit transactions or otherwise duplicate state-mutating effects
+/// on the upstream node.
+const NON_IDEMPOTENT_METHODS: &[&str] = &["sendrawtransaction", "submitblock"];
+
 impl retry::Policy<ZebradRequest, Value, ZidecarError> for ZebradRetryPolicy {
     type Future = Pin<Box<dyn Future<Output = Self> + Send>>;
 
     fn retry(
         &self,
-        _req: &ZebradRequest,
+        req: &ZebradRequest,
         result: std::result::Result<&Value, &ZidecarError>,
     ) -> Option<Self::Future> {
+        if NON_IDEMPOTENT_METHODS.contains(&req.method.as_str()) {
+            return None;
+        }
         match result {
             Ok(_) => None,
             Err(err) if err.is_transient() && self.max_retries > 0 => {

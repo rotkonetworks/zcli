@@ -16,6 +16,25 @@ use crate::{compact::CompactBlock as InternalBlock, storage::Storage, zebrad::Ze
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
+
+/// Maximum number of blocks a single GetBlockRange / GetBlockRangeNullifiers /
+/// GetTaddressTxids / GetTaddressTransactions request can span. Without this
+/// ceiling a malicious client requesting `start=0,end=u32::MAX` queues
+/// billions of upstream RPCs on a single connection — the gRPC concurrency
+/// limit doesn't catch it because the spawned handler task is detached from
+/// the connection slot once the initial `Response<Stream>` returns.
+const MAX_BLOCK_RANGE_DELTA: u32 = 10_000;
+
+/// Maximum entries in the `GetMempoolStream` per-stream seen-txid set. Mempool
+/// turnover at the current chain tip is tiny in practice (low hundreds), so
+/// this only matters when the chain stalls or a client holds the stream open
+/// across many tip changes. End the stream when hit; the client reconnects.
+const MAX_SEEN_TXIDS_PER_STREAM: usize = 50_000;
+
+/// Maximum number of `excludeTxidSuffixes` a single `GetMempoolTx` request may
+/// carry. Per-suffix length is already capped at 32 bytes (matching canonical
+/// lwd); this caps the count to keep the O(N·M) suffix-match loop bounded.
+const MAX_EXCLUDE_SUFFIXES: usize = 256;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::StreamExt;
@@ -281,8 +300,7 @@ impl CompactTxStreamer for LwdService {
         req: Request<BlockRange>,
     ) -> Result<Response<Self::GetBlockRangeStream>, Status> {
         let range = req.into_inner();
-        let start = range.start.map(|b| b.height as u32).unwrap_or(0);
-        let end = range.end.map(|b| b.height as u32).unwrap_or(start);
+        let (start, end) = parse_block_range(range.start, range.end)?;
 
         let (tx, rx) = mpsc::channel(32);
         let zebrad = self.zebrad.clone();
@@ -569,6 +587,17 @@ impl CompactTxStreamer for LwdService {
                     }
                 }
 
+                // Bounded seen-set: under normal mempool churn this won't
+                // get hit, but a stalled chain or a long-held stream from
+                // a hostile client could grow it unboundedly otherwise.
+                if seen.len() >= MAX_SEEN_TXIDS_PER_STREAM {
+                    debug!(
+                        "mempool stream: seen set hit cap {}, ending stream",
+                        MAX_SEEN_TXIDS_PER_STREAM
+                    );
+                    return;
+                }
+
                 let txids = match zebrad.get_raw_mempool().await {
                     Ok(t) => t,
                     Err(e) => {
@@ -648,7 +677,21 @@ impl CompactTxStreamer for LwdService {
     ) -> Result<Response<Self::GetMempoolTxStream>, Status> {
         let request = req.into_inner();
 
+        if request.exclude_txid_suffixes.len() > MAX_EXCLUDE_SUFFIXES {
+            return Err(Status::invalid_argument(format!(
+                "too many exclude txid suffixes ({}; max {})",
+                request.exclude_txid_suffixes.len(),
+                MAX_EXCLUDE_SUFFIXES
+            )));
+        }
         for sfx in &request.exclude_txid_suffixes {
+            if sfx.is_empty() {
+                // An empty suffix matches the tail of every txid, which would
+                // silently filter the entire stream — reject explicitly.
+                return Err(Status::invalid_argument(
+                    "empty exclude txid suffix matches every transaction",
+                ));
+            }
             if sfx.len() > 32 {
                 return Err(Status::invalid_argument(
                     "exclude txid suffix larger than 32 bytes",
@@ -787,8 +830,7 @@ impl CompactTxStreamer for LwdService {
         req: Request<BlockRange>,
     ) -> Result<Response<Self::GetBlockRangeNullifiersStream>, Status> {
         let range = req.into_inner();
-        let start = range.start.map(|b| b.height as u32).unwrap_or(0);
-        let end = range.end.map(|b| b.height as u32).unwrap_or(start);
+        let (start, end) = parse_block_range(range.start, range.end)?;
         let (tx, rx) = mpsc::channel(32);
         let zebrad = self.zebrad.clone();
         tokio::spawn(async move {
@@ -817,9 +859,33 @@ fn parse_taddress_filter(
         .range
         .clone()
         .ok_or_else(|| Status::invalid_argument("block range is required"))?;
-    let start = range.start.map(|b| b.height as u32).unwrap_or(0);
-    let end = range.end.map(|b| b.height as u32).unwrap_or(start);
+    let (start, end) = parse_block_range(range.start, range.end)?;
     Ok((filter, start, end))
+}
+
+/// Validate + extract `(start, end)` heights from a BlockRange. Rejects
+/// `start > end` and ranges wider than `MAX_BLOCK_RANGE_DELTA`. Used by every
+/// range-accepting handler so the bound is uniform.
+fn parse_block_range(
+    start_opt: Option<BlockId>,
+    end_opt: Option<BlockId>,
+) -> Result<(u32, u32), Status> {
+    let start = start_opt.map(|b| b.height as u32).unwrap_or(0);
+    let end = end_opt.map(|b| b.height as u32).unwrap_or(start);
+    if start > end {
+        return Err(Status::invalid_argument(format!(
+            "block range start ({}) > end ({})",
+            start, end
+        )));
+    }
+    let span = end.saturating_sub(start);
+    if span > MAX_BLOCK_RANGE_DELTA {
+        return Err(Status::resource_exhausted(format!(
+            "block range too large: {} blocks (max {})",
+            span, MAX_BLOCK_RANGE_DELTA
+        )));
+    }
+    Ok((start, end))
 }
 
 async fn stream_address_raw_txns(
@@ -1118,6 +1184,69 @@ mod tests {
         // Block-level metadata untouched by the strip.
         assert_eq!(stripped.height, 100);
         assert_eq!(stripped.header, vec![0x22; 1487]);
+    }
+
+    /// parse_block_range: accepts valid ranges, rejects start>end, rejects
+    /// spans wider than MAX_BLOCK_RANGE_DELTA. The cap is the only thing
+    /// stopping a `start=0,end=u32::MAX` request from queueing billions of
+    /// upstream Zebra RPCs.
+    #[test]
+    fn test_parse_block_range_bounds() {
+        // Happy path.
+        let (s, e) = parse_block_range(
+            Some(BlockId {
+                height: 100,
+                hash: vec![],
+            }),
+            Some(BlockId {
+                height: 200,
+                hash: vec![],
+            }),
+        )
+        .unwrap();
+        assert_eq!((s, e), (100, 200));
+
+        // At the limit — should pass.
+        let (s, e) = parse_block_range(
+            Some(BlockId {
+                height: 0,
+                hash: vec![],
+            }),
+            Some(BlockId {
+                height: MAX_BLOCK_RANGE_DELTA as u64,
+                hash: vec![],
+            }),
+        )
+        .unwrap();
+        assert_eq!((s, e), (0, MAX_BLOCK_RANGE_DELTA));
+
+        // One over the limit — rejected.
+        let err = parse_block_range(
+            Some(BlockId {
+                height: 0,
+                hash: vec![],
+            }),
+            Some(BlockId {
+                height: (MAX_BLOCK_RANGE_DELTA + 1) as u64,
+                hash: vec![],
+            }),
+        )
+        .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::ResourceExhausted);
+
+        // start > end — rejected.
+        let err = parse_block_range(
+            Some(BlockId {
+                height: 200,
+                hash: vec![],
+            }),
+            Some(BlockId {
+                height: 100,
+                hash: vec![],
+            }),
+        )
+        .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
     }
 
     /// parse_taddress_filter rejects missing range and parses heights correctly.
