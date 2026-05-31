@@ -170,6 +170,23 @@ message PingResponse {
     int64 exit = 2;
 }
 
+// Identifier for a Zcash value pool. Used by GetMempoolTxRequest.pool_types.
+enum PoolType {
+    POOL_TYPE_INVALID = 0;
+    TRANSPARENT = 1;
+    SAPLING = 2;
+    ORCHARD = 3;
+}
+
+message GetMempoolTxRequest {
+    // Transaction-ID byte-string suffixes to exclude from the response.
+    repeated bytes excludeTxidSuffixes = 1;
+    // Reserved for a possible future excludeTxidPrefixes field.
+    reserved 2;
+    // If empty, defaults to [SAPLING, ORCHARD] (canonical lwd behavior).
+    repeated PoolType poolTypes = 3;
+}
+
 // Lightwalletd service definition
 service CompactTxStreamer {
     // Get latest block
@@ -178,8 +195,15 @@ service CompactTxStreamer {
     // Get block by ID
     rpc GetBlock(BlockID) returns (CompactBlock);
 
+    // Get block by ID, returning only the nullifier-bearing portions of each tx.
+    rpc GetBlockNullifiers(BlockID) returns (CompactBlock);
+
     // Get block range (streaming)
     rpc GetBlockRange(BlockRange) returns (stream CompactBlock);
+
+    // Get block range (streaming), nullifier-only — same shape as GetBlockRange
+    // but each CompactTx only carries the spend nullifiers (no outputs/cmx).
+    rpc GetBlockRangeNullifiers(BlockRange) returns (stream CompactBlock);
 
     // Get transaction by txid
     rpc GetTransaction(TxFilter) returns (RawTransaction);
@@ -190,6 +214,9 @@ service CompactTxStreamer {
     // Stream historic transparent-address txids in a height range
     rpc GetTaddressTxids(TransparentAddressBlockFilter) returns (stream RawTransaction);
 
+    // Like GetTaddressTxids but emits the full RawTransaction.data per tx.
+    rpc GetTaddressTransactions(TransparentAddressBlockFilter) returns (stream RawTransaction);
+
     // Total balance for a list of transparent addresses
     rpc GetTaddressBalance(AddressList) returns (Balance);
 
@@ -199,6 +226,9 @@ service CompactTxStreamer {
 
     // Long-poll stream of mempool transactions; terminates when chain tip moves.
     rpc GetMempoolStream(Empty) returns (stream RawTransaction);
+
+    // Mempool snapshot in CompactTx form, filtered by exclude-suffix + pool type.
+    rpc GetMempoolTx(GetMempoolTxRequest) returns (stream CompactTx);
 
     // Get tree state at height
     rpc GetTreeState(BlockID) returns (TreeState);

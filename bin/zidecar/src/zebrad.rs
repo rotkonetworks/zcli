@@ -171,6 +171,12 @@ impl ZebradClient {
         serde_json::from_value(result).map_err(|e| ZidecarError::ZebradRpc(e.to_string()))
     }
 
+    /// Raw block hex (getblock <hash> 0); used to extract canonical header bytes.
+    pub async fn get_block_raw(&self, hash: &str) -> Result<String> {
+        let result = self.call("getblock", vec![json!(hash), json!(0)]).await?;
+        serde_json::from_value(result).map_err(|e| ZidecarError::ZebradRpc(e.to_string()))
+    }
+
     pub async fn get_block_header(&self, hash: &str) -> Result<BlockHeader> {
         let block = self.get_block(hash, 1).await?;
         Ok(BlockHeader {
@@ -369,8 +375,25 @@ pub struct RawTransaction {
     pub height: Option<u32>,
     #[serde(default, rename = "vShieldedSpend")]
     pub sapling_spends: Option<Vec<SaplingSpend>>,
+    #[serde(default, rename = "vShieldedOutput")]
+    pub sapling_outputs: Option<Vec<SaplingOutput>>,
     #[serde(default)]
     pub orchard: Option<OrchardData>,
+}
+
+/// Sapling shielded output (vShieldedOutput entry)
+#[derive(Debug, Deserialize, Clone)]
+pub struct SaplingOutput {
+    pub cv: String,
+    pub cmu: String,
+    #[serde(rename = "ephemeralKey")]
+    pub ephemeral_key: String,
+    #[serde(rename = "encCiphertext")]
+    pub enc_ciphertext: String,
+    #[serde(rename = "outCiphertext")]
+    pub out_ciphertext: String,
+    #[serde(default, rename = "proof")]
+    pub zkproof: String,
 }
 
 #[derive(Debug, Deserialize)]
