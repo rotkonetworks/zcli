@@ -131,9 +131,7 @@ impl CompactBlock {
                         &mut sapling_outputs,
                     );
 
-                    if actions.is_empty()
-                        && sapling_spends.is_empty()
-                        && sapling_outputs.is_empty()
+                    if actions.is_empty() && sapling_spends.is_empty() && sapling_outputs.is_empty()
                     {
                         continue;
                     }
@@ -168,10 +166,18 @@ fn extract_tx_shielded(
 ) {
     if let Some(orchard) = &tx.orchard {
         for action in &orchard.actions {
-            let Ok(cmx) = hex_to_bytes(&action.cmx) else { continue };
-            let Ok(ek) = hex_to_bytes(&action.ephemeral_key) else { continue };
-            let Ok(ct_full) = hex_to_bytes(&action.enc_ciphertext) else { continue };
-            let Ok(nf) = hex_to_bytes(&action.nullifier) else { continue };
+            let Ok(cmx) = hex_to_bytes(&action.cmx) else {
+                continue;
+            };
+            let Ok(ek) = hex_to_bytes(&action.ephemeral_key) else {
+                continue;
+            };
+            let Ok(ct_full) = hex_to_bytes(&action.enc_ciphertext) else {
+                continue;
+            };
+            let Ok(nf) = hex_to_bytes(&action.nullifier) else {
+                continue;
+            };
             actions.push(CompactAction {
                 cmx,
                 ephemeral_key: ek,
@@ -184,7 +190,9 @@ fn extract_tx_shielded(
 
     if let Some(spends) = &tx.sapling_spends {
         for s in spends {
-            let Ok(nf) = hex_to_bytes(&s.nullifier) else { continue };
+            let Ok(nf) = hex_to_bytes(&s.nullifier) else {
+                continue;
+            };
             sapling_spends.push(CompactSaplingSpendItem {
                 txid: txid_bytes.to_vec(),
                 nullifier: nf,
@@ -194,9 +202,15 @@ fn extract_tx_shielded(
 
     if let Some(outs) = &tx.sapling_outputs {
         for o in outs {
-            let Ok(cmu) = hex_to_bytes(&o.cmu) else { continue };
-            let Ok(ek) = hex_to_bytes(&o.ephemeral_key) else { continue };
-            let Ok(ct_full) = hex_to_bytes(&o.enc_ciphertext) else { continue };
+            let Ok(cmu) = hex_to_bytes(&o.cmu) else {
+                continue;
+            };
+            let Ok(ek) = hex_to_bytes(&o.ephemeral_key) else {
+                continue;
+            };
+            let Ok(ct_full) = hex_to_bytes(&o.enc_ciphertext) else {
+                continue;
+            };
             sapling_outputs.push(CompactSaplingOutputItem {
                 txid: txid_bytes.to_vec(),
                 cmu,
@@ -258,11 +272,153 @@ fn hex_to_bytes(hex: &str) -> Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::zebrad::{OrchardAction, OrchardData, RawTransaction, SaplingOutput, SaplingSpend};
 
     #[test]
     fn test_hex_to_bytes() {
         let hex = "deadbeef";
         let bytes = hex_to_bytes(hex).unwrap();
         assert_eq!(bytes, vec![0xde, 0xad, 0xbe, 0xef]);
+    }
+
+    /// Solution length < 0xfd encodes as a single varint byte; total header is
+    /// 140 fixed + 1 prefix + solution_len.
+    #[test]
+    fn test_extract_header_bytes_short_solution() {
+        let mut bytes = vec![0u8; 140];
+        bytes.push(0x05); // solution length = 5
+        bytes.extend(vec![0xaa; 5]);
+        bytes.extend(vec![0xff; 100]); // trailing tx data — must not appear in header
+
+        let header = extract_header_bytes(&hex::encode(&bytes)).unwrap();
+        assert_eq!(header.len(), 140 + 1 + 5);
+        assert_eq!(&header[140..], &[0x05, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa]);
+    }
+
+    /// Mainnet shape: equihash 200/9 → solution = 1344 bytes, prefix `0xfd 0x40 0x05`,
+    /// total header = 1487 bytes.
+    #[test]
+    fn test_extract_header_bytes_fd_prefix_mainnet_size() {
+        let mut bytes = vec![0u8; 140];
+        bytes.extend(&[0xfd, 0x40, 0x05]); // 0xfd marker + le u16(1344)
+        bytes.extend(vec![0xbb; 1344]);
+        bytes.extend(vec![0xff; 100]);
+
+        let header = extract_header_bytes(&hex::encode(&bytes)).unwrap();
+        assert_eq!(header.len(), 1487);
+    }
+
+    /// 0xfe marker uses next 4 bytes as a little-endian u32 length.
+    #[test]
+    fn test_extract_header_bytes_fe_prefix() {
+        let mut bytes = vec![0u8; 140];
+        bytes.extend(&[0xfe, 0x10, 0x00, 0x00, 0x00]); // length = 16
+        bytes.extend(vec![0xcc; 16]);
+
+        let header = extract_header_bytes(&hex::encode(&bytes)).unwrap();
+        assert_eq!(header.len(), 140 + 5 + 16);
+    }
+
+    /// Truncated input — declared length exceeds remaining bytes → error.
+    #[test]
+    fn test_extract_header_bytes_truncated_errors() {
+        let mut bytes = vec![0u8; 140];
+        bytes.push(0x64); // says 100-byte solution
+        bytes.extend(vec![0xcc; 50]); // only 50 provided
+
+        assert!(extract_header_bytes(&hex::encode(&bytes)).is_err());
+    }
+
+    /// Reaches into all three shielded pools in one tx and verifies every
+    /// item lands in the right output vector with correct contents.
+    #[test]
+    fn test_extract_tx_shielded_mixed_pools() {
+        let nf_orch = "01".repeat(32);
+        let cmx = "02".repeat(32);
+        let ek_orch = "03".repeat(32);
+        let ct_orch = "04".repeat(580); // > 52 bytes; should be truncated
+        let nf_sap = "05".repeat(32);
+        let cmu = "06".repeat(32);
+        let ek_sap = "07".repeat(32);
+        let ct_sap = "08".repeat(580);
+        let filler = "00".repeat(32);
+
+        let tx = RawTransaction {
+            txid: "abc".to_string(),
+            version: 5,
+            hex: String::new(),
+            height: Some(100),
+            sapling_spends: Some(vec![SaplingSpend {
+                cv: filler.clone(),
+                anchor: filler.clone(),
+                nullifier: nf_sap.clone(),
+                rk: filler.clone(),
+                zkproof: filler.clone(),
+                spend_auth_sig: filler.clone(),
+            }]),
+            sapling_outputs: Some(vec![SaplingOutput {
+                cv: filler.clone(),
+                cmu: cmu.clone(),
+                ephemeral_key: ek_sap.clone(),
+                enc_ciphertext: ct_sap.clone(),
+                out_ciphertext: filler.clone(),
+                zkproof: filler.clone(),
+            }]),
+            orchard: Some(OrchardData {
+                actions: vec![OrchardAction {
+                    cv: filler.clone(),
+                    nullifier: nf_orch.clone(),
+                    rk: filler.clone(),
+                    cmx: cmx.clone(),
+                    ephemeral_key: ek_orch.clone(),
+                    enc_ciphertext: ct_orch.clone(),
+                    out_ciphertext: filler.clone(),
+                }],
+            }),
+        };
+
+        let txid_bytes = vec![0xde; 32];
+        let mut actions = Vec::new();
+        let mut spends = Vec::new();
+        let mut outputs = Vec::new();
+        extract_tx_shielded(&tx, &txid_bytes, &mut actions, &mut spends, &mut outputs);
+
+        assert_eq!(actions.len(), 1);
+        assert_eq!(actions[0].nullifier, hex::decode(&nf_orch).unwrap());
+        assert_eq!(actions[0].cmx, hex::decode(&cmx).unwrap());
+        assert_eq!(actions[0].ephemeral_key, hex::decode(&ek_orch).unwrap());
+        assert_eq!(actions[0].ciphertext.len(), 52);
+        assert_eq!(actions[0].txid, txid_bytes);
+
+        assert_eq!(spends.len(), 1);
+        assert_eq!(spends[0].nullifier, hex::decode(&nf_sap).unwrap());
+        assert_eq!(spends[0].txid, txid_bytes);
+
+        assert_eq!(outputs.len(), 1);
+        assert_eq!(outputs[0].cmu, hex::decode(&cmu).unwrap());
+        assert_eq!(outputs[0].ephemeral_key, hex::decode(&ek_sap).unwrap());
+        assert_eq!(outputs[0].ciphertext.len(), 52);
+        assert_eq!(outputs[0].txid, txid_bytes);
+    }
+
+    /// A tx with no shielded data of any kind leaves all output vectors empty.
+    #[test]
+    fn test_extract_tx_shielded_transparent_only_is_noop() {
+        let tx = RawTransaction {
+            txid: "abc".to_string(),
+            version: 5,
+            hex: String::new(),
+            height: None,
+            sapling_spends: None,
+            sapling_outputs: None,
+            orchard: None,
+        };
+        let mut a = Vec::new();
+        let mut s = Vec::new();
+        let mut o = Vec::new();
+        extract_tx_shielded(&tx, &[0xde; 32], &mut a, &mut s, &mut o);
+        assert!(a.is_empty());
+        assert!(s.is_empty());
+        assert!(o.is_empty());
     }
 }

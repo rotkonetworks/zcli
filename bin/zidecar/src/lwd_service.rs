@@ -146,17 +146,9 @@ async fn build_compact_block_for(
     zebrad: &ZebradClient,
     height: u32,
 ) -> Result<CompactBlock, Status> {
-    let hash_str = zebrad
-        .get_block_hash(height)
-        .await
-        .map_err(|e| Status::internal(e.to_string()))?;
-    let block_meta = zebrad
-        .get_block(&hash_str, 1)
-        .await
-        .map_err(|e| Status::internal(e.to_string()))?;
-    let internal = InternalBlock::from_zebrad(zebrad, height)
-        .await
-        .map_err(|e| Status::internal(e.to_string()))?;
+    let hash_str = zebrad.get_block_hash(height).await?;
+    let block_meta = zebrad.get_block(&hash_str, 1).await?;
+    let internal = InternalBlock::from_zebrad(zebrad, height).await?;
     let prev_hash = prev_hash_for(zebrad, height).await;
     let (sapling_size, orchard_size) = tree_sizes_at(zebrad, height).await;
     Ok(to_lwd_block(
@@ -218,11 +210,7 @@ impl CompactTxStreamer for LwdService {
     type GetBlockRangeNullifiersStream = ReceiverStream<Result<CompactBlock, Status>>;
 
     async fn get_latest_block(&self, _: Request<ChainSpec>) -> Result<Response<BlockId>, Status> {
-        let info = self
-            .zebrad
-            .get_blockchain_info()
-            .await
-            .map_err(|e| Status::internal(e.to_string()))?;
+        let info = self.zebrad.get_blockchain_info().await?;
         Ok(Response::new(BlockId {
             height: info.blocks as u64,
             hash: hex::decode(&info.bestblockhash).unwrap_or_default(),
@@ -233,20 +221,10 @@ impl CompactTxStreamer for LwdService {
         let id = req.into_inner();
         let height = id.height as u32;
 
-        let hash_str = self
-            .zebrad
-            .get_block_hash(height)
-            .await
-            .map_err(|e| Status::internal(e.to_string()))?;
-        let block_meta = self
-            .zebrad
-            .get_block(&hash_str, 1)
-            .await
-            .map_err(|e| Status::internal(e.to_string()))?;
+        let hash_str = self.zebrad.get_block_hash(height).await?;
+        let block_meta = self.zebrad.get_block(&hash_str, 1).await?;
 
-        let block = InternalBlock::from_zebrad(&self.zebrad, height)
-            .await
-            .map_err(|e| Status::internal(e.to_string()))?;
+        let block = InternalBlock::from_zebrad(&self.zebrad, height).await?;
 
         let prev_hash = prev_hash_for(&self.zebrad, height).await;
         let (sapling_size, orchard_size) = tree_sizes_at(&self.zebrad, height).await;
@@ -364,11 +342,7 @@ impl CompactTxStreamer for LwdService {
             id.height.to_string()
         };
 
-        let ts = self
-            .zebrad
-            .get_tree_state(&key)
-            .await
-            .map_err(|e| Status::internal(e.to_string()))?;
+        let ts = self.zebrad.get_tree_state(&key).await?;
 
         Ok(Response::new(TreeState {
             network: self.chain_name().to_string(),
@@ -444,8 +418,7 @@ impl CompactTxStreamer for LwdService {
         let response = self
             .zebrad
             .get_subtrees_by_index(pool, arg.start_index, limit)
-            .await
-            .map_err(|e| Status::internal(e.to_string()))?;
+            .await?;
 
         let (tx, rx) = mpsc::channel(32);
         tokio::spawn(async move {
@@ -466,11 +439,7 @@ impl CompactTxStreamer for LwdService {
     }
 
     async fn get_lightd_info(&self, _: Request<Empty>) -> Result<Response<LightdInfo>, Status> {
-        let info = self
-            .zebrad
-            .get_blockchain_info()
-            .await
-            .map_err(|e| Status::internal(e.to_string()))?;
+        let info = self.zebrad.get_blockchain_info().await?;
 
         let sapling_height: u64 = if self.testnet { 280000 } else { 419200 };
 
@@ -514,11 +483,7 @@ impl CompactTxStreamer for LwdService {
         req: Request<AddressList>,
     ) -> Result<Response<Balance>, Status> {
         let addresses = req.into_inner().addresses;
-        let bal = self
-            .zebrad
-            .get_address_balance(&addresses)
-            .await
-            .map_err(|e| Status::internal(e.to_string()))?;
+        let bal = self.zebrad.get_address_balance(&addresses).await?;
         Ok(Response::new(Balance {
             value_zat: bal.balance,
         }))
@@ -534,11 +499,7 @@ impl CompactTxStreamer for LwdService {
             let a = item.map_err(|e| Status::internal(e.to_string()))?;
             addresses.push(a.address);
         }
-        let bal = self
-            .zebrad
-            .get_address_balance(&addresses)
-            .await
-            .map_err(|e| Status::internal(e.to_string()))?;
+        let bal = self.zebrad.get_address_balance(&addresses).await?;
         Ok(Response::new(Balance {
             value_zat: bal.balance,
         }))
@@ -548,11 +509,7 @@ impl CompactTxStreamer for LwdService {
         &self,
         _req: Request<Empty>,
     ) -> Result<Response<Self::GetMempoolStreamStream>, Status> {
-        let initial = self
-            .zebrad
-            .get_blockchain_info()
-            .await
-            .map_err(|e| Status::internal(e.to_string()))?;
+        let initial = self.zebrad.get_blockchain_info().await?;
         let stay_hash = initial.bestblockhash;
 
         let (tx, rx) = mpsc::channel(32);
@@ -612,16 +569,8 @@ impl CompactTxStreamer for LwdService {
         &self,
         _req: Request<Empty>,
     ) -> Result<Response<TreeState>, Status> {
-        let info = self
-            .zebrad
-            .get_blockchain_info()
-            .await
-            .map_err(|e| Status::internal(e.to_string()))?;
-        let ts = self
-            .zebrad
-            .get_tree_state(&info.blocks.to_string())
-            .await
-            .map_err(|e| Status::internal(e.to_string()))?;
+        let info = self.zebrad.get_blockchain_info().await?;
+        let ts = self.zebrad.get_tree_state(&info.blocks.to_string()).await?;
         Ok(Response::new(TreeState {
             network: self.chain_name().to_string(),
             height: ts.height as u64,
@@ -666,10 +615,7 @@ impl CompactTxStreamer for LwdService {
             }
         }
         let mut pool_types = request.pool_types;
-        if pool_types
-            .iter()
-            .any(|&p| p == PoolType::Invalid as i32)
-        {
+        if pool_types.iter().any(|&p| p == PoolType::Invalid as i32) {
             return Err(Status::invalid_argument("invalid pool type"));
         }
         // canonical lwd default: shielded-only.
@@ -868,5 +814,221 @@ async fn stream_address_raw_txns(
         if tx.send(Ok(msg)).await.is_err() {
             return;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::compact::{
+        CompactAction, CompactBlock as InternalBlock, CompactSaplingOutputItem,
+        CompactSaplingSpendItem,
+    };
+
+    fn make_internal(
+        actions: Vec<CompactAction>,
+        spends: Vec<CompactSaplingSpendItem>,
+        outputs: Vec<CompactSaplingOutputItem>,
+    ) -> InternalBlock {
+        InternalBlock {
+            height: 100,
+            hash: vec![0x11; 32],
+            header_bytes: vec![0x22; 1487],
+            actions,
+            sapling_spends: spends,
+            sapling_outputs: outputs,
+        }
+    }
+
+    /// All three pools across two distinct txids — each ends up in its own
+    /// CompactTx with the right pool populated and the right index.
+    #[test]
+    fn test_to_lwd_block_groups_per_txid() {
+        let txid_a = vec![0xaa; 32];
+        let txid_b = vec![0xbb; 32];
+
+        let block = make_internal(
+            vec![CompactAction {
+                cmx: vec![0x01; 32],
+                ephemeral_key: vec![0x02; 32],
+                ciphertext: vec![0x03; 52],
+                nullifier: vec![0x04; 32],
+                txid: txid_a.clone(),
+            }],
+            vec![CompactSaplingSpendItem {
+                txid: txid_b.clone(),
+                nullifier: vec![0x05; 32],
+            }],
+            vec![
+                CompactSaplingOutputItem {
+                    txid: txid_a.clone(),
+                    cmu: vec![0x06; 32],
+                    ephemeral_key: vec![0x07; 32],
+                    ciphertext: vec![0x08; 52],
+                },
+                CompactSaplingOutputItem {
+                    txid: txid_b.clone(),
+                    cmu: vec![0x09; 32],
+                    ephemeral_key: vec![0x0a; 32],
+                    ciphertext: vec![0x0b; 52],
+                },
+            ],
+        );
+
+        let prev = vec![0x12; 32];
+        let out = to_lwd_block(&block, prev.clone(), 1234, 100, 200);
+
+        assert_eq!(out.height, 100);
+        assert_eq!(out.hash, vec![0x11; 32]);
+        assert_eq!(out.prev_hash, prev);
+        assert_eq!(out.time, 1234);
+        assert_eq!(out.header, vec![0x22; 1487]);
+        let cm = out.chain_metadata.expect("chain_metadata populated");
+        assert_eq!(cm.sapling_commitment_tree_size, 100);
+        assert_eq!(cm.orchard_commitment_tree_size, 200);
+
+        // Two distinct txids → two CompactTx entries.
+        assert_eq!(out.vtx.len(), 2);
+
+        // Order = first-seen across (spends, outputs, actions) iteration:
+        // spend loop touches txid_b first; output loop touches txid_a as new;
+        // action loop sees txid_a (already in).
+        assert_eq!(out.vtx[0].hash, txid_b);
+        assert_eq!(out.vtx[1].hash, txid_a);
+        assert_eq!(out.vtx[0].index, 0);
+        assert_eq!(out.vtx[1].index, 1);
+
+        // tx_b: 1 spend, 1 output, 0 actions.
+        assert_eq!(out.vtx[0].spends.len(), 1);
+        assert_eq!(out.vtx[0].spends[0].nf, vec![0x05; 32]);
+        assert_eq!(out.vtx[0].outputs.len(), 1);
+        assert_eq!(out.vtx[0].outputs[0].cmu, vec![0x09; 32]);
+        assert!(out.vtx[0].actions.is_empty());
+
+        // tx_a: 0 spends, 1 output, 1 action.
+        assert!(out.vtx[1].spends.is_empty());
+        assert_eq!(out.vtx[1].outputs.len(), 1);
+        assert_eq!(out.vtx[1].outputs[0].cmu, vec![0x06; 32]);
+        assert_eq!(out.vtx[1].actions.len(), 1);
+        assert_eq!(out.vtx[1].actions[0].nullifier, vec![0x04; 32]);
+    }
+
+    /// Empty internal block → empty vtx + zero metadata, header still passed through.
+    #[test]
+    fn test_to_lwd_block_empty_block() {
+        let block = make_internal(vec![], vec![], vec![]);
+        let out = to_lwd_block(&block, vec![0x12; 32], 1234, 0, 0);
+        assert!(out.vtx.is_empty());
+        assert_eq!(out.header, vec![0x22; 1487]);
+    }
+
+    /// Multiple actions in the same tx end up grouped into one CompactTx
+    /// with N actions, not N CompactTx entries.
+    #[test]
+    fn test_to_lwd_block_multi_action_single_tx() {
+        let txid = vec![0xaa; 32];
+        let block = make_internal(
+            vec![
+                CompactAction {
+                    cmx: vec![0x01; 32],
+                    ephemeral_key: vec![0x02; 32],
+                    ciphertext: vec![0x03; 52],
+                    nullifier: vec![0x04; 32],
+                    txid: txid.clone(),
+                },
+                CompactAction {
+                    cmx: vec![0x11; 32],
+                    ephemeral_key: vec![0x12; 32],
+                    ciphertext: vec![0x13; 52],
+                    nullifier: vec![0x14; 32],
+                    txid: txid.clone(),
+                },
+            ],
+            vec![],
+            vec![],
+        );
+        let out = to_lwd_block(&block, vec![0u8; 32], 0, 0, 0);
+        assert_eq!(out.vtx.len(), 1);
+        assert_eq!(out.vtx[0].actions.len(), 2);
+    }
+
+    /// strip_to_nullifiers must zero everything except the nullifier on
+    /// orchard actions, drop sapling outputs entirely, and leave spend
+    /// nullifiers untouched.
+    #[test]
+    fn test_strip_to_nullifiers_keeps_only_nullifiers() {
+        let block = CompactBlock {
+            proto_version: 1,
+            height: 100,
+            hash: vec![0x11; 32],
+            prev_hash: vec![0x12; 32],
+            time: 1234,
+            header: vec![0x22; 1487],
+            vtx: vec![CompactTx {
+                index: 0,
+                hash: vec![0xaa; 32],
+                fee: 0,
+                spends: vec![CompactSaplingSpend { nf: vec![0x05; 32] }],
+                outputs: vec![CompactSaplingOutput {
+                    cmu: vec![0x06; 32],
+                    ephemeral_key: vec![0x07; 32],
+                    ciphertext: vec![0x08; 52],
+                }],
+                actions: vec![CompactOrchardAction {
+                    nullifier: vec![0x04; 32],
+                    cmx: vec![0x01; 32],
+                    ephemeral_key: vec![0x02; 32],
+                    ciphertext: vec![0x03; 52],
+                }],
+            }],
+            chain_metadata: None,
+        };
+
+        let stripped = strip_to_nullifiers(block);
+        let tx = &stripped.vtx[0];
+
+        // Outputs dropped, spend nullifier preserved.
+        assert!(tx.outputs.is_empty());
+        assert_eq!(tx.spends.len(), 1);
+        assert_eq!(tx.spends[0].nf, vec![0x05; 32]);
+
+        // Orchard action: nullifier kept, every other field zeroed out.
+        assert_eq!(tx.actions.len(), 1);
+        assert_eq!(tx.actions[0].nullifier, vec![0x04; 32]);
+        assert!(tx.actions[0].cmx.is_empty());
+        assert!(tx.actions[0].ephemeral_key.is_empty());
+        assert!(tx.actions[0].ciphertext.is_empty());
+
+        // Block-level metadata untouched by the strip.
+        assert_eq!(stripped.height, 100);
+        assert_eq!(stripped.header, vec![0x22; 1487]);
+    }
+
+    /// parse_taddress_filter rejects missing range and parses heights correctly.
+    #[test]
+    fn test_parse_taddress_filter_requires_range() {
+        let filter = TransparentAddressBlockFilter {
+            address: "t1abc".to_string(),
+            range: None,
+        };
+        assert!(parse_taddress_filter(filter).is_err());
+
+        let filter = TransparentAddressBlockFilter {
+            address: "t1abc".to_string(),
+            range: Some(BlockRange {
+                start: Some(BlockId {
+                    height: 100,
+                    hash: vec![],
+                }),
+                end: Some(BlockId {
+                    height: 200,
+                    hash: vec![],
+                }),
+            }),
+        };
+        let (f, start, end) = parse_taddress_filter(filter).unwrap();
+        assert_eq!(f.address, "t1abc");
+        assert_eq!(start, 100);
+        assert_eq!(end, 200);
     }
 }

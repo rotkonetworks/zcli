@@ -197,7 +197,10 @@ async fn main() -> Result<()> {
 
     let mut builder = Server::builder()
         .accept_http1(true)
-        .layer(middleware::trace_layer());
+        .layer(middleware::trace_layer())
+        .layer(middleware::timeout_layer(
+            middleware::DEFAULT_INBOUND_TIMEOUT,
+        ));
 
     let router = builder
         .add_service(tonic_web::enable(
