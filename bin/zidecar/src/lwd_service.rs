@@ -37,17 +37,46 @@ impl LwdService {
         }
     }
 
+    /// Network identifier used in LightdInfo + TreeState. Must match the
+    /// strings the Zcash SDK compares against (`"main"`/`"test"`); the longer
+    /// `"mainnet"`/`"testnet"` forms get rejected as an unknown network.
     fn chain_name(&self) -> &'static str {
         if self.testnet {
-            "testnet"
+            "test"
         } else {
-            "mainnet"
+            "main"
         }
     }
 }
 
+/// Reverse a byte slice. Used to flip between Zebra's display-order (BE) hex
+/// representation and lightwalletd's protocol-order (LE) wire bytes. Every
+/// txid, block hash, sapling cmu/ephemeral-key, and sapling spend nullifier
+/// crosses this boundary; orchard fields are already in protocol order
+/// because Zebra doesn't pre-reverse them.
+fn rev_bytes(bytes: &[u8]) -> Vec<u8> {
+    let mut v = bytes.to_vec();
+    v.reverse();
+    v
+}
+
+/// Same as `rev_bytes` but takes ownership of the Vec to avoid one allocation.
+fn rev_into(mut v: Vec<u8>) -> Vec<u8> {
+    v.reverse();
+    v
+}
+
 /// Convert internal compact block to lightwalletd wire format.
-/// Groups sapling spends, sapling outputs, and orchard actions per txid.
+///
+/// Three pool-specific input vectors are grouped per-txid into a single
+/// CompactTx per tx; the resulting CompactTx.index is the canonical
+/// position-in-block of the containing tx (carried through the per-item
+/// `block_tx_index`), NOT the position-in-shielded-only-set.
+///
+/// All txid/hash/cmu/ephemeral-key/sapling-nullifier byte fields are
+/// reversed on the way out — Zebra emits these in display order (BE) and
+/// the lightwalletd proto requires protocol order (LE). Orchard fields
+/// pass through unchanged (Zebra doesn't pre-reverse them).
 fn to_lwd_block(
     block: &InternalBlock,
     prev_hash: Vec<u8>,
@@ -59,6 +88,7 @@ fn to_lwd_block(
 
     #[derive(Default)]
     struct TxBucket {
+        block_tx_index: u32,
         spends: Vec<CompactSaplingSpend>,
         outputs: Vec<CompactSaplingOutput>,
         actions: Vec<CompactOrchardAction>,
@@ -72,11 +102,14 @@ fn to_lwd_block(
             .entry(s.txid.clone())
             .or_insert_with(|| {
                 tx_order.push(s.txid.clone());
-                TxBucket::default()
+                TxBucket {
+                    block_tx_index: s.block_tx_index,
+                    ..TxBucket::default()
+                }
             })
             .spends
             .push(CompactSaplingSpend {
-                nf: s.nullifier.clone(),
+                nf: rev_bytes(&s.nullifier),
             });
     }
     for o in &block.sapling_outputs {
@@ -84,12 +117,15 @@ fn to_lwd_block(
             .entry(o.txid.clone())
             .or_insert_with(|| {
                 tx_order.push(o.txid.clone());
-                TxBucket::default()
+                TxBucket {
+                    block_tx_index: o.block_tx_index,
+                    ..TxBucket::default()
+                }
             })
             .outputs
             .push(CompactSaplingOutput {
-                cmu: o.cmu.clone(),
-                ephemeral_key: o.ephemeral_key.clone(),
+                cmu: rev_bytes(&o.cmu),
+                ephemeral_key: rev_bytes(&o.ephemeral_key),
                 ciphertext: o.ciphertext.clone(),
             });
     }
@@ -98,7 +134,10 @@ fn to_lwd_block(
             .entry(action.txid.clone())
             .or_insert_with(|| {
                 tx_order.push(action.txid.clone());
-                TxBucket::default()
+                TxBucket {
+                    block_tx_index: action.block_tx_index,
+                    ..TxBucket::default()
+                }
             })
             .actions
             .push(CompactOrchardAction {
@@ -111,12 +150,11 @@ fn to_lwd_block(
 
     let vtx: Vec<CompactTx> = tx_order
         .into_iter()
-        .enumerate()
-        .map(|(i, txid)| {
+        .map(|txid| {
             let bucket = buckets.remove(&txid).unwrap_or_default();
             CompactTx {
-                index: i as u64,
-                hash: txid,
+                index: bucket.block_tx_index as u64,
+                hash: rev_into(txid),
                 fee: 0,
                 spends: bucket.spends,
                 outputs: bucket.outputs,
@@ -128,8 +166,8 @@ fn to_lwd_block(
     CompactBlock {
         proto_version: 1,
         height: block.height as u64,
-        hash: block.hash.clone(),
-        prev_hash,
+        hash: rev_bytes(&block.hash),
+        prev_hash: rev_into(prev_hash),
         time,
         header: block.header_bytes.clone(),
         vtx,
@@ -213,7 +251,7 @@ impl CompactTxStreamer for LwdService {
         let info = self.zebrad.get_blockchain_info().await?;
         Ok(Response::new(BlockId {
             height: info.blocks as u64,
-            hash: hex::decode(&info.bestblockhash).unwrap_or_default(),
+            hash: rev_into(hex::decode(&info.bestblockhash).unwrap_or_default()),
         }))
     }
 
@@ -299,7 +337,9 @@ impl CompactTxStreamer for LwdService {
         req: Request<TxFilter>,
     ) -> Result<Response<RawTransaction>, Status> {
         let filter = req.into_inner();
-        let txid_hex = hex::encode(&filter.hash);
+        // Client sends txid in protocol order (LE); Zebra's getrawtransaction
+        // expects display order (BE).
+        let txid_hex = hex::encode(rev_bytes(&filter.hash));
 
         let tx = self
             .zebrad
@@ -337,7 +377,8 @@ impl CompactTxStreamer for LwdService {
     async fn get_tree_state(&self, req: Request<BlockId>) -> Result<Response<TreeState>, Status> {
         let id = req.into_inner();
         let key = if !id.hash.is_empty() {
-            hex::encode(&id.hash)
+            // Client sends block hash in protocol order; Zebra expects display order.
+            hex::encode(rev_bytes(&id.hash))
         } else {
             id.height.to_string()
         };
@@ -370,7 +411,7 @@ impl CompactTxStreamer for LwdService {
         for u in results {
             utxos.push(GetAddressUtxosReply {
                 address: u.address,
-                txid: hex::decode(&u.txid).unwrap_or_default(),
+                txid: rev_into(hex::decode(&u.txid).unwrap_or_default()),
                 index: u.output_index as i32,
                 script: hex::decode(&u.script).unwrap_or_default(),
                 value_zat: u.satoshis as i64,
@@ -639,7 +680,10 @@ impl CompactTxStreamer for LwdService {
             };
 
             for (index, txid_str) in txids.into_iter().enumerate() {
-                let Ok(txid_bytes) = hex::decode(&txid_str) else {
+                // Zebra's txids are display-order hex. Reverse once to the
+                // protocol-order bytes used for both exclude-suffix matching
+                // and the eventual CompactTx.hash field.
+                let Ok(txid_bytes) = hex::decode(&txid_str).map(rev_into) else {
                     continue;
                 };
                 if exclude.iter().any(|sfx| {
@@ -684,7 +728,7 @@ impl CompactTxStreamer for LwdService {
                     if let Some(ss) = &raw.sapling_spends {
                         for s in ss {
                             if let Ok(nf) = hex::decode(&s.nullifier) {
-                                spends.push(CompactSaplingSpend { nf });
+                                spends.push(CompactSaplingSpend { nf: rev_into(nf) });
                             }
                         }
                     }
@@ -698,8 +742,8 @@ impl CompactTxStreamer for LwdService {
                                 continue;
                             };
                             outputs.push(CompactSaplingOutput {
-                                cmu,
-                                ephemeral_key: ek,
+                                cmu: rev_into(cmu),
+                                ephemeral_key: rev_into(ek),
                                 ciphertext: ct.into_iter().take(52).collect(),
                             });
                         }
@@ -841,10 +885,11 @@ mod tests {
     }
 
     /// All three pools across two distinct txids — each ends up in its own
-    /// CompactTx with the right pool populated and the right index.
+    /// CompactTx with the right pool populated and the CompactTx.index
+    /// reflecting the original block-tx position from the source items.
     #[test]
     fn test_to_lwd_block_groups_per_txid() {
-        let txid_a = vec![0xaa; 32];
+        let txid_a = vec![0xaa; 32]; // symmetric — reversal is invisible here
         let txid_b = vec![0xbb; 32];
 
         let block = make_internal(
@@ -854,10 +899,12 @@ mod tests {
                 ciphertext: vec![0x03; 52],
                 nullifier: vec![0x04; 32],
                 txid: txid_a.clone(),
+                block_tx_index: 5, // tx_a is the 6th tx in the source block
             }],
             vec![CompactSaplingSpendItem {
                 txid: txid_b.clone(),
                 nullifier: vec![0x05; 32],
+                block_tx_index: 2, // tx_b is the 3rd tx in the source block
             }],
             vec![
                 CompactSaplingOutputItem {
@@ -865,12 +912,14 @@ mod tests {
                     cmu: vec![0x06; 32],
                     ephemeral_key: vec![0x07; 32],
                     ciphertext: vec![0x08; 52],
+                    block_tx_index: 5,
                 },
                 CompactSaplingOutputItem {
                     txid: txid_b.clone(),
                     cmu: vec![0x09; 32],
                     ephemeral_key: vec![0x0a; 32],
                     ciphertext: vec![0x0b; 52],
+                    block_tx_index: 2,
                 },
             ],
         );
@@ -879,7 +928,7 @@ mod tests {
         let out = to_lwd_block(&block, prev.clone(), 1234, 100, 200);
 
         assert_eq!(out.height, 100);
-        assert_eq!(out.hash, vec![0x11; 32]);
+        assert_eq!(out.hash, vec![0x11; 32]); // symmetric → reversed equals self
         assert_eq!(out.prev_hash, prev);
         assert_eq!(out.time, 1234);
         assert_eq!(out.header, vec![0x22; 1487]);
@@ -890,13 +939,13 @@ mod tests {
         // Two distinct txids → two CompactTx entries.
         assert_eq!(out.vtx.len(), 2);
 
-        // Order = first-seen across (spends, outputs, actions) iteration:
-        // spend loop touches txid_b first; output loop touches txid_a as new;
-        // action loop sees txid_a (already in).
+        // Iteration order = first-seen across (spends, outputs, actions):
+        // spend loop touches tx_b first, output loop touches tx_a as new.
         assert_eq!(out.vtx[0].hash, txid_b);
         assert_eq!(out.vtx[1].hash, txid_a);
-        assert_eq!(out.vtx[0].index, 0);
-        assert_eq!(out.vtx[1].index, 1);
+        // CompactTx.index is the source block-tx position, NOT vtx slot.
+        assert_eq!(out.vtx[0].index, 2);
+        assert_eq!(out.vtx[1].index, 5);
 
         // tx_b: 1 spend, 1 output, 0 actions.
         assert_eq!(out.vtx[0].spends.len(), 1);
@@ -911,6 +960,71 @@ mod tests {
         assert_eq!(out.vtx[1].outputs[0].cmu, vec![0x06; 32]);
         assert_eq!(out.vtx[1].actions.len(), 1);
         assert_eq!(out.vtx[1].actions[0].nullifier, vec![0x04; 32]);
+    }
+
+    /// `to_lwd_block` must reverse the byte order of every txid, block hash,
+    /// sapling-spend nullifier, sapling-output cmu, and sapling-output
+    /// ephemeral-key on the way out. Orchard fields pass through.
+    /// This test uses asymmetric byte patterns where the reversed form is
+    /// distinguishable from the original.
+    #[test]
+    fn test_to_lwd_block_reverses_wire_bytes() {
+        // 32-byte pattern 0x01..0x20; reversed is 0x20..0x01
+        let asym32: Vec<u8> = (1u8..=32).collect();
+        let asym32_rev: Vec<u8> = asym32.iter().rev().copied().collect();
+
+        let block = make_internal(
+            vec![CompactAction {
+                cmx: asym32.clone(),
+                ephemeral_key: asym32.clone(),
+                ciphertext: vec![0x03; 52],
+                nullifier: asym32.clone(),
+                txid: asym32.clone(),
+                block_tx_index: 0,
+            }],
+            vec![CompactSaplingSpendItem {
+                txid: asym32.clone(),
+                nullifier: asym32.clone(),
+                block_tx_index: 0,
+            }],
+            vec![CompactSaplingOutputItem {
+                txid: asym32.clone(),
+                cmu: asym32.clone(),
+                ephemeral_key: asym32.clone(),
+                ciphertext: vec![0x08; 52],
+                block_tx_index: 0,
+            }],
+        );
+        // Use an asymmetric InternalBlock.hash + prev_hash so we can verify
+        // those reverse too.
+        let block_with_asym_hash = InternalBlock {
+            hash: asym32.clone(),
+            ..block
+        };
+        let prev_hash_asym = asym32.clone();
+
+        let out = to_lwd_block(&block_with_asym_hash, prev_hash_asym, 0, 0, 0);
+
+        // CompactBlock.hash and prev_hash reversed.
+        assert_eq!(out.hash, asym32_rev);
+        assert_eq!(out.prev_hash, asym32_rev);
+
+        // The single emitted CompactTx — its hash should be the reversed txid.
+        assert_eq!(out.vtx.len(), 1);
+        assert_eq!(out.vtx[0].hash, asym32_rev);
+
+        // Sapling spend nullifier reversed.
+        assert_eq!(out.vtx[0].spends[0].nf, asym32_rev);
+        // Sapling output cmu + ephemeral_key reversed; ciphertext passes through.
+        assert_eq!(out.vtx[0].outputs[0].cmu, asym32_rev);
+        assert_eq!(out.vtx[0].outputs[0].ephemeral_key, asym32_rev);
+        assert_eq!(out.vtx[0].outputs[0].ciphertext, vec![0x08; 52]);
+
+        // Orchard action fields pass through unchanged.
+        let act = &out.vtx[0].actions[0];
+        assert_eq!(act.cmx, asym32);
+        assert_eq!(act.ephemeral_key, asym32);
+        assert_eq!(act.nullifier, asym32);
     }
 
     /// Empty internal block → empty vtx + zero metadata, header still passed through.
@@ -935,6 +1049,7 @@ mod tests {
                     ciphertext: vec![0x03; 52],
                     nullifier: vec![0x04; 32],
                     txid: txid.clone(),
+                    block_tx_index: 0,
                 },
                 CompactAction {
                     cmx: vec![0x11; 32],
@@ -942,6 +1057,7 @@ mod tests {
                     ciphertext: vec![0x13; 52],
                     nullifier: vec![0x14; 32],
                     txid: txid.clone(),
+                    block_tx_index: 0,
                 },
             ],
             vec![],

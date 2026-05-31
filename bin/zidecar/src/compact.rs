@@ -4,14 +4,21 @@ use crate::error::{Result, ZidecarError};
 use crate::zebrad::{BlockHeader, ZebradClient};
 use tracing::debug;
 
+/// Per-tx index inside the containing block. lightwalletd's CompactTx.index
+/// is the canonical "position in block including coinbase + transparent-only
+/// txs" — wallet SDKs use `index == 0` to identify coinbase. We thread this
+/// through the per-pool item types so `to_lwd_block` can emit it correctly.
+pub type BlockTxIndex = u32;
+
 /// compact orchard action for trial decryption
 #[derive(Debug, Clone)]
 pub struct CompactAction {
-    pub cmx: Vec<u8>,           // 32 bytes
-    pub ephemeral_key: Vec<u8>, // 32 bytes
-    pub ciphertext: Vec<u8>,    // 52 bytes (compact)
-    pub nullifier: Vec<u8>,     // 32 bytes
-    pub txid: Vec<u8>,          // 32 bytes - for memo retrieval
+    pub cmx: Vec<u8>,                // 32 bytes
+    pub ephemeral_key: Vec<u8>,      // 32 bytes
+    pub ciphertext: Vec<u8>,         // 52 bytes (compact)
+    pub nullifier: Vec<u8>,          // 32 bytes
+    pub txid: Vec<u8>,               // 32 bytes - for memo retrieval
+    pub block_tx_index: BlockTxIndex, // position of the containing tx in its block
 }
 
 /// compact sapling spend (nullifier only; rest is irrelevant for scanning)
@@ -19,6 +26,7 @@ pub struct CompactAction {
 pub struct CompactSaplingSpendItem {
     pub txid: Vec<u8>,      // 32 bytes
     pub nullifier: Vec<u8>, // 32 bytes
+    pub block_tx_index: BlockTxIndex,
 }
 
 /// compact sapling output for trial decryption
@@ -28,6 +36,7 @@ pub struct CompactSaplingOutputItem {
     pub cmu: Vec<u8>,           // 32 bytes
     pub ephemeral_key: Vec<u8>, // 32 bytes
     pub ciphertext: Vec<u8>,    // 52 bytes (ZIP-307 compact ciphertext prefix)
+    pub block_tx_index: BlockTxIndex,
 }
 
 /// compact block with only scanning data
@@ -62,13 +71,14 @@ impl CompactBlock {
         let mut sapling_spends = Vec::new();
         let mut sapling_outputs = Vec::new();
 
-        for txid in &block.tx {
+        for (block_tx_index, txid) in block.tx.iter().enumerate() {
             match zebrad.get_raw_transaction(txid).await {
                 Ok(tx) => {
                     let txid_bytes = hex_to_bytes(txid)?;
                     extract_tx_shielded(
                         &tx,
                         &txid_bytes,
+                        block_tx_index as BlockTxIndex,
                         &mut actions,
                         &mut sapling_spends,
                         &mut sapling_outputs,
@@ -123,9 +133,12 @@ impl CompactBlock {
                     let mut actions = Vec::new();
                     let mut sapling_spends = Vec::new();
                     let mut sapling_outputs = Vec::new();
+                    // mempool synthetic blocks: each tx is the only tx in its own
+                    // CompactBlock, so block_tx_index is always 0.
                     extract_tx_shielded(
                         &tx,
                         &txid_bytes,
+                        0,
                         &mut actions,
                         &mut sapling_spends,
                         &mut sapling_outputs,
@@ -156,10 +169,13 @@ impl CompactBlock {
 }
 
 /// Extract orchard actions + sapling spends + sapling outputs from a single
-/// RawTransaction into the caller-supplied vectors.
+/// RawTransaction into the caller-supplied vectors. All byte fields stored
+/// here are in Zebra/display order; the conversion to lightwalletd wire
+/// (protocol-order / little-endian) happens at `to_lwd_block` in lwd_service.
 fn extract_tx_shielded(
     tx: &crate::zebrad::RawTransaction,
     txid_bytes: &[u8],
+    block_tx_index: BlockTxIndex,
     actions: &mut Vec<CompactAction>,
     sapling_spends: &mut Vec<CompactSaplingSpendItem>,
     sapling_outputs: &mut Vec<CompactSaplingOutputItem>,
@@ -184,6 +200,7 @@ fn extract_tx_shielded(
                 ciphertext: ct_full.into_iter().take(52).collect(),
                 nullifier: nf,
                 txid: txid_bytes.to_vec(),
+                block_tx_index,
             });
         }
     }
@@ -196,6 +213,7 @@ fn extract_tx_shielded(
             sapling_spends.push(CompactSaplingSpendItem {
                 txid: txid_bytes.to_vec(),
                 nullifier: nf,
+                block_tx_index,
             });
         }
     }
@@ -216,6 +234,7 @@ fn extract_tx_shielded(
                 cmu,
                 ephemeral_key: ek,
                 ciphertext: ct_full.into_iter().take(52).collect(),
+                block_tx_index,
             });
         }
     }
@@ -381,7 +400,7 @@ mod tests {
         let mut actions = Vec::new();
         let mut spends = Vec::new();
         let mut outputs = Vec::new();
-        extract_tx_shielded(&tx, &txid_bytes, &mut actions, &mut spends, &mut outputs);
+        extract_tx_shielded(&tx, &txid_bytes, 3, &mut actions, &mut spends, &mut outputs);
 
         assert_eq!(actions.len(), 1);
         assert_eq!(actions[0].nullifier, hex::decode(&nf_orch).unwrap());
@@ -389,16 +408,19 @@ mod tests {
         assert_eq!(actions[0].ephemeral_key, hex::decode(&ek_orch).unwrap());
         assert_eq!(actions[0].ciphertext.len(), 52);
         assert_eq!(actions[0].txid, txid_bytes);
+        assert_eq!(actions[0].block_tx_index, 3);
 
         assert_eq!(spends.len(), 1);
         assert_eq!(spends[0].nullifier, hex::decode(&nf_sap).unwrap());
         assert_eq!(spends[0].txid, txid_bytes);
+        assert_eq!(spends[0].block_tx_index, 3);
 
         assert_eq!(outputs.len(), 1);
         assert_eq!(outputs[0].cmu, hex::decode(&cmu).unwrap());
         assert_eq!(outputs[0].ephemeral_key, hex::decode(&ek_sap).unwrap());
         assert_eq!(outputs[0].ciphertext.len(), 52);
         assert_eq!(outputs[0].txid, txid_bytes);
+        assert_eq!(outputs[0].block_tx_index, 3);
     }
 
     /// A tx with no shielded data of any kind leaves all output vectors empty.
@@ -416,7 +438,7 @@ mod tests {
         let mut a = Vec::new();
         let mut s = Vec::new();
         let mut o = Vec::new();
-        extract_tx_shielded(&tx, &[0xde; 32], &mut a, &mut s, &mut o);
+        extract_tx_shielded(&tx, &[0xde; 32], 0, &mut a, &mut s, &mut o);
         assert!(a.is_empty());
         assert!(s.is_empty());
         assert!(o.is_empty());
