@@ -1,6 +1,6 @@
 [package]
 name = "zidecar"
-version = "0.7.0"
+version = "0.8.0"
 edition = "2021"
 license = "MIT"
 description = "Ligerito-powered Zcash light server with real-time header chain proofs"
@@ -22,7 +22,7 @@ ligerito-binary-fields = { version = "0.6.1", path = "../../crates/ligerito-bina
 
 # async runtime
 tokio = { version = "1", features = ["full"] }
-tokio-stream = { version = "0.1", features = ["sync"] }
+tokio-stream = { version = "0.1", features = ["sync", "net"] }
 futures = "0.3"
 
 # gRPC (with web support for browser clients)

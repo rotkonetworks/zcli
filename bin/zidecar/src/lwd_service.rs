@@ -12,9 +12,8 @@ use crate::lightwalletd::{
     LightdInfo, PingResponse, PoolType, RawTransaction, SendResponse, SubtreeRoot,
     TransparentAddressBlockFilter, TreeState, TxFilter,
 };
-use crate::{compact::CompactBlock as InternalBlock, storage::Storage, zebrad::ZebradClient};
+use crate::{compact::CompactBlock as InternalBlock, zebrad::ZebradClient};
 use std::collections::HashSet;
-use std::sync::Arc;
 use std::time::Duration;
 
 /// Maximum number of blocks a single GetBlockRange / GetBlockRangeNullifiers /
@@ -43,17 +42,12 @@ use tracing::{debug, warn};
 
 pub struct LwdService {
     zebrad: ZebradClient,
-    storage: Arc<Storage>,
     testnet: bool,
 }
 
 impl LwdService {
-    pub fn new(zebrad: ZebradClient, storage: Arc<Storage>, testnet: bool) -> Self {
-        Self {
-            zebrad,
-            storage,
-            testnet,
-        }
+    pub fn new(zebrad: ZebradClient, testnet: bool) -> Self {
+        Self { zebrad, testnet }
     }
 
     /// Network identifier used in LightdInfo + TreeState. Must match the

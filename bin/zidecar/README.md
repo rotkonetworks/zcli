@@ -58,11 +58,17 @@ Flags worth knowing:
 |---|---|---|
 | `--zebrad-rpc` | `http://127.0.0.1:8232` | upstream Zebra JSON-RPC endpoint |
 | `--listen` | `0.0.0.0:50051` | gRPC listen address (gRPC-web is enabled) |
-| `--db-path` | `./zidecar.db` | RocksDB cache for header-chain proofs |
-| `--start-height` | `orchard activation` | initial sync floor for header-chain proofs |
 | `--testnet` | false | switches `chainName` to `"test"` and the Sapling activation height to testnet's |
 | `--mempool-cache-ttl` | `0` | per-request `getrawmempool` cache; enable on public nodes |
-| `--no-frost-relay` | false | disable the FROST multisig relay endpoint |
+| `--zidecar-rpc` | **false (opt-in)** | enable the rotko ZidecarService (ligerito proofs, NOMT, FROST sign anchors); opens `--db-path` RocksDB and spawns 4 background tasks |
+| `--frost-relay` | **false (opt-in)** | enable the FROST multisig relay gRPC surface |
+| `--auth-token` (env `ZIDECAR_AUTH_TOKEN`) | unset | require `Authorization: Bearer <token>` on every gRPC request; when unset the server is anonymous-readable (the Zashi-compatible default) |
+| `--db-path` | `./zidecar.db` | RocksDB cache path (only opened when `--zidecar-rpc`) |
+| `--start-height` | `orchard activation` | proof start height (only used when `--zidecar-rpc`) |
+
+The default `zidecar` binary with no flags is a drop-in lightwalletd
+replacement: lwd surface only, no auth, no RocksDB, no background proof
+generation, no FROST relay. Add the extras when you need them.
 
 ## Operational defaults
 

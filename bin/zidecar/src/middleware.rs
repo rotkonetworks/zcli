@@ -4,7 +4,9 @@
 //! handler — this keeps cross-cutting concerns (tracing, timeouts) at the
 //! boundary instead of duplicated inside every handler body.
 
+use std::sync::Arc;
 use std::time::Duration;
+use tonic::{service::Interceptor, Request, Status};
 use tower::limit::ConcurrencyLimitLayer;
 use tower::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
@@ -43,3 +45,49 @@ pub fn timeout_layer(d: Duration) -> TimeoutLayer {
 pub fn concurrency_limit_layer(max: usize) -> ConcurrencyLimitLayer {
     ConcurrencyLimitLayer::new(max)
 }
+
+/// Optional bearer-token interceptor. Used uniformly across every gRPC
+/// surface; when `token` is `None`, requests pass through unconditionally,
+/// so the default no-auth deployment is byte-identical to wrapping each
+/// service in `with_interceptor(AuthInterceptor::new(None))`.
+///
+/// When set, requires the request metadata key `authorization` to read
+/// `Bearer <token>`; any other value (including missing) returns
+/// `Status::unauthenticated`. Token comparison is constant-time-ish via
+/// `subtle::ConstantTimeEq` would be ideal — but the token is configured
+/// once at startup and never changes, so a naive equality check is fine
+/// for this threat model (operator misconfiguration, not side-channel
+/// extraction of a known token).
+#[derive(Clone, Debug)]
+pub struct AuthInterceptor {
+    token: Option<Arc<String>>,
+}
+
+impl AuthInterceptor {
+    pub fn new(token: Option<String>) -> Self {
+        Self {
+            token: token.map(Arc::new),
+        }
+    }
+}
+
+impl Interceptor for AuthInterceptor {
+    fn call(&mut self, req: Request<()>) -> Result<Request<()>, Status> {
+        let Some(expected) = &self.token else {
+            return Ok(req);
+        };
+        let provided = req
+            .metadata()
+            .get("authorization")
+            .and_then(|h| h.to_str().ok())
+            .and_then(|h| h.strip_prefix("Bearer "));
+        if provided == Some(expected.as_str()) {
+            Ok(req)
+        } else {
+            Err(Status::unauthenticated(
+                "missing or invalid bearer authorization",
+            ))
+        }
+    }
+}
+

@@ -4,6 +4,65 @@ All notable changes to **zidecar** are documented here. Format roughly follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows
 SemVer with pre-1.0 minor bumps treated as breaking.
 
+## [0.8.0] - 2026-06-01
+
+Soundness + surface-scoping release informed by a side-by-side diff against
+Zingo Labs' [Zaino](https://github.com/zingolabs/zaino) (the upstream Rust
+lightwalletd replacement). The wire surface stays wire-compatible with both
+Zashi and Zaino; the changes are: (a) the default deployment is now a
+no-frills lwd replacement with zero extras, (b) the rotko-specific surfaces
+(ligerito proofs, FROST relay) are explicit opt-ins, (c) optional bearer
+auth, (d) cleaner stream-cancellation behavior.
+
+### Breaking (CLI)
+
+- **`--no-frost-relay` removed** in favor of opt-in `--frost-relay`. The
+  default `zidecar` binary no longer registers the FROST relay endpoint.
+- The rotko `ZidecarService` surface (ligerito proofs, NOMT, FROST sign
+  anchors) now requires opt-in `--zidecar-rpc`. Without that flag the
+  binary opens no RocksDB, spawns no background proof tasks, and exposes
+  only the lightwalletd CompactTxStreamer. This is intentional: pure
+  lwd-shim mode is now the default for wallet-compat deployments.
+
+### Added
+
+- **`--auth-token <TOKEN>` (env `ZIDECAR_AUTH_TOKEN`)** — optional
+  bearer-token auth. When set, every gRPC request to every registered
+  surface (lwd + any opt-in extras) must carry
+  `Authorization: Bearer <token>`. When unset, the server is anonymous
+  (the Zashi-compatible default).
+- Synchronous TCP bind before serve so `EADDRINUSE` / permission errors
+  propagate from `main()` immediately instead of surfacing as a late
+  panic after the server task is spawned. Pattern from Zaino's
+  `packages/zaino-serve/src/server/grpc.rs`.
+
+### Fixed
+
+- **Stream tasks observe client cancellation between upstream Zebra
+  RPCs.** A new `select_or_cancel!` macro races each per-iteration
+  Zebra future against `tx.closed()`; a disconnected client triggers
+  immediate task teardown instead of completing one more full RPC
+  round-trip per loop iteration. Applied to `get_block_range`,
+  `get_block_range_nullifiers`, `get_mempool_stream`, `get_mempool_tx`,
+  and the shared `stream_address_raw_txns` helper used by
+  `get_taddress_txids` / `get_taddress_transactions`. (Zaino's own
+  handlers don't do this; zidecar is now strictly better here.)
+- **`strip_to_nullifiers` emits `Some(ChainMetadata { 0, 0 })`** rather
+  than `None`, matching Zaino's `GetBlockNullifiers` output exactly.
+  Wire-equivalent for SDK clients (proto3 defaults), but mirroring
+  Zaino's shape keeps the two Rust implementations aligned.
+
+### Changed
+
+- `LwdService` no longer carries an unused `Arc<Storage>` field. The
+  lwd surface never read it; removing the field clarifies that the lwd
+  path needs no on-disk state.
+- `ZebradInner::poll_ready` documented: it intentionally always returns
+  `Ready(Ok)`; the meaningful backpressure happens at the outer `Buffer`
+  in `ZebradClient` and at the inbound `ConcurrencyLimitLayer`. Real
+  poll_ready propagation would require linking `zebra-state` directly,
+  which only Zaino does (and only when co-located with zebrad).
+
 ## [0.7.0] - 2026-06-01
 
 First release where any zcash-sdk wallet (Zashi, ywallet, etc.) can point at

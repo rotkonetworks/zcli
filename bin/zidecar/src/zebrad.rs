@@ -32,6 +32,20 @@ impl Service<ZebradRequest> for ZebradInner {
     type Error = ZidecarError;
     type Future = Pin<Box<dyn Future<Output = std::result::Result<Value, ZidecarError>> + Send>>;
 
+    /// Always ready — `reqwest::Client` has no `poll_ready` signal to
+    /// propagate, and each `call` is independent (no shared connection-pool
+    /// permits exposed by reqwest 0.11). Real backpressure on this stack
+    /// comes from the outer `Buffer` wrapping `Retry<Self>` in
+    /// `ZebradClient::new`: the Buffer's bounded mpsc returns `Pending` from
+    /// its own `poll_ready` once the queue saturates, which is what every
+    /// tonic handler sees when it does `service.clone().ready().await`. The
+    /// gRPC `ConcurrencyLimitLayer` on the server side caps the upstream
+    /// fan-out further so the Buffer queue is rarely the bottleneck in
+    /// practice. Documented after the Zaino-vs-zidecar architecture review
+    /// flagged this as a design-smell to address — keeping the always-Ready
+    /// behavior is the right call given the layers above; moving real
+    /// backpressure here would require linking `zebra-state` directly,
+    /// which only Zaino does (and only when co-located with zebrad).
     fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<std::result::Result<(), Self::Error>> {
         Poll::Ready(Ok(()))
     }
