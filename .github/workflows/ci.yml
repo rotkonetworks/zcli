@@ -18,4 +18,5 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo check --workspace
       - run: cargo test -p zync-core
+      - run: cargo test -p zidecar --lib
       - run: cargo clippy --workspace -- -D warnings
