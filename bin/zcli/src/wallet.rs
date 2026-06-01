@@ -249,7 +249,7 @@ impl Wallet {
             .open_tree(NOTES_TREE)
             .map_err(|e| Error::Wallet(format!("open notes tree: {}", e)))?;
         let value = tree
-            .get(nullifier.as_ref())
+            .get::<&[u8]>(nullifier.as_ref())
             .map_err(|e| Error::Wallet(format!("get note: {}", e)))?
             .ok_or_else(|| Error::Wallet("note not found".into()))?;
         serde_json::from_slice(&value)
@@ -262,7 +262,7 @@ impl Wallet {
             .db
             .open_tree(NULLIFIERS_TREE)
             .map_err(|e| Error::Wallet(format!("open nullifiers tree: {}", e)))?;
-        tree.insert(nullifier.as_ref(), &[1u8])
+        tree.insert::<&[u8], &[u8; 1]>(nullifier.as_ref(), &[1u8])
             .map_err(|e| Error::Wallet(format!("mark spent: {}", e)))?;
         Ok(())
     }
@@ -272,7 +272,7 @@ impl Wallet {
             .db
             .open_tree(NULLIFIERS_TREE)
             .map_err(|e| Error::Wallet(format!("open nullifiers tree: {}", e)))?;
-        tree.contains_key(nullifier.as_ref())
+        tree.contains_key::<&[u8]>(nullifier.as_ref())
             .map_err(|e| Error::Wallet(format!("check spent: {}", e)))
     }
 
@@ -569,7 +569,7 @@ impl Wallet {
 
     pub fn set_actions_commitment(&self, commitment: &[u8; 32]) -> Result<(), Error> {
         self.db
-            .insert(ACTIONS_COMMITMENT_KEY, commitment.as_ref())
+            .insert::<&[u8], &[u8]>(ACTIONS_COMMITMENT_KEY, commitment.as_ref())
             .map_err(|e| Error::Wallet(format!("write actions_commitment: {}", e)))?;
         Ok(())
     }
@@ -579,7 +579,7 @@ impl Wallet {
     /// store a 96-byte orchard full viewing key in the watch wallet
     pub fn store_fvk(&self, fvk_bytes: &[u8; 96]) -> Result<(), Error> {
         self.db
-            .insert(FVK_KEY, fvk_bytes.as_ref())
+            .insert::<&[u8], &[u8]>(FVK_KEY, fvk_bytes.as_ref())
             .map_err(|e| Error::Wallet(format!("write fvk: {}", e)))?;
         Ok(())
     }
