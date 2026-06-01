@@ -3107,12 +3107,36 @@ pub fn ur_encode_frames(
 /// Returns hex-encoded payload bytes (caller can hex_decode if it wants raw).
 /// We return hex (rather than `Vec<u8>` directly) to avoid a wasm-bindgen
 /// `Uint8Array` allocation pattern that's been flaky for us in some browsers.
+/// Maximum number of UR fountain parts accepted in a single call. Real PCZT
+/// signing sessions need on the order of tens to low hundreds of parts;
+/// adversarial inputs without a cap can OOM the wasm module since the host
+/// hands us the raw JSON-deserialized `Vec<String>` before we touch any
+/// fountain logic.
+const MAX_UR_PARTS: usize = 256;
+
+/// Maximum bytes per single UR fountain frame. The BC-UR spec doesn't pin
+/// frame size, but real emitters use ~100-500 B; 8 KiB is comfortably above
+/// real traffic and stops oversized adversarial payloads.
+const MAX_UR_PART_BYTES: usize = 8 * 1024;
+
 #[wasm_bindgen]
 pub fn ur_decode_frames(parts_json: &str, expected_type: &str) -> Result<String, JsError> {
     let parts: Vec<String> = serde_json::from_str(parts_json)
         .map_err(|e| JsError::new(&format!("ur parts JSON: {e}")))?;
     if parts.is_empty() {
         return Err(JsError::new("no UR parts provided"));
+    }
+    if parts.len() > MAX_UR_PARTS {
+        return Err(JsError::new(&format!(
+            "UR parts count {} exceeds cap {MAX_UR_PARTS}",
+            parts.len()
+        )));
+    }
+    if let Some((i, p)) = parts.iter().enumerate().find(|(_, p)| p.len() > MAX_UR_PART_BYTES) {
+        return Err(JsError::new(&format!(
+            "UR part {i} length {} exceeds cap {MAX_UR_PART_BYTES} B",
+            p.len()
+        )));
     }
     let mut decoder = ur::ur::Decoder::default();
     for (i, p) in parts.iter().enumerate() {
