@@ -2750,6 +2750,29 @@ pub fn extract_signed_tx_from_pczt(pczt_hex: &str) -> Result<String, JsError> {
     Ok(hex_encode(&tx_bytes))
 }
 
+/// Canonical ZIP-244 txid for a raw signed v5 transaction.
+///
+/// Public lightwalletd's `SendResponse` carries no txid, so the wallet derives
+/// it locally instead of trusting the server to echo it. This is the same value
+/// zidecar computes server-side and the same bytes that appear as
+/// `CompactTx.hash` during sync — returned as lowercase hex in internal/wire
+/// byte order so the outgoing record reconciles on the next scan.
+#[wasm_bindgen]
+pub fn compute_txid(tx_hex: &str) -> Result<String, JsError> {
+    use std::io::Cursor;
+    use zcash_primitives::transaction::Transaction;
+    use zcash_protocol::consensus::BranchId;
+
+    let tx_bytes = hex_decode(tx_hex).ok_or_else(|| JsError::new("invalid tx hex"))?;
+    // v5 reads its own consensus branch id from the header; the param only
+    // matters for pre-v5 formats.
+    let tx = Transaction::read(&mut Cursor::new(&tx_bytes), BranchId::Nu5)
+        .map_err(|e| JsError::new(&format!("parse tx: {:?}", e)))?;
+    let txid = tx.txid();
+    let bytes: &[u8; 32] = txid.as_ref();
+    Ok(hex_encode(bytes))
+}
+
 /// Get the commitment proof request data for a note
 /// Returns the cmx that should be sent to zidecar's GetCommitmentProof
 #[wasm_bindgen]
