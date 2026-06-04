@@ -2364,6 +2364,18 @@ pub fn redact_pczt_for_signer(pczt: pczt::Pczt) -> pczt::Pczt {
                 a.clear_spend_zip32_derivation();
                 a.clear_spend_dummy_sk();
                 a.clear_spend_proprietary();
+                // Output-side: change-output derivation path and the bound user
+                // address are local-wallet metadata; the cold signer doesn't
+                // need them and they leak the host's address book.
+                a.clear_output_zip32_derivation();
+                a.clear_output_user_address();
+                a.clear_output_proprietary();
+            });
+        })
+        .redact_transparent_with(|mut t| {
+            t.redact_outputs(|mut o| {
+                o.clear_user_address();
+                o.clear_proprietary();
             });
         })
         .finish()
@@ -3119,8 +3131,24 @@ const MAX_UR_PARTS: usize = 256;
 /// real traffic and stops oversized adversarial payloads.
 const MAX_UR_PART_BYTES: usize = 8 * 1024;
 
+/// Generous upper bound on the raw JSON envelope. Each part is capped at
+/// MAX_UR_PART_BYTES, so a worst-case legitimate envelope is roughly
+/// MAX_UR_PARTS * (MAX_UR_PART_BYTES + JSON-quoting overhead). Doubling
+/// MAX_UR_PART_BYTES per part covers JSON escaping of binary-ish bytes
+/// without being so generous it negates the cap.
+const MAX_UR_PARTS_JSON_BYTES: usize = MAX_UR_PARTS * (MAX_UR_PART_BYTES * 2 + 16);
+
 #[wasm_bindgen]
 pub fn ur_decode_frames(parts_json: &str, expected_type: &str) -> Result<String, JsError> {
+    // Cap the raw input before serde_json::from_str allocates the Vec — a
+    // 1 GiB JSON string would otherwise materialise in linear memory before
+    // any post-parse length check fires.
+    if parts_json.len() > MAX_UR_PARTS_JSON_BYTES {
+        return Err(JsError::new(&format!(
+            "UR parts JSON length {} exceeds cap {MAX_UR_PARTS_JSON_BYTES} B",
+            parts_json.len()
+        )));
+    }
     let parts: Vec<String> = serde_json::from_str(parts_json)
         .map_err(|e| JsError::new(&format!("ur parts JSON: {e}")))?;
     if parts.is_empty() {
@@ -4753,7 +4781,7 @@ fn parse_orchard_address(addr_str: &str, mainnet: bool) -> Result<orchard::Addre
 ///   actions_noncompact_digest = Blake2b-256("ZTxIdOrcActNHash", foreach: cv||rk||enc[564..580]||out[0..80])
 ///   orchard_digest = Blake2b-256("ZTxIdOrchardHash",
 ///                      compact||memos||noncompact||flags(1)||value_balance(8)||anchor(32))
-fn compute_orchard_digest<A: orchard::bundle::Authorization>(
+pub(crate) fn compute_orchard_digest<A: orchard::bundle::Authorization>(
     bundle: &orchard::Bundle<A, zcash_protocol::value::ZatBalance>,
 ) -> Result<[u8; 32], JsError> {
     let mut compact_data = Vec::new();
