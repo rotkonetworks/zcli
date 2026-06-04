@@ -1998,7 +1998,7 @@ pub fn build_unsigned_transaction(
         .ok_or_else(|| JsError::new("extract_effects produced no bundle"))?;
 
     // --- compute ZIP-244 sighash ---
-    let branch_id: u32 = 0x4DEC4DF0; // NU6.1
+    let branch_id: u32 = 0x5437F330; // NU6.2
     let expiry_height: u32 = 0;
 
     let header_data = {
@@ -3661,7 +3661,7 @@ pub fn build_signed_spend_transaction(
         .map_err(|e| JsError::new(&format!("create_proof: {:?}", e)))?;
 
     // --- compute ZIP-244 sighash ---
-    let branch_id: u32 = 0x4DEC4DF0; // NU6.1
+    let branch_id: u32 = 0x5437F330; // NU6.2
     let expiry_height: u32 = 0; // no expiry for orchard-only
 
     let header_data = {
@@ -4106,7 +4106,7 @@ pub fn build_shielding_transaction(
 
     // --- compute transparent digests for ZIP-244 sighash ---
     let n_inputs = selected.len();
-    let branch_id: u32 = 0x4DEC4DF0; // NU6.1
+    let branch_id: u32 = 0x5437F330; // NU6.2
     let expiry_height = anchor_height.saturating_add(100);
 
     let mut prevout_data = Vec::new();
@@ -4408,7 +4408,7 @@ pub fn build_unsigned_shielding_transaction(
 
     // --- compute transparent digests for ZIP-244 sighash ---
     let n_inputs = selected.len();
-    let branch_id: u32 = 0x4DEC4DF0; // NU6.1
+    let branch_id: u32 = 0x5437F330; // NU6.2
     let expiry_height = anchor_height.saturating_add(100);
 
     let mut prevout_data = Vec::new();
