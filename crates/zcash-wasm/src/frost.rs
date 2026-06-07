@@ -320,13 +320,14 @@ pub fn frost_parse_tx_outputs(
     orchard_fvk_uview: &str,
 ) -> Result<String, JsError> {
     use std::io::Cursor;
-    use orchard_legacy::keys::Scope;
-    use orchard_legacy::note_encryption::OrchardDomain;
+    use orchard::keys::Scope;
+    use orchard::note_encryption::OrchardDomain;
     use zcash_keys::keys::UnifiedFullViewingKey;
     use zcash_note_encryption::try_output_recovery_with_ovk;
-    use zcash_primitives::consensus::BranchId;
     use zcash_primitives::transaction::Transaction;
-    use zcash_protocol::consensus::{MainNetwork, TestNetwork};
+    // zcash_primitives 0.26 (librustzcash 5333c01b) moved consensus types
+    // into zcash_protocol; BranchId is re-exported there.
+    use zcash_protocol::consensus::{BranchId, MainNetwork, TestNetwork};
 
     let mut tx_bytes = hex::decode(unsigned_tx_hex)
         .map_err(|e| JsError::new(&format!("bad tx hex: {}", e)))?;
@@ -380,9 +381,10 @@ pub fn frost_parse_tx_outputs(
     // The zcash_keys orchard FVK comes from a different orchard version than
     // the one zcash_primitives uses for tx parsing. Cross through the 96-byte
     // wire format so OVK derivation, OrchardDomain, and the Action all share
-    // a single orchard crate version (orchard_legacy = orchard 0.10).
+    // a single orchard crate (the registry 0.12 we depend on directly,
+    // which librustzcash 5333c01b also resolves to).
     let fvk_bytes = orchard_fvk_keys.to_bytes();
-    let fvk = orchard_legacy::keys::FullViewingKey::from_bytes(&fvk_bytes)
+    let fvk = orchard::keys::FullViewingKey::from_bytes(&fvk_bytes)
         .ok_or_else(|| JsError::new("invalid orchard FVK in UFVK"))?;
 
     let ovk_external = fvk.to_ovk(Scope::External);
@@ -491,8 +493,12 @@ pub fn frost_parse_tx_outputs(
         let transparent_digest = crate::blake2b_256_personal(b"ZTxIdTranspaHash", &[]);
         // T.3 sapling_digest (empty)
         let sapling_digest = crate::blake2b_256_personal(b"ZTxIdSaplingHash", &[]);
-        // T.4 orchard_digest
-        let orchard_digest = compute_orchard_digest_legacy(bundle);
+        // T.4 orchard_digest. Single source of truth in lib.rs; ZIP-244
+        // changes only need to be applied there. The Result return on
+        // compute_orchard_digest is vestigial — the body has no early-Err
+        // paths, only Vec allocations + blake2b — so .expect() never fires.
+        let orchard_digest = crate::compute_orchard_digest(bundle)
+            .expect("compute_orchard_digest is infallible on well-formed orchard bundles");
 
         let mut personal = [0u8; 16];
         personal[..12].copy_from_slice(b"ZcashTxHash_");
@@ -522,47 +528,6 @@ pub fn frost_parse_tx_outputs(
     .to_string())
 }
 
-/// ZIP-244 orchard tx body digest (T.4) for an orchard_legacy bundle.
-/// Mirrors `compute_orchard_digest` in `lib.rs` byte-for-byte but uses
-/// orchard 0.10 types so it can consume what `tx.orchard_bundle()` returns
-/// from zcash_primitives 0.21.
-fn compute_orchard_digest_legacy<A: orchard_legacy::bundle::Authorization>(
-    bundle: &orchard_legacy::Bundle<A, zcash_primitives::transaction::components::Amount>,
-) -> [u8; 32] {
-    let mut compact_data = Vec::new();
-    let mut memos_data = Vec::new();
-    let mut noncompact_data = Vec::new();
-
-    for action in bundle.actions().iter() {
-        compact_data.extend_from_slice(&action.nullifier().to_bytes());
-        compact_data.extend_from_slice(&action.cmx().to_bytes());
-        let enc = &action.encrypted_note().enc_ciphertext;
-        let epk = &action.encrypted_note().epk_bytes;
-        compact_data.extend_from_slice(epk);
-        compact_data.extend_from_slice(&enc[..52]);
-
-        memos_data.extend_from_slice(&enc[52..564]);
-
-        noncompact_data.extend_from_slice(&action.cv_net().to_bytes());
-        noncompact_data.extend_from_slice(&<[u8; 32]>::from(action.rk()));
-        noncompact_data.extend_from_slice(&enc[564..580]);
-        noncompact_data.extend_from_slice(&action.encrypted_note().out_ciphertext);
-    }
-
-    let compact_digest = crate::blake2b_256_personal(b"ZTxIdOrcActCHash", &compact_data);
-    let memos_digest = crate::blake2b_256_personal(b"ZTxIdOrcActMHash", &memos_data);
-    let noncompact_digest = crate::blake2b_256_personal(b"ZTxIdOrcActNHash", &noncompact_data);
-
-    let mut orchard_data = Vec::new();
-    orchard_data.extend_from_slice(&compact_digest);
-    orchard_data.extend_from_slice(&memos_digest);
-    orchard_data.extend_from_slice(&noncompact_digest);
-    orchard_data.push(bundle.flags().to_byte());
-    orchard_data.extend_from_slice(&bundle.value_balance().to_i64_le_bytes());
-    orchard_data.extend_from_slice(&bundle.anchor().to_bytes());
-
-    crate::blake2b_256_personal(b"ZTxIdOrchardHash", &orchard_data)
-}
 
 // ── anchor attestation (domain-separated from spend auth) ──
 //

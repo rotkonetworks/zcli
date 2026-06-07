@@ -23,16 +23,13 @@ group = "0.13"
 
 # Orchard protocol - real key derivation and note encryption
 # Use latest versions to avoid halo2_proofs/indexmap conflict
+# All librustzcash crates pinned to git rev 5333c01b so the version coords
+# line up with `pczt` (which we pull from the same rev). Keeping any of these
+# on crates.io would cause a duplicate-crate-version error in the dep graph.
 orchard = { version = "0.12", default-features = false, features = ["circuit"] }
-
-# Pinned to the orchard version that zcash_primitives 0.21 brings in.
-# Used only inside frost_parse_tx_outputs so the parsed bundle and the
-# OVK-decryption types come from the same crate; mismatching versions
-# hits "different but same" trait-bound errors otherwise.
-orchard_legacy = { package = "orchard", version = "0.10", default-features = false }
-zcash_keys = { version = "0.12", default-features = false, features = ["orchard", "transparent-inputs"] }
-zcash_address = { version = "0.10", default-features = false }
-zcash_protocol = { version = "0.7", default-features = false }
+zcash_keys = { git = "https://github.com/zcash/librustzcash", rev = "5333c01b", default-features = false, features = ["orchard", "transparent-inputs"] }
+zcash_address = { git = "https://github.com/zcash/librustzcash", rev = "5333c01b", default-features = false }
+zcash_protocol = { git = "https://github.com/zcash/librustzcash", rev = "5333c01b", default-features = false }
 rand_core = "0.6"
 zip32 = { version = "0.2", default-features = false }
 
@@ -50,8 +47,22 @@ indexmap = { version = "1", features = ["std"] }
 zcash_note_encryption = "0.4"
 
 # transaction primitives
-zcash_primitives = { version = "0.21", default-features = false }
-zcash_transparent = { version = "0.6", default-features = false, features = ["transparent-inputs"] }
+# zcash_primitives 0.26 + sapling-crypto 0.6 + orchard 0.12 line up with the
+# librustzcash workspace at git rev 5333c01b — the same version coords zigner
+# and zashi/keystone-sdk consume. Required for `pczt` interop.
+zcash_primitives = { git = "https://github.com/zcash/librustzcash", rev = "5333c01b", default-features = false, features = ["non-standard-fees", "transparent-inputs"] }
+zcash_transparent = { git = "https://github.com/zcash/librustzcash", rev = "5333c01b", package = "zcash_transparent", default-features = false, features = ["transparent-inputs"] }
+
+# Partially-Created Zcash Transaction (PCZT) construction.
+# Pinned to the same librustzcash workspace rev that zigner consumes so
+# orchard/sapling/zcash_primitives versions match byte-for-byte.
+pczt = { git = "https://github.com/zcash/librustzcash", rev = "5333c01b", default-features = false, features = ["orchard", "transparent", "sapling", "zcp-builder", "prover", "io-finalizer", "tx-extractor", "signer", "spend-finalizer"] }
+# zcash_primitives renames sapling-crypto to `sapling` internally; mirror the
+# alias so BuildConfig's `Option<sapling::Anchor>` field type-checks.
+# `circuit` feature pulls bellman+groth16 proving — bloats the wasm but is
+# required because pczt's prover/io-finalizer code paths reference
+# sapling::pczt::ProverError / Prover even when the tx has no sapling actions.
+sapling = { package = "sapling-crypto", version = "0.6", default-features = false, features = ["circuit"] }
 
 # key derivation
 bip39 = { version = "2.0", features = ["rand"] }
@@ -96,6 +107,11 @@ wasm-bindgen-rayon = { version = "1.2", optional = true }
 wasm-bindgen-test = "0.3"
 criterion = "0.5"
 rand = "0.8"
+# Used by integration tests (tests/) to build small synthetic PCZTs for
+# redactor/round-trip property assertions. We deliberately re-use the same
+# zcash_transparent the lib pulls (no alias) — Cargo refuses two names for
+# the same crate, and pczt's signer/transparent code expects this exact rev.
+secp256k1 = { version = "0.29", default-features = false, features = ["alloc"] }
 
 [[bench]]
 name = "scanning"
