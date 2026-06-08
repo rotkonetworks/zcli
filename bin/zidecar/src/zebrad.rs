@@ -345,6 +345,15 @@ pub struct Block {
     pub tx: Vec<String>,
 }
 
+/// Block fetched with verbosity=2 — transactions inlined as full objects
+/// so we avoid one getrawtransaction RPC per tx.
+#[derive(Debug, Deserialize)]
+pub struct BlockVerbose {
+    pub hash: String,
+    pub height: u32,
+    pub tx: Vec<RawTransaction>,
+}
+
 /// Sapling shielded spend
 #[derive(Debug, Deserialize, Clone)]
 pub struct SaplingSpend {
