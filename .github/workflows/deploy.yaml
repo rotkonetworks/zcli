@@ -1,0 +1,46 @@
+name: deploy zcli.rotko.net
+
+on:
+  push:
+    branches: [main]
+    paths: [www/**]
+  workflow_dispatch:
+
+env:
+  CONTAINER_NAME: zcli-net
+  CONTAINER_PORT: 55557
+  PROJECT_DIR: www.zcli.rotko.net
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: upload site
+        uses: appleboy/scp-action@v0.1.5
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_KEY }}
+          source: www/*
+          target: /home/${{ secrets.DEPLOY_USER }}/zcli-staging/
+          strip_components: 0
+
+      - name: deploy files
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_KEY }}
+          script: |
+            set -e
+            cd /home/${{ secrets.DEPLOY_USER }}
+
+            mkdir -p ${{ env.PROJECT_DIR }}
+            cp zcli-staging/www/*.html ${{ env.PROJECT_DIR }}/
+            cp zcli-staging/www/*.css ${{ env.PROJECT_DIR }}/
+            cp zcli-staging/www/memos.json ${{ env.PROJECT_DIR }}/ 2>/dev/null || true
+
+            rm -rf zcli-staging/
+            echo "deployed zcli.rotko.net"
