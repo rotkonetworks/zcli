@@ -169,11 +169,20 @@ async fn main() {
 
     let db = sled::open(&args.db_path).expect("failed to open license database");
 
-    // seed initial sync height if --sync-from was provided and no sync state exists
+    // advance sync cursor to --sync-from if the stored cursor is behind it.
+    // never goes backward, so this is safe to leave in env permanently.
     if let Some(from) = args.sync_from {
-        if db.get(SYNC_HEIGHT_KEY).ok().flatten().is_none() {
+        let stored = db.get(SYNC_HEIGHT_KEY)
+            .ok()
+            .flatten()
+            .and_then(|v| {
+                let b: [u8; 4] = v.as_ref().try_into().ok()?;
+                Some(u32::from_le_bytes(b))
+            })
+            .unwrap_or(0);
+        if from > stored {
             let _ = db.insert(SYNC_HEIGHT_KEY, &from.to_le_bytes());
-            info!("initial sync will start from block {}", from);
+            info!("sync cursor advanced to block {} (was {})", from, stored);
         }
     }
 
