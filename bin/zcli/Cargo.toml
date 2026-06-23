@@ -46,12 +46,12 @@ cli = [
 # bip39 mnemonic
 bip39 = { version = "2.0", features = ["rand"] }
 
-# orchard / zcash
-orchard = { version = "0.12", default-features = false, features = ["circuit"] }
-zcash_keys = { version = "0.12", default-features = false, features = ["orchard"] }
-zcash_protocol = { version = "0.7", default-features = false }
+# orchard / zcash — NU6.2 stack (orchard 0.14 fixed Action circuit, branch 0x5437F330)
+orchard = { version = "0.14", default-features = false, features = ["circuit"] }
+zcash_keys = { version = "0.14", default-features = false, features = ["orchard"] }
+zcash_protocol = { version = "0.9", default-features = false }
 zip32 = { version = "0.2", default-features = false }
-zcash_address = "0.7"
+zcash_address = "0.12"
 zcash_note_encryption = "0.4"
 
 # merkle tree witness construction
