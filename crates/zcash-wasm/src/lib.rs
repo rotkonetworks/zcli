@@ -3037,7 +3037,9 @@ pub fn build_witnesses_and_paths(
 /// * `merkle_result_json` - JSON from build_merkle_paths: `{anchor_hex, paths: [{position, path: [{hash}]}]}`
 /// * `anchor_height` - block height of the anchor
 /// * `mainnet` - true for mainnet, false for testnet
-/// * `attestation_hex` - optional hex-encoded 64-byte FROST attestation signature
+/// * `attestation_hex` - optional hex-encoded 64-byte ed25519 anchor attestation
+///   signature from a trusted verifier (zidecar SignAnchor). Verified on the
+///   cold device against its anchor-verifier registry.
 ///
 /// # Returns
 /// `Uint8Array` of CBOR bytes ready for UR fountain encoding
@@ -3094,12 +3096,12 @@ pub fn encode_notes_bundle(
         .try_into()
         .map_err(|_| JsError::new("anchor must be 32 bytes"))?;
 
-    let attestation: Option<[u8; 96]> = match attestation_hex {
+    let attestation: Option<[u8; 64]> = match attestation_hex {
         Some(h) if !h.is_empty() => {
-            let bytes: [u8; 96] = hex::decode(&h)
+            let bytes: [u8; 64] = hex::decode(&h)
                 .map_err(|e| JsError::new(&format!("bad attestation hex: {e}")))?
                 .try_into()
-                .map_err(|_| JsError::new("attestation must be 96 bytes (sig 64 + randomizer 32)"))?;
+                .map_err(|_| JsError::new("attestation must be 64 bytes (ed25519 signature)"))?;
             Some(bytes)
         }
         _ => None,
@@ -3185,11 +3187,12 @@ pub fn encode_notes_bundle(
         }
     }
 
-    // key 5: attestation (optional, 96 bytes: signature(64) + randomizer(32))
+    // key 5: attestation (optional, 64 bytes: ed25519 signature over the
+    // anchor digest by a trusted verifier — matches zigner's decoder).
     if let Some(att) = attestation {
         cbor.push(0x05);
         cbor.push(0x58);
-        cbor.push(0x60); // bytes(96)
+        cbor.push(0x40); // bytes(64)
         cbor.extend_from_slice(&att);
     }
 
@@ -3328,6 +3331,31 @@ pub fn zt_encode_frames(
     n: u8,
 ) -> Result<String, JsError> {
     let (frames, _) = zoda_vss::transport::Encoder::encode(cbor_data, k, n);
+    let strings: Vec<String> = frames
+        .iter()
+        .map(|f| format!("zt:{}/{}", zt_type, hex::encode(f.to_bytes())))
+        .collect();
+    serde_json::to_string(&strings).map_err(|e| JsError::new(&format!("JSON: {e}")))
+}
+
+/// Encode CBOR bytes as zoda transport QR frames, auto-sizing `k`/`n` so each
+/// hex-encoded `zt:` frame fits a scannable QR regardless of payload size.
+/// Returns JSON array of `zt:type/hex` strings.
+///
+/// - `max_qr_bytes`: max *raw* frame bytes before hex encoding. The QR string
+///   is `len("zt:type/") + 2 * frame_bytes`, so pick this from the target QR
+///   capacity: roughly `qr_byte_capacity / 2 - prefix`. ~600 gives a ~1.2 KB
+///   QR string (≈ v24 at ECC-L), comfortable for handheld scanning.
+/// - `redundancy_pct`: extra parity frames as a percentage of `k` (e.g. 30).
+#[wasm_bindgen]
+pub fn zt_encode_frames_auto(
+    cbor_data: &[u8],
+    zt_type: &str,
+    max_qr_bytes: usize,
+    redundancy_pct: u8,
+) -> Result<String, JsError> {
+    let (frames, _) =
+        zoda_vss::transport::Encoder::encode_auto(cbor_data, max_qr_bytes, redundancy_pct);
     let strings: Vec<String> = frames
         .iter()
         .map(|f| format!("zt:{}/{}", zt_type, hex::encode(f.to_bytes())))
