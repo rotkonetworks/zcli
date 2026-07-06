@@ -193,6 +193,14 @@ impl ZebradClient {
         serde_json::from_value(result).map_err(|e| ZidecarError::ZebradRpc(e.to_string()))
     }
 
+    /// Verbose block (getblock <hash> 2): full transaction objects including
+    /// sapling spend / orchard action detail. Restored after a staging merge
+    /// dropped it while epoch.rs still depends on it for nullifier extraction.
+    pub async fn get_block_verbose(&self, hash: &str) -> Result<BlockVerbose> {
+        let result = self.call("getblock", vec![json!(hash), json!(2)]).await?;
+        serde_json::from_value(result).map_err(|e| ZidecarError::ZebradRpc(e.to_string()))
+    }
+
     /// Raw block hex (getblock <hash> 0); used to extract canonical header bytes.
     pub async fn get_block_raw(&self, hash: &str) -> Result<String> {
         let result = self.call("getblock", vec![json!(hash), json!(0)]).await?;
