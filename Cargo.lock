@@ -8580,6 +8580,8 @@ dependencies = [
  "futures",
  "hex",
  "hkdf",
+ "http 0.2.12",
+ "hyper 0.14.32",
  "incrementalmerkletree 0.8.2",
  "ligerito",
  "ligerito-binary-fields",

@@ -91,3 +91,59 @@ impl Interceptor for AuthInterceptor {
     }
 }
 
+
+/// Shim for grpc-web clients that POST an empty HTTP body for RPCs whose
+/// request message is `Empty` (e.g. `GetLightdInfo`, `GetLatestBlock`).
+///
+/// tonic-web 0.11 rejects those requests with grpc-status 13
+/// ("Missing request message") before the handler runs, because its codec
+/// requires at least one length-prefixed frame. Go lightwalletd is lenient,
+/// so wallets probing `GetLightdInfo` see zec.rocks answer and zidecar fail —
+/// which broke zafu's backend auto-detection.
+///
+/// The shim rewrites a `content-length: 0` grpc-web request body into the
+/// canonical empty frame (`[flags=0, len=0u32]`, base64 for -text), which
+/// decodes to the default message — semantically identical to what lenient
+/// servers do. Non-empty bodies pass through untouched. Remove once the
+/// tonic 0.12+ bump lands (it accepts empty bodies natively).
+pub fn empty_grpc_web_body_shim(
+    mut req: http::Request<hyper::Body>,
+) -> http::Request<hyper::Body> {
+    const EMPTY_FRAME: [u8; 5] = [0, 0, 0, 0, 0];
+    // base64("\0\0\0\0\0") — grpc-web-text bodies are base64-encoded frames
+    const EMPTY_FRAME_B64: &str = "AAAAAAA=";
+
+    let is_empty = req
+        .headers()
+        .get(http::header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.trim() == "0")
+        .unwrap_or(false);
+    if !is_empty {
+        return req;
+    }
+
+    let content_type = req
+        .headers()
+        .get(http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+
+    let new_body: Option<(hyper::Body, usize)> =
+        if content_type.starts_with("application/grpc-web-text") {
+            Some((hyper::Body::from(EMPTY_FRAME_B64), EMPTY_FRAME_B64.len()))
+        } else if content_type.starts_with("application/grpc-web") {
+            Some((hyper::Body::from(EMPTY_FRAME.to_vec()), EMPTY_FRAME.len()))
+        } else {
+            None // plain grpc/2 or non-grpc traffic: leave alone
+        };
+
+    if let Some((body, len)) = new_body {
+        *req.body_mut() = body;
+        req.headers_mut().insert(
+            http::header::CONTENT_LENGTH,
+            http::header::HeaderValue::from(len),
+        );
+    }
+    req
+}
