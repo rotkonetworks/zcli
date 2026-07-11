@@ -255,11 +255,17 @@ async fn cmd_balance(cli: &Cli, mainnet: bool) -> Result<(), Error> {
     let bal = if cli.watch {
         // watch-only: shielded balance only (from local wallet db)
         let wallet = wallet::Wallet::open(&wallet::Wallet::default_path())?;
-        let (shielded, _) = wallet.shielded_balance()?;
+        let (shielded, notes) = wallet.shielded_balance()?;
+        let ironwood: u64 = notes
+            .iter()
+            .filter(|n| n.pool == wallet::Pool::Ironwood)
+            .map(|n| n.value)
+            .sum();
         ops::balance::Balance {
             transparent: 0,
             shielded,
             total: shielded,
+            ironwood,
         }
     } else {
         let seed = load_seed(cli)?;
@@ -273,9 +279,11 @@ async fn cmd_balance(cli: &Cli, mainnet: bool) -> Result<(), Error> {
                 "transparent": bal.transparent,
                 "shielded": bal.shielded,
                 "total": bal.total,
+                "ironwood": bal.ironwood,
                 "transparent_zec": format!("{:.8}", bal.transparent as f64 / 1e8),
                 "shielded_zec": format!("{:.8}", bal.shielded as f64 / 1e8),
                 "total_zec": format!("{:.8}", bal.total as f64 / 1e8),
+                "ironwood_zec": format!("{:.8}", bal.ironwood as f64 / 1e8),
             })
         );
     } else {
@@ -284,6 +292,12 @@ async fn cmd_balance(cli: &Cli, mainnet: bool) -> Result<(), Error> {
         let total = bal.total as f64 / 1e8;
         println!("transparent: {:.8} ZEC", t);
         println!("shielded:    {:.8} ZEC", s);
+        if bal.ironwood > 0 {
+            println!(
+                "  of which ironwood (not yet spendable): {:.8} ZEC",
+                bal.ironwood as f64 / 1e8
+            );
+        }
         println!("total:       {:.8} ZEC", total);
     }
 
@@ -684,6 +698,10 @@ fn cmd_notes(cli: &Cli) -> Result<(), Error> {
                     "cmx": hex::encode(&n.cmx[..8]),
                     "nullifier": hex::encode(n.nullifier),
                     "spent": spent,
+                    "pool": match n.pool {
+                        wallet::Pool::Orchard => "orchard",
+                        wallet::Pool::Ironwood => "ironwood",
+                    },
                 });
                 if !n.txid.is_empty() {
                     obj["txid"] = hex::encode(&n.txid).into();
@@ -703,14 +721,22 @@ fn cmd_notes(cli: &Cli) -> Result<(), Error> {
             println!("no received notes");
             return Ok(());
         }
-        println!("{:<10} {:>14} {:>7} memo", "height", "ZEC", "spent");
+        println!(
+            "{:<10} {:>14} {:>9} {:>7} memo",
+            "height", "ZEC", "pool", "spent"
+        );
         for n in &notes {
             let spent = wallet.is_spent(&n.nullifier).unwrap_or(false);
             let memo = n.memo.as_deref().unwrap_or("");
+            let pool = match n.pool {
+                wallet::Pool::Orchard => "orchard",
+                wallet::Pool::Ironwood => "ironwood",
+            };
             println!(
-                "{:<10} {:>14.8} {:>7} {}",
+                "{:<10} {:>14.8} {:>9} {:>7} {}",
                 n.block_height,
                 n.value as f64 / 1e8,
+                pool,
                 if spent { "yes" } else { "" },
                 memo,
             );

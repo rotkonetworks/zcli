@@ -11,6 +11,7 @@ use crate::error::Error;
 const SYNC_HEIGHT_KEY: &[u8] = b"sync_height";
 const BIRTH_HEIGHT_KEY: &[u8] = b"birth_height";
 const ORCHARD_POSITION_KEY: &[u8] = b"orchard_position";
+const IRONWOOD_POSITION_KEY: &[u8] = b"ironwood_position";
 const TREE_FRONTIER_KEY: &[u8] = b"tree_frontier";
 const TREE_FRONTIER_HEIGHT_KEY: &[u8] = b"tree_frontier_height";
 const NEXT_REQUEST_ID_KEY: &[u8] = b"next_request_id";
@@ -36,6 +37,17 @@ fn is_watch_mode() -> bool {
     WATCH_MODE.get().copied().unwrap_or(false)
 }
 
+/// which shielded pool a note lives in. Ironwood (NU6.3) reuses orchard
+/// addresses and note encryption, so notes decrypt identically — but they sit
+/// in a separate commitment tree and need a v6 transaction to spend.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Pool {
+    #[default]
+    Orchard,
+    Ironwood,
+}
+
 /// a received note stored in the wallet
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct WalletNote {
@@ -49,11 +61,16 @@ pub struct WalletNote {
     pub recipient: Vec<u8>,
     pub rho: [u8; 32],
     pub rseed: [u8; 32],
+    /// leaf position in the note's own pool's commitment tree
     pub position: u64,
     #[serde(default)]
     pub txid: Vec<u8>,
     #[serde(default)]
     pub memo: Option<String>,
+    /// pool the note belongs to; defaults to orchard for notes stored
+    /// before ironwood support existed
+    #[serde(default)]
+    pub pool: Pool,
 }
 
 impl WalletNote {
@@ -300,6 +317,28 @@ impl Wallet {
         self.db
             .insert(ORCHARD_POSITION_KEY, &pos.to_le_bytes())
             .map_err(|e| Error::Wallet(format!("write orchard position: {}", e)))?;
+        Ok(())
+    }
+
+    /// global ironwood commitment position counter (increments for every
+    /// ironwood action in every block from NU6.3 activation)
+    pub fn ironwood_position(&self) -> Result<u64, Error> {
+        match self
+            .db
+            .get(IRONWOOD_POSITION_KEY)
+            .map_err(|e| Error::Wallet(format!("read ironwood position: {}", e)))?
+        {
+            Some(bytes) if bytes.len() == 8 => Ok(u64::from_le_bytes(
+                bytes.as_ref().try_into().expect("len checked"),
+            )),
+            _ => Ok(0),
+        }
+    }
+
+    pub fn set_ironwood_position(&self, pos: u64) -> Result<(), Error> {
+        self.db
+            .insert(IRONWOOD_POSITION_KEY, &pos.to_le_bytes())
+            .map_err(|e| Error::Wallet(format!("write ironwood position: {}", e)))?;
         Ok(())
     }
 

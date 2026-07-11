@@ -213,6 +213,27 @@ async fn sync_inner(
         }
     };
 
+    // global ironwood position counter — separate tree from orchard.
+    // 0 until NU6.3 activation; on first sync past activation, seed from the
+    // ironwood tree size at start-1 (empty frontier hex → 0).
+    let mut ironwood_position = {
+        let stored = wallet.ironwood_position()?;
+        if stored == 0 && start > zync_core::IRONWOOD_ACTIVATION_HEIGHT {
+            match client.get_ironwood_tree_state(start - 1).await {
+                Ok((tree_hex, _)) if !tree_hex.is_empty() => {
+                    let tree_bytes = hex::decode(&tree_hex)
+                        .map_err(|e| Error::Other(format!("invalid ironwood tree hex: {}", e)))?;
+                    let pos = crate::witness::frontier_tree_size(&tree_bytes)?;
+                    wallet.set_ironwood_position(pos)?;
+                    pos
+                }
+                _ => 0,
+            }
+        } else {
+            stored
+        }
+    };
+
     // collect new notes that need memo fetching
     type MemoEntry = ([u8; 32], Vec<u8>, [u8; 32], [u8; 32], [u8; 32]);
     let mut needs_memo: Vec<MemoEntry> = Vec::new();
@@ -249,10 +270,13 @@ async fn sync_inner(
             Err(e) => return Err(e),
         };
 
-        let action_count: usize = blocks.iter().map(|b| b.actions.len()).sum();
+        let action_count: usize = blocks
+            .iter()
+            .map(|b| b.actions.len() + b.ironwood_actions.len())
+            .sum();
         if action_count > 0 {
             eprintln!(
-                "  batch {}..{}: {} blocks, {} orchard actions",
+                "  batch {}..{}: {} blocks, {} shielded actions",
                 current,
                 end,
                 blocks.len(),
@@ -302,6 +326,7 @@ async fn sync_inner(
                         position: position_counter,
                         txid: action.txid.clone(),
                         memo: None,
+                        pool: crate::wallet::Pool::Orchard,
                     };
                     pending_notes.push(wallet_note);
                     found_total += 1;
@@ -323,6 +348,54 @@ async fn sync_inner(
                 seen_nullifiers.push(action.nullifier);
 
                 position_counter += 1;
+            }
+
+            // ironwood actions (NU6.3+): same trial decryption — the pool
+            // reuses orchard note encryption and addresses — but positions
+            // count leaves of the separate ironwood tree, and memo retrieval
+            // is skipped (it needs v6 raw-tx parsing the wallet doesn't have
+            // yet). Notes are tagged Pool::Ironwood and excluded from spend
+            // selection until v6 transaction building lands.
+            for action in &block.ironwood_actions {
+                if action.ciphertext.len() < 52 {
+                    ironwood_position += 1;
+                    continue;
+                }
+
+                let mut ct = [0u8; 52];
+                ct.copy_from_slice(&action.ciphertext[..52]);
+
+                let output = CompactShieldedOutput {
+                    epk: action.ephemeral_key,
+                    cmx: action.cmx,
+                    ciphertext: ct,
+                };
+
+                let result = try_decrypt(fvk, &ivk_ext, &ivk_int, &action.nullifier, &output);
+
+                if let Some(decrypted) = result {
+                    pending_notes.push(WalletNote {
+                        value: decrypted.value,
+                        nullifier: decrypted.nullifier,
+                        cmx: action.cmx,
+                        block_height: block.height,
+                        is_change: decrypted.is_change,
+                        recipient: decrypted.recipient,
+                        rho: decrypted.rho,
+                        rseed: decrypted.rseed,
+                        position: ironwood_position,
+                        txid: action.txid.clone(),
+                        memo: None,
+                        pool: crate::wallet::Pool::Ironwood,
+                    });
+                    found_total += 1;
+                    received_cmxs.push(action.cmx);
+                    received_positions.push(ironwood_position);
+                }
+
+                seen_nullifiers.push(action.nullifier);
+
+                ironwood_position += 1;
             }
 
             // compute per-block actions_root and update running commitment chain
@@ -402,6 +475,7 @@ async fn sync_inner(
     }
     wallet.set_sync_height(tip)?;
     wallet.set_orchard_position(position_counter)?;
+    wallet.set_ironwood_position(ironwood_position)?;
     wallet.set_actions_commitment(&running_actions_commitment)?;
 
     // cache tree frontier at sync height for fast witness building (no binary search)
@@ -878,14 +952,17 @@ async fn scan_mempool(
         }
     };
 
-    let total_actions: usize = blocks.iter().map(|b| b.actions.len()).sum();
+    let total_actions: usize = blocks
+        .iter()
+        .map(|b| b.actions.len() + b.ironwood_actions.len())
+        .sum();
     if total_actions == 0 {
         return 0;
     }
 
     if !json {
         eprintln!(
-            "scanning mempool: {} txs, {} orchard actions",
+            "scanning mempool: {} txs, {} shielded actions",
             blocks.len(),
             total_actions
         );
@@ -902,7 +979,9 @@ async fn scan_mempool(
     for block in &blocks {
         let txid_hex = hex::encode(&block.hash);
 
-        for action in &block.actions {
+        // orchard + ironwood actions decrypt identically; mempool display
+        // doesn't need positions so one chained pass covers both pools
+        for action in block.actions.iter().chain(block.ironwood_actions.iter()) {
             // check if any wallet nullifier is being spent in mempool
             if wallet_nullifiers.contains(&action.nullifier) {
                 if !json {

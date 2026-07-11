@@ -9,6 +9,10 @@ pub struct Balance {
     pub transparent: u64,
     pub shielded: u64,
     pub total: u64,
+    /// subtotal of `shielded` held in ironwood notes — visible funds that are
+    /// not yet spendable (needs v6 transaction support). 0 pre-NU6.3.
+    #[serde(default)]
+    pub ironwood: u64,
 }
 
 pub async fn get_balance(
@@ -26,11 +30,17 @@ pub async fn get_balance(
 
     // shielded balance from local wallet
     let wallet = Wallet::open(&Wallet::default_path())?;
-    let (shielded, _notes) = wallet.shielded_balance()?;
+    let (shielded, notes) = wallet.shielded_balance()?;
+    let ironwood: u64 = notes
+        .iter()
+        .filter(|n| n.pool == crate::wallet::Pool::Ironwood)
+        .map(|n| n.value)
+        .sum();
 
     Ok(Balance {
         transparent,
         shielded,
         total: transparent + shielded,
+        ironwood,
     })
 }

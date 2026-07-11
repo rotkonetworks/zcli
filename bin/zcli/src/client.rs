@@ -85,6 +85,10 @@ pub struct CompactBlock {
     pub hash: Vec<u8>,
     pub actions: Vec<CompactAction>,
     pub actions_root: [u8; 32],
+    /// ironwood actions (NU6.3+); empty pre-activation. Same shape as
+    /// orchard actions and trial-decrypted with the same keys, but their
+    /// commitments live in the ironwood tree — not covered by actions_root.
+    pub ironwood_actions: Vec<CompactAction>,
 }
 
 #[derive(Debug, Clone)]
@@ -94,6 +98,32 @@ pub struct CompactAction {
     pub ciphertext: Vec<u8>,
     pub nullifier: [u8; 32],
     pub txid: Vec<u8>,
+}
+
+/// convert proto compact actions (orchard or ironwood — same shape) to the
+/// client type, dropping any with malformed field lengths
+fn convert_actions(actions: Vec<zidecar_proto::CompactAction>) -> Vec<CompactAction> {
+    actions
+        .into_iter()
+        .filter_map(|a| {
+            if a.cmx.len() != 32 || a.ephemeral_key.len() != 32 || a.nullifier.len() != 32 {
+                return None;
+            }
+            let mut cmx = [0u8; 32];
+            let mut ek = [0u8; 32];
+            let mut nf = [0u8; 32];
+            cmx.copy_from_slice(&a.cmx);
+            ek.copy_from_slice(&a.ephemeral_key);
+            nf.copy_from_slice(&a.nullifier);
+            Some(CompactAction {
+                cmx,
+                ephemeral_key: ek,
+                ciphertext: a.ciphertext,
+                nullifier: nf,
+                txid: a.txid,
+            })
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone)]
@@ -394,31 +424,8 @@ impl ZidecarClient {
         Ok(protos
             .into_iter()
             .map(|block| {
-                let actions = block
-                    .actions
-                    .into_iter()
-                    .filter_map(|a| {
-                        if a.cmx.len() != 32
-                            || a.ephemeral_key.len() != 32
-                            || a.nullifier.len() != 32
-                        {
-                            return None;
-                        }
-                        let mut cmx = [0u8; 32];
-                        let mut ek = [0u8; 32];
-                        let mut nf = [0u8; 32];
-                        cmx.copy_from_slice(&a.cmx);
-                        ek.copy_from_slice(&a.ephemeral_key);
-                        nf.copy_from_slice(&a.nullifier);
-                        Some(CompactAction {
-                            cmx,
-                            ephemeral_key: ek,
-                            ciphertext: a.ciphertext,
-                            nullifier: nf,
-                            txid: a.txid,
-                        })
-                    })
-                    .collect();
+                let actions = convert_actions(block.actions);
+                let ironwood_actions = convert_actions(block.ironwood_actions);
 
                 let actions_root = if block.actions_root.len() == 32 {
                     let mut ar = [0u8; 32];
@@ -433,6 +440,7 @@ impl ZidecarClient {
                     hash: block.hash,
                     actions,
                     actions_root,
+                    ironwood_actions,
                 }
             })
             .collect())
@@ -449,6 +457,21 @@ impl ZidecarClient {
             )
             .await?;
         Ok((state.orchard_tree, state.height))
+    }
+
+    /// Ironwood tree frontier at a height. Empty string pre-NU6.3 or from a
+    /// server that predates ironwood support.
+    pub async fn get_ironwood_tree_state(&self, height: u32) -> Result<(String, u32), Error> {
+        let state: zidecar_proto::TreeState = self
+            .call_unary(
+                "zidecar.v1.Zidecar/GetTreeState",
+                &zidecar_proto::BlockId {
+                    height,
+                    hash: vec![],
+                },
+            )
+            .await?;
+        Ok((state.ironwood_tree, state.height))
     }
 
     /// Fetch just the block timestamp (unix seconds) at the given height.
@@ -544,39 +567,12 @@ impl ZidecarClient {
 
         Ok(protos
             .into_iter()
-            .map(|block| {
-                let actions = block
-                    .actions
-                    .into_iter()
-                    .filter_map(|a| {
-                        if a.cmx.len() != 32
-                            || a.ephemeral_key.len() != 32
-                            || a.nullifier.len() != 32
-                        {
-                            return None;
-                        }
-                        let mut cmx = [0u8; 32];
-                        let mut ek = [0u8; 32];
-                        let mut nf = [0u8; 32];
-                        cmx.copy_from_slice(&a.cmx);
-                        ek.copy_from_slice(&a.ephemeral_key);
-                        nf.copy_from_slice(&a.nullifier);
-                        Some(CompactAction {
-                            cmx,
-                            ephemeral_key: ek,
-                            ciphertext: a.ciphertext,
-                            nullifier: nf,
-                            txid: a.txid,
-                        })
-                    })
-                    .collect();
-
-                CompactBlock {
-                    height: 0,
-                    hash: block.hash,
-                    actions,
-                    actions_root: [0u8; 32],
-                }
+            .map(|block| CompactBlock {
+                height: 0,
+                hash: block.hash,
+                actions: convert_actions(block.actions),
+                actions_root: [0u8; 32],
+                ironwood_actions: convert_actions(block.ironwood_actions),
             })
             .collect())
     }

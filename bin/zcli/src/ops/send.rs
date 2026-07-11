@@ -343,7 +343,19 @@ pub(crate) fn select_notes(
     notes: &[crate::wallet::WalletNote],
     target: u64,
 ) -> Result<Vec<crate::wallet::WalletNote>, Error> {
-    let mut sorted: Vec<_> = notes.to_vec();
+    // ironwood notes need a v6 transaction to spend; until the wallet can
+    // build those, only orchard notes are spendable. They still show in the
+    // balance, so surface the gap explicitly when funds fall short.
+    let ironwood_zat: u64 = notes
+        .iter()
+        .filter(|n| n.pool == crate::wallet::Pool::Ironwood)
+        .map(|n| n.value)
+        .sum();
+    let mut sorted: Vec<_> = notes
+        .iter()
+        .filter(|n| n.pool == crate::wallet::Pool::Orchard)
+        .cloned()
+        .collect();
     // sort by value descending, then by position descending (prefer recent notes
     // to minimize merkle witness replay distance from stale checkpoints)
     sorted.sort_by(|a, b| b.value.cmp(&a.value).then(b.position.cmp(&a.position)));
@@ -358,6 +370,13 @@ pub(crate) fn select_notes(
         }
     }
 
+    if ironwood_zat > 0 {
+        eprintln!(
+            "note: {:.8} ZEC held in ironwood notes is not yet spendable \
+             (needs v6 transaction support)",
+            ironwood_zat as f64 / 100_000_000.0
+        );
+    }
     Err(Error::InsufficientFunds {
         have: total,
         need: target,
@@ -397,5 +416,66 @@ mod tests {
     fn parse_zatoshi_amount() {
         assert_eq!(parse_amount("100000").unwrap(), 100_000);
         assert_eq!(parse_amount("1").unwrap(), 1);
+    }
+
+    fn note(value: u64, pool: crate::wallet::Pool) -> crate::wallet::WalletNote {
+        crate::wallet::WalletNote {
+            value,
+            nullifier: [0u8; 32],
+            cmx: [0u8; 32],
+            block_height: 0,
+            is_change: false,
+            recipient: vec![],
+            rho: [0u8; 32],
+            rseed: [0u8; 32],
+            position: 0,
+            txid: vec![],
+            memo: None,
+            pool,
+        }
+    }
+
+    /// ironwood notes are never selected for spending (no v6 builder yet),
+    /// even when they would cover the target.
+    #[test]
+    fn select_notes_skips_ironwood() {
+        use crate::wallet::Pool;
+        let notes = vec![note(50_000, Pool::Orchard), note(1_000_000, Pool::Ironwood)];
+
+        // orchard alone covers a small target
+        let sel = select_notes(&notes, 40_000).unwrap();
+        assert_eq!(sel.len(), 1);
+        assert_eq!(sel[0].pool, Pool::Orchard);
+
+        // ironwood value must not count toward spendable funds
+        let err = select_notes(&notes, 500_000).unwrap_err();
+        match err {
+            Error::InsufficientFunds { have, need } => {
+                assert_eq!(have, 50_000);
+                assert_eq!(need, 500_000);
+            }
+            other => panic!("expected InsufficientFunds, got {:?}", other),
+        }
+    }
+
+    /// notes stored before ironwood support (no `pool` field in JSON)
+    /// deserialize as orchard and stay spendable.
+    #[test]
+    fn wallet_note_pool_default_is_orchard() {
+        let zeros = vec![0u8; 32];
+        let legacy_json = serde_json::json!({
+            "value": 123u64,
+            "nullifier": zeros,
+            "cmx": zeros,
+            "block_height": 1u32,
+            "is_change": false,
+            "recipient": [],
+            "rho": zeros,
+            "rseed": zeros,
+            "position": 7u64,
+        });
+        let note: crate::wallet::WalletNote = serde_json::from_value(legacy_json).unwrap();
+        assert_eq!(note.pool, crate::wallet::Pool::Orchard);
+        assert!(select_notes(&[note], 100).is_ok());
     }
 }
