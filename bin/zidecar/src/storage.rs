@@ -907,11 +907,16 @@ pub struct EpochBoundary {
 ///   1 — initial: state_roots stored a sha-256 placeholder, not the real
 ///       orchard tree root. Wipe `b'r'` on bump → 2.
 ///   2 — state_roots store the real orchard tree root.
-///   3 — current: nullifier_sync_height is reset so the sync also backfills
+///   3 — nullifier_sync_height is reset so the sync also backfills
 ///       orchard cmxs into NOMT (commitment-proof RPC was previously hitting
 ///       an empty tree). NOMT nullifier keys are re-inserted idempotently;
 ///       the cost is re-fetching historical blocks once.
-const SCHEMA_VERSION: u32 = 3;
+///   4 — current: nullifier_sync_height is reset again after the production
+///       NOMT store was lost to the nomt v1.0.3 bbn tear (2026-07-11) and
+///       recreated empty. state_roots and cached proofs are NOT wiped this
+///       time: NOMT roots are content-derived, so the rebuilt store converges
+///       to the same per-height roots the cached entries already hold.
+const SCHEMA_VERSION: u32 = 4;
 const SCHEMA_VERSION_KEY: &[u8] = b"_schema_version";
 
 fn run_schema_migrations(sled: &sled::Db) -> Result<()> {
@@ -935,62 +940,67 @@ fn run_schema_migrations(sled: &sled::Db) -> Result<()> {
         stored, SCHEMA_VERSION
     );
 
-    // Cumulative wipes covering all jumps from any prior version to current:
+    let from = stored.unwrap_or(0);
+
+    // Wipes for stores older than v3:
     //  - b'r' (state_roots): v1 held sha placeholder, not real orchard root
     //  - b'p' (proof cache): epoch proofs baked stale tip_tree_root values
-    //  - nullifier_sync_height: v2 only tracked nullifier inserts; v3 also
-    //    inserts cmxs. Reset so the sync loop backfills cmxs into NOMT from
-    //    start_height. Nullifier re-insertion is idempotent.
     //
     // Headers (b'h') are unaffected — they're raw chain data, not derived.
     let mut wiped_state_roots = 0usize;
-    for entry in sled.scan_prefix(b"r") {
-        let (k, _) = entry.map_err(|e| ZidecarError::Storage(format!("sled: {}", e)))?;
-        if k.len() == 5 && k[0] == b'r' {
-            sled.remove(&k)
-                .map_err(|e| ZidecarError::Storage(format!("sled: {}", e)))?;
-            wiped_state_roots += 1;
-        }
-    }
     let mut wiped_proofs = 0usize;
-    for entry in sled.scan_prefix(b"p") {
-        let (k, _) = entry.map_err(|e| ZidecarError::Storage(format!("sled: {}", e)))?;
-        if k.len() == 9 && k[0] == b'p' {
-            sled.remove(&k)
-                .map_err(|e| ZidecarError::Storage(format!("sled: {}", e)))?;
-            wiped_proofs += 1;
+    let mut reset_epoch_meta = false;
+    if from < 3 {
+        for entry in sled.scan_prefix(b"r") {
+            let (k, _) = entry.map_err(|e| ZidecarError::Storage(format!("sled: {}", e)))?;
+            if k.len() == 5 && k[0] == b'r' {
+                sled.remove(&k)
+                    .map_err(|e| ZidecarError::Storage(format!("sled: {}", e)))?;
+                wiped_state_roots += 1;
+            }
+        }
+        for entry in sled.scan_prefix(b"p") {
+            let (k, _) = entry.map_err(|e| ZidecarError::Storage(format!("sled: {}", e)))?;
+            if k.len() == 9 && k[0] == b'p' {
+                sled.remove(&k)
+                    .map_err(|e| ZidecarError::Storage(format!("sled: {}", e)))?;
+                wiped_proofs += 1;
+            }
+        }
+
+        // Wiping b'p' removed the cached epoch-proof bytes, but the
+        // `epoch_proof_epoch` / `epoch_proof_start` counters still point at the
+        // now-missing entry. Leaving them dangling makes get_proofs() return
+        // "epoch proof not found in cache" intermittently. Clear them so the
+        // background prover regenerates from scratch.
+        if sled
+            .remove(b"epoch_proof_epoch")
+            .map_err(|e| ZidecarError::Storage(format!("sled: {}", e)))?
+            .is_some()
+        {
+            reset_epoch_meta = true;
+        }
+        if sled
+            .remove(b"epoch_proof_start")
+            .map_err(|e| ZidecarError::Storage(format!("sled: {}", e)))?
+            .is_some()
+        {
+            reset_epoch_meta = true;
         }
     }
 
-    // Reset sync-progress markers introduced before v3 awareness of cmxs.
+    // v3: reset so the sync loop backfills cmxs (not just nullifiers) into
+    // NOMT from start_height. v4: reset again to repopulate the NOMT store
+    // recreated after the v1.0.3 bbn tear. Re-insertion is idempotent either
+    // way; the cost is re-fetching historical blocks once.
     let mut reset_sync = false;
-    if sled
-        .remove(b"nullifier_sync_height")
-        .map_err(|e| ZidecarError::Storage(format!("sled: {}", e)))?
-        .is_some()
+    if from < 4
+        && sled
+            .remove(b"nullifier_sync_height")
+            .map_err(|e| ZidecarError::Storage(format!("sled: {}", e)))?
+            .is_some()
     {
         reset_sync = true;
-    }
-
-    // Wiping b'p' removed the cached epoch-proof bytes, but the
-    // `epoch_proof_epoch` / `epoch_proof_start` counters still point at the
-    // now-missing entry. Leaving them dangling makes get_proofs() return
-    // "epoch proof not found in cache" intermittently. Clear them so the
-    // background prover regenerates from scratch.
-    let mut reset_epoch_meta = false;
-    if sled
-        .remove(b"epoch_proof_epoch")
-        .map_err(|e| ZidecarError::Storage(format!("sled: {}", e)))?
-        .is_some()
-    {
-        reset_epoch_meta = true;
-    }
-    if sled
-        .remove(b"epoch_proof_start")
-        .map_err(|e| ZidecarError::Storage(format!("sled: {}", e)))?
-        .is_some()
-    {
-        reset_epoch_meta = true;
     }
 
     info!(
