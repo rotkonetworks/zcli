@@ -418,6 +418,10 @@ pub struct RawTransaction {
     pub sapling_outputs: Option<Vec<SaplingOutput>>,
     #[serde(default)]
     pub orchard: Option<OrchardData>,
+    /// Ironwood bundle (v6 transactions, NU6.3+). Zebra reuses the
+    /// Orchard-shaped JSON object for it, so the same struct deserializes both.
+    #[serde(default)]
+    pub ironwood: Option<OrchardData>,
 }
 
 /// Sapling shielded output (vShieldedOutput entry)
@@ -477,6 +481,9 @@ pub struct TreeState {
     pub time: u64,
     pub sapling: TreeCommitment,
     pub orchard: TreeCommitment,
+    /// Ironwood commitment tree (zebrad 6.0+, populated from NU6.3 activation).
+    #[serde(default)]
+    pub ironwood: Option<TreeCommitment>,
 }
 
 #[derive(Debug, Deserialize)]

@@ -675,6 +675,7 @@ pub struct ExtractedNullifier {
 pub enum NullifierPool {
     Sapling,
     Orchard,
+    Ironwood,
 }
 
 impl EpochManager {
@@ -733,6 +734,27 @@ impl EpochManager {
                     }
                     if let (Some(cmx), Some(nf), Some(epk)) = (cmx, nf, epk) {
                         action_triples.push((cmx, nf, epk));
+                    }
+                }
+            }
+
+            // Ironwood (NU6.3+, v6 txs): nullifiers and cmxs go into the same
+            // NOMT indexes as Orchard so GetNullifierProof / GetCommitmentProof
+            // cover Ironwood notes — the NOMT is existence-keyed, matching how
+            // Sapling and Orchard nullifiers already share one set. Ironwood
+            // actions are deliberately NOT added to `action_triples`: the
+            // actions_root chain feeding the ligerito proofs is Orchard-scoped,
+            // and widening it would invalidate historical commitments.
+            if let Some(ref ironwood) = tx.ironwood {
+                for action in &ironwood.actions {
+                    if let Some(nf) = action.nullifier_bytes() {
+                        nullifiers.push(ExtractedNullifier {
+                            nullifier: nf,
+                            pool: NullifierPool::Ironwood,
+                        });
+                    }
+                    if let Some(cmx) = action.cmx_bytes() {
+                        cmxs.push(cmx);
                     }
                 }
             }

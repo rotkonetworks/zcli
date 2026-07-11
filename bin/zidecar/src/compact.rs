@@ -49,6 +49,10 @@ pub struct CompactBlock {
     pub actions: Vec<CompactAction>,
     pub sapling_spends: Vec<CompactSaplingSpendItem>,
     pub sapling_outputs: Vec<CompactSaplingOutputItem>,
+    /// Ironwood actions (v6 transactions, NU6.3+). Same compact shape as
+    /// Orchard — the pool reuses Orchard note encryption and addresses, so
+    /// wallets trial-decrypt these with their existing Orchard keys.
+    pub ironwood_actions: Vec<CompactAction>,
 }
 
 impl CompactBlock {
@@ -70,6 +74,7 @@ impl CompactBlock {
         let mut actions = Vec::new();
         let mut sapling_spends = Vec::new();
         let mut sapling_outputs = Vec::new();
+        let mut ironwood_actions = Vec::new();
 
         for (block_tx_index, txid) in block.tx.iter().enumerate() {
             match zebrad.get_raw_transaction(txid).await {
@@ -82,6 +87,7 @@ impl CompactBlock {
                         &mut actions,
                         &mut sapling_spends,
                         &mut sapling_outputs,
+                        &mut ironwood_actions,
                     );
                 }
                 Err(e) => {
@@ -99,6 +105,7 @@ impl CompactBlock {
             actions,
             sapling_spends,
             sapling_outputs,
+            ironwood_actions,
         })
     }
 
@@ -133,6 +140,7 @@ impl CompactBlock {
                     let mut actions = Vec::new();
                     let mut sapling_spends = Vec::new();
                     let mut sapling_outputs = Vec::new();
+                    let mut ironwood_actions = Vec::new();
                     // mempool synthetic blocks: each tx is the only tx in its own
                     // CompactBlock, so block_tx_index is always 0.
                     extract_tx_shielded(
@@ -142,9 +150,13 @@ impl CompactBlock {
                         &mut actions,
                         &mut sapling_spends,
                         &mut sapling_outputs,
+                        &mut ironwood_actions,
                     );
 
-                    if actions.is_empty() && sapling_spends.is_empty() && sapling_outputs.is_empty()
+                    if actions.is_empty()
+                        && sapling_spends.is_empty()
+                        && sapling_outputs.is_empty()
+                        && ironwood_actions.is_empty()
                     {
                         continue;
                     }
@@ -156,6 +168,7 @@ impl CompactBlock {
                         actions,
                         sapling_spends,
                         sapling_outputs,
+                        ironwood_actions,
                     });
                 }
                 Err(e) => {
@@ -179,30 +192,14 @@ fn extract_tx_shielded(
     actions: &mut Vec<CompactAction>,
     sapling_spends: &mut Vec<CompactSaplingSpendItem>,
     sapling_outputs: &mut Vec<CompactSaplingOutputItem>,
+    ironwood_actions: &mut Vec<CompactAction>,
 ) {
     if let Some(orchard) = &tx.orchard {
-        for action in &orchard.actions {
-            let Ok(cmx) = hex_to_bytes(&action.cmx) else {
-                continue;
-            };
-            let Ok(ek) = hex_to_bytes(&action.ephemeral_key) else {
-                continue;
-            };
-            let Ok(ct_full) = hex_to_bytes(&action.enc_ciphertext) else {
-                continue;
-            };
-            let Ok(nf) = hex_to_bytes(&action.nullifier) else {
-                continue;
-            };
-            actions.push(CompactAction {
-                cmx,
-                ephemeral_key: ek,
-                ciphertext: ct_full.into_iter().take(52).collect(),
-                nullifier: nf,
-                txid: txid_bytes.to_vec(),
-                block_tx_index,
-            });
-        }
+        extract_pool_actions(orchard, txid_bytes, block_tx_index, actions);
+    }
+
+    if let Some(ironwood) = &tx.ironwood {
+        extract_pool_actions(ironwood, txid_bytes, block_tx_index, ironwood_actions);
     }
 
     if let Some(spends) = &tx.sapling_spends {
@@ -237,6 +234,38 @@ fn extract_tx_shielded(
                 block_tx_index,
             });
         }
+    }
+}
+
+/// Extract compact actions from an Orchard-shaped bundle (Orchard or Ironwood —
+/// the Ironwood pool reuses the same action encoding).
+fn extract_pool_actions(
+    bundle: &crate::zebrad::OrchardData,
+    txid_bytes: &[u8],
+    block_tx_index: BlockTxIndex,
+    out: &mut Vec<CompactAction>,
+) {
+    for action in &bundle.actions {
+        let Ok(cmx) = hex_to_bytes(&action.cmx) else {
+            continue;
+        };
+        let Ok(ek) = hex_to_bytes(&action.ephemeral_key) else {
+            continue;
+        };
+        let Ok(ct_full) = hex_to_bytes(&action.enc_ciphertext) else {
+            continue;
+        };
+        let Ok(nf) = hex_to_bytes(&action.nullifier) else {
+            continue;
+        };
+        out.push(CompactAction {
+            cmx,
+            ephemeral_key: ek,
+            ciphertext: ct_full.into_iter().take(52).collect(),
+            nullifier: nf,
+            txid: txid_bytes.to_vec(),
+            block_tx_index,
+        });
     }
 }
 
@@ -348,7 +377,7 @@ mod tests {
         assert!(extract_header_bytes(&hex::encode(&bytes)).is_err());
     }
 
-    /// Reaches into all three shielded pools in one tx and verifies every
+    /// Reaches into all four shielded pools in one tx and verifies every
     /// item lands in the right output vector with correct contents.
     #[test]
     fn test_extract_tx_shielded_mixed_pools() {
@@ -360,11 +389,15 @@ mod tests {
         let cmu = "06".repeat(32);
         let ek_sap = "07".repeat(32);
         let ct_sap = "08".repeat(580);
+        let nf_iron = "09".repeat(32);
+        let cmx_iron = "0a".repeat(32);
+        let ek_iron = "0b".repeat(32);
+        let ct_iron = "0c".repeat(580);
         let filler = "00".repeat(32);
 
         let tx = RawTransaction {
             txid: "abc".to_string(),
-            version: 5,
+            version: 6,
             hex: String::new(),
             height: Some(100),
             sapling_spends: Some(vec![SaplingSpend {
@@ -394,13 +427,33 @@ mod tests {
                     out_ciphertext: filler.clone(),
                 }],
             }),
+            ironwood: Some(OrchardData {
+                actions: vec![OrchardAction {
+                    cv: filler.clone(),
+                    nullifier: nf_iron.clone(),
+                    rk: filler.clone(),
+                    cmx: cmx_iron.clone(),
+                    ephemeral_key: ek_iron.clone(),
+                    enc_ciphertext: ct_iron.clone(),
+                    out_ciphertext: filler.clone(),
+                }],
+            }),
         };
 
         let txid_bytes = vec![0xde; 32];
         let mut actions = Vec::new();
         let mut spends = Vec::new();
         let mut outputs = Vec::new();
-        extract_tx_shielded(&tx, &txid_bytes, 3, &mut actions, &mut spends, &mut outputs);
+        let mut iron = Vec::new();
+        extract_tx_shielded(
+            &tx,
+            &txid_bytes,
+            3,
+            &mut actions,
+            &mut spends,
+            &mut outputs,
+            &mut iron,
+        );
 
         assert_eq!(actions.len(), 1);
         assert_eq!(actions[0].nullifier, hex::decode(&nf_orch).unwrap());
@@ -421,6 +474,15 @@ mod tests {
         assert_eq!(outputs[0].ciphertext.len(), 52);
         assert_eq!(outputs[0].txid, txid_bytes);
         assert_eq!(outputs[0].block_tx_index, 3);
+
+        // ironwood actions land in their own vector, never in `actions`
+        assert_eq!(iron.len(), 1);
+        assert_eq!(iron[0].nullifier, hex::decode(&nf_iron).unwrap());
+        assert_eq!(iron[0].cmx, hex::decode(&cmx_iron).unwrap());
+        assert_eq!(iron[0].ephemeral_key, hex::decode(&ek_iron).unwrap());
+        assert_eq!(iron[0].ciphertext.len(), 52);
+        assert_eq!(iron[0].txid, txid_bytes);
+        assert_eq!(iron[0].block_tx_index, 3);
     }
 
     /// A tx with no shielded data of any kind leaves all output vectors empty.
@@ -434,13 +496,16 @@ mod tests {
             sapling_spends: None,
             sapling_outputs: None,
             orchard: None,
+            ironwood: None,
         };
         let mut a = Vec::new();
         let mut s = Vec::new();
         let mut o = Vec::new();
-        extract_tx_shielded(&tx, &[0xde; 32], 0, &mut a, &mut s, &mut o);
+        let mut i = Vec::new();
+        extract_tx_shielded(&tx, &[0xde; 32], 0, &mut a, &mut s, &mut o, &mut i);
         assert!(a.is_empty());
         assert!(s.is_empty());
         assert!(o.is_empty());
+        assert!(i.is_empty());
     }
 }

@@ -111,6 +111,7 @@ fn to_lwd_block(
     time: u32,
     sapling_tree_size: u32,
     orchard_tree_size: u32,
+    ironwood_tree_size: u32,
 ) -> CompactBlock {
     use std::collections::HashMap;
 
@@ -120,6 +121,7 @@ fn to_lwd_block(
         spends: Vec<CompactSaplingSpend>,
         outputs: Vec<CompactSaplingOutput>,
         actions: Vec<CompactOrchardAction>,
+        ironwood_actions: Vec<CompactOrchardAction>,
     }
 
     let mut buckets: HashMap<Vec<u8>, TxBucket> = HashMap::new();
@@ -175,6 +177,24 @@ fn to_lwd_block(
                 ciphertext: action.ciphertext.clone(),
             });
     }
+    for action in &block.ironwood_actions {
+        buckets
+            .entry(action.txid.clone())
+            .or_insert_with(|| {
+                tx_order.push(action.txid.clone());
+                TxBucket {
+                    block_tx_index: action.block_tx_index,
+                    ..TxBucket::default()
+                }
+            })
+            .ironwood_actions
+            .push(CompactOrchardAction {
+                nullifier: action.nullifier.clone(),
+                cmx: action.cmx.clone(),
+                ephemeral_key: action.ephemeral_key.clone(),
+                ciphertext: action.ciphertext.clone(),
+            });
+    }
 
     let vtx: Vec<CompactTx> = tx_order
         .into_iter()
@@ -187,6 +207,7 @@ fn to_lwd_block(
                 spends: bucket.spends,
                 outputs: bucket.outputs,
                 actions: bucket.actions,
+                ironwood_actions: bucket.ironwood_actions,
             }
         })
         .collect();
@@ -206,6 +227,7 @@ fn to_lwd_block(
         chain_metadata: Some(ChainMetadata {
             sapling_commitment_tree_size: sapling_tree_size,
             orchard_commitment_tree_size: orchard_tree_size,
+            ironwood_commitment_tree_size: ironwood_tree_size,
         }),
     }
 }
@@ -220,13 +242,14 @@ async fn build_compact_block_for(
     let block_meta = zebrad.get_block(&hash_str, 1).await?;
     let internal = InternalBlock::from_zebrad(zebrad, height).await?;
     let prev_hash = prev_hash_for(zebrad, height).await;
-    let (sapling_size, orchard_size) = tree_sizes_at(zebrad, height).await;
+    let (sapling_size, orchard_size, ironwood_size) = tree_sizes_at(zebrad, height).await;
     Ok(to_lwd_block(
         &internal,
         prev_hash,
         block_meta.time as u32,
         sapling_size,
         orchard_size,
+        ironwood_size,
     ))
 }
 
@@ -243,6 +266,11 @@ fn strip_to_nullifiers(mut block: CompactBlock) -> CompactBlock {
             action.ephemeral_key.clear();
             action.ciphertext.clear();
         }
+        for action in &mut tx.ironwood_actions {
+            action.cmx.clear();
+            action.ephemeral_key.clear();
+            action.ciphertext.clear();
+        }
     }
     // Match Zaino: keep the ChainMetadata message present but zero its tree
     // sizes (canonical lwd's nullifier path also returns zeros). Proto3
@@ -252,18 +280,23 @@ fn strip_to_nullifiers(mut block: CompactBlock) -> CompactBlock {
     block.chain_metadata = Some(ChainMetadata {
         sapling_commitment_tree_size: 0,
         orchard_commitment_tree_size: 0,
+        ironwood_commitment_tree_size: 0,
     });
     block
 }
 
 /// Fetch commitment tree sizes at a given height from zebrad.
-async fn tree_sizes_at(zebrad: &ZebradClient, height: u32) -> (u32, u32) {
+async fn tree_sizes_at(zebrad: &ZebradClient, height: u32) -> (u32, u32, u32) {
     match zebrad.get_tree_state(&height.to_string()).await {
         Ok(ts) => (
             ts.sapling.commitments.final_state_size.unwrap_or(0),
             ts.orchard.commitments.final_state_size.unwrap_or(0),
+            ts.ironwood
+                .as_ref()
+                .and_then(|t| t.commitments.final_state_size)
+                .unwrap_or(0),
         ),
-        Err(_) => (0, 0),
+        Err(_) => (0, 0, 0),
     }
 }
 
@@ -309,7 +342,8 @@ impl CompactTxStreamer for LwdService {
         let block = InternalBlock::from_zebrad(&self.zebrad, height).await?;
 
         let prev_hash = prev_hash_for(&self.zebrad, height).await;
-        let (sapling_size, orchard_size) = tree_sizes_at(&self.zebrad, height).await;
+        let (sapling_size, orchard_size, ironwood_size) =
+            tree_sizes_at(&self.zebrad, height).await;
 
         Ok(Response::new(to_lwd_block(
             &block,
@@ -317,6 +351,7 @@ impl CompactTxStreamer for LwdService {
             block_meta.time as u32,
             sapling_size,
             orchard_size,
+            ironwood_size,
         )))
     }
 
@@ -356,7 +391,7 @@ impl CompactTxStreamer for LwdService {
                         }
                     };
                 let prev_hash = select_or_cancel!(tx, prev_hash_for(&zebrad, height));
-                let (sapling_size, orchard_size) =
+                let (sapling_size, orchard_size, ironwood_size) =
                     select_or_cancel!(tx, tree_sizes_at(&zebrad, height));
                 if tx
                     .send(Ok(to_lwd_block(
@@ -365,6 +400,7 @@ impl CompactTxStreamer for LwdService {
                         block_meta.time as u32,
                         sapling_size,
                         orchard_size,
+                        ironwood_size,
                     )))
                     .await
                     .is_err()
@@ -437,6 +473,10 @@ impl CompactTxStreamer for LwdService {
             time: ts.time as u32,
             sapling_tree: ts.sapling.commitments.final_state,
             orchard_tree: ts.orchard.commitments.final_state,
+            ironwood_tree: ts
+                .ironwood
+                .map(|t| t.commitments.final_state)
+                .unwrap_or_default(),
         }))
     }
 
@@ -493,6 +533,7 @@ impl CompactTxStreamer for LwdService {
         let pool = match arg.shielded_protocol() {
             crate::lightwalletd::ShieldedProtocol::Sapling => "sapling",
             crate::lightwalletd::ShieldedProtocol::Orchard => "orchard",
+            crate::lightwalletd::ShieldedProtocol::Ironwood => "ironwood",
         };
 
         let limit = if arg.max_entries > 0 {
@@ -675,6 +716,10 @@ impl CompactTxStreamer for LwdService {
             time: ts.time as u32,
             sapling_tree: ts.sapling.commitments.final_state,
             orchard_tree: ts.orchard.commitments.final_state,
+            ironwood_tree: ts
+                .ironwood
+                .map(|t| t.commitments.final_state)
+                .unwrap_or_default(),
         }))
     }
 
@@ -729,12 +774,18 @@ impl CompactTxStreamer for LwdService {
         if pool_types.iter().any(|&p| p == PoolType::Invalid as i32) {
             return Err(Status::invalid_argument("invalid pool type"));
         }
-        // canonical lwd default: shielded-only.
+        // canonical lwd default: shielded-only (Sapling, Orchard, and Ironwood
+        // per the post-NU6.3 lightwallet-protocol spec).
         if pool_types.is_empty() {
-            pool_types = vec![PoolType::Sapling as i32, PoolType::Orchard as i32];
+            pool_types = vec![
+                PoolType::Sapling as i32,
+                PoolType::Orchard as i32,
+                PoolType::Ironwood as i32,
+            ];
         }
         let want_sapling = pool_types.contains(&(PoolType::Sapling as i32));
         let want_orchard = pool_types.contains(&(PoolType::Orchard as i32));
+        let want_ironwood = pool_types.contains(&(PoolType::Ironwood as i32));
 
         let exclude = request.exclude_txid_suffixes;
         let (tx, rx) = mpsc::channel(32);
@@ -773,6 +824,7 @@ impl CompactTxStreamer for LwdService {
                 let mut actions = Vec::new();
                 let mut spends = Vec::new();
                 let mut outputs = Vec::new();
+                let mut ironwood_actions = Vec::new();
 
                 if want_orchard {
                     if let Some(orch) = &raw.orchard {
@@ -786,6 +838,26 @@ impl CompactTxStreamer for LwdService {
                                 continue;
                             };
                             actions.push(CompactOrchardAction {
+                                nullifier: nf,
+                                cmx,
+                                ephemeral_key: ek,
+                                ciphertext: ct.into_iter().take(52).collect(),
+                            });
+                        }
+                    }
+                }
+                if want_ironwood {
+                    if let Some(iron) = &raw.ironwood {
+                        for a in &iron.actions {
+                            let (Ok(nf), Ok(cmx), Ok(ek), Ok(ct)) = (
+                                hex::decode(&a.nullifier),
+                                hex::decode(&a.cmx),
+                                hex::decode(&a.ephemeral_key),
+                                hex::decode(&a.enc_ciphertext),
+                            ) else {
+                                continue;
+                            };
+                            ironwood_actions.push(CompactOrchardAction {
                                 nullifier: nf,
                                 cmx,
                                 ephemeral_key: ek,
@@ -822,7 +894,11 @@ impl CompactTxStreamer for LwdService {
 
                 // Skip txs that match no requested pool — keeps the stream
                 // shielded-relevant (canonical lwd does the same).
-                if actions.is_empty() && spends.is_empty() && outputs.is_empty() {
+                if actions.is_empty()
+                    && spends.is_empty()
+                    && outputs.is_empty()
+                    && ironwood_actions.is_empty()
+                {
                     continue;
                 }
 
@@ -833,6 +909,7 @@ impl CompactTxStreamer for LwdService {
                     spends,
                     outputs,
                     actions,
+                    ironwood_actions,
                 };
                 if tx.send(Ok(msg)).await.is_err() {
                     return;
@@ -974,6 +1051,7 @@ mod tests {
             actions,
             sapling_spends: spends,
             sapling_outputs: outputs,
+            ironwood_actions: Vec::new(),
         }
     }
 
@@ -1018,7 +1096,7 @@ mod tests {
         );
 
         let prev = vec![0x12; 32];
-        let out = to_lwd_block(&block, prev.clone(), 1234, 100, 200);
+        let out = to_lwd_block(&block, prev.clone(), 1234, 100, 200, 300);
 
         assert_eq!(out.height, 100);
         assert_eq!(out.hash, vec![0x11; 32]); // symmetric → reversed equals self
@@ -1029,6 +1107,7 @@ mod tests {
         let cm = out.chain_metadata.expect("chain_metadata populated");
         assert_eq!(cm.sapling_commitment_tree_size, 100);
         assert_eq!(cm.orchard_commitment_tree_size, 200);
+        assert_eq!(cm.ironwood_commitment_tree_size, 300);
 
         // Two distinct txids → two CompactTx entries.
         assert_eq!(out.vtx.len(), 2);
@@ -1097,7 +1176,7 @@ mod tests {
         };
         let prev_hash_asym = asym32.clone();
 
-        let out = to_lwd_block(&block_with_asym_hash, prev_hash_asym, 0, 0, 0);
+        let out = to_lwd_block(&block_with_asym_hash, prev_hash_asym, 0, 0, 0, 0);
 
         // CompactBlock.hash and prev_hash reversed.
         assert_eq!(out.hash, asym32_rev);
@@ -1125,7 +1204,7 @@ mod tests {
     #[test]
     fn test_to_lwd_block_empty_block() {
         let block = make_internal(vec![], vec![], vec![]);
-        let out = to_lwd_block(&block, vec![0x12; 32], 1234, 0, 0);
+        let out = to_lwd_block(&block, vec![0x12; 32], 1234, 0, 0, 0);
         assert!(out.vtx.is_empty());
         // CompactBlock.header is intentionally empty per canonical lwd proto.
         assert!(out.header.is_empty());
@@ -1158,9 +1237,69 @@ mod tests {
             vec![],
             vec![],
         );
-        let out = to_lwd_block(&block, vec![0u8; 32], 0, 0, 0);
+        let out = to_lwd_block(&block, vec![0u8; 32], 0, 0, 0, 0);
         assert_eq!(out.vtx.len(), 1);
         assert_eq!(out.vtx[0].actions.len(), 2);
+    }
+
+    /// Ironwood actions group into the same CompactTx as orchard actions of
+    /// the same txid, but land in the `ironwood_actions` field — never mixed
+    /// into `actions`.
+    #[test]
+    fn test_to_lwd_block_ironwood_separate_field() {
+        let txid = vec![0xaa; 32];
+        let mut block = make_internal(
+            vec![CompactAction {
+                cmx: vec![0x01; 32],
+                ephemeral_key: vec![0x02; 32],
+                ciphertext: vec![0x03; 52],
+                nullifier: vec![0x04; 32],
+                txid: txid.clone(),
+                block_tx_index: 1,
+            }],
+            vec![],
+            vec![],
+        );
+        block.ironwood_actions = vec![CompactAction {
+            cmx: vec![0x11; 32],
+            ephemeral_key: vec![0x12; 32],
+            ciphertext: vec![0x13; 52],
+            nullifier: vec![0x14; 32],
+            txid: txid.clone(),
+            block_tx_index: 1,
+        }];
+
+        let out = to_lwd_block(&block, vec![0u8; 32], 0, 0, 0, 0);
+        assert_eq!(out.vtx.len(), 1);
+        assert_eq!(out.vtx[0].index, 1);
+        assert_eq!(out.vtx[0].actions.len(), 1);
+        assert_eq!(out.vtx[0].actions[0].cmx, vec![0x01; 32]);
+        assert_eq!(out.vtx[0].ironwood_actions.len(), 1);
+        assert_eq!(out.vtx[0].ironwood_actions[0].cmx, vec![0x11; 32]);
+        // ironwood fields pass through unreversed, same as orchard
+        assert_eq!(out.vtx[0].ironwood_actions[0].nullifier, vec![0x14; 32]);
+    }
+
+    /// An ironwood-only tx (no orchard/sapling data) still produces a
+    /// CompactTx — the bucket must be created by the ironwood loop too.
+    #[test]
+    fn test_to_lwd_block_ironwood_only_tx() {
+        let txid = vec![0xbb; 32];
+        let mut block = make_internal(vec![], vec![], vec![]);
+        block.ironwood_actions = vec![CompactAction {
+            cmx: vec![0x21; 32],
+            ephemeral_key: vec![0x22; 32],
+            ciphertext: vec![0x23; 52],
+            nullifier: vec![0x24; 32],
+            txid: txid.clone(),
+            block_tx_index: 2,
+        }];
+
+        let out = to_lwd_block(&block, vec![0u8; 32], 0, 0, 0, 0);
+        assert_eq!(out.vtx.len(), 1);
+        assert_eq!(out.vtx[0].index, 2);
+        assert!(out.vtx[0].actions.is_empty());
+        assert_eq!(out.vtx[0].ironwood_actions.len(), 1);
     }
 
     /// strip_to_nullifiers must zero everything except the nullifier on
@@ -1191,6 +1330,12 @@ mod tests {
                     ephemeral_key: vec![0x02; 32],
                     ciphertext: vec![0x03; 52],
                 }],
+                ironwood_actions: vec![CompactOrchardAction {
+                    nullifier: vec![0x24; 32],
+                    cmx: vec![0x21; 32],
+                    ephemeral_key: vec![0x22; 32],
+                    ciphertext: vec![0x23; 52],
+                }],
             }],
             chain_metadata: None,
         };
@@ -1209,6 +1354,13 @@ mod tests {
         assert!(tx.actions[0].cmx.is_empty());
         assert!(tx.actions[0].ephemeral_key.is_empty());
         assert!(tx.actions[0].ciphertext.is_empty());
+
+        // Ironwood action: same stripping rule as orchard.
+        assert_eq!(tx.ironwood_actions.len(), 1);
+        assert_eq!(tx.ironwood_actions[0].nullifier, vec![0x24; 32]);
+        assert!(tx.ironwood_actions[0].cmx.is_empty());
+        assert!(tx.ironwood_actions[0].ephemeral_key.is_empty());
+        assert!(tx.ironwood_actions[0].ciphertext.is_empty());
 
         // Block-level metadata untouched by the strip.
         assert_eq!(stripped.height, 100);
