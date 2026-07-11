@@ -29,16 +29,15 @@ impl Storage {
         // file) supports ~1.8M pages before degradation. Only takes effect on
         // fresh database creation — existing dbs keep their original size.
         nomt_opts.hashtable_buckets(2_000_000);
-        // use 50% of CPU threads for NOMT (leaves room for other ops)
-        let all_threads = std::thread::available_parallelism()
-            .map(|p| p.get())
-            .unwrap_or(8);
-        let nomt_threads = (all_threads / 2).max(4);
+        // NOMT v1.0.3 has a concurrency issue at commit_concurrency > 1:
+        // concurrent commit workers can leave page parent/child hash
+        // inconsistency that surfaces on restart as a panic at
+        // src/merkle/page_walker.rs:1013 ("assertion left == right failed",
+        // empty subtree vs non-empty stored hash). NOMT's own test suite
+        // uses commit_concurrency(1). Stay at 1 until upstream addresses it.
+        let nomt_threads: usize = 1;
         nomt_opts.commit_concurrency(nomt_threads);
-        info!(
-            "nomt commit_concurrency: {} threads (50% of {})",
-            nomt_threads, all_threads
-        );
+        info!("nomt commit_concurrency: {} thread (pinned for v1.0.3 safety)", nomt_threads);
 
         let nomt = Nomt::<Blake3Hasher>::open(nomt_opts)
             .map_err(|e| ZidecarError::Storage(format!("nomt: {}", e)))?;
@@ -49,12 +48,62 @@ impl Storage {
         let sled = sled::open(format!("{}/sled", path))
             .map_err(|e| ZidecarError::Storage(format!("sled: {}", e)))?;
 
+        run_schema_migrations(&sled)?;
         Ok(Self { nomt, sled })
     }
 
     /// get current merkle root
     pub fn root(&self) -> Root {
         self.nomt.root()
+    }
+
+    /// Drain in-flight NOMT writes and force the underlying files to disk.
+    ///
+    /// NOMT v1.0.3 has a known issue where commit()'s post-meta phase writes
+    /// pages without fsyncing them; those writes are only durable after the
+    /// *next* commit's pre-meta wait. With a single trailing commit, post-meta
+    /// writes can be lost on process exit → bbn ends up torn on restart
+    /// ("failed to reconstruct btree from bbn store file").
+    ///
+    /// Belt-and-suspenders approach:
+    /// 1. One no-op commit to flush prior commit's post-meta into a fresh pre-meta
+    /// 2. sled.flush()
+    /// 3. Caller should fsync the NOMT files directly via the db_path
+    pub fn flush(&self) -> Result<()> {
+        let session = self.nomt.begin_session(SessionParams::default());
+        let finished = session
+            .finish(Vec::new())
+            .map_err(|e| ZidecarError::Storage(format!("flush nomt finish: {:?}", e)))?;
+        finished
+            .commit(&self.nomt)
+            .map_err(|e| ZidecarError::Storage(format!("flush nomt commit: {}", e)))?;
+        self.sled
+            .flush()
+            .map_err(|e| ZidecarError::Storage(format!("flush sled: {}", e)))?;
+        Ok(())
+    }
+
+    /// Explicitly fsync NOMT's on-disk files. Call this AFTER `flush()` and
+    /// BEFORE drop, to force any post-meta writes still in the OS page cache
+    /// to actually hit disk. Belt-and-suspenders for NOMT v1.0.3's missing
+    /// post-meta fsync.
+    pub fn fsync_nomt_files(db_path: &str) -> Result<()> {
+        let nomt_dir = format!("{}/nomt", db_path);
+        for name in &["bbn", "ln", "ht", "meta", "wal"] {
+            let path = format!("{}/{}", nomt_dir, name);
+            match std::fs::File::open(&path) {
+                Ok(f) => {
+                    if let Err(e) = f.sync_all() {
+                        // log but don't fail — file may not exist or be locked
+                        tracing::warn!("fsync {} failed: {}", path, e);
+                    }
+                }
+                Err(e) => {
+                    tracing::debug!("open {} for fsync skipped: {}", path, e);
+                }
+            }
+        }
+        Ok(())
     }
 
     /// store proof for height range (simple cache)
@@ -146,6 +195,43 @@ impl Storage {
         }
 
         // Sort by key (required by nomt)
+        ops.sort_by_key(|(k, _)| *k);
+
+        let finished = session
+            .finish(ops)
+            .map_err(|e| ZidecarError::Storage(format!("nomt finish: {:?}", e)))?;
+
+        let root = finished.root();
+        finished
+            .commit(&self.nomt)
+            .map_err(|e| ZidecarError::Storage(format!("nomt commit: {}", e)))?;
+
+        Ok(root)
+    }
+
+    /// Batch insert orchard cmxs with block height (for commitment sync).
+    /// Value = block height (4 bytes LE); NOMT hashes this to derive value_hash.
+    /// Existence in NOMT is what the wallet's verify_commitment_proof checks.
+    pub fn batch_insert_commitments(
+        &self,
+        cmxs: &[[u8; 32]],
+        block_height: u32,
+    ) -> Result<Root> {
+        if cmxs.is_empty() {
+            return Ok(self.nomt.root());
+        }
+
+        let session = self.nomt.begin_session(SessionParams::default());
+
+        let mut ops = Vec::with_capacity(cmxs.len());
+        let height_bytes = block_height.to_le_bytes().to_vec();
+
+        for cmx in cmxs {
+            let key = key_for_note(cmx);
+            session.warm_up(key);
+            ops.push((key, KeyReadWrite::Write(Some(height_bytes.clone()))));
+        }
+
         ops.sort_by_key(|(k, _)| *k);
 
         let finished = session
@@ -813,6 +899,122 @@ pub struct EpochBoundary {
     pub last_hash: [u8; 32],
 }
 
+/// Current sled schema version. Bump whenever the *meaning* of a stored value
+/// changes (so older entries become incorrect, not just outdated). The migration
+/// step at startup wipes affected key prefixes and writes the current version.
+///
+/// History:
+///   1 — initial: state_roots stored a sha-256 placeholder, not the real
+///       orchard tree root. Wipe `b'r'` on bump → 2.
+///   2 — state_roots store the real orchard tree root.
+///   3 — nullifier_sync_height is reset so the sync also backfills
+///       orchard cmxs into NOMT (commitment-proof RPC was previously hitting
+///       an empty tree). NOMT nullifier keys are re-inserted idempotently;
+///       the cost is re-fetching historical blocks once.
+///   4 — current: nullifier_sync_height is reset again after the production
+///       NOMT store was lost to the nomt v1.0.3 bbn tear (2026-07-11) and
+///       recreated empty. state_roots and cached proofs are NOT wiped this
+///       time: NOMT roots are content-derived, so the rebuilt store converges
+///       to the same per-height roots the cached entries already hold.
+const SCHEMA_VERSION: u32 = 4;
+const SCHEMA_VERSION_KEY: &[u8] = b"_schema_version";
+
+fn run_schema_migrations(sled: &sled::Db) -> Result<()> {
+    let stored = sled
+        .get(SCHEMA_VERSION_KEY)
+        .map_err(|e| ZidecarError::Storage(format!("sled: {}", e)))?
+        .and_then(|iv| {
+            if iv.len() == 4 {
+                Some(u32::from_le_bytes([iv[0], iv[1], iv[2], iv[3]]))
+            } else {
+                None
+            }
+        });
+
+    if stored == Some(SCHEMA_VERSION) {
+        return Ok(());
+    }
+
+    info!(
+        "sled schema migration: stored={:?} -> current={}",
+        stored, SCHEMA_VERSION
+    );
+
+    let from = stored.unwrap_or(0);
+
+    // Wipes for stores older than v3:
+    //  - b'r' (state_roots): v1 held sha placeholder, not real orchard root
+    //  - b'p' (proof cache): epoch proofs baked stale tip_tree_root values
+    //
+    // Headers (b'h') are unaffected — they're raw chain data, not derived.
+    let mut wiped_state_roots = 0usize;
+    let mut wiped_proofs = 0usize;
+    let mut reset_epoch_meta = false;
+    if from < 3 {
+        for entry in sled.scan_prefix(b"r") {
+            let (k, _) = entry.map_err(|e| ZidecarError::Storage(format!("sled: {}", e)))?;
+            if k.len() == 5 && k[0] == b'r' {
+                sled.remove(&k)
+                    .map_err(|e| ZidecarError::Storage(format!("sled: {}", e)))?;
+                wiped_state_roots += 1;
+            }
+        }
+        for entry in sled.scan_prefix(b"p") {
+            let (k, _) = entry.map_err(|e| ZidecarError::Storage(format!("sled: {}", e)))?;
+            if k.len() == 9 && k[0] == b'p' {
+                sled.remove(&k)
+                    .map_err(|e| ZidecarError::Storage(format!("sled: {}", e)))?;
+                wiped_proofs += 1;
+            }
+        }
+
+        // Wiping b'p' removed the cached epoch-proof bytes, but the
+        // `epoch_proof_epoch` / `epoch_proof_start` counters still point at the
+        // now-missing entry. Leaving them dangling makes get_proofs() return
+        // "epoch proof not found in cache" intermittently. Clear them so the
+        // background prover regenerates from scratch.
+        if sled
+            .remove(b"epoch_proof_epoch")
+            .map_err(|e| ZidecarError::Storage(format!("sled: {}", e)))?
+            .is_some()
+        {
+            reset_epoch_meta = true;
+        }
+        if sled
+            .remove(b"epoch_proof_start")
+            .map_err(|e| ZidecarError::Storage(format!("sled: {}", e)))?
+            .is_some()
+        {
+            reset_epoch_meta = true;
+        }
+    }
+
+    // v3: reset so the sync loop backfills cmxs (not just nullifiers) into
+    // NOMT from start_height. v4: reset again to repopulate the NOMT store
+    // recreated after the v1.0.3 bbn tear. Re-insertion is idempotent either
+    // way; the cost is re-fetching historical blocks once.
+    let mut reset_sync = false;
+    if from < 4
+        && sled
+            .remove(b"nullifier_sync_height")
+            .map_err(|e| ZidecarError::Storage(format!("sled: {}", e)))?
+            .is_some()
+    {
+        reset_sync = true;
+    }
+
+    info!(
+        "sled schema migration: wiped {} state_roots, {} cached proofs, sync_reset={}, epoch_meta_reset={}",
+        wiped_state_roots, wiped_proofs, reset_sync, reset_epoch_meta
+    );
+
+    sled.insert(SCHEMA_VERSION_KEY, &SCHEMA_VERSION.to_le_bytes())
+        .map_err(|e| ZidecarError::Storage(format!("sled: {}", e)))?;
+    sled.flush()
+        .map_err(|e| ZidecarError::Storage(format!("sled: {}", e)))?;
+    Ok(())
+}
+
 /// convert nomt Root to bytes
 fn root_to_bytes(root: &Root) -> [u8; 32] {
     let mut bytes = [0u8; 32];
@@ -840,6 +1042,42 @@ impl From<String> for ZidecarError {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn schema_migration_wipes_state_roots_and_proofs_keeps_headers() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().to_str().unwrap();
+
+        // First open: empty DB, migration writes current version, nothing to wipe.
+        let storage = Storage::open(path).unwrap();
+        // Seed: stale state_root + cached proof (both must die) + header (must survive)
+        // + nullifier_sync_height (must be reset on v→3 to force cmx backfill).
+        storage
+            .store_state_roots(1_700_000, &[0xaa; 32], &[0xbb; 32])
+            .unwrap();
+        storage
+            .store_proof(1_687_104, 3_000_000, b"stale epoch proof bytes")
+            .unwrap();
+        storage
+            .store_header(1_700_000, "deadbeef", "feedface", "1d00ffff")
+            .unwrap();
+        storage.set_nullifier_sync_height(3_000_000).unwrap();
+        // Manually downgrade the version to simulate an old DB.
+        storage
+            .sled
+            .insert(SCHEMA_VERSION_KEY, &1u32.to_le_bytes())
+            .unwrap();
+        drop(storage);
+
+        // Reopen → migration wipes b'r', b'p', and nullifier_sync_height; keeps b'h'.
+        let storage = Storage::open(path).unwrap();
+        assert_eq!(storage.get_state_roots(1_700_000).unwrap(), None);
+        assert_eq!(storage.get_proof(1_687_104, 3_000_000).unwrap(), None);
+        assert!(storage.get_header(1_700_000).unwrap().is_some());
+        assert_eq!(storage.get_nullifier_sync_height().unwrap(), None);
+        let v = storage.sled.get(SCHEMA_VERSION_KEY).unwrap().unwrap();
+        assert_eq!(u32::from_le_bytes([v[0], v[1], v[2], v[3]]), SCHEMA_VERSION);
+    }
 
     #[test]
     fn test_storage_proof_roundtrip() {

@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>checkout - pay with zcash</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{
+  background:#0a0a0a;color:#ccc;
+  font-family:'Courier New',Courier,monospace;
+  font-size:15px;line-height:1.6;
+  display:flex;justify-content:center;
+  min-height:100vh;padding:2em;
+}
+.wrap{max-width:480px;width:100%}
+a{color:#f4b728;text-decoration:none}
+a:hover{text-decoration:underline}
+h1{color:#f4b728;font-weight:normal;font-size:1.3em;margin-bottom:0.5em}
+h2{color:#f4b728;font-weight:normal;font-size:1em;margin:1.2em 0 0.4em}
+code,pre{color:#f4b728}
+.dim{color:#666}
+.gold{color:#f4b728}
+.green{color:#5f5}
+
+.product{
+  border:1px solid #222;padding:1.2em;margin:1em 0;
+  background:#111;
+}
+.product .name{font-size:1.1em;color:#f4b728}
+.product .price{font-size:0.95em;color:#ccc;margin:0.3em 0}
+.product button{
+  background:#f4b728;color:#000;border:none;
+  padding:0.5em 1.2em;cursor:pointer;
+  font-family:inherit;font-size:0.9em;
+  margin-top:0.5em;
+}
+.product button:hover{background:#d4a028}
+
+#checkout{display:none;margin:1em 0}
+#checkout .addr{
+  font-size:0.8em;word-break:break-all;
+  background:#0a0a0a;padding:0.6em;border:1px solid #333;
+  margin:0.4em 0;display:block;
+}
+#checkout .qr{text-align:center;margin:0.8em 0}
+#checkout .qr canvas{border:4px solid #f4b728}
+
+.status-box{
+  border:1px solid #222;padding:0.8em;margin:0.8em 0;
+  font-size:0.9em;
+}
+.status-box.pending{border-color:#f4b728}
+.status-box.paid{border-color:#5f5;color:#5f5}
+.status-box.forwarded{border-color:#5f5;color:#5f5}
+
+footer{margin-top:2em;color:#444;font-size:0.85em;border-top:1px solid #222;padding-top:0.5em}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>example shop</h1>
+<p class="dim">pay with shielded zcash. powered by zcli merchant.</p>
+
+<div id="products">
+  <div class="product" data-amount="0.001" data-label="sticker pack">
+    <div class="name">sticker pack</div>
+    <div class="price">0.001 ZEC</div>
+    <button onclick="buy(this)">pay with zcash</button>
+  </div>
+  <div class="product" data-amount="0.01" data-label="t-shirt">
+    <div class="name">t-shirt</div>
+    <div class="price">0.01 ZEC</div>
+    <button onclick="buy(this)">pay with zcash</button>
+  </div>
+  <div class="product" data-amount="0" data-label="donation">
+    <div class="name">donation</div>
+    <div class="price">any amount</div>
+    <button onclick="buy(this)">donate zcash</button>
+  </div>
+</div>
+
+<div id="checkout">
+  <h2>send payment</h2>
+  <div class="qr"><canvas id="qr"></canvas></div>
+  <code class="addr" id="addr"></code>
+  <div id="amount-line" class="dim"></div>
+  <div class="status-box pending" id="status">waiting for payment...</div>
+  <p class="dim" style="margin-top:0.5em;font-size:0.85em">
+    scan with <a href="https://electriccoin.co/zashi/">zashi</a> or paste the unified address.
+    status updates every 10 seconds.
+  </p>
+</div>
+
+<footer>
+  <a href="https://github.com/rotkonetworks/zcli">zcli</a>
+  <span class="dim"> · example webshop · not a real store</span>
+</footer>
+
+</div>
+
+<!-- qrcode.min.js (MIT, ~10KB) vendored to avoid CDN dependency -->
+<script src="qrcode.min.js"></script>
+<script>
+(function(){
+  var checkoutEl = document.getElementById('checkout');
+  var productsEl = document.getElementById('products');
+  var addrEl = document.getElementById('addr');
+  var statusEl = document.getElementById('status');
+  var amountEl = document.getElementById('amount-line');
+  var qrCanvas = document.getElementById('qr');
+  var pollTimer = null;
+  var currentId = null;
+
+  // backend base URL — in production, set to your zcli merchant API
+  // for the example: requests.json is served from the same directory
+  var API_BASE = '.';
+
+  window.buy = function(btn) {
+    var product = btn.closest('.product');
+    var amount = product.dataset.amount;
+    var label = product.dataset.label;
+
+    // create payment request via backend
+    // in production: POST to your API that calls `zcli merchant create --json`
+    // for the static example: we read pre-created requests from requests.json
+    fetch(API_BASE + '/create?amount=' + amount + '&label=' + encodeURIComponent(label))
+      .then(function(r){ return r.json(); })
+      .then(function(req){ showCheckout(req); })
+      .catch(function(){
+        // fallback: try static requests.json (for demo without backend)
+        fetch(API_BASE + '/requests.json')
+          .then(function(r){ return r.json(); })
+          .then(function(reqs){
+            // find first pending request matching amount
+            var zat = amount.indexOf('.') >= 0
+              ? Math.round(parseFloat(amount) * 1e8)
+              : parseInt(amount);
+            var match = null;
+            for (var i = 0; i < reqs.length; i++) {
+              if (reqs[i].status === 'pending' &&
+                  (reqs[i].amount_zat === zat || zat === 0)) {
+                match = reqs[i];
+                break;
+              }
+            }
+            if (match) showCheckout(match);
+            else statusEl.textContent = 'no available payment address — contact merchant';
+          })
+          .catch(function(){ statusEl.textContent = 'shop offline'; });
+      });
+  };
+
+  function showCheckout(req) {
+    currentId = req.id;
+    productsEl.style.display = 'none';
+    checkoutEl.style.display = 'block';
+
+    addrEl.textContent = req.address;
+    if (req.amount_zat > 0) {
+      amountEl.textContent = 'send exactly ' + req.amount_zec + ' ZEC';
+    } else {
+      amountEl.textContent = 'send any amount';
+    }
+
+    // render QR
+    if (window.QRCode) {
+      qrCanvas.innerHTML = '';
+      new QRCode(qrCanvas, {
+        text: req.address,
+        width: 200,
+        height: 200,
+        colorDark: '#f4b728',
+        colorLight: '#0a0a0a',
+        correctLevel: QRCode.CorrectLevel.M,
+      });
+    }
+
+    statusEl.className = 'status-box pending';
+    statusEl.textContent = 'waiting for payment...';
+
+    // start polling
+    if (pollTimer) clearInterval(pollTimer);
+    pollTimer = setInterval(pollStatus, 10000);
+  }
+
+  function pollStatus() {
+    fetch(API_BASE + '/requests.json')
+      .then(function(r){ return r.json(); })
+      .then(function(reqs){
+        for (var i = 0; i < reqs.length; i++) {
+          if (reqs[i].id === currentId) {
+            updateStatus(reqs[i]);
+            break;
+          }
+        }
+      })
+      .catch(function(){});
+  }
+
+  function updateStatus(req) {
+    if (req.status === 'paid') {
+      statusEl.className = 'status-box paid';
+      statusEl.textContent = 'payment received: ' +
+        (req.received_zat / 1e8).toFixed(8) + ' ZEC';
+      clearInterval(pollTimer);
+    } else if (req.status === 'forwarded') {
+      statusEl.className = 'status-box forwarded';
+      statusEl.textContent = 'payment confirmed and forwarded';
+      clearInterval(pollTimer);
+    } else if (req.status === 'forward_failed') {
+      statusEl.className = 'status-box paid';
+      statusEl.textContent = 'payment received (forward pending)';
+      clearInterval(pollTimer);
+    }
+  }
+})();
+</script>
+
+</body>
+</html>

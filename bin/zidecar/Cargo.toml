@@ -28,13 +28,16 @@ futures = "0.3"
 # gRPC (with web support for browser clients)
 tonic = "0.11"
 tonic-web = "0.11"
+# http/hyper pinned to tonic 0.11's generation for the grpc-web body shim
+http = "0.2"
+hyper = "0.14"
 prost = "0.12"
 prost-types = "0.12"
 
-# zcash primitives (will add later when needed for tx building)
-# zcash_primitives = { version = "0.13", features = ["transparent-inputs"] }
-# zcash_client_backend = "0.11"
-# orchard = "0.7"
+# orchard tree — needed to compute the canonical orchard tree root
+# from zebrad's frontier hex (the "anchor" we sign + bind in the proof).
+orchard = { version = "0.12", default-features = false }
+incrementalmerkletree = { version = "0.8", features = ["legacy-api"] }
 
 # http client for zebrad RPC
 reqwest = { version = "0.11", default-features = false, features = ["json", "rustls-tls"] }

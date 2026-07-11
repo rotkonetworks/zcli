@@ -18,6 +18,7 @@ mod grpc_service;
 mod header_chain;
 mod lwd_service;
 mod middleware;
+mod orchard_tree;
 mod prover;
 mod ring_vrf;
 mod storage;
@@ -132,6 +133,11 @@ async fn main() -> Result<()> {
     // surface (lwd + any opt-in extras): tracing, timeout, concurrency limit.
     let mut builder = Server::builder()
         .accept_http1(true)
+        // must run before tonic-web decodes frames: rewrites empty-body
+        // grpc-web requests (GetLightdInfo probes) into a valid empty frame
+        .layer(tower::util::MapRequestLayer::new(
+            middleware::empty_grpc_web_body_shim,
+        ))
         .layer(middleware::trace_layer())
         .layer(middleware::timeout_layer(
             middleware::DEFAULT_INBOUND_TIMEOUT,
@@ -200,14 +206,24 @@ async fn main() -> Result<()> {
         }
 
         info!("starting background tasks...");
+        // Shutdown signal for background loops (graceful-exit plumbing the
+        // epoch tasks select on). Sender parked in a leaked guard: zidecar
+        // currently runs tasks for the process lifetime; flip to a real
+        // broadcast on SIGTERM when a drain path is needed.
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        std::mem::forget(shutdown_tx);
         let epoch_manager_bg = epoch_manager.clone();
-        tokio::spawn(async move { epoch_manager_bg.run_background_prover().await });
+        let rx = shutdown_rx.clone();
+        tokio::spawn(async move { epoch_manager_bg.run_background_prover(rx).await });
         let epoch_manager_state = epoch_manager.clone();
-        tokio::spawn(async move { epoch_manager_state.run_background_state_tracker().await });
+        let rx = shutdown_rx.clone();
+        tokio::spawn(async move { epoch_manager_state.run_background_state_tracker(rx).await });
         let epoch_manager_tip = epoch_manager.clone();
-        tokio::spawn(async move { epoch_manager_tip.run_background_tip_prover().await });
+        let rx = shutdown_rx.clone();
+        tokio::spawn(async move { epoch_manager_tip.run_background_tip_prover(rx).await });
         let epoch_manager_nf = epoch_manager.clone();
-        tokio::spawn(async move { epoch_manager_nf.run_background_nullifier_sync().await });
+        let rx = shutdown_rx.clone();
+        tokio::spawn(async move { epoch_manager_nf.run_background_nullifier_sync(rx).await });
         info!("  epoch proof generator + state tracker + tip prover + nullifier sync: running");
 
         let mempool_cache_ttl = std::time::Duration::from_secs(args.mempool_cache_ttl);

@@ -1998,7 +1998,7 @@ pub fn build_unsigned_transaction(
         .ok_or_else(|| JsError::new("extract_effects produced no bundle"))?;
 
     // --- compute ZIP-244 sighash ---
-    let branch_id: u32 = 0x4DEC4DF0; // NU6.1
+    let branch_id: u32 = 0x5437F330; // NU6.2
     let expiry_height: u32 = 0;
 
     let header_data = {
@@ -2760,6 +2760,29 @@ pub fn extract_signed_tx_from_pczt(pczt_hex: &str) -> Result<String, JsError> {
     let bytes = hex_decode(pczt_hex).ok_or_else(|| JsError::new("invalid pczt hex"))?;
     let tx_bytes = extract_signed_tx_from_pczt_bytes(&bytes).map_err(|e| JsError::new(&e))?;
     Ok(hex_encode(&tx_bytes))
+}
+
+/// Canonical ZIP-244 txid for a raw signed v5 transaction.
+///
+/// Public lightwalletd's `SendResponse` carries no txid, so the wallet derives
+/// it locally instead of trusting the server to echo it. This is the same value
+/// zidecar computes server-side and the same bytes that appear as
+/// `CompactTx.hash` during sync — returned as lowercase hex in internal/wire
+/// byte order so the outgoing record reconciles on the next scan.
+#[wasm_bindgen]
+pub fn compute_txid(tx_hex: &str) -> Result<String, JsError> {
+    use std::io::Cursor;
+    use zcash_primitives::transaction::Transaction;
+    use zcash_protocol::consensus::BranchId;
+
+    let tx_bytes = hex_decode(tx_hex).ok_or_else(|| JsError::new("invalid tx hex"))?;
+    // v5 reads its own consensus branch id from the header; the param only
+    // matters for pre-v5 formats.
+    let tx = Transaction::read(&mut Cursor::new(&tx_bytes), BranchId::Nu5)
+        .map_err(|e| JsError::new(&format!("parse tx: {:?}", e)))?;
+    let txid = tx.txid();
+    let bytes: &[u8; 32] = txid.as_ref();
+    Ok(hex_encode(bytes))
 }
 
 /// Get the commitment proof request data for a note
@@ -3689,7 +3712,7 @@ pub fn build_signed_spend_transaction(
         .map_err(|e| JsError::new(&format!("create_proof: {:?}", e)))?;
 
     // --- compute ZIP-244 sighash ---
-    let branch_id: u32 = 0x4DEC4DF0; // NU6.1
+    let branch_id: u32 = 0x5437F330; // NU6.2
     let expiry_height: u32 = 0; // no expiry for orchard-only
 
     let header_data = {
@@ -4134,7 +4157,7 @@ pub fn build_shielding_transaction(
 
     // --- compute transparent digests for ZIP-244 sighash ---
     let n_inputs = selected.len();
-    let branch_id: u32 = 0x4DEC4DF0; // NU6.1
+    let branch_id: u32 = 0x5437F330; // NU6.2
     let expiry_height = anchor_height.saturating_add(100);
 
     let mut prevout_data = Vec::new();
@@ -4436,7 +4459,7 @@ pub fn build_unsigned_shielding_transaction(
 
     // --- compute transparent digests for ZIP-244 sighash ---
     let n_inputs = selected.len();
-    let branch_id: u32 = 0x4DEC4DF0; // NU6.1
+    let branch_id: u32 = 0x5437F330; // NU6.2
     let expiry_height = anchor_height.saturating_add(100);
 
     let mut prevout_data = Vec::new();
