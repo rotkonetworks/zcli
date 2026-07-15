@@ -16,7 +16,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
       - uses: Swatinem/rust-cache@v2
-      - run: cargo check --workspace
-      - run: cargo test -p zync-core
-      - run: cargo test -p zidecar --lib
-      - run: cargo clippy --workspace -- -D warnings
+        with:
+          # cache-bust: earlier unlocked runs poisoned the shared key with a
+          # freshly-resolved (mixed-orchard) graph; --locked runs must not
+          # restore artifacts from that resolution.
+          prefix-key: locked-v1
+      - run: cargo check --workspace --locked
+      - run: cargo test -p zync-core --locked
+      - run: cargo test -p zidecar --lib --locked
+      - run: cargo clippy --workspace --locked -- -D warnings

@@ -2415,6 +2415,7 @@ pub fn redact_pczt_for_signer(pczt: pczt::Pczt) -> pczt::Pczt {
 /// The TS layer wraps `pczt_hex` in CBOR `{1: bytes}` and UR-encodes as
 /// `zcash-pczt` for animated QR transport.
 #[wasm_bindgen]
+#[allow(clippy::too_many_arguments)] // mirrors the PCZT creator-role parameter surface
 pub fn build_unsigned_pczt(
     ufvk_str: &str,
     notes_json: JsValue,

@@ -333,7 +333,7 @@ async fn host_game(
     println!("running frostito interleaved DKG (3-of-5 jury)...");
     let escrow = Escrow::create(5, 3, false);
     println!("escrow pallas key: {}", hex::encode(&escrow.address[..16]));
-    println!("zcash address:     {}", &escrow.unified_address);
+    println!("zcash address:     {}", escrow.unified_address);
     println!("s₃ status:         NEVER EXISTED\n");
 
     // join room
