@@ -21,10 +21,6 @@ jobs:
           # freshly-resolved (mixed-orchard) graph; --locked runs must not
           # restore artifacts from that resolution.
           prefix-key: locked-v1
-      - run: cargo --version && rustc --version
-      # diagnostic for the CI-only zclid orchard type-mix (remove once solved)
-      - run: cargo tree --locked -i orchard || true
-      - run: cargo tree --locked -p zclid | grep -E "orchard|zecli" || true
       - run: cargo check --workspace --locked
       - run: cargo test -p zync-core --locked
       - run: cargo test -p zidecar --lib --locked
