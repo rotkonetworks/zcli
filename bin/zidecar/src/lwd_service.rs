@@ -34,6 +34,11 @@ const MAX_SEEN_TXIDS_PER_STREAM: usize = 50_000;
 /// carry. Per-suffix length is already capped at 32 bytes (matching canonical
 /// lwd); this caps the count to keep the O(N·M) suffix-match loop bounded.
 const MAX_EXCLUDE_SUFFIXES: usize = 256;
+
+/// Uniform refusal message for requests that would need Ironwood (NU6.3)
+/// pool data before support lands. Clients get a clear Unimplemented error
+/// instead of silently-empty (i.e. wrong) results.
+const IRONWOOD_UNSUPPORTED_MSG: &str = "ironwood pool not yet supported";
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::StreamExt;
@@ -187,6 +192,8 @@ fn to_lwd_block(
                 spends: bucket.spends,
                 outputs: bucket.outputs,
                 actions: bucket.actions,
+                // NU6.3 groundwork: no ironwood data is served yet.
+                ironwood_actions: vec![],
             }
         })
         .collect();
@@ -206,6 +213,8 @@ fn to_lwd_block(
         chain_metadata: Some(ChainMetadata {
             sapling_commitment_tree_size: sapling_tree_size,
             orchard_commitment_tree_size: orchard_tree_size,
+            // NU6.3 groundwork: stays 0 until ironwood support lands.
+            ironwood_commitment_tree_size: 0,
         }),
     }
 }
@@ -243,6 +252,13 @@ fn strip_to_nullifiers(mut block: CompactBlock) -> CompactBlock {
             action.ephemeral_key.clear();
             action.ciphertext.clear();
         }
+        // Same treatment for ironwood actions (always empty until NU6.3
+        // support lands, but keep the strip future-proof).
+        for action in &mut tx.ironwood_actions {
+            action.cmx.clear();
+            action.ephemeral_key.clear();
+            action.ciphertext.clear();
+        }
     }
     // Match Zaino: keep the ChainMetadata message present but zero its tree
     // sizes (canonical lwd's nullifier path also returns zeros). Proto3
@@ -252,6 +268,7 @@ fn strip_to_nullifiers(mut block: CompactBlock) -> CompactBlock {
     block.chain_metadata = Some(ChainMetadata {
         sapling_commitment_tree_size: 0,
         orchard_commitment_tree_size: 0,
+        ironwood_commitment_tree_size: 0,
     });
     block
 }
@@ -437,6 +454,8 @@ impl CompactTxStreamer for LwdService {
             time: ts.time as u32,
             sapling_tree: ts.sapling.commitments.final_state,
             orchard_tree: ts.orchard.commitments.final_state,
+            // NU6.3 groundwork: empty until ironwood support lands.
+            ironwood_tree: String::new(),
         }))
     }
 
@@ -493,6 +512,11 @@ impl CompactTxStreamer for LwdService {
         let pool = match arg.shielded_protocol() {
             crate::lightwalletd::ShieldedProtocol::Sapling => "sapling",
             crate::lightwalletd::ShieldedProtocol::Orchard => "orchard",
+            // Refusal path: better a clear error than garbage data while the
+            // ironwood (NU6.3) tree is not tracked yet.
+            crate::lightwalletd::ShieldedProtocol::Ironwood => {
+                return Err(Status::unimplemented(IRONWOOD_UNSUPPORTED_MSG));
+            }
         };
 
         let limit = if arg.max_entries > 0 {
@@ -675,6 +699,8 @@ impl CompactTxStreamer for LwdService {
             time: ts.time as u32,
             sapling_tree: ts.sapling.commitments.final_state,
             orchard_tree: ts.orchard.commitments.final_state,
+            // NU6.3 groundwork: empty until ironwood support lands.
+            ironwood_tree: String::new(),
         }))
     }
 
@@ -728,6 +754,11 @@ impl CompactTxStreamer for LwdService {
         let mut pool_types = request.pool_types;
         if pool_types.iter().any(|&p| p == PoolType::Invalid as i32) {
             return Err(Status::invalid_argument("invalid pool type"));
+        }
+        // Refusal path: an IRONWOOD selection would silently yield nothing
+        // (no ironwood data is tracked yet) - reject it clearly instead.
+        if pool_types.iter().any(|&p| p == PoolType::Ironwood as i32) {
+            return Err(Status::unimplemented(IRONWOOD_UNSUPPORTED_MSG));
         }
         // canonical lwd default: shielded-only.
         if pool_types.is_empty() {
@@ -833,6 +864,9 @@ impl CompactTxStreamer for LwdService {
                     spends,
                     outputs,
                     actions,
+                    // IRONWOOD pool selection is refused above; nothing to
+                    // serve here until NU6.3 support lands.
+                    ironwood_actions: vec![],
                 };
                 if tx.send(Ok(msg)).await.is_err() {
                     return;
@@ -1191,6 +1225,12 @@ mod tests {
                     ephemeral_key: vec![0x02; 32],
                     ciphertext: vec![0x03; 52],
                 }],
+                ironwood_actions: vec![CompactOrchardAction {
+                    nullifier: vec![0x24; 32],
+                    cmx: vec![0x21; 32],
+                    ephemeral_key: vec![0x22; 32],
+                    ciphertext: vec![0x23; 52],
+                }],
             }],
             chain_metadata: None,
         };
@@ -1209,6 +1249,14 @@ mod tests {
         assert!(tx.actions[0].cmx.is_empty());
         assert!(tx.actions[0].ephemeral_key.is_empty());
         assert!(tx.actions[0].ciphertext.is_empty());
+
+        // Ironwood action gets the same treatment (future-proofing: no
+        // ironwood data is ever populated yet).
+        assert_eq!(tx.ironwood_actions.len(), 1);
+        assert_eq!(tx.ironwood_actions[0].nullifier, vec![0x24; 32]);
+        assert!(tx.ironwood_actions[0].cmx.is_empty());
+        assert!(tx.ironwood_actions[0].ephemeral_key.is_empty());
+        assert!(tx.ironwood_actions[0].ciphertext.is_empty());
 
         // Block-level metadata untouched by the strip.
         assert_eq!(stripped.height, 100);
@@ -1304,6 +1352,57 @@ mod tests {
         assert_eq!(f.address, "t1abc");
         assert_eq!(start, 100);
         assert_eq!(end, 200);
+    }
+
+    /// Ironwood (NU6.3) refusal path: GetSubtreeRoots for the ironwood pool
+    /// must fail with a clear Unimplemented error before any upstream call
+    /// is made, not return garbage or an empty stream.
+    #[tokio::test]
+    async fn get_subtree_roots_refuses_ironwood() {
+        use crate::lightwalletd::{GetSubtreeRootsArg, ShieldedProtocol};
+        let svc = LwdService::new(ZebradClient::new("http://127.0.0.1:1"), false);
+        let err = svc
+            .get_subtree_roots(Request::new(GetSubtreeRootsArg {
+                start_index: 0,
+                shielded_protocol: ShieldedProtocol::Ironwood as i32,
+                max_entries: 0,
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::Unimplemented);
+        assert_eq!(err.message(), IRONWOOD_UNSUPPORTED_MSG);
+    }
+
+    /// Ironwood (NU6.3) refusal path: a GetMempoolTx selecting the IRONWOOD
+    /// pool must fail with a clear Unimplemented error before any upstream
+    /// call is made (an accepted request would silently stream nothing).
+    #[tokio::test]
+    async fn get_mempool_tx_refuses_ironwood_pool_type() {
+        let svc = LwdService::new(ZebradClient::new("http://127.0.0.1:1"), false);
+        let err = svc
+            .get_mempool_tx(Request::new(GetMempoolTxRequest {
+                exclude_txid_suffixes: vec![],
+                pool_types: vec![PoolType::Sapling as i32, PoolType::Ironwood as i32],
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::Unimplemented);
+        assert_eq!(err.message(), IRONWOOD_UNSUPPORTED_MSG);
+    }
+
+    /// Current orchard/sapling paths are untouched by the ironwood
+    /// groundwork: a default (shielded) GetMempoolTx request passes
+    /// validation and only fails later at the unreachable zebrad.
+    #[tokio::test]
+    async fn get_mempool_tx_default_pools_still_accepted() {
+        let svc = LwdService::new(ZebradClient::new("http://127.0.0.1:1"), false);
+        let resp = svc
+            .get_mempool_tx(Request::new(GetMempoolTxRequest {
+                exclude_txid_suffixes: vec![],
+                pool_types: vec![],
+            }))
+            .await;
+        assert!(resp.is_ok(), "default pool selection must not be refused");
     }
 
     /// Build an empty-body grpc-web POST to GetLightdInfo, run it through the
