@@ -772,9 +772,6 @@ impl CompactTxStreamer for LwdService {
             }
         }
         let mut pool_types = request.pool_types;
-        if pool_types.iter().any(|&p| p == PoolType::Invalid as i32) {
-            return Err(Status::invalid_argument("invalid pool type"));
-        }
         // canonical lwd default: shielded-only (Sapling, Orchard, and Ironwood
         // per the post-NU6.3 lightwallet-protocol spec).
         if pool_types.is_empty() {
@@ -784,9 +781,29 @@ impl CompactTxStreamer for LwdService {
                 PoolType::Ironwood as i32,
             ];
         }
-        let want_sapling = pool_types.contains(&(PoolType::Sapling as i32));
-        let want_orchard = pool_types.contains(&(PoolType::Orchard as i32));
-        let want_ironwood = pool_types.contains(&(PoolType::Ironwood as i32));
+        // Resolve requested pools through an exhaustive match, not a set of
+        // `contains` probes: adding a PoolType variant then becomes a compile
+        // error here instead of a silently-dropped pool. Invalid or unknown
+        // selections are rejected rather than served as empty (garbage).
+        let (mut want_sapling, mut want_orchard, mut want_ironwood) = (false, false, false);
+        for &p in &pool_types {
+            match PoolType::try_from(p) {
+                Ok(PoolType::Sapling) => want_sapling = true,
+                Ok(PoolType::Orchard) => want_orchard = true,
+                Ok(PoolType::Ironwood) => want_ironwood = true,
+                // CompactTx carries no transparent fields, so a transparent
+                // selection contributes nothing to the compact mempool stream
+                // (canonical lwd behavior). Handled explicitly so it is a
+                // deliberate no-op, not a silent drop.
+                Ok(PoolType::Transparent) => {}
+                Ok(PoolType::Invalid) => {
+                    return Err(Status::invalid_argument("invalid pool type"));
+                }
+                Err(_) => {
+                    return Err(Status::invalid_argument("unknown pool type"));
+                }
+            }
+        }
 
         let exclude = request.exclude_txid_suffixes;
         let (tx, rx) = mpsc::channel(32);
