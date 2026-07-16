@@ -531,6 +531,60 @@ impl Storage {
         Ok(None)
     }
 
+    // ===== IRONWOOD (NU6.3) STATE ROOT GROUNDWORK =====
+    //
+    // Nullable companion to the orchard state-root keyspace above. Ironwood
+    // roots live under their own b'i' prefix instead of widening the b'r'
+    // value encoding: absence of the key IS the NULL state, so pre-ironwood
+    // databases and heights need no migration (and no schema-version bump)
+    // and every existing orchard read/write path is untouched.
+
+    /// Store ironwood state roots at height (same shape as the orchard
+    /// entry: commitment tree root + nullifier set root). Nothing calls
+    /// this yet - it exists so the schema is settled before NU6.3 support.
+    pub fn store_ironwood_state_roots(
+        &self,
+        height: u32,
+        tree_root: &[u8; 32],
+        nullifier_root: &[u8; 32],
+    ) -> Result<()> {
+        let mut key = Vec::with_capacity(5);
+        key.push(b'i'); // ironwood roots prefix
+        key.extend_from_slice(&height.to_le_bytes());
+
+        let mut value = Vec::with_capacity(64);
+        value.extend_from_slice(tree_root);
+        value.extend_from_slice(nullifier_root);
+
+        self.sled
+            .insert(key, value)
+            .map_err(|e| ZidecarError::Storage(format!("sled: {}", e)))?;
+        Ok(())
+    }
+
+    /// Get ironwood state roots at height. `Ok(None)` means "no ironwood
+    /// state recorded" - the expected result for every height until NU6.3
+    /// support lands. Callers needing ironwood data must translate that
+    /// into a clear "ironwood pool not yet supported" error, never into
+    /// zero-filled roots.
+    pub fn get_ironwood_state_roots(&self, height: u32) -> Result<Option<([u8; 32], [u8; 32])>> {
+        let mut key = Vec::with_capacity(5);
+        key.push(b'i');
+        key.extend_from_slice(&height.to_le_bytes());
+
+        match self.sled.get(key) {
+            Ok(Some(bytes)) if bytes.len() == 64 => {
+                let mut tree_root = [0u8; 32];
+                let mut nullifier_root = [0u8; 32];
+                tree_root.copy_from_slice(&bytes[..32]);
+                nullifier_root.copy_from_slice(&bytes[32..]);
+                Ok(Some((tree_root, nullifier_root)))
+            }
+            Ok(_) => Ok(None),
+            Err(e) => Err(ZidecarError::Storage(format!("sled: {}", e))),
+        }
+    }
+
     // ===== ACTIONS ROOT STORAGE =====
 
     /// Store precomputed actions merkle root for a block height
@@ -1067,6 +1121,39 @@ mod tests {
         assert_eq!(storage.get_nullifier_sync_height().unwrap(), None);
         let v = storage.sled.get(SCHEMA_VERSION_KEY).unwrap().unwrap();
         assert_eq!(u32::from_le_bytes([v[0], v[1], v[2], v[3]]), SCHEMA_VERSION);
+    }
+
+    /// Ironwood state roots are a nullable companion keyspace: absent by
+    /// default (NULL until NU6.3 support lands), independently writable,
+    /// and invisible to the orchard state-root paths.
+    #[test]
+    fn ironwood_state_roots_nullable_and_independent_of_orchard() {
+        let dir = tempdir().unwrap();
+        let storage = Storage::open(dir.path().to_str().unwrap()).unwrap();
+
+        // NULL state: nothing recorded for any height.
+        assert_eq!(storage.get_ironwood_state_roots(3_500_000).unwrap(), None);
+
+        // Orchard write does not materialize ironwood state...
+        storage
+            .store_state_roots(3_500_000, &[0xaa; 32], &[0xbb; 32])
+            .unwrap();
+        assert_eq!(storage.get_ironwood_state_roots(3_500_000).unwrap(), None);
+
+        // ...and an ironwood write round-trips without touching orchard.
+        storage
+            .store_ironwood_state_roots(3_500_000, &[0x11; 32], &[0x22; 32])
+            .unwrap();
+        assert_eq!(
+            storage.get_ironwood_state_roots(3_500_000).unwrap(),
+            Some(([0x11; 32], [0x22; 32]))
+        );
+        assert_eq!(
+            storage.get_state_roots(3_500_000).unwrap(),
+            Some(([0xaa; 32], [0xbb; 32]))
+        );
+        // get_latest_state_height scans the orchard b'r' keyspace only.
+        assert_eq!(storage.get_latest_state_height().unwrap(), Some(3_500_000));
     }
 
     #[test]
