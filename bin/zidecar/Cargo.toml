@@ -26,13 +26,15 @@ tokio-stream = { version = "0.1", features = ["sync", "net"] }
 futures = "0.3"
 
 # gRPC (with web support for browser clients)
-tonic = "0.11"
-tonic-web = "0.11"
-# http/hyper pinned to tonic 0.11's generation for the grpc-web body shim
-http = "0.2"
-hyper = "0.14"
-prost = "0.12"
-prost-types = "0.12"
+# tonic 0.12 generation (http/hyper 1.x under the hood). http + http-body-util
+# are used by the grpc-web empty-body shim in middleware.rs; tonic 0.12 still
+# rejects zero-frame unary requests (see the canary test in lwd_service.rs).
+tonic = "0.12"
+tonic-web = "0.12"
+http = "1"
+http-body-util = "0.1"
+prost = "0.13"
+prost-types = "0.13"
 
 # orchard tree — needed to compute the canonical orchard tree root
 # from zebrad's frontier hex (the "anchor" we sign + bind in the proof).
@@ -56,7 +58,7 @@ hkdf = "0.12"
 
 # tower middleware
 tower = { version = "0.4", features = ["retry", "timeout", "util", "buffer", "limit"] }
-tower-http = { version = "0.4", features = ["trace"] }
+tower-http = { version = "0.5", features = ["trace"] }
 
 # frost relay
 rand = "0.8"
@@ -74,7 +76,7 @@ serde = { version = "1.0", features = ["derive"] }
 bincode = "1.3"
 
 [build-dependencies]
-tonic-build = "0.11"
+tonic-build = "0.12"
 
 [dev-dependencies]
 tempfile = "3"

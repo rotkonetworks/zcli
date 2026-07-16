@@ -91,26 +91,31 @@ impl Interceptor for AuthInterceptor {
     }
 }
 
-
 /// Shim for grpc-web clients that POST an empty HTTP body for RPCs whose
 /// request message is `Empty` (e.g. `GetLightdInfo`, `GetLatestBlock`).
 ///
-/// tonic-web 0.11 rejects those requests with grpc-status 13
-/// ("Missing request message") before the handler runs, because its codec
-/// requires at least one length-prefixed frame. Go lightwalletd is lenient,
-/// so wallets probing `GetLightdInfo` see zec.rocks answer and zidecar fail —
-/// which broke zafu's backend auto-detection.
+/// tonic rejects those requests with grpc-status 13 ("Missing request
+/// message") before the handler runs, because its codec requires at least
+/// one length-prefixed frame. Go lightwalletd is lenient, so wallets probing
+/// `GetLightdInfo` see zec.rocks answer and zidecar fail - which broke
+/// zafu's backend auto-detection.
 ///
 /// The shim rewrites a `content-length: 0` grpc-web request body into the
 /// canonical empty frame (`[flags=0, len=0u32]`, base64 for -text), which
-/// decodes to the default message — semantically identical to what lenient
-/// servers do. Non-empty bodies pass through untouched. Remove once the
-/// tonic 0.12+ bump lands (it accepts empty bodies natively).
+/// decodes to the default message - semantically identical to what lenient
+/// servers do. Non-empty bodies pass through untouched.
+///
+/// NOTE: the tonic 0.12 bump was expected to make this shim redundant, but
+/// tonic 0.12.3 (and 0.13/0.14, per `src/server/grpc.rs`) still returns
+/// "Missing request message." for zero-frame unary requests. The canary test
+/// `lwd_service::tests::empty_body_grpc_web_without_shim_rejected_by_tonic`
+/// fails when a future tonic bump starts accepting empty bodies natively -
+/// remove the shim (and its MapRequestLayer wiring in main.rs) when it does.
 pub fn empty_grpc_web_body_shim(
-    mut req: http::Request<hyper::Body>,
-) -> http::Request<hyper::Body> {
-    const EMPTY_FRAME: [u8; 5] = [0, 0, 0, 0, 0];
-    // base64("\0\0\0\0\0") — grpc-web-text bodies are base64-encoded frames
+    mut req: http::Request<tonic::body::BoxBody>,
+) -> http::Request<tonic::body::BoxBody> {
+    static EMPTY_FRAME: [u8; 5] = [0, 0, 0, 0, 0];
+    // base64 of the 5 zero bytes - grpc-web-text bodies are base64-encoded frames
     const EMPTY_FRAME_B64: &str = "AAAAAAA=";
 
     let is_empty = req
@@ -129,11 +134,17 @@ pub fn empty_grpc_web_body_shim(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
 
-    let new_body: Option<(hyper::Body, usize)> =
+    let new_body: Option<(tonic::body::BoxBody, usize)> =
         if content_type.starts_with("application/grpc-web-text") {
-            Some((hyper::Body::from(EMPTY_FRAME_B64), EMPTY_FRAME_B64.len()))
+            Some((
+                tonic::body::boxed(http_body_util::Full::from(EMPTY_FRAME_B64)),
+                EMPTY_FRAME_B64.len(),
+            ))
         } else if content_type.starts_with("application/grpc-web") {
-            Some((hyper::Body::from(EMPTY_FRAME.to_vec()), EMPTY_FRAME.len()))
+            Some((
+                tonic::body::boxed(http_body_util::Full::from(&EMPTY_FRAME[..])),
+                EMPTY_FRAME.len(),
+            ))
         } else {
             None // plain grpc/2 or non-grpc traffic: leave alone
         };

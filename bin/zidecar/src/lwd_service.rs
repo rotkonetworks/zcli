@@ -34,6 +34,11 @@ const MAX_SEEN_TXIDS_PER_STREAM: usize = 50_000;
 /// carry. Per-suffix length is already capped at 32 bytes (matching canonical
 /// lwd); this caps the count to keep the O(N·M) suffix-match loop bounded.
 const MAX_EXCLUDE_SUFFIXES: usize = 256;
+
+/// Uniform refusal message for requests that would need Ironwood (NU6.3)
+/// pool data before support lands. Clients get a clear Unimplemented error
+/// instead of silently-empty (i.e. wrong) results.
+const IRONWOOD_UNSUPPORTED_MSG: &str = "ironwood pool not yet supported";
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::StreamExt;
@@ -187,6 +192,8 @@ fn to_lwd_block(
                 spends: bucket.spends,
                 outputs: bucket.outputs,
                 actions: bucket.actions,
+                // NU6.3 groundwork: no ironwood data is served yet.
+                ironwood_actions: vec![],
             }
         })
         .collect();
@@ -206,6 +213,8 @@ fn to_lwd_block(
         chain_metadata: Some(ChainMetadata {
             sapling_commitment_tree_size: sapling_tree_size,
             orchard_commitment_tree_size: orchard_tree_size,
+            // NU6.3 groundwork: stays 0 until ironwood support lands.
+            ironwood_commitment_tree_size: 0,
         }),
     }
 }
@@ -243,6 +252,13 @@ fn strip_to_nullifiers(mut block: CompactBlock) -> CompactBlock {
             action.ephemeral_key.clear();
             action.ciphertext.clear();
         }
+        // Same treatment for ironwood actions (always empty until NU6.3
+        // support lands, but keep the strip future-proof).
+        for action in &mut tx.ironwood_actions {
+            action.cmx.clear();
+            action.ephemeral_key.clear();
+            action.ciphertext.clear();
+        }
     }
     // Match Zaino: keep the ChainMetadata message present but zero its tree
     // sizes (canonical lwd's nullifier path also returns zeros). Proto3
@@ -252,6 +268,7 @@ fn strip_to_nullifiers(mut block: CompactBlock) -> CompactBlock {
     block.chain_metadata = Some(ChainMetadata {
         sapling_commitment_tree_size: 0,
         orchard_commitment_tree_size: 0,
+        ironwood_commitment_tree_size: 0,
     });
     block
 }
@@ -437,6 +454,8 @@ impl CompactTxStreamer for LwdService {
             time: ts.time as u32,
             sapling_tree: ts.sapling.commitments.final_state,
             orchard_tree: ts.orchard.commitments.final_state,
+            // NU6.3 groundwork: empty until ironwood support lands.
+            ironwood_tree: String::new(),
         }))
     }
 
@@ -493,6 +512,11 @@ impl CompactTxStreamer for LwdService {
         let pool = match arg.shielded_protocol() {
             crate::lightwalletd::ShieldedProtocol::Sapling => "sapling",
             crate::lightwalletd::ShieldedProtocol::Orchard => "orchard",
+            // Refusal path: better a clear error than garbage data while the
+            // ironwood (NU6.3) tree is not tracked yet.
+            crate::lightwalletd::ShieldedProtocol::Ironwood => {
+                return Err(Status::unimplemented(IRONWOOD_UNSUPPORTED_MSG));
+            }
         };
 
         let limit = if arg.max_entries > 0 {
@@ -675,6 +699,8 @@ impl CompactTxStreamer for LwdService {
             time: ts.time as u32,
             sapling_tree: ts.sapling.commitments.final_state,
             orchard_tree: ts.orchard.commitments.final_state,
+            // NU6.3 groundwork: empty until ironwood support lands.
+            ironwood_tree: String::new(),
         }))
     }
 
@@ -728,6 +754,11 @@ impl CompactTxStreamer for LwdService {
         let mut pool_types = request.pool_types;
         if pool_types.iter().any(|&p| p == PoolType::Invalid as i32) {
             return Err(Status::invalid_argument("invalid pool type"));
+        }
+        // Refusal path: an IRONWOOD selection would silently yield nothing
+        // (no ironwood data is tracked yet) - reject it clearly instead.
+        if pool_types.iter().any(|&p| p == PoolType::Ironwood as i32) {
+            return Err(Status::unimplemented(IRONWOOD_UNSUPPORTED_MSG));
         }
         // canonical lwd default: shielded-only.
         if pool_types.is_empty() {
@@ -833,6 +864,9 @@ impl CompactTxStreamer for LwdService {
                     spends,
                     outputs,
                     actions,
+                    // IRONWOOD pool selection is refused above; nothing to
+                    // serve here until NU6.3 support lands.
+                    ironwood_actions: vec![],
                 };
                 if tx.send(Ok(msg)).await.is_err() {
                     return;
@@ -1191,6 +1225,12 @@ mod tests {
                     ephemeral_key: vec![0x02; 32],
                     ciphertext: vec![0x03; 52],
                 }],
+                ironwood_actions: vec![CompactOrchardAction {
+                    nullifier: vec![0x24; 32],
+                    cmx: vec![0x21; 32],
+                    ephemeral_key: vec![0x22; 32],
+                    ciphertext: vec![0x23; 52],
+                }],
             }],
             chain_metadata: None,
         };
@@ -1209,6 +1249,14 @@ mod tests {
         assert!(tx.actions[0].cmx.is_empty());
         assert!(tx.actions[0].ephemeral_key.is_empty());
         assert!(tx.actions[0].ciphertext.is_empty());
+
+        // Ironwood action gets the same treatment (future-proofing: no
+        // ironwood data is ever populated yet).
+        assert_eq!(tx.ironwood_actions.len(), 1);
+        assert_eq!(tx.ironwood_actions[0].nullifier, vec![0x24; 32]);
+        assert!(tx.ironwood_actions[0].cmx.is_empty());
+        assert!(tx.ironwood_actions[0].ephemeral_key.is_empty());
+        assert!(tx.ironwood_actions[0].ciphertext.is_empty());
 
         // Block-level metadata untouched by the strip.
         assert_eq!(stripped.height, 100);
@@ -1304,5 +1352,171 @@ mod tests {
         assert_eq!(f.address, "t1abc");
         assert_eq!(start, 100);
         assert_eq!(end, 200);
+    }
+
+    /// Ironwood (NU6.3) refusal path: GetSubtreeRoots for the ironwood pool
+    /// must fail with a clear Unimplemented error before any upstream call
+    /// is made, not return garbage or an empty stream.
+    #[tokio::test]
+    async fn get_subtree_roots_refuses_ironwood() {
+        use crate::lightwalletd::{GetSubtreeRootsArg, ShieldedProtocol};
+        let svc = LwdService::new(ZebradClient::new("http://127.0.0.1:1"), false);
+        let err = svc
+            .get_subtree_roots(Request::new(GetSubtreeRootsArg {
+                start_index: 0,
+                shielded_protocol: ShieldedProtocol::Ironwood as i32,
+                max_entries: 0,
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::Unimplemented);
+        assert_eq!(err.message(), IRONWOOD_UNSUPPORTED_MSG);
+    }
+
+    /// Ironwood (NU6.3) refusal path: a GetMempoolTx selecting the IRONWOOD
+    /// pool must fail with a clear Unimplemented error before any upstream
+    /// call is made (an accepted request would silently stream nothing).
+    #[tokio::test]
+    async fn get_mempool_tx_refuses_ironwood_pool_type() {
+        let svc = LwdService::new(ZebradClient::new("http://127.0.0.1:1"), false);
+        let err = svc
+            .get_mempool_tx(Request::new(GetMempoolTxRequest {
+                exclude_txid_suffixes: vec![],
+                pool_types: vec![PoolType::Sapling as i32, PoolType::Ironwood as i32],
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::Unimplemented);
+        assert_eq!(err.message(), IRONWOOD_UNSUPPORTED_MSG);
+    }
+
+    /// Current orchard/sapling paths are untouched by the ironwood
+    /// groundwork: a default (shielded) GetMempoolTx request passes
+    /// validation and only fails later at the unreachable zebrad.
+    #[tokio::test]
+    async fn get_mempool_tx_default_pools_still_accepted() {
+        let svc = LwdService::new(ZebradClient::new("http://127.0.0.1:1"), false);
+        let resp = svc
+            .get_mempool_tx(Request::new(GetMempoolTxRequest {
+                exclude_txid_suffixes: vec![],
+                pool_types: vec![],
+            }))
+            .await;
+        assert!(resp.is_ok(), "default pool selection must not be refused");
+    }
+
+    /// Build an empty-body grpc-web POST to GetLightdInfo, run it through the
+    /// tonic-web-wrapped CompactTxStreamer service (optionally applying the
+    /// middleware shim first, mirroring the MapRequestLayer order in main.rs)
+    /// and return `(grpc-status, grpc-message + body text)`.
+    ///
+    /// The LwdService points at a never-listening endpoint (port 1), so a
+    /// request that actually reaches the handler fails with connection
+    /// refused -> ZebradTransport -> Status::unavailable (14). A request
+    /// rejected by the codec never runs the handler and comes back 13 with
+    /// "Missing request message" instead - that distinction is the whole
+    /// point of these tests.
+    async fn empty_body_get_lightd_info_status(apply_shim: bool) -> (String, String) {
+        use crate::lightwalletd::compact_tx_streamer_server::CompactTxStreamerServer;
+        use http_body_util::BodyExt;
+        use tower::ServiceExt;
+
+        let svc = tonic_web::enable(CompactTxStreamerServer::new(LwdService::new(
+            ZebradClient::new("http://127.0.0.1:1"),
+            false,
+        )));
+
+        let mut req = http::Request::builder()
+            .method("POST")
+            .uri("/cash.z.wallet.sdk.rpc.CompactTxStreamer/GetLightdInfo")
+            .header("content-type", "application/grpc-web")
+            .header("content-length", "0")
+            .body(tonic::body::empty_body())
+            .unwrap();
+        if apply_shim {
+            req = crate::middleware::empty_grpc_web_body_shim(req);
+        }
+
+        let resp = svc.oneshot(req).await.expect("service call");
+
+        // grpc-status arrives either as a response header (trailers-only
+        // response) or inside a trailer frame at the end of the body.
+        let header_status = resp
+            .headers()
+            .get("grpc-status")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned);
+        let header_message = resp
+            .headers()
+            .get("grpc-message")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned)
+            .unwrap_or_default();
+        let body = resp
+            .into_body()
+            .collect()
+            .await
+            .expect("collect body")
+            .to_bytes();
+        let body_text = String::from_utf8_lossy(&body).into_owned();
+        let status = header_status.unwrap_or_else(|| {
+            body_text
+                .split("grpc-status:")
+                .nth(1)
+                .map(|rest| {
+                    rest.trim_start()
+                        .chars()
+                        .take_while(|c| c.is_ascii_digit())
+                        .collect()
+                })
+                .unwrap_or_default()
+        });
+        // grpc-message values are percent-encoded on the wire; decode the
+        // one escape that matters for matching the message text.
+        let message = format!("{header_message} {body_text}").replace("%20", " ");
+        (status, message)
+    }
+
+    /// With the shim applied (as main.rs wires it, before tonic-web decodes
+    /// frames), an empty-body grpc-web GetLightdInfo probe must reach the
+    /// handler: the rewritten body decodes to a default `Empty` message and
+    /// the handler's zebrad call fails with Unavailable (14). Wallets probing
+    /// GetLightdInfo this way is why the shim exists (Go lightwalletd is
+    /// lenient about the missing frame; zafu's backend auto-detection broke
+    /// when zidecar was not).
+    #[tokio::test]
+    async fn empty_body_grpc_web_get_lightd_info_reaches_handler_via_shim() {
+        let (status, message) = empty_body_get_lightd_info_status(true).await;
+        assert!(
+            !message.contains("Missing request message"),
+            "empty grpc-web body was rejected by the codec before the handler ran"
+        );
+        assert_eq!(
+            status, "14",
+            "expected Unavailable from the handler's zebrad call, got grpc-status {status} \
+             (message: {message:?})"
+        );
+    }
+
+    /// Canary: bare tonic-web (no shim) still rejects zero-frame unary
+    /// requests with grpc-status 13 "Missing request message" - true through
+    /// tonic 0.12.3 (and still present in 0.13/0.14 `src/server/grpc.rs`).
+    ///
+    /// When a future tonic bump makes this test FAIL, empty bodies are
+    /// accepted natively: delete `middleware::empty_grpc_web_body_shim`, its
+    /// MapRequestLayer wiring in main.rs, and this canary, keeping only the
+    /// via-shim test above (rewritten without the shim).
+    #[tokio::test]
+    async fn empty_body_grpc_web_without_shim_rejected_by_tonic() {
+        let (status, message) = empty_body_get_lightd_info_status(false).await;
+        assert_eq!(
+            status, "13",
+            "tonic now accepts empty-body unary requests natively \
+             (message: {message:?}) - the grpc-web body shim can be removed"
+        );
+        assert!(
+            message.contains("Missing request message"),
+            "unexpected rejection message: {message:?}"
+        );
     }
 }

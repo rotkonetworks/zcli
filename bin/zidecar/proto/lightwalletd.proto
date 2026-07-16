@@ -12,6 +12,14 @@ message CompactTx {
     repeated CompactSaplingSpend spends = 4;
     repeated CompactSaplingOutput outputs = 5;
     repeated CompactOrchardAction actions = 6;
+    // 7 and 8 are CompactTxIn vin / TxOut vout in the canonical NU6.3-era
+    // proto (vizor-wallet); reserved here so a future transparent-data
+    // addition can't collide with them.
+    reserved 7, 8;
+    // Ironwood (NU6.3) actions. Ironwood reuses the compact Orchard action
+    // shape because the pools have identical action fields. Field number
+    // matches vizor-wallet's compact_formats.proto for wire compat.
+    repeated CompactOrchardAction ironwoodActions = 9;
 }
 
 message CompactSaplingSpend {
@@ -46,6 +54,10 @@ message CompactBlock {
 message ChainMetadata {
     uint32 saplingCommitmentTreeSize = 1;
     uint32 orchardCommitmentTreeSize = 2;
+    // Size of the Ironwood (NU6.3) note commitment tree as of the end of
+    // this block. Field number matches vizor-wallet's compact_formats.proto
+    // for wire compat. Always 0 until ironwood support lands.
+    uint32 ironwoodCommitmentTreeSize = 3;
 }
 
 // Block ID message
@@ -124,6 +136,10 @@ message TreeState {
     uint32 time = 4;
     string saplingTree = 5;
     string orchardTree = 6;
+    // Ironwood (NU6.3) commitment tree state. Field number matches
+    // vizor-wallet's service.proto for wire compat. Empty until ironwood
+    // support lands.
+    string ironwoodTree = 7;
 }
 
 // Empty message
@@ -133,6 +149,9 @@ message Empty {}
 enum ShieldedProtocol {
     sapling = 0;
     orchard = 1;
+    // NU6.3 pool; requests naming it are refused with Unimplemented
+    // ("ironwood pool not yet supported") until support lands.
+    ironwood = 2;
 }
 
 // Request for GetSubtreeRoots
@@ -176,6 +195,10 @@ enum PoolType {
     TRANSPARENT = 1;
     SAPLING = 2;
     ORCHARD = 3;
+    // NU6.3 pool; value matches vizor-wallet's service.proto for wire
+    // compat. Requests naming it are refused with Unimplemented
+    // ("ironwood pool not yet supported") until support lands.
+    IRONWOOD = 4;
 }
 
 message GetMempoolTxRequest {
