@@ -1305,4 +1305,119 @@ mod tests {
         assert_eq!(start, 100);
         assert_eq!(end, 200);
     }
+
+    /// Build an empty-body grpc-web POST to GetLightdInfo, run it through the
+    /// tonic-web-wrapped CompactTxStreamer service (optionally applying the
+    /// middleware shim first, mirroring the MapRequestLayer order in main.rs)
+    /// and return `(grpc-status, grpc-message + body text)`.
+    ///
+    /// The LwdService points at a never-listening endpoint (port 1), so a
+    /// request that actually reaches the handler fails with connection
+    /// refused -> ZebradTransport -> Status::unavailable (14). A request
+    /// rejected by the codec never runs the handler and comes back 13 with
+    /// "Missing request message" instead - that distinction is the whole
+    /// point of these tests.
+    async fn empty_body_get_lightd_info_status(apply_shim: bool) -> (String, String) {
+        use crate::lightwalletd::compact_tx_streamer_server::CompactTxStreamerServer;
+        use http_body_util::BodyExt;
+        use tower::ServiceExt;
+
+        let svc = tonic_web::enable(CompactTxStreamerServer::new(LwdService::new(
+            ZebradClient::new("http://127.0.0.1:1"),
+            false,
+        )));
+
+        let mut req = http::Request::builder()
+            .method("POST")
+            .uri("/cash.z.wallet.sdk.rpc.CompactTxStreamer/GetLightdInfo")
+            .header("content-type", "application/grpc-web")
+            .header("content-length", "0")
+            .body(tonic::body::empty_body())
+            .unwrap();
+        if apply_shim {
+            req = crate::middleware::empty_grpc_web_body_shim(req);
+        }
+
+        let resp = svc.oneshot(req).await.expect("service call");
+
+        // grpc-status arrives either as a response header (trailers-only
+        // response) or inside a trailer frame at the end of the body.
+        let header_status = resp
+            .headers()
+            .get("grpc-status")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned);
+        let header_message = resp
+            .headers()
+            .get("grpc-message")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned)
+            .unwrap_or_default();
+        let body = resp
+            .into_body()
+            .collect()
+            .await
+            .expect("collect body")
+            .to_bytes();
+        let body_text = String::from_utf8_lossy(&body).into_owned();
+        let status = header_status.unwrap_or_else(|| {
+            body_text
+                .split("grpc-status:")
+                .nth(1)
+                .map(|rest| {
+                    rest.trim_start()
+                        .chars()
+                        .take_while(|c| c.is_ascii_digit())
+                        .collect()
+                })
+                .unwrap_or_default()
+        });
+        // grpc-message values are percent-encoded on the wire; decode the
+        // one escape that matters for matching the message text.
+        let message = format!("{header_message} {body_text}").replace("%20", " ");
+        (status, message)
+    }
+
+    /// With the shim applied (as main.rs wires it, before tonic-web decodes
+    /// frames), an empty-body grpc-web GetLightdInfo probe must reach the
+    /// handler: the rewritten body decodes to a default `Empty` message and
+    /// the handler's zebrad call fails with Unavailable (14). Wallets probing
+    /// GetLightdInfo this way is why the shim exists (Go lightwalletd is
+    /// lenient about the missing frame; zafu's backend auto-detection broke
+    /// when zidecar was not).
+    #[tokio::test]
+    async fn empty_body_grpc_web_get_lightd_info_reaches_handler_via_shim() {
+        let (status, message) = empty_body_get_lightd_info_status(true).await;
+        assert!(
+            !message.contains("Missing request message"),
+            "empty grpc-web body was rejected by the codec before the handler ran"
+        );
+        assert_eq!(
+            status, "14",
+            "expected Unavailable from the handler's zebrad call, got grpc-status {status} \
+             (message: {message:?})"
+        );
+    }
+
+    /// Canary: bare tonic-web (no shim) still rejects zero-frame unary
+    /// requests with grpc-status 13 "Missing request message" - true through
+    /// tonic 0.12.3 (and still present in 0.13/0.14 `src/server/grpc.rs`).
+    ///
+    /// When a future tonic bump makes this test FAIL, empty bodies are
+    /// accepted natively: delete `middleware::empty_grpc_web_body_shim`, its
+    /// MapRequestLayer wiring in main.rs, and this canary, keeping only the
+    /// via-shim test above (rewritten without the shim).
+    #[tokio::test]
+    async fn empty_body_grpc_web_without_shim_rejected_by_tonic() {
+        let (status, message) = empty_body_get_lightd_info_status(false).await;
+        assert_eq!(
+            status, "13",
+            "tonic now accepts empty-body unary requests natively \
+             (message: {message:?}) - the grpc-web body shim can be removed"
+        );
+        assert!(
+            message.contains("Missing request message"),
+            "unexpected rejection message: {message:?}"
+        );
+    }
 }
