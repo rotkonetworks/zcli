@@ -213,7 +213,7 @@ pub fn build_shielding_tx(
 
     // ZIP-244 sighash computation
     let n_inputs = selected.len();
-    let branch_id: u32 = 0x4DEC4DF0; // NU6.1
+    let branch_id: u32 = 0x5437F330; // NU6.2
     let expiry_height = anchor_height.saturating_add(100);
 
     let mut prevout_data = Vec::new();
@@ -472,7 +472,7 @@ pub fn build_orchard_spend_tx(
         .collect::<Result<_, _>>()?;
 
     // ZIP-244 sighash
-    let branch_id: u32 = 0x4DEC4DF0; // NU6.1
+    let branch_id: u32 = 0x5437F330; // NU6.2
     let expiry_height = anchor_height.saturating_add(100);
 
     let header_data = {

@@ -2415,6 +2415,7 @@ pub fn redact_pczt_for_signer(pczt: pczt::Pczt) -> pczt::Pczt {
 /// The TS layer wraps `pczt_hex` in CBOR `{1: bytes}` and UR-encodes as
 /// `zcash-pczt` for animated QR transport.
 #[wasm_bindgen]
+#[allow(clippy::too_many_arguments)] // mirrors the PCZT creator-role parameter surface
 pub fn build_unsigned_pczt(
     ufvk_str: &str,
     notes_json: JsValue,
@@ -2455,6 +2456,12 @@ pub fn build_unsigned_pczt(
             .clone()
     };
     let change_addr = fvk.to_ivk(Scope::Internal).address_at(0u64);
+    // OVK-encrypt outputs so the group FVK can recover them: the FROST joiner
+    // OVK-decodes the bundle to verify (recipient, amount) before signing (gh #17),
+    // and the sender keeps its own send history. `None` here (the old zigner
+    // cold-sign default) left outputs unrecoverable → joiner derived 0 recipients.
+    let ovk_external = fvk.to_ovk(Scope::External);
+    let ovk_internal = fvk.to_ovk(Scope::Internal);
 
     // ── recipient parse ────────────────────────────────────────────────────
     let is_transparent = recipient.starts_with("t1") || recipient.starts_with("tm");
@@ -2628,7 +2635,7 @@ pub fn build_unsigned_pczt(
             if let Some(addr) = orchard_recipient {
                 builder
                     .add_orchard_output::<<FixedFeeRule as zcash_primitives::transaction::fees::FeeRule>::Error>(
-                        None,
+                        Some(ovk_external.clone()),
                         addr,
                         amount_zat,
                         recipient_memo.clone(),
@@ -2640,7 +2647,7 @@ pub fn build_unsigned_pczt(
                     .map_err(|_| JsError::new("invalid change amount"))?;
                 builder
                     .add_orchard_output::<<FixedFeeRule as zcash_primitives::transaction::fees::FeeRule>::Error>(
-                        None,
+                        Some(ovk_internal.clone()),
                         change_addr,
                         change_zat,
                         MemoBytes::empty(),
@@ -2661,14 +2668,41 @@ pub fn build_unsigned_pczt(
         }};
     }
 
-    let pczt = if mainnet {
+    // Capture FROST signing data from the orchard parts BEFORE Creator consumes
+    // them. `into_pczt` sets `alpha` + `dummy_sk` at build_for_pczt time, so real
+    // spends (dummy_sk == None) carry their rerandomizer here. The pczt::Pczt that
+    // Creator produces keeps these pub(crate), so this is the only public read.
+    // Order = action order = the order host + joiner run the FROST rounds in.
+    use group::ff::PrimeField;
+    let extract_frost = |orchard: &Option<orchard::pczt::Bundle>| -> Result<(Vec<String>, Vec<u32>), JsError> {
+        let mut alphas = Vec::new();
+        let mut spend_indices = Vec::new();
+        if let Some(b) = orchard.as_ref() {
+            for (i, action) in b.actions().iter().enumerate() {
+                if action.spend().dummy_sk().is_none() {
+                    let alpha = action.spend().alpha().ok_or_else(|| {
+                        JsError::new(&format!("missing alpha for real spend action {}", i))
+                    })?;
+                    alphas.push(hex_encode(&alpha.to_repr()));
+                    spend_indices.push(i as u32);
+                }
+            }
+        }
+        Ok((alphas, spend_indices))
+    };
+
+    let (pczt, alphas, spend_indices) = if mainnet {
         let parts = build_pczt_for!(MainNetwork);
-        pczt::roles::creator::Creator::build_from_parts(parts)
-            .ok_or_else(|| JsError::new("Creator::build_from_parts: incompatible tx version"))?
+        let (alphas, spend_indices) = extract_frost(&parts.orchard)?;
+        let pczt = pczt::roles::creator::Creator::build_from_parts(parts)
+            .ok_or_else(|| JsError::new("Creator::build_from_parts: incompatible tx version"))?;
+        (pczt, alphas, spend_indices)
     } else {
         let parts = build_pczt_for!(TestNetwork);
-        pczt::roles::creator::Creator::build_from_parts(parts)
-            .ok_or_else(|| JsError::new("Creator::build_from_parts: incompatible tx version"))?
+        let (alphas, spend_indices) = extract_frost(&parts.orchard)?;
+        let pczt = pczt::roles::creator::Creator::build_from_parts(parts)
+            .ok_or_else(|| JsError::new("Creator::build_from_parts: incompatible tx version"))?;
+        (pczt, alphas, spend_indices)
     };
 
     // ── orchard Halo 2 proof (expensive — seconds on a phone CPU) ──────────
@@ -2692,6 +2726,17 @@ pub fn build_unsigned_pczt(
     let action_count = pczt.orchard().actions().len() as u32;
     let pczt_bytes = pczt.serialize();
 
+    // ── canonical sighash for FROST signing ───────────────────────────────
+    // Derive it from the serialized (redacted) PCZT — exactly the bytes the
+    // joiner gets — so host + joiner sign the same message the joiner verified.
+    let sighash = {
+        let reparsed = pczt::Pczt::parse(&pczt_bytes)
+            .map_err(|e| JsError::new(&format!("reparse pczt for sighash: {:?}", e)))?;
+        pczt::roles::signer::Signer::new(reparsed)
+            .map_err(|e| JsError::new(&format!("signer init: {:?}", e)))?
+            .shielded_sighash()
+    };
+
     let recipient_short = if recipient.len() > 20 {
         &recipient[..20]
     } else {
@@ -2705,16 +2750,25 @@ pub fn build_unsigned_pczt(
         num_spends
     );
 
+    // `sighash`/`alphas`/`spend_indices` are additive: the zigner cold-sign
+    // caller ignores them; the FROST host (mnemonic/escrow) needs them to drive
+    // round1/round2 per real-spend action. See gh #17.
     #[derive(Serialize)]
     struct Out {
         pczt_hex: String,
         summary: String,
         action_count: u32,
+        sighash: String,
+        alphas: Vec<String>,
+        spend_indices: Vec<u32>,
     }
     serde_wasm_bindgen::to_value(&Out {
         pczt_hex: hex_encode(&pczt_bytes),
         summary,
         action_count,
+        sighash: hex_encode(&sighash),
+        alphas,
+        spend_indices,
     })
     .map_err(|e| JsError::new(&format!("serialization failed: {}", e)))
 }
@@ -2759,6 +2813,51 @@ pub fn extract_signed_tx_from_pczt_bytes(pczt_bytes: &[u8]) -> Result<Vec<u8>, S
 pub fn extract_signed_tx_from_pczt(pczt_hex: &str) -> Result<String, JsError> {
     let bytes = hex_decode(pczt_hex).ok_or_else(|| JsError::new("invalid pczt hex"))?;
     let tx_bytes = extract_signed_tx_from_pczt_bytes(&bytes).map_err(|e| JsError::new(&e))?;
+    Ok(hex_encode(&tx_bytes))
+}
+
+/// Complete an orchard-only FROST multisig PCZT: inject the externally-aggregated
+/// SpendAuth signatures (one per real spend, in `spend_indices` order, matching
+/// what `build_unsigned_pczt` returned) into the PCZT, then extract the
+/// broadcast-ready v5 tx. The mnemonic/zigner host and the poker escrow all
+/// finish a FROST signing round this way (gh #17 PCZT migration).
+#[wasm_bindgen]
+pub fn complete_orchard_pczt(
+    pczt_hex: &str,
+    orchard_sigs_json: JsValue,
+    spend_indices_json: JsValue,
+) -> Result<String, JsError> {
+    use orchard::primitives::redpallas;
+
+    let sigs: Vec<String> = serde_wasm_bindgen::from_value(orchard_sigs_json)
+        .map_err(|e| JsError::new(&format!("invalid orchard_sigs: {}", e)))?;
+    let spend_indices: Vec<u32> = serde_wasm_bindgen::from_value(spend_indices_json)
+        .map_err(|e| JsError::new(&format!("invalid spend_indices: {}", e)))?;
+    if sigs.len() != spend_indices.len() {
+        return Err(JsError::new("orchard_sigs and spend_indices length mismatch"));
+    }
+
+    let bytes = hex_decode(pczt_hex).ok_or_else(|| JsError::new("invalid pczt hex"))?;
+    let pczt = pczt::Pczt::parse(&bytes)
+        .map_err(|e| JsError::new(&format!("pczt parse failed: {:?}", e)))?;
+    let mut signer = pczt::roles::signer::Signer::new(pczt)
+        .map_err(|e| JsError::new(&format!("signer init: {:?}", e)))?;
+
+    for (sig_hex, idx) in sigs.iter().zip(spend_indices.iter()) {
+        let raw = hex_decode(sig_hex).ok_or_else(|| JsError::new("invalid orchard sig hex"))?;
+        let arr: [u8; 64] = raw
+            .as_slice()
+            .try_into()
+            .map_err(|_| JsError::new("orchard sig must be 64 bytes"))?;
+        let sig = redpallas::Signature::<redpallas::SpendAuth>::from(arr);
+        signer
+            .apply_orchard_signature(*idx as usize, sig)
+            .map_err(|e| JsError::new(&format!("apply_orchard_signature[{}]: {:?}", idx, e)))?;
+    }
+
+    let signed = signer.finish();
+    let tx_bytes =
+        extract_signed_tx_from_pczt_bytes(&signed.serialize()).map_err(|e| JsError::new(&e))?;
     Ok(hex_encode(&tx_bytes))
 }
 
@@ -2939,7 +3038,9 @@ pub fn build_witnesses_and_paths(
 /// * `merkle_result_json` - JSON from build_merkle_paths: `{anchor_hex, paths: [{position, path: [{hash}]}]}`
 /// * `anchor_height` - block height of the anchor
 /// * `mainnet` - true for mainnet, false for testnet
-/// * `attestation_hex` - optional hex-encoded 64-byte FROST attestation signature
+/// * `attestation_hex` - optional hex-encoded 64-byte ed25519 anchor attestation
+///   signature from a trusted verifier (zidecar SignAnchor). Verified on the
+///   cold device against its anchor-verifier registry.
 ///
 /// # Returns
 /// `Uint8Array` of CBOR bytes ready for UR fountain encoding
@@ -2996,12 +3097,12 @@ pub fn encode_notes_bundle(
         .try_into()
         .map_err(|_| JsError::new("anchor must be 32 bytes"))?;
 
-    let attestation: Option<[u8; 96]> = match attestation_hex {
+    let attestation: Option<[u8; 64]> = match attestation_hex {
         Some(h) if !h.is_empty() => {
-            let bytes: [u8; 96] = hex::decode(&h)
+            let bytes: [u8; 64] = hex::decode(&h)
                 .map_err(|e| JsError::new(&format!("bad attestation hex: {e}")))?
                 .try_into()
-                .map_err(|_| JsError::new("attestation must be 96 bytes (sig 64 + randomizer 32)"))?;
+                .map_err(|_| JsError::new("attestation must be 64 bytes (ed25519 signature)"))?;
             Some(bytes)
         }
         _ => None,
@@ -3087,11 +3188,12 @@ pub fn encode_notes_bundle(
         }
     }
 
-    // key 5: attestation (optional, 96 bytes: signature(64) + randomizer(32))
+    // key 5: attestation (optional, 64 bytes: ed25519 signature over the
+    // anchor digest by a trusted verifier — matches zigner's decoder).
     if let Some(att) = attestation {
         cbor.push(0x05);
         cbor.push(0x58);
-        cbor.push(0x60); // bytes(96)
+        cbor.push(0x40); // bytes(64)
         cbor.extend_from_slice(&att);
     }
 
@@ -3230,6 +3332,31 @@ pub fn zt_encode_frames(
     n: u8,
 ) -> Result<String, JsError> {
     let (frames, _) = zoda_vss::transport::Encoder::encode(cbor_data, k, n);
+    let strings: Vec<String> = frames
+        .iter()
+        .map(|f| format!("zt:{}/{}", zt_type, hex::encode(f.to_bytes())))
+        .collect();
+    serde_json::to_string(&strings).map_err(|e| JsError::new(&format!("JSON: {e}")))
+}
+
+/// Encode CBOR bytes as zoda transport QR frames, auto-sizing `k`/`n` so each
+/// hex-encoded `zt:` frame fits a scannable QR regardless of payload size.
+/// Returns JSON array of `zt:type/hex` strings.
+///
+/// - `max_qr_bytes`: max *raw* frame bytes before hex encoding. The QR string
+///   is `len("zt:type/") + 2 * frame_bytes`, so pick this from the target QR
+///   capacity: roughly `qr_byte_capacity / 2 - prefix`. ~600 gives a ~1.2 KB
+///   QR string (≈ v24 at ECC-L), comfortable for handheld scanning.
+/// - `redundancy_pct`: extra parity frames as a percentage of `k` (e.g. 30).
+#[wasm_bindgen]
+pub fn zt_encode_frames_auto(
+    cbor_data: &[u8],
+    zt_type: &str,
+    max_qr_bytes: usize,
+    redundancy_pct: u8,
+) -> Result<String, JsError> {
+    let (frames, _) =
+        zoda_vss::transport::Encoder::encode_auto(cbor_data, max_qr_bytes, redundancy_pct);
     let strings: Vec<String> = frames
         .iter()
         .map(|f| format!("zt:{}/{}", zt_type, hex::encode(f.to_bytes())))

@@ -528,6 +528,140 @@ pub fn frost_parse_tx_outputs(
     .to_string())
 }
 
+/// Inspect a PCZT's orchard outputs + recompute its canonical ZIP-244 sighash,
+/// for the FROST joiner's display↔sighash binding (gh #17). Returns the same
+/// JSON shape as `frost_parse_tx_outputs`, but sources both the bundle and the
+/// sighash from the PCZT itself via `Pczt::into_effects()` → `v5_signature_hash`.
+/// So the value the joiner checks is the canonical message its signature will
+/// commit to — never a host-supplied claim. The host publishes the (proven,
+/// io-finalized, redacted) PCZT; `into_effects` needs neither proof nor sigs.
+#[wasm_bindgen]
+pub fn frost_inspect_pczt_outputs(
+    pczt_hex: &str,
+    orchard_fvk_uview: &str,
+) -> Result<String, JsError> {
+    use orchard::keys::Scope;
+    use orchard::note_encryption::OrchardDomain;
+    use zcash_keys::keys::UnifiedFullViewingKey;
+    use zcash_note_encryption::try_output_recovery_with_ovk;
+    use zcash_primitives::transaction::sighash::SignableInput;
+    use zcash_primitives::transaction::sighash_v5::v5_signature_hash;
+    use zcash_primitives::transaction::txid::TxIdDigester;
+    use zcash_protocol::consensus::{MainNetwork, TestNetwork};
+
+    let bytes = hex::decode(pczt_hex)
+        .map_err(|e| JsError::new(&format!("bad pczt hex: {}", e)))?;
+    let pczt = pczt::Pczt::parse(&bytes)
+        .map_err(|e| JsError::new(&format!("pczt parse failed: {:?}", e)))?;
+
+    // Canonical effects: the sighash AND the orchard bundle both derive from
+    // the same byte stream the FROST signature commits to.
+    let tx_data = pczt
+        .into_effects()
+        .map_err(|e| JsError::new(&format!("pczt into_effects: {:?}", e)))?;
+    let txid_parts = tx_data.digest(TxIdDigester);
+    let shielded_sighash = v5_signature_hash(&tx_data, &SignableInput::Shielded, &txid_parts);
+    let computed_sighash_hex = hex::encode(shielded_sighash.as_ref());
+
+    // testnet uview prefix is `uviewtest1`, mainnet is `uview1`.
+    let mainnet = !orchard_fvk_uview.starts_with("uviewtest");
+    let ufvk = if mainnet {
+        UnifiedFullViewingKey::decode(&MainNetwork, orchard_fvk_uview)
+    } else {
+        UnifiedFullViewingKey::decode(&TestNetwork, orchard_fvk_uview)
+    }
+    .map_err(|e| JsError::new(&format!("invalid UFVK: {}", e)))?;
+    let orchard_fvk_keys = ufvk
+        .orchard()
+        .ok_or_else(|| JsError::new("UFVK has no orchard component"))?;
+    let fvk_bytes = orchard_fvk_keys.to_bytes();
+    let fvk = orchard::keys::FullViewingKey::from_bytes(&fvk_bytes)
+        .ok_or_else(|| JsError::new("invalid orchard FVK in UFVK"))?;
+    let ovk_external = fvk.to_ovk(Scope::External);
+    let ovk_internal = fvk.to_ovk(Scope::Internal);
+
+    let bundle = match tx_data.orchard_bundle() {
+        Some(b) => b,
+        None => {
+            return Ok(serde_json::json!({
+                "actions": [],
+                "summary": {
+                    "total_send_zat": 0u64,
+                    "total_change_zat": 0u64,
+                    "decrypted_count": 0u32,
+                    "action_count": 0u32,
+                },
+                "computed_sighash_hex": computed_sighash_hex,
+            })
+            .to_string());
+        }
+    };
+
+    let actions: Vec<_> = bundle.actions().iter().collect();
+    let mut actions_json = Vec::with_capacity(actions.len());
+    let mut total_send: u64 = 0;
+    let mut total_change: u64 = 0;
+    let mut decrypted_count: u32 = 0;
+
+    for (idx, action) in actions.iter().enumerate() {
+        let domain = OrchardDomain::for_action(*action);
+        let cv = action.cv_net();
+        let out_ct = action.encrypted_note().out_ciphertext;
+
+        if let Some((note, addr, _memo)) =
+            try_output_recovery_with_ovk(&domain, &ovk_external, *action, cv, &out_ct)
+        {
+            let amount = note.value().inner();
+            total_send = total_send.saturating_add(amount);
+            decrypted_count += 1;
+            actions_json.push(serde_json::json!({
+                "index": idx as u32,
+                "amount_zat": amount,
+                "recipient_raw_hex": hex::encode(addr.to_raw_address_bytes()),
+                "is_change": false,
+                "decrypted": true,
+            }));
+            continue;
+        }
+
+        if let Some((note, addr, _memo)) =
+            try_output_recovery_with_ovk(&domain, &ovk_internal, *action, cv, &out_ct)
+        {
+            let amount = note.value().inner();
+            total_change = total_change.saturating_add(amount);
+            decrypted_count += 1;
+            actions_json.push(serde_json::json!({
+                "index": idx as u32,
+                "amount_zat": amount,
+                "recipient_raw_hex": hex::encode(addr.to_raw_address_bytes()),
+                "is_change": true,
+                "decrypted": true,
+            }));
+            continue;
+        }
+
+        actions_json.push(serde_json::json!({
+            "index": idx as u32,
+            "amount_zat": 0u64,
+            "recipient_raw_hex": serde_json::Value::Null,
+            "is_change": false,
+            "decrypted": false,
+        }));
+    }
+
+    Ok(serde_json::json!({
+        "actions": actions_json,
+        "summary": {
+            "total_send_zat": total_send,
+            "total_change_zat": total_change,
+            "decrypted_count": decrypted_count,
+            "action_count": actions.len() as u32,
+        },
+        "computed_sighash_hex": computed_sighash_hex,
+    })
+    .to_string())
+}
+
 
 // ── anchor attestation (domain-separated from spend auth) ──
 //

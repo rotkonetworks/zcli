@@ -83,7 +83,13 @@ pub async fn scan(
 
     let start = last_height.saturating_add(1).max(ORCHARD_ACTIVATION_MAINNET);
     if start > tip {
-        return Ok((tip, vec![]));
+        static LOGGED_ONCE: std::sync::atomic::AtomicBool =
+            std::sync::atomic::AtomicBool::new(false);
+        let first = !LOGGED_ONCE.swap(true, std::sync::atomic::Ordering::Relaxed);
+        if first || start > tip + 100 {
+            tracing::info!("sync start from: {}, current_highest_height: {}", start, tip);
+        }
+        return Ok((last_height, vec![]));
     }
 
     let ivk_ext: PreparedIncomingViewingKey =

@@ -235,11 +235,10 @@ pub fn encode_unified_address(addr: &orchard::Address, mainnet: bool) -> Result<
     let items = vec![zcash_address::unified::Receiver::Orchard(raw)];
     let ua = zcash_address::unified::Address::try_from_items(items)
         .map_err(|e| Error::Address(format!("UA construction: {}", e)))?;
-    #[allow(deprecated)]
     let network = if mainnet {
-        zcash_address::Network::Main
+        zcash_protocol::consensus::NetworkType::Main
     } else {
-        zcash_address::Network::Test
+        zcash_protocol::consensus::NetworkType::Test
     };
     Ok(ua.encode(&network))
 }
