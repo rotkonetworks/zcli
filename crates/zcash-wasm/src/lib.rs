@@ -2404,6 +2404,28 @@ pub fn redact_pczt_for_signer(pczt: pczt::Pczt) -> pczt::Pczt {
                 a.clear_spend_zip32_derivation();
                 a.clear_spend_dummy_sk();
                 a.clear_spend_proprietary();
+                // R3: the spent-note plaintext (rseed/rho/recipient/value) is
+                // NOT needed by the Signer - the Prover already ran and
+                // IoFinalizer already bound the sighash. Leaving these ships the
+                // note contents to the signing device, so strip them. The
+                // signer's `verify_nullifier(None)` tolerates each of these being
+                // absent (it maps MissingRecipient/Value/Rho/RandomSeed to Ok).
+                a.clear_spend_rseed();
+                a.clear_spend_rho();
+                a.clear_spend_recipient();
+                a.clear_spend_value();
+                // NOTE on fvk: R3 also asked to clear the spend fvk (it is the
+                // wallet's viewing key). In THIS pinned pczt rev that is unsafe
+                // on the producer side alone: `Signer::sign_orchard` calls
+                // `verify_nullifier(None)`, which checks the fvk FIRST and does
+                // NOT tolerate `MissingFullViewingKey`; and the public Updater
+                // exposes no `set_spend_fvk`, so a cleared fvk cannot be restored
+                // on the signer device. Clearing it here makes the orchard spend
+                // UNSIGNABLE (empirically: "no orchard action accepted our ask").
+                // Fully stripping the fvk therefore requires the signer path to
+                // reconstruct its own fvk and call `verify_nullifier(Some(fvk))`
+                // - a FIX-B (signer) change. Until that lands, keep the fvk so
+                // funds can move; the other four plaintext fields are stripped.
             });
         });
     // The ironwood bundle (NU6.3 / V6) is orchard-shaped; apply the identical
@@ -2416,6 +2438,15 @@ pub fn redact_pczt_for_signer(pczt: pczt::Pczt) -> pczt::Pczt {
             a.clear_spend_zip32_derivation();
             a.clear_spend_dummy_sk();
             a.clear_spend_proprietary();
+            // R3: same note-plaintext leak as the orchard bundle. The ironwood
+            // spends in a turnstile migration are all dummies, but strip
+            // unconditionally so no plaintext ever reaches the signer. Same fvk
+            // caveat as the orchard bundle above (kept for signability; full
+            // strip is a FIX-B signer change).
+            a.clear_spend_rseed();
+            a.clear_spend_rho();
+            a.clear_spend_recipient();
+            a.clear_spend_value();
         });
     });
     redactor.finish()
@@ -2510,6 +2541,21 @@ fn prepare_orchard_spends(
                     JsError::new(&format!("note {} reconstruction failed (rseed/rho/value)", i))
                 })?
         };
+        // Pool / note-version guard (defense-in-depth): the orchard spend path
+        // is ONLY for legacy V2 orchard notes. A V3 (ironwood) note must never
+        // enter here - spending an ironwood note as if it were orchard would
+        // bind the wrong pool. Reconstruction above forces V2, so a mismatch
+        // means the caller handed us note components that don't belong; reject
+        // explicitly rather than relying on the cmx check to catch it.
+        if note.version() != orchard::note::NoteVersion::V2 {
+            return Err(JsError::new(&format!(
+                "note {} is not a V2 orchard note (got {:?}); the orchard spend \
+                 path rejects ironwood/V3 inputs",
+                i,
+                note.version()
+            )));
+        }
+
         let expected = hex_decode(&n.cmx)
             .ok_or_else(|| JsError::new(&format!("invalid cmx hex for note {}", i)))?;
         let computed = orchard::note::ExtractedNoteCommitment::from(note.commitment()).to_bytes();
@@ -3016,6 +3062,7 @@ pub fn build_turnstile_migration_pczt_core<P>(
     fee: u64,
     orchard_anchor: orchard::tree::Anchor,
     target_height: u32,
+    expected_branch_id: u32,
     memo: zcash_protocol::memo::MemoBytes,
 ) -> Result<TurnstileBuild, String>
 where
@@ -3026,10 +3073,46 @@ where
     use zcash_primitives::transaction::builder::{BuildConfig, Builder};
     use zcash_primitives::transaction::fees::fixed::FeeRule as FixedFeeRule;
     use zcash_primitives::transaction::TxVersion;
-    use zcash_protocol::consensus::BlockHeight;
+    use zcash_protocol::consensus::{BlockHeight, BranchId};
     use zcash_protocol::value::Zatoshis;
 
     type FeError = <FixedFeeRule as zcash_primitives::transaction::fees::FeeRule>::Error;
+
+    // FAIL-CLOSED branch-id guard (money path). The turnstile sighash binds the
+    // consensus branch id selected by the network params at `target_height`.
+    // The wallet reads the *real* active branch id from GetLightdInfo and passes
+    // it here as `expected_branch_id`. We REFUSE to build unless the branch id
+    // we would actually bind matches it, AND we refuse the placeholder value
+    // outright. This makes it impossible to ever produce a tx that binds the
+    // 0xffff_ffff placeholder (which would be invalid/unspendable on-chain) or
+    // a branch other than the one the wallet believes is active.
+    const NU6_3_PLACEHOLDER_BRANCH_ID: u32 = 0xffff_ffff;
+    if expected_branch_id == NU6_3_PLACEHOLDER_BRANCH_ID {
+        return Err(format!(
+            "refusing to build turnstile migration: expected_branch_id is the \
+             NU6.3 placeholder {:#010x}; the wallet must pass the real consensus \
+             branch id read from GetLightdInfo",
+            NU6_3_PLACEHOLDER_BRANCH_ID
+        ));
+    }
+    let bound_branch_id: u32 =
+        BranchId::for_height(&params, BlockHeight::from(target_height)).into();
+    if bound_branch_id == NU6_3_PLACEHOLDER_BRANCH_ID {
+        return Err(format!(
+            "refusing to build turnstile migration: the network params would bind \
+             the NU6.3 placeholder branch id {:#010x} at height {} - the \
+             librustzcash fork has not been patched with the real NU6.3 branch id",
+            NU6_3_PLACEHOLDER_BRANCH_ID, target_height
+        ));
+    }
+    if bound_branch_id != expected_branch_id {
+        return Err(format!(
+            "refusing to build turnstile migration: branch id that would bind at \
+             height {} is {:#010x} but the wallet expected {:#010x} (NU6.3 not \
+             active at this height, or a branch-id mismatch)",
+            target_height, bound_branch_id, expected_branch_id
+        ));
+    }
 
     if prepared.is_empty() {
         return Err("turnstile migration requires at least one orchard note".into());
@@ -3138,6 +3221,7 @@ pub fn build_turnstile_migration_pczt(
     orchard_merkle_paths_json: &str,
     account_index: u32,
     target_height: u32,
+    expected_branch_id: u32,
     mainnet: bool,
     memo_hex: Option<String>,
 ) -> Result<JsValue, JsError> {
@@ -3188,6 +3272,7 @@ pub fn build_turnstile_migration_pczt(
             fee,
             orchard_anchor,
             target_height,
+            expected_branch_id,
             memo,
         )
     } else {
@@ -3201,6 +3286,7 @@ pub fn build_turnstile_migration_pczt(
             fee,
             orchard_anchor,
             target_height,
+            expected_branch_id,
             memo,
         )
     }
@@ -3233,6 +3319,7 @@ pub fn build_turnstile_migration_pczt(
     _orchard_merkle_paths_json: &str,
     _account_index: u32,
     _target_height: u32,
+    _expected_branch_id: u32,
     _mainnet: bool,
     _memo_hex: Option<String>,
 ) -> Result<JsValue, JsError> {

@@ -58,9 +58,12 @@ fn build_test_pczt() -> Pczt {
     let orchard_fvk = orchard::keys::FullViewingKey::from(&orchard_sk);
     let recipient = orchard_fvk.address_at(0u32, Scope::External);
 
+    // Post-NU6.2, below the real NU6.3 activation (3_428_143). At NU6.3 the
+    // orchard cross-address outputs this fixture adds are DISABLED, so we must
+    // build a pre-NU6.3 orchard tx now that FIX-A wired the real activation.
     let mut builder = Builder::new(
         params,
-        10_000_000.into(),
+        3_400_000.into(),
         BuildConfig::Standard {
             sapling_anchor: None,
             orchard_anchor: Some(orchard::Anchor::empty_tree()),

@@ -1,0 +1,50 @@
+name: Audits
+
+on:
+  pull_request:
+  push:
+    branches: main
+
+permissions:
+  contents: read
+
+jobs:
+  cargo-vet:
+    name: Vet Rust dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        id: toolchain
+      - run: rustup override set "${TOOLCHAIN}"
+        env:
+          TOOLCHAIN: ${{steps.toolchain.outputs.name}}
+      - run: cargo install cargo-vet --version ~0.10
+      - run: cargo vet --locked
+
+  cargo-deny:
+    name: Check licenses
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - uses: EmbarkStudios/cargo-deny-action@6c8f9facfa5047ec02d8485b6bf52b587b7777d1 # v2.0.18
+        with:
+          command: check licenses
+
+  required-audits:
+    name: Required audits have passed
+    needs:
+      - cargo-vet
+      - cargo-deny
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Determine whether all required-pass steps succeeded
+        run: |
+          echo "${NEEDS}" | jq -e '[ .[] | .result == "success" ] | all'
+        env:
+          NEEDS: ${{ toJSON(needs) }}

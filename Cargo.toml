@@ -18,6 +18,13 @@ members = [
     "bin/license-server",
 ]
 
+# The vendored librustzcash fork is its own workspace (see the [patch] below);
+# keep it out of ours so its crates inherit workspace.package from the
+# vendored root, not from us.
+exclude = [
+    "vendor/librustzcash",
+]
+
 [workspace.package]
 authors = ["rotko networks"]
 edition = "2021"
@@ -47,6 +54,31 @@ wide = { version = "0.7", default-features = false }
 
 [patch.crates-io]
 maybe-rayon = { path = "crates/maybe-rayon" }
+
+# NU6.3 / Ironwood real params fix (FIX-A, money path).
+#
+# The pinned valargroup/librustzcash rev 0c3ad735 (branch
+# adam/qleak-pr44-orchard-dummy-ciphertexts) hardcodes the NU6.3 consensus
+# branch id as the placeholder 0xffff_ffff and activation_height(Nu6_3) => None.
+# The turnstile sighash MUST bind the real branch id 0x37a5165b (activation
+# height 3_428_143 on mainnet) or every produced tx is invalid on-chain.
+#
+# Rather than depend on an out-of-band fork being reachable, we vendor the exact
+# pinned checkout under vendor/librustzcash with the three-line consensus patch
+# applied (see vendor/librustzcash/components/zcash_protocol/src/consensus.rs)
+# and [patch] the git source to it. This is fully reproducible offline and the
+# patched source is committed. All nine crates the lock pulls from that source
+# are overridden so Cargo does not mix patched and unpatched copies.
+[patch."https://github.com/valargroup/librustzcash"]
+equihash = { path = "vendor/librustzcash/components/equihash" }
+f4jumble = { path = "vendor/librustzcash/components/f4jumble" }
+pczt = { path = "vendor/librustzcash/pczt" }
+zcash_address = { path = "vendor/librustzcash/components/zcash_address" }
+zcash_encoding = { path = "vendor/librustzcash/components/zcash_encoding" }
+zcash_keys = { path = "vendor/librustzcash/zcash_keys" }
+zcash_primitives = { path = "vendor/librustzcash/zcash_primitives" }
+zcash_protocol = { path = "vendor/librustzcash/components/zcash_protocol" }
+zcash_transparent = { path = "vendor/librustzcash/zcash_transparent" }
 
 
 # Optional local dev: uncomment to develop against a sibling zeratul checkout.

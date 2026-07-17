@@ -39,10 +39,19 @@ use zcash_protocol::{
 };
 use zcash_transparent::{address::TransparentAddress, bundle as transparent};
 
+// Build height for this plain orchard+transparent send. Must be post-NU6.2
+// (3_364_600) so the builder selects the FixedPostNu6_2 circuit, but BELOW the
+// real NU6.3 activation (3_428_143) - at NU6.3 orchard cross-address outputs
+// are DISABLED (the one-way turnstile), which would reject this test's orchard
+// output with OrchardRecipient(CrossAddressDisabled). Since FIX-A wired the
+// real NU6.3 activation height into the fork, this test can no longer build at
+// 10_000_000 (now post-NU6.3); 3_400_000 keeps it a valid pre-NU6.3 orchard tx.
+const ORCHARD_SEND_HEIGHT: u32 = 3_400_000;
+
 static ORCHARD_PROVING_KEY: OnceLock<orchard::circuit::ProvingKey> = OnceLock::new();
 fn orchard_proving_key() -> &'static orchard::circuit::ProvingKey {
-    // Height 10_000_000 on MainNetwork is past NU6.2 activation, so the
-    // builder selects BundleProtocol::OrchardPreNu6_3 = the fixed circuit.
+    // Post-NU6.2 / pre-NU6.3 selects BundleProtocol::OrchardPreNu6_3 = the
+    // fixed circuit.
     ORCHARD_PROVING_KEY.get_or_init(|| {
         orchard::circuit::ProvingKey::build(
             orchard::circuit::OrchardCircuitVersion::FixedPostNu6_2,
@@ -73,7 +82,7 @@ fn extract_signed_tx_round_trip() {
     // Build PCZT with a transparent input + two orchard outputs that balance.
     let mut builder = Builder::new(
         params,
-        10_000_000.into(),
+        ORCHARD_SEND_HEIGHT.into(),
         BuildConfig::Standard {
             sapling_anchor: None,
             orchard_anchor: Some(orchard::Anchor::empty_tree()),

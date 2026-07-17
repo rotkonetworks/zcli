@@ -74,6 +74,22 @@ fn turnstile_orchard_to_ironwood_builds_signs_extracts() {
     // Target height must be past every inherited MainNetwork activation (the
     // orchard builder needs NU5 active); 10_000_000 matches the fork's
     // end_to_end.rs fixture.
+    // Real NU6.3 / Ironwood consensus branch id (from the live zebra). The
+    // patched fork binds this at any NU6.3-active height; the fail-closed guard
+    // requires the caller to pass it explicitly.
+    const NU6_3_BRANCH_ID: u32 = 0x37a5_165b;
+
+    // Sanity: the patched params bind the REAL branch id at an NU6.3-active
+    // height (not the 0xffff_ffff placeholder).
+    assert_eq!(
+        u32::from(BranchId::for_height(
+            &Nu63TestNet,
+            BlockHeight::from_u32(10_000_000)
+        )),
+        NU6_3_BRANCH_ID,
+        "turnstile must bind the real NU6.3 branch id 0x37a5165b"
+    );
+
     let built = build_turnstile_migration_pczt_core(
         Nu63TestNet,
         &fvk,
@@ -81,9 +97,63 @@ fn turnstile_orchard_to_ironwood_builds_signs_extracts() {
         fee,
         orchard_anchor,
         10_000_000,
+        NU6_3_BRANCH_ID,
         MemoBytes::empty(),
     )
     .expect("build turnstile migration PCZT");
+
+    // Fail-closed guard: a mismatched expected branch id must be REFUSED, and
+    // the placeholder must be refused outright. Rebuild with fresh inputs since
+    // the note/witness were moved into the successful build above.
+    {
+        let note2: orchard::Note = Option::from(orchard::Note::from_parts(
+            fvk.address_at(0u32, orchard::keys::Scope::External),
+            orchard::value::NoteValue::from_raw(note_value),
+            rho,
+            rseed,
+            orchard::note::NoteVersion::V2,
+        ))
+        .expect("test note 2");
+        let witness2 = orchard::tree::MerklePath::from_parts(0, [zero; 32]);
+        let err = match build_turnstile_migration_pczt_core(
+            Nu63TestNet,
+            &fvk,
+            vec![(note2, witness2)],
+            fee,
+            orchard_anchor,
+            10_000_000,
+            0xdead_beef, // wrong branch id
+            MemoBytes::empty(),
+        ) {
+            Ok(_) => panic!("must refuse a mismatched branch id"),
+            Err(e) => e,
+        };
+        assert!(err.contains("branch id"), "unexpected error: {err}");
+
+        let note3: orchard::Note = Option::from(orchard::Note::from_parts(
+            fvk.address_at(0u32, orchard::keys::Scope::External),
+            orchard::value::NoteValue::from_raw(note_value),
+            rho,
+            rseed,
+            orchard::note::NoteVersion::V2,
+        ))
+        .expect("test note 3");
+        let witness3 = orchard::tree::MerklePath::from_parts(0, [zero; 32]);
+        let err = match build_turnstile_migration_pczt_core(
+            Nu63TestNet,
+            &fvk,
+            vec![(note3, witness3)],
+            fee,
+            orchard_anchor,
+            10_000_000,
+            0xffff_ffff, // placeholder
+            MemoBytes::empty(),
+        ) {
+            Ok(_) => panic!("must refuse the placeholder branch id"),
+            Err(e) => e,
+        };
+        assert!(err.contains("placeholder"), "unexpected error: {err}");
+    }
 
     let migrated = note_value - fee;
 
@@ -111,6 +181,44 @@ fn turnstile_orchard_to_ironwood_builds_signs_extracts() {
     assert_eq!(
         built.action_count,
         built.summary.orchard_actions + built.summary.ironwood_actions
+    );
+
+    // -- REDACTION-ABSENCE (R3): the spent-note plaintext MUST NOT survive into
+    //    the redacted-for-signer payload. The pczt Spend fields
+    //    (recipient/value/rho/rseed/fvk) are pub(crate) (no public accessor), so
+    //    we assert at the byte level: the known secret byte-strings must be
+    //    absent from the serialized redacted PCZT.
+    //
+    //    We assert on the spent note's 32-byte rho: it is a spend-note secret,
+    //    the redactor clears `spend.rho`, and the fabricated outputs use fresh
+    //    rho values, so its absence uniquely proves the spend was redacted.
+    //    (The spend's recipient/rseed ALSO appear in the fabricated dummy ORCHARD
+    //    OUTPUT paired with the spend - an output-side leak out of scope for the
+    //    R3 spend-redaction fix - so byte-testing those would false-negative on
+    //    the output copy.)
+    //
+    //    fvk is intentionally NOT asserted absent: `Signer::sign_orchard` calls
+    //    `verify_nullifier(None)` which requires the spend fvk in THIS pinned
+    //    rev (it does not tolerate MissingFullViewingKey and the Updater has no
+    //    set_spend_fvk to restore it). Stripping fvk makes the spend unsignable;
+    //    fully stripping it is a FIX-B signer change. See the redactor comment.
+    //
+    //    A control assertion confirms the ironwood OUTPUT recipient (needed for
+    //    device confirmation) DOES survive, so the redaction is not over-broad.
+    fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+        !needle.is_empty() && haystack.windows(needle.len()).any(|w| w == needle)
+    }
+    let spent_rho = rho.to_bytes();
+    let ironwood_dest = fvk
+        .address_at(0u32, orchard::keys::Scope::Internal)
+        .to_raw_address_bytes();
+    assert!(
+        !contains(&built.pczt_bytes, &spent_rho),
+        "redacted PCZT still leaks the spent note's rho"
+    );
+    assert!(
+        contains(&built.pczt_bytes, &ironwood_dest),
+        "redaction dropped the ironwood output recipient needed for confirmation"
     );
 
     // -- redacted PCZT round-trips and is V6 --
