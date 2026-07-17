@@ -2386,7 +2386,7 @@ pub fn complete_transaction(
 /// so behavioral tests can exercise it without spinning up the full Halo 2
 /// proving pipeline.
 pub fn redact_pczt_for_signer(pczt: pczt::Pczt) -> pczt::Pczt {
-    pczt::roles::redactor::Redactor::new(pczt)
+    let redactor = pczt::roles::redactor::Redactor::new(pczt)
         .redact_global_with(|mut g| {
             g.clear_proprietary();
         })
@@ -2397,8 +2397,20 @@ pub fn redact_pczt_for_signer(pczt: pczt::Pczt) -> pczt::Pczt {
                 a.clear_spend_dummy_sk();
                 a.clear_spend_proprietary();
             });
-        })
-        .finish()
+        });
+    // The ironwood bundle (NU6.3 / V6) is orchard-shaped; apply the identical
+    // redaction. In a turnstile migration every ironwood spend is a dummy
+    // whose auth sig IoFinalizer already attached, so the same clears apply.
+    #[cfg(zcash_unstable = "nu6.3")]
+    let redactor = redactor.redact_ironwood_with(|mut o| {
+        o.redact_actions(|mut a| {
+            a.clear_spend_witness();
+            a.clear_spend_zip32_derivation();
+            a.clear_spend_dummy_sk();
+            a.clear_spend_proprietary();
+        });
+    });
+    redactor.finish()
 }
 
 // ============================================================================
@@ -2425,108 +2437,25 @@ pub fn redact_pczt_for_signer(pczt: pczt::Pczt) -> pczt::Pczt {
 //   TransactionExtractor::with_orchard(vk).extract → broadcast-ready v5 tx.
 // ============================================================================
 
-/// Build a PCZT for cold-wallet signing via QR.
-///
-/// `target_height` selects the consensus branch; pass any height ≥ NU6.1
-/// activation for current mainnet operations. The tx version is derived from
-/// network upgrade rules (currently V5).
-///
-/// Returns JSON: `{ pczt_hex, summary, action_count }`.
-/// The TS layer wraps `pczt_hex` in CBOR `{1: bytes}` and UR-encodes as
-/// `zcash-pczt` for animated QR transport.
-#[wasm_bindgen]
-pub fn build_unsigned_pczt(
-    ufvk_str: &str,
-    notes_json: JsValue,
-    recipient: &str,
-    amount: u64,
-    fee: u64,
-    anchor_hex: &str,
-    merkle_paths_json: JsValue,
-    target_height: u32,
-    mainnet: bool,
-    memo_hex: Option<String>,
-) -> Result<JsValue, JsError> {
+/// Reconstruct owned orchard notes (V2, legacy pool) and their merkle paths
+/// from raw scan fields, verifying each note's cmx commitment. Verifying cmx
+/// defends against a caller passing `value`/`rho` that don't actually commit
+/// to the note they're claiming. Shared by the PCZT send producer and the
+/// turnstile migration producer.
+fn prepare_orchard_spends(
+    fvk: &orchard::keys::FullViewingKey,
+    notes: &[SpendableNote],
+    merkle_paths: &[MerklePathInfo],
+) -> Result<Vec<(orchard::Note, orchard::tree::MerklePath)>, JsError> {
     use orchard::note::{RandomSeed, Rho};
-    use orchard::tree::{Anchor, MerkleHashOrchard, MerklePath as OrchardMerklePath};
+    use orchard::tree::{MerkleHashOrchard, MerklePath as OrchardMerklePath};
     use orchard::value::NoteValue;
-    use rand::rngs::OsRng;
-    use zcash_keys::keys::UnifiedFullViewingKey;
-    use zcash_primitives::transaction::builder::{BuildConfig, Builder};
-    use zcash_primitives::transaction::fees::fixed::FeeRule as FixedFeeRule;
-    use zcash_protocol::consensus::{BlockHeight, MainNetwork, TestNetwork};
-    use zcash_protocol::memo::MemoBytes;
-    use zcash_keys::encoding::AddressCodec;
-    use zcash_protocol::value::Zatoshis;
-    use ::zcash_transparent as transparent;
 
-    // ── decode FVK from UFVK ───────────────────────────────────────────────
-    // zcash_keys 5333c01b uses the same orchard 0.12 we do, so no byte
-    // round-trip is needed any more.
-    let fvk = {
-        let ufvk = if mainnet {
-            UnifiedFullViewingKey::decode(&MainNetwork, ufvk_str)
-        } else {
-            UnifiedFullViewingKey::decode(&TestNetwork, ufvk_str)
-        }
-        .map_err(|e| JsError::new(&format!("invalid UFVK: {}", e)))?;
-        ufvk.orchard()
-            .ok_or_else(|| JsError::new("UFVK has no orchard component"))?
-            .clone()
-    };
-    let change_addr = fvk.to_ivk(Scope::Internal).address_at(0u64);
-
-    // ── recipient parse ────────────────────────────────────────────────────
-    let is_transparent = recipient.starts_with("t1") || recipient.starts_with("tm");
-    let orchard_recipient = if is_transparent {
-        None
-    } else {
-        Some(
-            parse_orchard_address(recipient, mainnet)
-                .map_err(|e| JsError::new(&format!("invalid recipient: {}", e)))?,
-        )
-    };
-
-    // ── anchor ─────────────────────────────────────────────────────────────
-    let anchor_bytes = hex_decode(anchor_hex).ok_or_else(|| JsError::new("invalid anchor hex"))?;
-    if anchor_bytes.len() != 32 {
-        return Err(JsError::new("anchor must be 32 bytes"));
-    }
-    let mut anchor_arr = [0u8; 32];
-    anchor_arr.copy_from_slice(&anchor_bytes);
-    let orchard_anchor = Option::from(Anchor::from_bytes(anchor_arr))
-        .ok_or_else(|| JsError::new("invalid anchor"))?;
-
-    // ── notes + paths ──────────────────────────────────────────────────────
-    let notes: Vec<SpendableNote> = serde_wasm_bindgen::from_value(notes_json)
-        .map_err(|e| JsError::new(&format!("invalid notes: {}", e)))?;
-    let merkle_paths: Vec<MerklePathInfo> = serde_wasm_bindgen::from_value(merkle_paths_json)
-        .map_err(|e| JsError::new(&format!("invalid merkle paths: {}", e)))?;
     if notes.len() != merkle_paths.len() {
         return Err(JsError::new("notes and merkle paths count mismatch"));
     }
 
-    // ── balance check (also enforced by the builder, but earlier here) ─────
-    let total_input: u64 = notes.iter().map(|n| n.value).sum();
-    if total_input < amount + fee {
-        return Err(JsError::new(&format!(
-            "insufficient funds: {} < {} + {}",
-            total_input, amount, fee
-        )));
-    }
-    let change = total_input - amount - fee;
-    let num_spends = notes.len();
-
-    // ── memo (recipient only — change uses empty per zcash convention) ─────
-    let memo_arr = decode_memo_hex(memo_hex.as_deref())?;
-    let recipient_memo = MemoBytes::from_bytes(&memo_arr)
-        .map_err(|e| JsError::new(&format!("memo: {:?}", e)))?;
-
-    // ── reconstruct each owned note from raw fields, verify cmx ────────────
-    // Same logic as build_unsigned_transaction. Verifying cmx defends against
-    // a caller passing `value`/`rho` that don't actually commit to the note
-    // they're claiming.
-    let mut prepared: Vec<(orchard::Note, OrchardMerklePath)> = Vec::with_capacity(num_spends);
+    let mut prepared: Vec<(orchard::Note, OrchardMerklePath)> = Vec::with_capacity(notes.len());
     for (i, n) in notes.iter().enumerate() {
         let rho = {
             let b = hex_decode(&n.rho_hex)
@@ -2616,6 +2545,109 @@ pub fn build_unsigned_pczt(
         );
         prepared.push((note, merkle_path));
     }
+    Ok(prepared)
+}
+
+/// Build a PCZT for cold-wallet signing via QR.
+///
+/// `target_height` selects the consensus branch; pass any height ≥ NU6.1
+/// activation for current mainnet operations. The tx version is derived from
+/// network upgrade rules (currently V5).
+///
+/// Returns JSON: `{ pczt_hex, summary, action_count }`.
+/// The TS layer wraps `pczt_hex` in CBOR `{1: bytes}` and UR-encodes as
+/// `zcash-pczt` for animated QR transport.
+#[wasm_bindgen]
+pub fn build_unsigned_pczt(
+    ufvk_str: &str,
+    notes_json: JsValue,
+    recipient: &str,
+    amount: u64,
+    fee: u64,
+    anchor_hex: &str,
+    merkle_paths_json: JsValue,
+    target_height: u32,
+    mainnet: bool,
+    memo_hex: Option<String>,
+) -> Result<JsValue, JsError> {
+    use orchard::tree::Anchor;
+    use rand::rngs::OsRng;
+    use zcash_keys::keys::UnifiedFullViewingKey;
+    use zcash_primitives::transaction::builder::{BuildConfig, Builder};
+    use zcash_primitives::transaction::fees::fixed::FeeRule as FixedFeeRule;
+    use zcash_protocol::consensus::{BlockHeight, MainNetwork, TestNetwork};
+    use zcash_protocol::memo::MemoBytes;
+    use zcash_keys::encoding::AddressCodec;
+    use zcash_protocol::value::Zatoshis;
+    use ::zcash_transparent as transparent;
+
+    // ── decode FVK from UFVK ───────────────────────────────────────────────
+    // zcash_keys 5333c01b uses the same orchard 0.12 we do, so no byte
+    // round-trip is needed any more.
+    let fvk = {
+        let ufvk = if mainnet {
+            UnifiedFullViewingKey::decode(&MainNetwork, ufvk_str)
+        } else {
+            UnifiedFullViewingKey::decode(&TestNetwork, ufvk_str)
+        }
+        .map_err(|e| JsError::new(&format!("invalid UFVK: {}", e)))?;
+        ufvk.orchard()
+            .ok_or_else(|| JsError::new("UFVK has no orchard component"))?
+            .clone()
+    };
+    let change_addr = fvk.to_ivk(Scope::Internal).address_at(0u64);
+
+    // ── recipient parse ────────────────────────────────────────────────────
+    let is_transparent = recipient.starts_with("t1") || recipient.starts_with("tm");
+    let orchard_recipient = if is_transparent {
+        None
+    } else {
+        Some(
+            parse_orchard_address(recipient, mainnet)
+                .map_err(|e| JsError::new(&format!("invalid recipient: {}", e)))?,
+        )
+    };
+
+    // ── anchor ─────────────────────────────────────────────────────────────
+    let anchor_bytes = hex_decode(anchor_hex).ok_or_else(|| JsError::new("invalid anchor hex"))?;
+    if anchor_bytes.len() != 32 {
+        return Err(JsError::new("anchor must be 32 bytes"));
+    }
+    let mut anchor_arr = [0u8; 32];
+    anchor_arr.copy_from_slice(&anchor_bytes);
+    let orchard_anchor = Option::from(Anchor::from_bytes(anchor_arr))
+        .ok_or_else(|| JsError::new("invalid anchor"))?;
+
+    // ── notes + paths ──────────────────────────────────────────────────────
+    let notes: Vec<SpendableNote> = serde_wasm_bindgen::from_value(notes_json)
+        .map_err(|e| JsError::new(&format!("invalid notes: {}", e)))?;
+    let merkle_paths: Vec<MerklePathInfo> = serde_wasm_bindgen::from_value(merkle_paths_json)
+        .map_err(|e| JsError::new(&format!("invalid merkle paths: {}", e)))?;
+    if notes.len() != merkle_paths.len() {
+        return Err(JsError::new("notes and merkle paths count mismatch"));
+    }
+
+    // ── balance check (also enforced by the builder, but earlier here) ─────
+    let total_input: u64 = notes.iter().map(|n| n.value).sum();
+    if total_input < amount + fee {
+        return Err(JsError::new(&format!(
+            "insufficient funds: {} < {} + {}",
+            total_input, amount, fee
+        )));
+    }
+    let change = total_input - amount - fee;
+    let num_spends = notes.len();
+
+    // ── memo (recipient only — change uses empty per zcash convention) ─────
+    let memo_arr = decode_memo_hex(memo_hex.as_deref())?;
+    let recipient_memo = MemoBytes::from_bytes(&memo_arr)
+        .map_err(|e| JsError::new(&format!("memo: {:?}", e)))?;
+
+    // ── reconstruct each owned note from raw fields, verify cmx ────────────
+    // Same logic as build_unsigned_transaction. Verifying cmx defends against
+    // a caller passing `value`/`rho` that don't actually commit to the note
+    // they're claiming.
+    let prepared = prepare_orchard_spends(&fvk, &notes, &merkle_paths)?;
 
     // ── drive zcash_primitives Builder, branched on network ────────────────
     // Builder<P, ()> is monomorphic in P; we build_for_pczt inside each branch
@@ -2842,6 +2874,360 @@ pub fn extract_signed_tx_from_pczt(pczt_hex: &str) -> Result<String, JsError> {
     Ok(hex_encode(&tx_bytes))
 }
 
+// ============================================================================
+// Turnstile migration (orchard -> ironwood, NU6.3 / V6)
+// ============================================================================
+
+/// Device-confirmation summary of a produced PCZT, recomputed from the
+/// redacted PCZT bytes themselves (never from builder-side bookkeeping) so
+/// what the consumer displays is bound to what gets signed.
+///
+/// Field-compatible with zigner's `pczt_signing::PcztSummary` so both ends
+/// of the QR channel render the same shape. `outputs` entries are
+/// `[label, zatoshis]` pairs where label is one of:
+///   `t-script:<hex>`, `orchard:<43-byte-hex>`, `orchard:shielded`,
+///   `ironwood:<43-byte-hex>`, `ironwood:shielded`.
+#[derive(Debug, Clone, Serialize)]
+pub struct PcztSummary {
+    /// Number of orchard actions (spend side signable by the cold signer).
+    pub orchard_actions: u32,
+    /// Number of ironwood actions (NU6.3 / V6 pool). Always 0 when the
+    /// artifact was built without the nu6.3 cfg.
+    pub ironwood_actions: u32,
+    /// Number of transparent inputs.
+    pub transparent_inputs: u32,
+    /// Visible outputs: (label, zatoshis). Serializes as [[label, value], ...].
+    pub outputs: Vec<(String, u64)>,
+    /// Declared fee in zatoshi when the producer knows it.
+    pub fee_zat: Option<u64>,
+}
+
+/// Recompute a `PcztSummary` from a (redacted) PCZT. Mirrors zigner's
+/// `summarize` extraction logic exactly - keep in sync.
+fn summarize_pczt(pczt: &pczt::Pczt, fee_zat: Option<u64>) -> PcztSummary {
+    let mut outputs: Vec<(String, u64)> = Vec::new();
+    for out in pczt.transparent().outputs() {
+        outputs.push((
+            format!("t-script:{}", hex_encode(out.script_pubkey())),
+            *out.value(),
+        ));
+    }
+    for action in pczt.orchard().actions() {
+        let out = action.output();
+        let label = match out.recipient() {
+            Some(r) => format!("orchard:{}", hex_encode(r)),
+            None => "orchard:shielded".to_string(),
+        };
+        outputs.push((label, out.value().unwrap_or(0)));
+    }
+    #[cfg(zcash_unstable = "nu6.3")]
+    let ironwood_actions = {
+        for action in pczt.ironwood().actions() {
+            let out = action.output();
+            let label = match out.recipient() {
+                Some(r) => format!("ironwood:{}", hex_encode(r)),
+                None => "ironwood:shielded".to_string(),
+            };
+            outputs.push((label, out.value().unwrap_or(0)));
+        }
+        pczt.ironwood().actions().len() as u32
+    };
+    #[cfg(not(zcash_unstable = "nu6.3"))]
+    let ironwood_actions = 0u32;
+
+    PcztSummary {
+        orchard_actions: pczt.orchard().actions().len() as u32,
+        ironwood_actions,
+        transparent_inputs: pczt.transparent().inputs().len() as u32,
+        outputs,
+        fee_zat,
+    }
+}
+
+/// Consensus parameters wrapper that reports NU6.3 as active from a given
+/// height. The valar fork leaves `Nu6_3 => None` on MainNetwork/TestNetwork
+/// (no activation heights are assigned yet), but the builder only enables
+/// the ironwood bundle when `is_nu_active(Nu6_3, target_height)`. Until the
+/// fork lands real activation heights, the caller's `target_height` IS the
+/// declared activation point, and the resulting tx carries the placeholder
+/// NU6.3 consensus branch id (0xffff_ffff) - the same branch the zigner
+/// valar spike signs. Drop this wrapper once upstream assigns heights.
+#[cfg(zcash_unstable = "nu6.3")]
+#[derive(Clone, Copy, Debug)]
+struct Nu63Activated<P> {
+    inner: P,
+    nu6_3_from: zcash_protocol::consensus::BlockHeight,
+}
+
+#[cfg(zcash_unstable = "nu6.3")]
+impl<P: zcash_protocol::consensus::Parameters> zcash_protocol::consensus::Parameters
+    for Nu63Activated<P>
+{
+    fn network_type(&self) -> zcash_protocol::consensus::NetworkType {
+        self.inner.network_type()
+    }
+
+    fn activation_height(
+        &self,
+        nu: zcash_protocol::consensus::NetworkUpgrade,
+    ) -> Option<zcash_protocol::consensus::BlockHeight> {
+        match nu {
+            zcash_protocol::consensus::NetworkUpgrade::Nu6_3 => {
+                // Respect a real upstream activation height once one exists.
+                self.inner.activation_height(nu).or(Some(self.nu6_3_from))
+            }
+            _ => self.inner.activation_height(nu),
+        }
+    }
+}
+
+/// Result of building a turnstile migration PCZT (testable core output).
+#[cfg(zcash_unstable = "nu6.3")]
+pub struct TurnstileBuild {
+    /// Redacted-for-signer PCZT bytes (same redaction contract as
+    /// `build_unsigned_pczt`).
+    pub pczt_bytes: Vec<u8>,
+    /// Confirmation summary recomputed from the redacted bytes.
+    pub summary: PcztSummary,
+    /// Total actions across the orchard and ironwood bundles.
+    pub action_count: u32,
+}
+
+/// Core of the turnstile migration builder, generic over consensus params so
+/// native tests can drive it with a regtest-style network. Builds a single
+/// `TxVersion::V6` transaction that spends the supplied orchard notes and
+/// outputs their full value minus `fee` to the wallet's OWN ironwood-pool
+/// address (internal scope, diversifier 0 - mirroring the zigner valar spike
+/// producer). Roles: Creator -> IoFinalizer -> Prover (orchard + ironwood
+/// proofs, both post-NU6.3 circuit) -> redact.
+#[cfg(zcash_unstable = "nu6.3")]
+pub fn build_turnstile_migration_pczt_core<P>(
+    params: P,
+    fvk: &orchard::keys::FullViewingKey,
+    prepared: Vec<(orchard::Note, orchard::tree::MerklePath)>,
+    fee: u64,
+    orchard_anchor: orchard::tree::Anchor,
+    target_height: u32,
+    memo: zcash_protocol::memo::MemoBytes,
+) -> Result<TurnstileBuild, String>
+where
+    P: zcash_protocol::consensus::Parameters,
+{
+    use orchard::circuit::OrchardCircuitVersion;
+    use rand::rngs::OsRng;
+    use zcash_primitives::transaction::builder::{BuildConfig, Builder};
+    use zcash_primitives::transaction::fees::fixed::FeeRule as FixedFeeRule;
+    use zcash_primitives::transaction::TxVersion;
+    use zcash_protocol::consensus::BlockHeight;
+    use zcash_protocol::value::Zatoshis;
+
+    type FeError = <FixedFeeRule as zcash_primitives::transaction::fees::FeeRule>::Error;
+
+    if prepared.is_empty() {
+        return Err("turnstile migration requires at least one orchard note".into());
+    }
+    let total_input: u64 = prepared.iter().map(|(n, _)| n.value().inner()).sum();
+    if total_input <= fee {
+        return Err(format!(
+            "insufficient funds: inputs {} do not cover fee {}",
+            total_input, fee
+        ));
+    }
+    let migrated = total_input - fee;
+
+    // Self-migration destination: the wallet's own address in the ironwood
+    // pool. Internal scope (the change/shielding scope) so the funds read as
+    // an internal movement, exactly like the zigner spike models it. The
+    // internal OVK preserves outgoing visibility for the wallet itself.
+    let recipient = fvk.address_at(0u32, Scope::Internal);
+    let internal_ovk = Some(fvk.to_ovk(Scope::Internal));
+
+    // Migration spends orchard and only OUTPUTS ironwood, so no ironwood
+    // anchor is needed (contract section 1).
+    let mut builder = Builder::new(
+        params,
+        BlockHeight::from(target_height),
+        BuildConfig::Standard {
+            sapling_anchor: None,
+            orchard_anchor: Some(orchard_anchor),
+            ironwood_anchor: None,
+        },
+    );
+    builder
+        .propose_version::<FeError>(TxVersion::V6)
+        .map_err(|e| format!("propose_version(V6): {:?}", e))?;
+    for (note, mp) in &prepared {
+        builder
+            .add_orchard_spend::<FeError>(fvk.clone(), note.clone(), mp.clone())
+            .map_err(|e| format!("add_orchard_spend: {:?}", e))?;
+    }
+    let migrated_zat =
+        Zatoshis::from_u64(migrated).map_err(|_| "invalid migrated amount".to_string())?;
+    builder
+        .add_ironwood_output::<FeError>(internal_ovk, recipient, migrated_zat, memo)
+        .map_err(|e| format!("add_ironwood_output: {:?}", e))?;
+
+    let fee_zat = Zatoshis::from_u64(fee).map_err(|_| "invalid fee amount".to_string())?;
+    let fee_rule = FixedFeeRule::non_standard(fee_zat);
+    let parts = builder
+        .build_for_pczt(OsRng, &fee_rule)
+        .map_err(|e| format!("build_for_pczt: {:?}", e))?
+        .pczt_parts;
+
+    let pczt = pczt::roles::creator::Creator::build_from_parts(parts)
+        .ok_or_else(|| "Creator::build_from_parts: incompatible tx version".to_string())?;
+
+    // Canonical role order for the turnstile (contract section 1):
+    // IoFinalizer binds the sighash, then the Prover attaches both proofs.
+    let pczt = pczt::roles::io_finalizer::IoFinalizer::new(pczt)
+        .finalize_io()
+        .map_err(|e| format!("finalize_io: {:?}", e))?;
+
+    // Both bundles of a V6 tx prove against the post-NU6.3 circuit.
+    let pczt = with_proving_key_for(OrchardCircuitVersion::PostNu6_3, |pk| {
+        pczt::roles::prover::Prover::new(pczt)
+            .create_orchard_proof(pk)
+            .and_then(|p| p.create_ironwood_proof(pk))
+            .map(|p| p.finish())
+    })
+    .map_err(|e| format!("create proofs: {:?}", e))?;
+
+    let pczt = redact_pczt_for_signer(pczt);
+
+    let summary = summarize_pczt(&pczt, Some(fee));
+    let action_count =
+        (pczt.orchard().actions().len() + pczt.ironwood().actions().len()) as u32;
+    Ok(TurnstileBuild {
+        pczt_bytes: pczt.serialize(),
+        summary,
+        action_count,
+    })
+}
+
+/// Build the one-way turnstile migration PCZT: spend the supplied orchard
+/// notes into the wallet's OWN ironwood address in a single V6 transaction.
+///
+/// The ironwood recipient is derived INTERNALLY from `ufvk_str` (self
+/// migration); everything minus `fee` migrates. Returns a redacted-for-signer
+/// PCZT (same redaction contract as `build_unsigned_pczt`) as JSON
+/// `{ pczt_hex, summary, action_count }` where `summary` is a `PcztSummary`.
+///
+/// `account_index` is accepted for API parity with the worker call shape but
+/// is not used for derivation - the UFVK is already account-scoped.
+#[cfg(zcash_unstable = "nu6.3")]
+#[wasm_bindgen]
+#[allow(clippy::too_many_arguments)]
+pub fn build_turnstile_migration_pczt(
+    ufvk_str: &str,
+    orchard_notes_json: &str,
+    fee: u64,
+    orchard_anchor_hex: &str,
+    orchard_merkle_paths_json: &str,
+    account_index: u32,
+    target_height: u32,
+    mainnet: bool,
+    memo_hex: Option<String>,
+) -> Result<JsValue, JsError> {
+    use zcash_keys::keys::UnifiedFullViewingKey;
+    use zcash_protocol::consensus::{BlockHeight, MainNetwork, TestNetwork};
+    use zcash_protocol::memo::MemoBytes;
+
+    let _ = account_index; // UFVK is already account-scoped; kept for parity.
+
+    let fvk = {
+        let ufvk = if mainnet {
+            UnifiedFullViewingKey::decode(&MainNetwork, ufvk_str)
+        } else {
+            UnifiedFullViewingKey::decode(&TestNetwork, ufvk_str)
+        }
+        .map_err(|e| JsError::new(&format!("invalid UFVK: {}", e)))?;
+        ufvk.orchard()
+            .ok_or_else(|| JsError::new("UFVK has no orchard component"))?
+            .clone()
+    };
+
+    let notes: Vec<SpendableNote> = serde_json::from_str(orchard_notes_json)
+        .map_err(|e| JsError::new(&format!("invalid orchard_notes_json: {}", e)))?;
+    let merkle_paths: Vec<MerklePathInfo> = serde_json::from_str(orchard_merkle_paths_json)
+        .map_err(|e| JsError::new(&format!("invalid orchard_merkle_paths_json: {}", e)))?;
+    let prepared = prepare_orchard_spends(&fvk, &notes, &merkle_paths)?;
+
+    let anchor_bytes = hex_decode(orchard_anchor_hex)
+        .ok_or_else(|| JsError::new("invalid anchor hex"))?;
+    let anchor_arr: [u8; 32] = anchor_bytes
+        .try_into()
+        .map_err(|_| JsError::new("anchor must be 32 bytes"))?;
+    let orchard_anchor = Option::from(orchard::tree::Anchor::from_bytes(anchor_arr))
+        .ok_or_else(|| JsError::new("invalid anchor"))?;
+
+    let memo_arr = decode_memo_hex(memo_hex.as_deref())?;
+    let memo = MemoBytes::from_bytes(&memo_arr)
+        .map_err(|e| JsError::new(&format!("memo: {:?}", e)))?;
+
+    let built = if mainnet {
+        build_turnstile_migration_pczt_core(
+            Nu63Activated {
+                inner: MainNetwork,
+                nu6_3_from: BlockHeight::from(target_height),
+            },
+            &fvk,
+            prepared,
+            fee,
+            orchard_anchor,
+            target_height,
+            memo,
+        )
+    } else {
+        build_turnstile_migration_pczt_core(
+            Nu63Activated {
+                inner: TestNetwork,
+                nu6_3_from: BlockHeight::from(target_height),
+            },
+            &fvk,
+            prepared,
+            fee,
+            orchard_anchor,
+            target_height,
+            memo,
+        )
+    }
+    .map_err(|e| JsError::new(&e))?;
+
+    #[derive(Serialize)]
+    struct Out {
+        pczt_hex: String,
+        summary: PcztSummary,
+        action_count: u32,
+    }
+    serde_wasm_bindgen::to_value(&Out {
+        pczt_hex: hex_encode(&built.pczt_bytes),
+        summary: built.summary,
+        action_count: built.action_count,
+    })
+    .map_err(|e| JsError::new(&format!("serialization failed: {}", e)))
+}
+
+/// Stub keeping the JS API surface stable when the artifact is built without
+/// the NU6.3 cfg: the export exists but always errors.
+#[cfg(not(zcash_unstable = "nu6.3"))]
+#[wasm_bindgen]
+#[allow(clippy::too_many_arguments)]
+pub fn build_turnstile_migration_pczt(
+    _ufvk_str: &str,
+    _orchard_notes_json: &str,
+    _fee: u64,
+    _orchard_anchor_hex: &str,
+    _orchard_merkle_paths_json: &str,
+    _account_index: u32,
+    _target_height: u32,
+    _mainnet: bool,
+    _memo_hex: Option<String>,
+) -> Result<JsValue, JsError> {
+    Err(JsError::new(
+        "this artifact was built without NU6.3 / ironwood support (missing zcash_unstable cfg)",
+    ))
+}
+
 /// Get the commitment proof request data for a note
 /// Returns the cmx that should be sent to zidecar's GetCommitmentProof
 #[wasm_bindgen]
@@ -2979,6 +3365,69 @@ pub fn build_witnesses_and_paths(
     let json = serde_json::to_string(&result)
         .map_err(|e| JsError::new(&format!("failed to serialize result: {}", e)))?;
     Ok(JsValue::from_str(&json))
+}
+
+// ============================================================================
+// Ironwood commitment tree / witnesses (NU6.3+)
+//
+// The ironwood pool keeps its OWN note commitment tree, but its node hash is
+// the identical orchard sinsemilla hash (`MerkleHashOrchard::from_cmx` - see
+// the fork's pczt/tests/end_to_end.rs ironwood tests). These exports are
+// therefore thin delegates over the same witness machinery; the separation
+// exists so the TS layer feeds ironwood tree state / ironwood bundle cmxs
+// here and never mixes the two trees. Wire formats are identical to the
+// orchard equivalents.
+// ============================================================================
+
+/// Ironwood-tree variant of `build_merkle_paths`. Same JSON contract; feed
+/// the ironwood frontier from GetTreeState and cmxs from ironwood bundles.
+#[wasm_bindgen]
+pub fn build_merkle_paths_ironwood(
+    tree_state_hex: &str,
+    compact_blocks_json: &str,
+    note_positions_json: &str,
+    anchor_height: u32,
+) -> Result<JsValue, JsError> {
+    build_merkle_paths(
+        tree_state_hex,
+        compact_blocks_json,
+        note_positions_json,
+        anchor_height,
+    )
+}
+
+/// Ironwood-tree variant of `witness_sync_update`. Same JSON contract.
+#[wasm_bindgen]
+pub fn witness_sync_update_ironwood(
+    start_frontier_hex: &str,
+    compact_blocks_json: &str,
+    existing_witnesses_json: &str,
+    new_notes_json: &str,
+) -> Result<JsValue, JsError> {
+    witness_sync_update(
+        start_frontier_hex,
+        compact_blocks_json,
+        existing_witnesses_json,
+        new_notes_json,
+    )
+}
+
+/// Ironwood-tree variant of `witness_extract_path`. Same JSON contract.
+#[wasm_bindgen]
+pub fn witness_extract_path_ironwood(witness_hex: &str) -> Result<JsValue, JsError> {
+    witness_extract_path(witness_hex)
+}
+
+/// Ironwood-tree variant of `frontier_tree_size`.
+#[wasm_bindgen]
+pub fn frontier_tree_size_ironwood(tree_state_hex: &str) -> Result<u64, JsError> {
+    frontier_tree_size(tree_state_hex)
+}
+
+/// Ironwood-tree variant of `tree_root_hex`.
+#[wasm_bindgen]
+pub fn tree_root_hex_ironwood(tree_state_hex: &str) -> Result<String, JsError> {
+    tree_root_hex(tree_state_hex)
 }
 
 // ============================================================================
@@ -3849,11 +4298,16 @@ fn test_user_seed_with_real_action() {
         ciphertext,
     };
 
-    // Try to decrypt with External scope
-    let result = keys.try_decrypt_action_binary(&action);
+    // Try to decrypt with both scopes via the shared scan helper
+    let result = try_decrypt_compact_action(
+        &keys.fvk,
+        &keys.prepared_ivk_external,
+        &keys.prepared_ivk_internal,
+        &action,
+    );
     println!(
-        "Decryption result (External scope): {:?}",
-        result.map(|(v, nf, _, _, _, is_change)| (v, hex_encode(&nf), is_change))
+        "Decryption result: {:?}",
+        result.map(|d| (d.value, hex_encode(&d.nullifier), d.is_change))
     );
 
     // Also try Internal scope
