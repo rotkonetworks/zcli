@@ -558,7 +558,12 @@ fn compute_orchard_digest_legacy<A: orchard::bundle::Authorization>(
     orchard_data.extend_from_slice(&compact_digest);
     orchard_data.extend_from_slice(&memos_digest);
     orchard_data.extend_from_slice(&noncompact_digest);
-    orchard_data.push(bundle.flags().to_byte());
+    orchard_data.push(
+        bundle
+            .flags()
+            .to_byte(orchard::bundle::BundleFormat::PreNu6_3)
+            .expect("V5 legacy orchard bundle flags always fit the pre-NU6.3 format"),
+    );
     orchard_data.extend_from_slice(&bundle.value_balance().to_i64_le_bytes());
     orchard_data.extend_from_slice(&bundle.anchor().to_bytes());
 

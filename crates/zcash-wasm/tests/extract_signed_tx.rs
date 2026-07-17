@@ -41,7 +41,13 @@ use zcash_transparent::{address::TransparentAddress, bundle as transparent};
 
 static ORCHARD_PROVING_KEY: OnceLock<orchard::circuit::ProvingKey> = OnceLock::new();
 fn orchard_proving_key() -> &'static orchard::circuit::ProvingKey {
-    ORCHARD_PROVING_KEY.get_or_init(orchard::circuit::ProvingKey::build)
+    // Height 10_000_000 on MainNetwork is past NU6.2 activation, so the
+    // builder selects BundleProtocol::OrchardPreNu6_3 = the fixed circuit.
+    ORCHARD_PROVING_KEY.get_or_init(|| {
+        orchard::circuit::ProvingKey::build(
+            orchard::circuit::OrchardCircuitVersion::FixedPostNu6_2,
+        )
+    })
 }
 
 #[test]
@@ -71,6 +77,8 @@ fn extract_signed_tx_round_trip() {
         BuildConfig::Standard {
             sapling_anchor: None,
             orchard_anchor: Some(orchard::Anchor::empty_tree()),
+            #[cfg(zcash_unstable = "nu6.3")]
+            ironwood_anchor: None,
         },
     );
     builder

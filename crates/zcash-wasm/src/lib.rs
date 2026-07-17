@@ -35,16 +35,70 @@ extern "C" {
     fn log(s: &str);
 }
 
-/// Cached Halo 2 proving key. Building is expensive (~seconds), built once
-/// and shared across all rayon threads via OnceLock.
-static PROVING_KEY: std::sync::OnceLock<orchard::circuit::ProvingKey> = std::sync::OnceLock::new();
+/// Cached Halo 2 proving keys, one per circuit version. Building is
+/// expensive (~seconds), built once per version and shared across all rayon
+/// threads via OnceLock.
+///
+/// The NU6.3 fork parameterizes `ProvingKey::build` by circuit version:
+/// - `InsecurePreNu6_2`: the historical NU5..NU6.1 circuit. Required for
+///   proving against chains whose consensus branch predates NU6.2 (the fixed
+///   circuit has a different verifying key, so its proofs would not verify
+///   there). This is what today's mainnet V5 paths use.
+/// - `FixedPostNu6_2`: the NU6.2 fixed circuit.
+/// - `PostNu6_3`: the NU6.3 circuit with the `disableCrossAddress` public
+///   input. Used for BOTH the orchard and ironwood bundles of a V6 tx.
+static PROVING_KEY_PRE_NU6_2: std::sync::OnceLock<orchard::circuit::ProvingKey> =
+    std::sync::OnceLock::new();
+static PROVING_KEY_POST_NU6_2: std::sync::OnceLock<orchard::circuit::ProvingKey> =
+    std::sync::OnceLock::new();
+static PROVING_KEY_POST_NU6_3: std::sync::OnceLock<orchard::circuit::ProvingKey> =
+    std::sync::OnceLock::new();
 
-fn with_proving_key<R>(f: impl FnOnce(&orchard::circuit::ProvingKey) -> R) -> R {
-    let pk = PROVING_KEY.get_or_init(|| {
-        log("[zafu-wasm] building Halo 2 proving key (one-time)");
-        orchard::circuit::ProvingKey::build()
+fn proving_key_cell(
+    cv: orchard::circuit::OrchardCircuitVersion,
+) -> &'static std::sync::OnceLock<orchard::circuit::ProvingKey> {
+    use orchard::circuit::OrchardCircuitVersion as Cv;
+    match cv {
+        Cv::InsecurePreNu6_2 => &PROVING_KEY_PRE_NU6_2,
+        Cv::FixedPostNu6_2 => &PROVING_KEY_POST_NU6_2,
+        Cv::PostNu6_3 => &PROVING_KEY_POST_NU6_3,
+    }
+}
+
+fn with_proving_key_for<R>(
+    cv: orchard::circuit::OrchardCircuitVersion,
+    f: impl FnOnce(&orchard::circuit::ProvingKey) -> R,
+) -> R {
+    let pk = proving_key_cell(cv).get_or_init(|| {
+        log(&format!(
+            "[zafu-wasm] building Halo 2 proving key for {:?} (one-time)",
+            cv
+        ));
+        orchard::circuit::ProvingKey::build(cv)
     });
     f(pk)
+}
+
+/// Legacy helper for the hand-rolled V5 paths, which hardcode the NU6.1
+/// consensus branch (0x4DEC4DF0) and therefore MUST prove with the
+/// historical circuit to match the verifying key deployed on those branches.
+fn with_proving_key<R>(f: impl FnOnce(&orchard::circuit::ProvingKey) -> R) -> R {
+    with_proving_key_for(orchard::circuit::OrchardCircuitVersion::InsecurePreNu6_2, f)
+}
+
+/// Map a consensus branch to the orchard bundle protocol the
+/// zcash_primitives Builder selects for it. Mirrors the (private)
+/// `orchard_protocol_for_branch` in the fork's builder.rs — keep in sync.
+fn orchard_protocol_for_branch(
+    branch: zcash_protocol::consensus::BranchId,
+) -> orchard::BundleProtocol {
+    use zcash_protocol::consensus::BranchId;
+    match branch {
+        #[cfg(zcash_unstable = "nu6.3")]
+        BranchId::Nu6_3 => orchard::BundleProtocol::OrchardPostNu6_3,
+        BranchId::Nu6_2 => orchard::BundleProtocol::OrchardPreNu6_3,
+        _ => orchard::BundleProtocol::OrchardPreNu6_2,
+    }
 }
 
 /// Initialize panic hook for better error messages
@@ -1633,8 +1687,7 @@ mod tests {
     #[test]
     fn test_orchard_builder_shielding() {
         use orchard::builder::{Builder, BundleType};
-        use orchard::bundle::Flags;
-        use orchard::keys::{FullViewingKey, Scope, SpendingKey};
+            use orchard::keys::{FullViewingKey, Scope, SpendingKey};
         use orchard::tree::Anchor;
         use orchard::value::NoteValue;
         use rand::rngs::OsRng;
@@ -1656,10 +1709,15 @@ mod tests {
 
         // build an output-only bundle
         let bundle_type = BundleType::Transactional {
-            flags: Flags::SPENDS_DISABLED,
+            spends_enabled: false,
+            outputs_enabled: true,
             bundle_required: true,
         };
-        let mut builder = Builder::new(bundle_type, Anchor::empty_tree());
+        let mut builder = Builder::new(
+            orchard::BundleProtocol::OrchardPreNu6_2,
+            bundle_type,
+            Anchor::empty_tree(),
+        );
 
         builder
             .add_output(None, recipient, NoteValue::from_raw(50_000), [0u8; 512])
@@ -1730,7 +1788,6 @@ pub fn build_unsigned_transaction(
 ) -> Result<JsValue, JsError> {
     use group::ff::PrimeField;
     use orchard::builder::{Builder, BundleType};
-    use orchard::bundle::Flags;
     use orchard::note::{RandomSeed, Rho};
     use orchard::tree::{Anchor, MerkleHashOrchard, MerklePath as OrchardMerklePath};
     use orchard::value::NoteValue;
@@ -1812,11 +1869,17 @@ pub fn build_unsigned_transaction(
     let num_spends = notes.len();
 
     // --- build orchard bundle using PCZT path ---
+    // NU6.1-branch V5 tx: legacy orchard pool, pre-NU6.2 (historical) circuit.
     let bundle_type = BundleType::Transactional {
-        flags: Flags::ENABLED,
+        spends_enabled: true,
+        outputs_enabled: true,
         bundle_required: true,
     };
-    let mut builder = Builder::new(bundle_type, anchor);
+    let mut builder = Builder::new(
+        orchard::BundleProtocol::OrchardPreNu6_2,
+        bundle_type,
+        anchor,
+    );
 
     // add spends (same note reconstruction as build_signed_spend_transaction)
     for (i, note_info) in notes.iter().enumerate() {
@@ -1856,7 +1919,7 @@ pub fn build_unsigned_transaction(
                 .map_err(|_| JsError::new(&format!("recipient must be 43 bytes for note {}", i)))?;
             let addr = Option::from(orchard::Address::from_raw_address_bytes(&addr_arr))
                 .ok_or_else(|| JsError::new(&format!("invalid orchard address for note {}", i)))?;
-            Option::from(orchard::Note::from_parts(addr, note_value, rho, rseed)).ok_or_else(
+            Option::from(orchard::Note::from_parts(addr, note_value, rho, rseed, orchard::note::NoteVersion::V2)).ok_or_else(
                 || {
                     JsError::new(&format!(
                         "failed to reconstruct note {} from stored address",
@@ -1867,9 +1930,9 @@ pub fn build_unsigned_transaction(
         } else {
             let ext_addr = fvk.to_ivk(Scope::External).address_at(0u64);
             let int_addr = fvk.to_ivk(Scope::Internal).address_at(0u64);
-            Option::from(orchard::Note::from_parts(ext_addr, note_value, rho, rseed))
+            Option::from(orchard::Note::from_parts(ext_addr, note_value, rho, rseed, orchard::note::NoteVersion::V2))
                 .or_else(|| {
-                    Option::from(orchard::Note::from_parts(int_addr, note_value, rho, rseed))
+                    Option::from(orchard::Note::from_parts(int_addr, note_value, rho, rseed, orchard::note::NoteVersion::V2))
                 })
                 .ok_or_else(|| {
                     JsError::new(&format!(
@@ -2127,7 +2190,12 @@ pub fn build_unsigned_transaction(
     }
 
     // flags byte
-    tx_bytes.push(pczt_bundle.flags().to_byte());
+    tx_bytes.push(
+        pczt_bundle
+            .flags()
+            .to_byte(orchard::bundle::BundleFormat::PreNu6_3)
+            .ok_or_else(|| JsError::new("flags not representable in pre-NU6.3 format"))?,
+    );
 
     // valueBalanceOrchard (i64 LE) — from the effects bundle
     tx_bytes.extend_from_slice(&effects_bundle.value_balance().to_i64_le_bytes());
@@ -2530,13 +2598,13 @@ pub fn build_unsigned_pczt(
                 .map_err(|_| JsError::new(&format!("recipient must be 43 bytes for note {}", i)))?;
             let addr = Option::from(orchard::Address::from_raw_address_bytes(&arr))
                 .ok_or_else(|| JsError::new(&format!("invalid orchard address for note {}", i)))?;
-            Option::from(orchard::Note::from_parts(addr, value, rho, rseed))
+            Option::from(orchard::Note::from_parts(addr, value, rho, rseed, orchard::note::NoteVersion::V2))
                 .ok_or_else(|| JsError::new(&format!("note {} reconstruction failed", i)))?
         } else {
             let ext = fvk.to_ivk(Scope::External).address_at(0u64);
             let int = fvk.to_ivk(Scope::Internal).address_at(0u64);
-            Option::from(orchard::Note::from_parts(ext, value, rho, rseed))
-                .or_else(|| Option::from(orchard::Note::from_parts(int, value, rho, rseed)))
+            Option::from(orchard::Note::from_parts(ext, value, rho, rseed, orchard::note::NoteVersion::V2))
+                .or_else(|| Option::from(orchard::Note::from_parts(int, value, rho, rseed, orchard::note::NoteVersion::V2)))
                 .ok_or_else(|| {
                     JsError::new(&format!("note {} reconstruction failed (rseed/rho/value)", i))
                 })?
@@ -2592,6 +2660,8 @@ pub fn build_unsigned_pczt(
     let build_config = BuildConfig::Standard {
         sapling_anchor: None,
         orchard_anchor: Some(orchard_anchor),
+        #[cfg(zcash_unstable = "nu6.3")]
+        ironwood_anchor: None,
     };
     let fee_amount = Zatoshis::from_u64(fee)
         .map_err(|_| JsError::new("invalid fee amount"))?;
@@ -2599,6 +2669,19 @@ pub fn build_unsigned_pczt(
         .map_err(|_| JsError::new("invalid send amount"))?;
     let fee_rule = FixedFeeRule::non_standard(fee_amount);
     let target = BlockHeight::from(target_height);
+
+    // The proving key must match the circuit the Builder selects for the
+    // consensus branch at `target` (historical circuit before NU6.2, fixed
+    // circuit from NU6.2, post-NU6.3 circuit from NU6.3).
+    let orchard_circuit = {
+        use zcash_protocol::consensus::BranchId;
+        let branch = if mainnet {
+            BranchId::for_height(&MainNetwork, target)
+        } else {
+            BranchId::for_height(&TestNetwork, target)
+        };
+        orchard_protocol_for_branch(branch).circuit_version()
+    };
 
     macro_rules! build_pczt_for {
         ($params:expr) => {{
@@ -2660,7 +2743,7 @@ pub fn build_unsigned_pczt(
     };
 
     // ── orchard Halo 2 proof (expensive — seconds on a phone CPU) ──────────
-    let pczt = with_proving_key(|pk| {
+    let pczt = with_proving_key_for(orchard_circuit, |pk| {
         pczt::roles::prover::Prover::new(pczt)
             .create_orchard_proof(pk)
             .map(|p| p.finish())
@@ -2707,25 +2790,70 @@ pub fn build_unsigned_pczt(
     .map_err(|e| JsError::new(&format!("serialization failed: {}", e)))
 }
 
-/// Extract a broadcast-ready v5 transaction from a signed PCZT.
+/// Cached Halo 2 verifying keys, one per circuit version (mirrors the
+/// proving key cache above). Building a VK is cheap relative to proving but
+/// worth amortizing across extract calls.
+static VERIFYING_KEY_PRE_NU6_2: std::sync::OnceLock<orchard::circuit::VerifyingKey> =
+    std::sync::OnceLock::new();
+static VERIFYING_KEY_POST_NU6_2: std::sync::OnceLock<orchard::circuit::VerifyingKey> =
+    std::sync::OnceLock::new();
+static VERIFYING_KEY_POST_NU6_3: std::sync::OnceLock<orchard::circuit::VerifyingKey> =
+    std::sync::OnceLock::new();
+
+fn verifying_key_for(
+    cv: orchard::circuit::OrchardCircuitVersion,
+) -> &'static orchard::circuit::VerifyingKey {
+    use orchard::circuit::OrchardCircuitVersion as Cv;
+    let cell = match cv {
+        Cv::InsecurePreNu6_2 => &VERIFYING_KEY_PRE_NU6_2,
+        Cv::FixedPostNu6_2 => &VERIFYING_KEY_POST_NU6_2,
+        Cv::PostNu6_3 => &VERIFYING_KEY_POST_NU6_3,
+    };
+    cell.get_or_init(|| orchard::circuit::VerifyingKey::build(cv))
+}
+
+/// Extract a broadcast-ready v5/v6 transaction from a signed PCZT.
 ///
 /// This is the testable inner core: takes raw bytes, returns raw bytes, and
 /// uses `String` for errors so it's callable from regular cargo tests
 /// without dragging in `JsError`. The `#[wasm_bindgen]` wrapper below just
 /// adds hex marshaling and JS error mapping.
+///
+/// Accepts both V5 (orchard) and, when built with the NU6.3 cfg, V6
+/// (orchard + ironwood) PCZTs. The orchard verifying key is selected from
+/// the PCZT's own tx version + consensus branch so that proofs made with
+/// the historical circuit (pre-NU6.2 branches) still verify.
 pub fn extract_signed_tx_from_pczt_bytes(pczt_bytes: &[u8]) -> Result<Vec<u8>, String> {
-    use orchard::circuit::VerifyingKey as OrchardVk;
+    use orchard::circuit::OrchardCircuitVersion;
+    use zcash_protocol::consensus::BranchId;
 
     let pczt = pczt::Pczt::parse(pczt_bytes)
         .map_err(|e| format!("pczt parse failed: {:?}", e))?;
 
-    // Orchard verifying key. Cached across calls — building it costs hash-table
-    // construction, cheap relative to proving but worth amortizing.
-    static ORCHARD_VK: std::sync::OnceLock<OrchardVk> = std::sync::OnceLock::new();
-    let vk = ORCHARD_VK.get_or_init(OrchardVk::build);
+    let branch = BranchId::try_from(*pczt.global().consensus_branch_id())
+        .map_err(|e| format!("unknown consensus branch in pczt: {:?}", e))?;
 
-    let tx = pczt::roles::tx_extractor::TransactionExtractor::new(pczt)
-        .with_orchard(vk)
+    #[cfg(zcash_unstable = "nu6.3")]
+    let is_v6 = *pczt.global().tx_version() == zcash_protocol::constants::V6_TX_VERSION;
+    #[cfg(not(zcash_unstable = "nu6.3"))]
+    let is_v6 = false;
+
+    // Circuit selection mirrors the fork's own rules: V6 orchard bundles use
+    // the post-NU6.3 circuit; V5 bundles use the circuit for their branch.
+    let orchard_cv = if is_v6 {
+        OrchardCircuitVersion::PostNu6_3
+    } else {
+        orchard_protocol_for_branch(branch).circuit_version()
+    };
+    let _ = branch; // (used only for V5 circuit selection)
+
+    let vk = verifying_key_for(orchard_cv);
+
+    let extractor = pczt::roles::tx_extractor::TransactionExtractor::new(pczt).with_orchard(vk);
+    #[cfg(zcash_unstable = "nu6.3")]
+    let extractor = extractor.with_ironwood(verifying_key_for(OrchardCircuitVersion::PostNu6_3));
+
+    let tx = extractor
         .extract()
         .map_err(|e| format!("tx extract failed: {:?}", e))?;
 
@@ -3387,7 +3515,6 @@ pub fn build_signed_spend_transaction(
     memo_hex: Option<String>,
 ) -> Result<String, JsError> {
     use orchard::builder::{Builder, BundleType};
-    use orchard::bundle::Flags;
     use orchard::keys::SpendAuthorizingKey;
     use orchard::note::{RandomSeed, Rho};
     use orchard::tree::{Anchor, MerkleHashOrchard, MerklePath as OrchardMerklePath};
@@ -3462,11 +3589,17 @@ pub fn build_signed_spend_transaction(
     let change = total_input - amount - fee;
 
     // --- build orchard bundle ---
+    // NU6.1-branch V5 tx: legacy orchard pool, pre-NU6.2 (historical) circuit.
     let bundle_type = BundleType::Transactional {
-        flags: Flags::ENABLED,
+        spends_enabled: true,
+        outputs_enabled: true,
         bundle_required: true,
     };
-    let mut builder = Builder::new(bundle_type, anchor);
+    let mut builder = Builder::new(
+        orchard::BundleProtocol::OrchardPreNu6_2,
+        bundle_type,
+        anchor,
+    );
 
     // add spends
     for (i, note_info) in notes.iter().enumerate() {
@@ -3508,7 +3641,7 @@ pub fn build_signed_spend_transaction(
                 .map_err(|_| JsError::new(&format!("recipient must be 43 bytes for note {}", i)))?;
             let addr = Option::from(orchard::Address::from_raw_address_bytes(&addr_arr))
                 .ok_or_else(|| JsError::new(&format!("invalid orchard address for note {}", i)))?;
-            Option::from(orchard::Note::from_parts(addr, note_value, rho, rseed)).ok_or_else(
+            Option::from(orchard::Note::from_parts(addr, note_value, rho, rseed, orchard::note::NoteVersion::V2)).ok_or_else(
                 || {
                     JsError::new(&format!(
                         "failed to reconstruct note {} from stored address",
@@ -3520,9 +3653,9 @@ pub fn build_signed_spend_transaction(
             // fallback: try default addresses (legacy notes without stored recipient)
             let ext_addr = fvk.to_ivk(Scope::External).address_at(0u64);
             let int_addr = fvk.to_ivk(Scope::Internal).address_at(0u64);
-            Option::from(orchard::Note::from_parts(ext_addr, note_value, rho, rseed))
+            Option::from(orchard::Note::from_parts(ext_addr, note_value, rho, rseed, orchard::note::NoteVersion::V2))
                 .or_else(|| {
-                    Option::from(orchard::Note::from_parts(int_addr, note_value, rho, rseed))
+                    Option::from(orchard::Note::from_parts(int_addr, note_value, rho, rseed, orchard::note::NoteVersion::V2))
                 })
                 .ok_or_else(|| {
                     JsError::new(&format!(
@@ -4001,7 +4134,6 @@ pub fn build_shielding_transaction(
 ) -> Result<String, JsError> {
     use k256::ecdsa::{signature::hazmat::PrehashSigner, SigningKey};
     use orchard::builder::{Builder, BundleType};
-    use orchard::bundle::Flags;
     use orchard::tree::Anchor;
     use orchard::value::NoteValue;
     use rand::rngs::OsRng;
@@ -4055,11 +4187,17 @@ pub fn build_shielding_transaction(
     let shielded_value = total_in - fee;
 
     // --- build orchard bundle with real Halo 2 proofs ---
+    // NU6.1-branch V5 tx: legacy orchard pool, pre-NU6.2 (historical) circuit.
     let bundle_type = BundleType::Transactional {
-        flags: Flags::SPENDS_DISABLED, // outputs only
+        spends_enabled: false, // outputs only
+        outputs_enabled: true,
         bundle_required: true,
     };
-    let mut builder = Builder::new(bundle_type, Anchor::empty_tree());
+    let mut builder = Builder::new(
+        orchard::BundleProtocol::OrchardPreNu6_2,
+        bundle_type,
+        Anchor::empty_tree(),
+    );
 
     builder
         .add_output(
@@ -4320,7 +4458,6 @@ pub fn build_unsigned_shielding_transaction(
     mainnet: bool,
 ) -> Result<String, JsError> {
     use orchard::builder::{Builder, BundleType};
-    use orchard::bundle::Flags;
     use orchard::tree::Anchor;
     use orchard::value::NoteValue;
     use rand::rngs::OsRng;
@@ -4358,11 +4495,17 @@ pub fn build_unsigned_shielding_transaction(
     let shielded_value = total_in - fee;
 
     // --- build orchard bundle with real Halo 2 proofs ---
+    // NU6.1-branch V5 tx: legacy orchard pool, pre-NU6.2 (historical) circuit.
     let bundle_type = BundleType::Transactional {
-        flags: Flags::SPENDS_DISABLED,
+        spends_enabled: false,
+        outputs_enabled: true,
         bundle_required: true,
     };
-    let mut builder = Builder::new(bundle_type, Anchor::empty_tree());
+    let mut builder = Builder::new(
+        orchard::BundleProtocol::OrchardPreNu6_2,
+        bundle_type,
+        Anchor::empty_tree(),
+    );
 
     builder
         .add_output(
@@ -4763,7 +4906,12 @@ fn compute_orchard_digest<A: orchard::bundle::Authorization>(
     orchard_data.extend_from_slice(&compact_digest);
     orchard_data.extend_from_slice(&memos_digest);
     orchard_data.extend_from_slice(&noncompact_digest);
-    orchard_data.push(bundle.flags().to_byte());
+    orchard_data.push(
+        bundle
+            .flags()
+            .to_byte(orchard::bundle::BundleFormat::PreNu6_3)
+            .ok_or_else(|| JsError::new("flags not representable in pre-NU6.3 format"))?,
+    );
     orchard_data.extend_from_slice(&bundle.value_balance().to_i64_le_bytes());
     orchard_data.extend_from_slice(&bundle.anchor().to_bytes());
 
@@ -4797,7 +4945,12 @@ fn serialize_orchard_bundle(
     }
 
     // flags byte
-    out.push(bundle.flags().to_byte());
+    out.push(
+        bundle
+            .flags()
+            .to_byte(orchard::bundle::BundleFormat::PreNu6_3)
+            .ok_or_else(|| JsError::new("flags not representable in pre-NU6.3 format"))?,
+    );
 
     // valueBalanceOrchard (i64 LE)
     out.extend_from_slice(&bundle.value_balance().to_i64_le_bytes());

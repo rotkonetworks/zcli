@@ -64,6 +64,8 @@ fn build_test_pczt() -> Pczt {
         BuildConfig::Standard {
             sapling_anchor: None,
             orchard_anchor: Some(orchard::Anchor::empty_tree()),
+            #[cfg(zcash_unstable = "nu6.3")]
+            ironwood_anchor: None,
         },
     );
     builder
