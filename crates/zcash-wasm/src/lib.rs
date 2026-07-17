@@ -3071,7 +3071,7 @@ where
         .map_err(|e| format!("propose_version(V6): {:?}", e))?;
     for (note, mp) in &prepared {
         builder
-            .add_orchard_spend::<FeError>(fvk.clone(), note.clone(), mp.clone())
+            .add_orchard_spend::<FeError>(fvk.clone(), *note, mp.clone())
             .map_err(|e| format!("add_orchard_spend: {:?}", e))?;
     }
     let migrated_zat =
