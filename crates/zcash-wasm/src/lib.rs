@@ -2414,18 +2414,20 @@ pub fn redact_pczt_for_signer(pczt: pczt::Pczt) -> pczt::Pczt {
                 a.clear_spend_rho();
                 a.clear_spend_recipient();
                 a.clear_spend_value();
-                // NOTE on fvk: R3 also asked to clear the spend fvk (it is the
-                // wallet's viewing key). In THIS pinned pczt rev that is unsafe
-                // on the producer side alone: `Signer::sign_orchard` calls
-                // `verify_nullifier(None)`, which checks the fvk FIRST and does
-                // NOT tolerate `MissingFullViewingKey`; and the public Updater
-                // exposes no `set_spend_fvk`, so a cleared fvk cannot be restored
-                // on the signer device. Clearing it here makes the orchard spend
-                // UNSIGNABLE (empirically: "no orchard action accepted our ask").
-                // Fully stripping the fvk therefore requires the signer path to
-                // reconstruct its own fvk and call `verify_nullifier(Some(fvk))`
-                // - a FIX-B (signer) change. Until that lands, keep the fvk so
-                // funds can move; the other four plaintext fields are stripped.
+                // R3 viewing-key leak fix: the spend `fvk` is the wallet's
+                // 96-byte orchard FullViewingKey - it links every note the
+                // account can receive, so shipping it over the untrusted QR
+                // transport is a viewing-key leak. Strip it. This is now safe
+                // because the coordinated signer (zigner
+                // feat/ironwood-v6-signer) reconstructs the fvk from the seed
+                // it already holds and drives the pczt low-level Signer role,
+                // supplying the reconstructed fvk to
+                // `Spend::verify_nullifier(Some(fvk))`
+                // (`fvk_for_validation` returns the caller-supplied fvk when the
+                // PCZT's own `fvk` field is absent - librustzcash orchard
+                // pczt/verify.rs). The actual `Action::sign` never reads the
+                // fvk (only `alpha` + `rk`), so signatures still land.
+                a.clear_spend_fvk();
             });
         });
     // The ironwood bundle (NU6.3 / V6) is orchard-shaped; apply the identical
@@ -2447,6 +2449,10 @@ pub fn redact_pczt_for_signer(pczt: pczt::Pczt) -> pczt::Pczt {
             a.clear_spend_rho();
             a.clear_spend_recipient();
             a.clear_spend_value();
+            // R3 viewing-key leak fix (same as the orchard bundle above): strip
+            // the spend fvk. Safe now that the coordinated signer reconstructs
+            // it from the seed and supplies it to `verify_nullifier(Some(fvk))`.
+            a.clear_spend_fvk();
         });
     });
     redactor.finish()

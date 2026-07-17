@@ -197,11 +197,13 @@ fn turnstile_orchard_to_ironwood_builds_signs_extracts() {
     //    R3 spend-redaction fix - so byte-testing those would false-negative on
     //    the output copy.)
     //
-    //    fvk is intentionally NOT asserted absent: `Signer::sign_orchard` calls
-    //    `verify_nullifier(None)` which requires the spend fvk in THIS pinned
-    //    rev (it does not tolerate MissingFullViewingKey and the Updater has no
-    //    set_spend_fvk to restore it). Stripping fvk makes the spend unsignable;
-    //    fully stripping it is a FIX-B signer change. See the redactor comment.
+    //    R3 viewing-key leak fix: the spend `fvk` (the wallet's 96-byte orchard
+    //    FullViewingKey) MUST now be absent too - it links every note the
+    //    account can receive, so it may not cross the QR to the signer. We
+    //    assert the raw fvk bytes are absent from the redacted PCZT. This is
+    //    safe because the coordinated signer reconstructs the fvk from the seed
+    //    and supplies it to `verify_nullifier(Some(fvk))`; the signing loop
+    //    below mirrors that path (low-level Signer role + reconstructed fvk).
     //
     //    A control assertion confirms the ironwood OUTPUT recipient (needed for
     //    device confirmation) DOES survive, so the redaction is not over-broad.
@@ -209,12 +211,17 @@ fn turnstile_orchard_to_ironwood_builds_signs_extracts() {
         !needle.is_empty() && haystack.windows(needle.len()).any(|w| w == needle)
     }
     let spent_rho = rho.to_bytes();
+    let spent_fvk = fvk.to_bytes();
     let ironwood_dest = fvk
         .address_at(0u32, orchard::keys::Scope::Internal)
         .to_raw_address_bytes();
     assert!(
         !contains(&built.pczt_bytes, &spent_rho),
         "redacted PCZT still leaks the spent note's rho"
+    );
+    assert!(
+        !contains(&built.pczt_bytes, &spent_fvk),
+        "redacted PCZT still leaks the spend viewing key (fvk)"
     );
     assert!(
         contains(&built.pczt_bytes, &ironwood_dest),
@@ -227,19 +234,49 @@ fn turnstile_orchard_to_ironwood_builds_signs_extracts() {
         *pczt.global().tx_version(),
         zcash_protocol::constants::V6_TX_VERSION
     );
-    // -- signer side: sign the real orchard spend (dummy/padding spends were
-    //    already signed by IoFinalizer; sign_orchard fails on those, which is
-    //    fine - at least one real spend must succeed) --
-    let n_orchard = pczt.orchard().actions().len();
-    let mut signer = pczt::roles::signer::Signer::new(pczt).expect("signer accepts PCZT");
-    let mut signed_actions = 0usize;
-    for i in 0..n_orchard {
-        if signer.sign_orchard(i, &ask).is_ok() {
-            signed_actions += 1;
-        }
-    }
-    assert!(signed_actions >= 1, "no orchard action accepted our ask");
-    let signed = signer.finish();
+    // -- signer side: sign the real orchard spend the way the coordinated
+    //    zigner signer does. Because the redactor now strips the spend `fvk`,
+    //    the high-level `Signer::sign_orchard` (which hardcodes
+    //    `verify_nullifier(None)` and rejects a missing fvk) can no longer be
+    //    used. Instead we reconstruct the fvk from the seed we hold and drive
+    //    the low-level Signer role, supplying the fvk to
+    //    `verify_nullifier(Some(fvk))` and signing each action directly.
+    //    (dummy/padding spends were already signed by IoFinalizer; those error
+    //    with a Wrong/Missing mismatch and are skipped - at least one real
+    //    spend must land.)
+    use rand_core::OsRng;
+    let shielded_sighash = pczt::roles::signer::Signer::new(pczt.clone())
+        .expect("signer accepts PCZT")
+        .shielded_sighash();
+    let signed_actions = std::cell::Cell::new(0usize);
+    let low = pczt::roles::low_level_signer::Signer::new(pczt);
+    let low = low
+        .sign_orchard_with(
+            |_pczt, bundle, _tx_modifiable| -> Result<(), pczt::orchard::BundleParseError> {
+                for action in bundle.actions_mut().iter_mut() {
+                    match action.spend().verify_nullifier(Some(&fvk)) {
+                        Ok(())
+                        | Err(
+                            orchard::pczt::VerifyError::MissingRecipient
+                            | orchard::pczt::VerifyError::MissingValue
+                            | orchard::pczt::VerifyError::MissingRho
+                            | orchard::pczt::VerifyError::MissingRandomSeed,
+                        ) => {}
+                        Err(_) => continue,
+                    }
+                    if action.sign(shielded_sighash, &ask, OsRng).is_ok() {
+                        signed_actions.set(signed_actions.get() + 1);
+                    }
+                }
+                Ok(())
+            },
+        )
+        .expect("low-level orchard signing");
+    assert!(
+        signed_actions.get() >= 1,
+        "no orchard action accepted our ask with the reconstructed fvk"
+    );
+    let signed = low.finish();
 
     // -- extractor: same code path zafu's hot wallet uses --
     let tx_bytes =
