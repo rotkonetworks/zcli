@@ -228,6 +228,35 @@ fn turnstile_orchard_to_ironwood_builds_signs_extracts() {
         "redaction dropped the ironwood output recipient needed for confirmation"
     );
 
+    // -- MONEY-PATH OUTPUT-SIDE LEAK (this fix): the orchard bundle's DUMMY
+    //    outputs are fabricated to the SPENT note's own receiver - i.e. the
+    //    wallet's own EXTERNAL diversified orchard address (see zcash/orchard
+    //    qleak `OutputInfo::fabricated_for_spend`). That 43-byte
+    //    `output.recipient` used to survive redaction and link the wallet's
+    //    address over the untrusted QR. `redact_turnstile_dummy_outputs` now
+    //    clears it. Assert (a): the wallet's own external address is ABSENT from
+    //    the redacted bytes.
+    //
+    //    This address is DISTINCT from the ironwood destination
+    //    (Scope::Internal) asserted present above, so the two checks together
+    //    prove the redaction is precise: it drops the dummy orchard recipient
+    //    while keeping the real ironwood recipient the device must confirm.
+    let own_external_orchard = fvk
+        .address_at(0u32, orchard::keys::Scope::External)
+        .to_raw_address_bytes();
+    // Precondition: the two addresses really are different byte strings, else
+    // the absence assertion would be trivially contradicted by the presence one.
+    assert_ne!(
+        own_external_orchard.as_slice(),
+        ironwood_dest.as_slice(),
+        "test fixture invalid: external and internal addresses collide"
+    );
+    assert!(
+        !contains(&built.pczt_bytes, &own_external_orchard),
+        "MONEY-PATH LEAK: redacted PCZT still contains the wallet's own external \
+         orchard address (the dummy-output recipient)"
+    );
+
     // -- redacted PCZT round-trips and is V6 --
     let pczt = pczt::Pczt::parse(&built.pczt_bytes).expect("redacted PCZT parses");
     assert_eq!(

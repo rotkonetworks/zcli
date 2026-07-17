@@ -2458,6 +2458,68 @@ pub fn redact_pczt_for_signer(pczt: pczt::Pczt) -> pczt::Pczt {
     redactor.finish()
 }
 
+/// Turnstile-only redaction: strip the address-linking output metadata from the
+/// **orchard** bundle's DUMMY outputs, while leaving the **ironwood** bundle's
+/// real output metadata intact so the cold device can confirm the destination.
+///
+/// # Why this is a separate step (and only run for turnstile migrations)
+///
+/// [`redact_pczt_for_signer`] deliberately KEEPS `output.recipient`/`value`
+/// because in an ordinary orchard *send* the orchard output IS the real
+/// recipient the signer must display and confirm. Blanket-clearing it there
+/// would break send confirmation.
+///
+/// A turnstile migration is different. Its orchard bundle contains **no real
+/// outputs at all**: the builder only calls `add_orchard_spend` (never
+/// `add_orchard_output`), and at NU6.3 orchard cross-address transfers are
+/// DISABLED, so the orchard builder (zcash/orchard qleak branch,
+/// `builder.rs` `pad_and_shuffle` / `OutputInfo::fabricated_for_spend`) pairs
+/// every requested spend with a *fabricated zero-value dummy output addressed
+/// to the spent note's own receiver* — i.e. the wallet's own external
+/// diversified orchard address. That 43-byte `output.recipient` (plus
+/// `user_address`, and the dummy's `value`/`rseed`/`ock`/`zip32_derivation`)
+/// survives [`redact_pczt_for_signer`] and links the wallet's address over the
+/// untrusted QR transport — the leak FIX-A/R3 flagged.
+///
+/// The value migrated by a turnstile tx exits **entirely** through the ironwood
+/// output(s) (`add_ironwood_output` to `fvk.address_at(0, Scope::Internal)`).
+/// The orchard side is spend-only. Therefore **every** orchard-bundle output is
+/// a dummy and can be cleared wholesale, while **every** ironwood-bundle output
+/// is the real destination and is left untouched for device confirmation. This
+/// is the "distinguish dummy vs real" rule, and it is structurally guaranteed by
+/// how `build_turnstile_migration_pczt_core` constructs the tx (orchard spends +
+/// ironwood outputs only) — see the assertion in `turnstile_v6.rs` that the
+/// wallet's own external address is absent from the redacted bytes.
+///
+/// The dummy outputs are zero-value and their commitments (`cmx`) plus
+/// ciphertexts remain, so the sighash the signer recomputes is unchanged; the
+/// signer's `verify` path does not require `output.recipient`/`value`/`rseed`
+/// (they map to `Ok` when absent, same as the spend-side clears).
+#[cfg(zcash_unstable = "nu6.3")]
+pub fn redact_turnstile_dummy_outputs(pczt: pczt::Pczt) -> pczt::Pczt {
+    pczt::roles::redactor::Redactor::new(pczt)
+        .redact_orchard_with(|mut o| {
+            o.redact_actions(|mut a| {
+                // The wallet's own external address, raw-encoded (43 bytes) —
+                // the actual leak.
+                a.clear_output_recipient();
+                // Human-readable form of the same address, set by an Updater.
+                a.clear_output_user_address();
+                // Dummy is zero-value, but clear defensively so no per-output
+                // value hint reaches the signer.
+                a.clear_output_value();
+                // Seed randomness / out-cipher key / derivation hint for the
+                // dummy note — all wallet-linking metadata the signer does not
+                // need.
+                a.clear_output_rseed();
+                a.clear_output_ock();
+                a.clear_output_zip32_derivation();
+                a.clear_output_proprietary();
+            });
+        })
+        .finish()
+}
+
 // ============================================================================
 // PCZT (Partially Created Zcash Transaction) signing flow.
 //
@@ -3195,6 +3257,13 @@ where
     .map_err(|e| format!("create proofs: {:?}", e))?;
 
     let pczt = redact_pczt_for_signer(pczt);
+    // Money-path privacy fix: strip the wallet's own external orchard address
+    // (and the rest of the dummy-output metadata) from the orchard bundle. In a
+    // turnstile migration every orchard output is a fabricated dummy addressed to
+    // the wallet itself; the real destination is the ironwood output, which this
+    // step leaves intact for the cold device to confirm. See
+    // `redact_turnstile_dummy_outputs` for the full rationale.
+    let pczt = redact_turnstile_dummy_outputs(pczt);
 
     let summary = summarize_pczt(&pczt, Some(fee));
     let action_count =
