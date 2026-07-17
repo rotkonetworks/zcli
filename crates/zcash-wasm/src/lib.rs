@@ -3067,13 +3067,13 @@ fn summarize_pczt(pczt: &pczt::Pczt, fee_zat: Option<u64>) -> PcztSummary {
 }
 
 /// Consensus parameters wrapper that reports NU6.3 as active from a given
-/// height. The valar fork leaves `Nu6_3 => None` on MainNetwork/TestNetwork
-/// (no activation heights are assigned yet), but the builder only enables
-/// the ironwood bundle when `is_nu_active(Nu6_3, target_height)`. Until the
-/// fork lands real activation heights, the caller's `target_height` IS the
-/// declared activation point, and the resulting tx carries the placeholder
-/// NU6.3 consensus branch id (0xffff_ffff) - the same branch the zigner
-/// valar spike signs. Drop this wrapper once upstream assigns heights.
+/// height. The vendored librustzcash now carries the real NU6.3 activation
+/// height (Main 3_428_143) and consensus branch id (0x37a5165b), so on
+/// mainnet this wrapper is a no-op - the real height wins in the `.or()`
+/// below. It remains only so tests / non-mainnet callers can declare NU6.3
+/// active at an arbitrary `target_height`; the fail-closed guard in
+/// `build_turnstile_migration_pczt_core` still refuses unless the bound
+/// branch id equals the caller-supplied expected_branch_id.
 #[cfg(zcash_unstable = "nu6.3")]
 #[derive(Clone, Copy, Debug)]
 struct Nu63Activated<P> {
