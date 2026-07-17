@@ -29,10 +29,18 @@ use rayon::prelude::*;
 pub use wasm_bindgen_rayon::init_thread_pool;
 
 // JS console.log binding for WASM debug output
+#[cfg(target_arch = "wasm32")]
 #[wasm_bindgen]
 extern "C" {
     #[wasm_bindgen(js_namespace = console)]
     fn log(s: &str);
+}
+
+/// Native fallback: wasm-bindgen imports panic when called off-wasm, and the
+/// proving-key paths (exercised by cargo tests) log through this.
+#[cfg(not(target_arch = "wasm32"))]
+fn log(s: &str) {
+    eprintln!("{}", s);
 }
 
 /// Cached Halo 2 proving keys, one per circuit version. Building is
@@ -3042,15 +3050,20 @@ where
     let recipient = fvk.address_at(0u32, Scope::Internal);
     let internal_ovk = Some(fvk.to_ovk(Scope::Internal));
 
-    // Migration spends orchard and only OUTPUTS ironwood, so no ironwood
-    // anchor is needed (contract section 1).
+    // Migration spends orchard and only OUTPUTS ironwood, so no real ironwood
+    // anchor is involved - but the pinned rev only creates the ironwood
+    // bundle builder when `ironwood_anchor` is Some (BuildConfig::
+    // ironwood_builder returns None otherwise). The empty-tree anchor is the
+    // output-only convention the zigner valar spike producer uses; it only
+    // ever anchors dummy spends. (Deviation from contract section 1's
+    // literal "ironwood_anchor: None" - flagged.)
     let mut builder = Builder::new(
         params,
         BlockHeight::from(target_height),
         BuildConfig::Standard {
             sapling_anchor: None,
             orchard_anchor: Some(orchard_anchor),
-            ironwood_anchor: None,
+            ironwood_anchor: Some(orchard::Anchor::empty_tree()),
         },
     );
     builder

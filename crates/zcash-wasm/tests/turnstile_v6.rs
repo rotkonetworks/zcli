@@ -71,13 +71,16 @@ fn turnstile_orchard_to_ironwood_builds_signs_extracts() {
     let orchard_anchor = witness.root(cmx);
 
     // -- producer: build + prove + redact --
+    // Target height must be past every inherited MainNetwork activation (the
+    // orchard builder needs NU5 active); 10_000_000 matches the fork's
+    // end_to_end.rs fixture.
     let built = build_turnstile_migration_pczt_core(
         Nu63TestNet,
         &fvk,
         vec![(note, witness)],
         fee,
         orchard_anchor,
-        100,
+        10_000_000,
         MemoBytes::empty(),
     )
     .expect("build turnstile migration PCZT");
