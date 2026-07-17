@@ -168,53 +168,36 @@ impl WalletKeys {
 
     /// Scan a batch of compact actions in PARALLEL and return found notes
     /// This is the main entry point for high-performance scanning
+    ///
+    /// Binary format: [count: u32][action1][action2]...
+    /// Each action: [nullifier: 32][cmx: 32][epk: 32][ciphertext: 52] = 148 bytes
     #[wasm_bindgen]
     pub fn scan_actions_parallel(&self, actions_bytes: &[u8]) -> Result<JsValue, JsError> {
-        // Deserialize actions from compact binary format
-        // Format: [count: u32][action1][action2]...
-        // Each action: [nullifier: 32][cmx: 32][epk: 32][ciphertext: 52] = 148 bytes
-        let actions = parse_compact_actions(actions_bytes)?;
+        scan_compact_actions_with_keys(
+            &self.fvk,
+            &self.prepared_ivk_external,
+            &self.prepared_ivk_internal,
+            actions_bytes,
+            "orchard",
+        )
+    }
 
-        #[cfg(feature = "parallel")]
-        let found: Vec<FoundNote> = actions
-            .par_iter()
-            .enumerate()
-            .filter_map(|(idx, action)| {
-                self.try_decrypt_action_binary(action)
-                    .map(|(value, note_nf, rseed, rho, addr, is_change)| FoundNote {
-                        index: idx as u32,
-                        value,
-                        nullifier: hex_encode(&note_nf),
-                        cmx: hex_encode(&action.cmx),
-                        is_change,
-                        rseed: Some(hex_encode(&rseed)),
-                        rho: Some(hex_encode(&rho)),
-                        recipient: Some(hex_encode(&addr)),
-                    })
-            })
-            .collect();
-
-        #[cfg(not(feature = "parallel"))]
-        let found: Vec<FoundNote> = actions
-            .iter()
-            .enumerate()
-            .filter_map(|(idx, action)| {
-                self.try_decrypt_action_binary(action)
-                    .map(|(value, note_nf, rseed, rho, addr, is_change)| FoundNote {
-                        index: idx as u32,
-                        value,
-                        nullifier: hex_encode(&note_nf),
-                        cmx: hex_encode(&action.cmx),
-                        is_change,
-                        rseed: Some(hex_encode(&rseed)),
-                        rho: Some(hex_encode(&rho)),
-                        recipient: Some(hex_encode(&addr)),
-                    })
-            })
-            .collect();
-
-        serde_wasm_bindgen::to_value(&found)
-            .map_err(|e| JsError::new(&format!("Serialization failed: {}", e)))
+    /// Scan a batch of IRONWOOD compact actions in PARALLEL (NU6.3+ pool).
+    ///
+    /// Same binary format and key material as `scan_actions_parallel` — the
+    /// ironwood pool shares orchard's key tree and note encryption; only the
+    /// bundle (and note plaintext version, V3) differ. The caller feeds the
+    /// actions from the tx's ironwood bundle here so returned notes carry
+    /// `pool: "ironwood"`.
+    #[wasm_bindgen]
+    pub fn scan_actions_ironwood_parallel(&self, actions_bytes: &[u8]) -> Result<JsValue, JsError> {
+        scan_compact_actions_with_keys(
+            &self.fvk,
+            &self.prepared_ivk_external,
+            &self.prepared_ivk_internal,
+            actions_bytes,
+            "ironwood",
+        )
     }
 
     /// Scan actions from JSON (legacy compatibility, slower)
@@ -237,6 +220,8 @@ impl WalletKeys {
                     rseed: None,
                     rho: None,
                     recipient: None,
+                    pool: FoundNote::default_pool(),
+                    note_version: FoundNote::default_note_version(),
                 })
             })
             .collect();
@@ -255,6 +240,8 @@ impl WalletKeys {
                     rseed: None,
                     rho: None,
                     recipient: None,
+                    pool: FoundNote::default_pool(),
+                    note_version: FoundNote::default_note_version(),
                 })
             })
             .collect();
@@ -282,83 +269,6 @@ impl WalletKeys {
             .sum();
 
         Ok(balance)
-    }
-
-    /// Try to decrypt a binary-format action using official Orchard note decryption
-    /// Tries BOTH external and internal scope IVKs
-    /// Returns (value, note_nullifier, rseed_bytes, rho_bytes, recipient_address_bytes)
-    #[allow(clippy::type_complexity)]
-    /// Returns (value, nullifier, rseed, rho, address, is_change)
-    fn try_decrypt_action_binary(
-        &self,
-        action: &CompactActionBinary,
-    ) -> Option<(u64, [u8; 32], [u8; 32], [u8; 32], [u8; 43], bool)> {
-        // Parse the nullifier and cmx
-        let nullifier = orchard::note::Nullifier::from_bytes(&action.nullifier);
-        if nullifier.is_none().into() {
-            return None;
-        }
-        let nullifier = nullifier.unwrap();
-
-        let cmx = orchard::note::ExtractedNoteCommitment::from_bytes(&action.cmx);
-        if cmx.is_none().into() {
-            return None;
-        }
-        let cmx = cmx.unwrap();
-
-        // Create compact action for domain construction
-        let compact_action = orchard::note_encryption::CompactAction::from_parts(
-            nullifier,
-            cmx,
-            EphemeralKeyBytes(action.epk),
-            action.ciphertext,
-        );
-
-        // Create domain for this action
-        let domain = OrchardDomain::for_compact_action(&compact_action);
-
-        // Create our shielded output wrapper
-        let output = CompactShieldedOutput {
-            epk: action.epk,
-            cmx: action.cmx,
-            ciphertext: action.ciphertext,
-        };
-
-        // Try compact note decryption with EXTERNAL scope IVK first (incoming)
-        if let Some((note, addr)) =
-            try_compact_note_decryption(&domain, &self.prepared_ivk_external, &output)
-        {
-            let note_nf = note.nullifier(&self.fvk);
-            let rseed = *note.rseed().as_bytes();
-            let rho = note.rho().to_bytes();
-            return Some((
-                note.value().inner(),
-                note_nf.to_bytes(),
-                rseed,
-                rho,
-                addr.to_raw_address_bytes(),
-                false, // external scope = incoming, not change
-            ));
-        }
-
-        // If external failed, try INTERNAL scope IVK (change/shielding outputs)
-        if let Some((note, addr)) =
-            try_compact_note_decryption(&domain, &self.prepared_ivk_internal, &output)
-        {
-            let note_nf = note.nullifier(&self.fvk);
-            let rseed = *note.rseed().as_bytes();
-            let rho = note.rho().to_bytes();
-            return Some((
-                note.value().inner(),
-                note_nf.to_bytes(),
-                rseed,
-                rho,
-                addr.to_raw_address_bytes(),
-                true, // internal scope = change output
-            ));
-        }
-
-        None
     }
 
     /// Try to decrypt a JSON-format action
@@ -500,6 +410,115 @@ fn parse_compact_actions(data: &[u8]) -> Result<Vec<CompactActionBinary>, JsErro
     Ok(actions)
 }
 
+/// The decrypted fields of a compact action, shared by every scan entry
+/// point (WalletKeys / WatchOnlyWallet, orchard / ironwood).
+struct DecryptedParts {
+    value: u64,
+    nullifier: [u8; 32],
+    rseed: [u8; 32],
+    rho: [u8; 32],
+    recipient: [u8; 43],
+    is_change: bool,
+    note_version: u8,
+}
+
+/// Trial-decrypt one compact action with both scope IVKs.
+///
+/// The same `OrchardDomain` decrypts both orchard (V2) and ironwood (V3)
+/// note plaintexts — the plaintext lead byte selects the version, and the
+/// nullifier derivation follows the note's own version. The pool label is
+/// applied by the caller.
+fn try_decrypt_compact_action(
+    fvk: &orchard::keys::FullViewingKey,
+    ivk_external: &PreparedIncomingViewingKey,
+    ivk_internal: &PreparedIncomingViewingKey,
+    action: &CompactActionBinary,
+) -> Option<DecryptedParts> {
+    let nullifier = orchard::note::Nullifier::from_bytes(&action.nullifier);
+    if nullifier.is_none().into() {
+        return None;
+    }
+    let nullifier = nullifier.unwrap();
+
+    let cmx = orchard::note::ExtractedNoteCommitment::from_bytes(&action.cmx);
+    if cmx.is_none().into() {
+        return None;
+    }
+    let cmx = cmx.unwrap();
+
+    let compact_action = orchard::note_encryption::CompactAction::from_parts(
+        nullifier,
+        cmx,
+        EphemeralKeyBytes(action.epk),
+        action.ciphertext,
+    );
+
+    let domain = OrchardDomain::for_compact_action(&compact_action);
+    let output = CompactShieldedOutput {
+        epk: action.epk,
+        cmx: action.cmx,
+        ciphertext: action.ciphertext,
+    };
+
+    let build = |note: orchard::Note, addr: orchard::Address, is_change: bool| DecryptedParts {
+        value: note.value().inner(),
+        nullifier: note.nullifier(fvk).to_bytes(),
+        rseed: *note.rseed().as_bytes(),
+        rho: note.rho().to_bytes(),
+        recipient: addr.to_raw_address_bytes(),
+        is_change,
+        note_version: match note.version() {
+            orchard::note::NoteVersion::V2 => 2,
+            orchard::note::NoteVersion::V3 => 3,
+        },
+    };
+
+    // External scope first (incoming payments), then internal (change).
+    if let Some((note, addr)) = try_compact_note_decryption(&domain, ivk_external, &output) {
+        return Some(build(note, addr, false));
+    }
+    if let Some((note, addr)) = try_compact_note_decryption(&domain, ivk_internal, &output) {
+        return Some(build(note, addr, true));
+    }
+    None
+}
+
+/// Scan a binary batch of compact actions and return decrypted notes tagged
+/// with `pool`. Shared implementation behind the orchard and ironwood scan
+/// exports on both wallet types.
+fn scan_compact_actions_with_keys(
+    fvk: &orchard::keys::FullViewingKey,
+    ivk_external: &PreparedIncomingViewingKey,
+    ivk_internal: &PreparedIncomingViewingKey,
+    actions_bytes: &[u8],
+    pool: &str,
+) -> Result<JsValue, JsError> {
+    let actions = parse_compact_actions(actions_bytes)?;
+
+    let to_found = |(idx, action): (usize, &CompactActionBinary)| {
+        try_decrypt_compact_action(fvk, ivk_external, ivk_internal, action).map(|d| FoundNote {
+            index: idx as u32,
+            value: d.value,
+            nullifier: hex_encode(&d.nullifier),
+            cmx: hex_encode(&action.cmx),
+            is_change: d.is_change,
+            rseed: Some(hex_encode(&d.rseed)),
+            rho: Some(hex_encode(&d.rho)),
+            recipient: Some(hex_encode(&d.recipient)),
+            pool: pool.to_string(),
+            note_version: d.note_version,
+        })
+    };
+
+    #[cfg(feature = "parallel")]
+    let found: Vec<FoundNote> = actions.par_iter().enumerate().filter_map(to_found).collect();
+    #[cfg(not(feature = "parallel"))]
+    let found: Vec<FoundNote> = actions.iter().enumerate().filter_map(to_found).collect();
+
+    serde_wasm_bindgen::to_value(&found)
+        .map_err(|e| JsError::new(&format!("Serialization failed: {}", e)))
+}
+
 /// Compact action from JavaScript (JSON format)
 #[derive(Debug, Deserialize)]
 struct CompactActionJs {
@@ -528,6 +547,25 @@ pub struct FoundNote {
     /// recipient address bytes for note reconstruction (hex, 43 bytes)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub recipient: Option<String>,
+    /// Which shielded pool the action was scanned from: "orchard" | "ironwood".
+    /// Set by the scan entry point (the pool is a property of which bundle in
+    /// the tx the action lives in, not of the ciphertext itself).
+    #[serde(default = "FoundNote::default_pool")]
+    pub pool: String,
+    /// Note plaintext version from the decrypted lead byte
+    /// (2 = orchard V2, 3 = ironwood V3 quantum-recoverable). Needed to
+    /// reconstruct the exact note (and its commitment) at spend time.
+    #[serde(default = "FoundNote::default_note_version")]
+    pub note_version: u8,
+}
+
+impl FoundNote {
+    fn default_pool() -> String {
+        "orchard".to_string()
+    }
+    fn default_note_version() -> u8 {
+        2
+    }
 }
 
 /// Batch scan result with stats
@@ -826,104 +864,30 @@ impl WatchOnlyWallet {
     /// Scan compact actions (same interface as WalletKeys)
     #[wasm_bindgen]
     pub fn scan_actions_parallel(&self, actions_bytes: &[u8]) -> Result<JsValue, JsError> {
-        let actions = parse_compact_actions(actions_bytes)?;
-
-        #[cfg(feature = "parallel")]
-        let found: Vec<FoundNote> = actions
-            .par_iter()
-            .enumerate()
-            .filter_map(|(idx, action)| {
-                self.try_decrypt_action(action)
-                    .map(|(value, note_nf, rseed, rho, addr, is_change)| FoundNote {
-                        index: idx as u32,
-                        value,
-                        nullifier: hex_encode(&note_nf),
-                        cmx: hex_encode(&action.cmx),
-                        is_change,
-                        rseed: Some(hex_encode(&rseed)),
-                        rho: Some(hex_encode(&rho)),
-                        recipient: Some(hex_encode(&addr)),
-                    })
-            })
-            .collect();
-
-        #[cfg(not(feature = "parallel"))]
-        let found: Vec<FoundNote> = actions
-            .iter()
-            .enumerate()
-            .filter_map(|(idx, action)| {
-                self.try_decrypt_action(action)
-                    .map(|(value, note_nf, rseed, rho, addr, is_change)| FoundNote {
-                        index: idx as u32,
-                        value,
-                        nullifier: hex_encode(&note_nf),
-                        cmx: hex_encode(&action.cmx),
-                        is_change,
-                        rseed: Some(hex_encode(&rseed)),
-                        rho: Some(hex_encode(&rho)),
-                        recipient: Some(hex_encode(&addr)),
-                    })
-            })
-            .collect();
-
-        serde_wasm_bindgen::to_value(&found)
-            .map_err(|e| JsError::new(&format!("Serialization failed: {}", e)))
+        scan_compact_actions_with_keys(
+            &self.fvk,
+            &self.prepared_ivk_external,
+            &self.prepared_ivk_internal,
+            actions_bytes,
+            "orchard",
+        )
     }
 
-    /// Try to decrypt a compact action
-    /// Returns (value, note_nullifier, rseed_bytes, rho_bytes, recipient_address_bytes)
-    #[allow(clippy::type_complexity)]
-    fn try_decrypt_action(
-        &self,
-        action: &CompactActionBinary,
-    ) -> Option<(u64, [u8; 32], [u8; 32], [u8; 32], [u8; 43], bool)> {
-        let nullifier = orchard::note::Nullifier::from_bytes(&action.nullifier);
-        if nullifier.is_none().into() {
-            return None;
-        }
-        let nullifier = nullifier.unwrap();
-
-        let cmx = orchard::note::ExtractedNoteCommitment::from_bytes(&action.cmx);
-        if cmx.is_none().into() {
-            return None;
-        }
-        let cmx = cmx.unwrap();
-
-        let compact_action = orchard::note_encryption::CompactAction::from_parts(
-            nullifier,
-            cmx,
-            EphemeralKeyBytes(action.epk),
-            action.ciphertext,
-        );
-
-        let domain = OrchardDomain::for_compact_action(&compact_action);
-        let output = CompactShieldedOutput {
-            epk: action.epk,
-            cmx: action.cmx,
-            ciphertext: action.ciphertext,
-        };
-
-        // Try external scope first (incoming)
-        if let Some((note, addr)) =
-            try_compact_note_decryption(&domain, &self.prepared_ivk_external, &output)
-        {
-            let note_nf = note.nullifier(&self.fvk);
-            let rseed = *note.rseed().as_bytes();
-            let rho = note.rho().to_bytes();
-            return Some((note.value().inner(), note_nf.to_bytes(), rseed, rho, addr.to_raw_address_bytes(), false));
-        }
-
-        // Try internal scope (change)
-        if let Some((note, addr)) =
-            try_compact_note_decryption(&domain, &self.prepared_ivk_internal, &output)
-        {
-            let note_nf = note.nullifier(&self.fvk);
-            let rseed = *note.rseed().as_bytes();
-            let rho = note.rho().to_bytes();
-            return Some((note.value().inner(), note_nf.to_bytes(), rseed, rho, addr.to_raw_address_bytes(), true));
-        }
-
-        None
+    /// Scan a batch of IRONWOOD compact actions (NU6.3+ pool).
+    ///
+    /// Same binary format and key material as `scan_actions_parallel` — the
+    /// ironwood pool shares orchard's key tree and note encryption. Feed the
+    /// actions from a tx's ironwood bundle here so returned notes carry
+    /// `pool: "ironwood"`.
+    #[wasm_bindgen]
+    pub fn scan_actions_ironwood_parallel(&self, actions_bytes: &[u8]) -> Result<JsValue, JsError> {
+        scan_compact_actions_with_keys(
+            &self.fvk,
+            &self.prepared_ivk_external,
+            &self.prepared_ivk_internal,
+            actions_bytes,
+            "ironwood",
+        )
     }
 }
 
