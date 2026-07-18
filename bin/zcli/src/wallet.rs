@@ -195,6 +195,20 @@ impl Wallet {
         format!("{}/.zcli/watch", home)
     }
 
+    /// marker file recording which seed derivation an ssh-key wallet uses
+    /// ("legacy-ssh" or "mnemonic-v1"); lives beside the wallet db, not in it,
+    /// so it can be read before the db is opened
+    pub fn derivation_marker_path() -> String {
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+        format!("{}/.zcli/seed_derivation", home)
+    }
+
+    /// wallet db path ignoring watch mode — the spending wallet's location
+    pub fn spending_path() -> String {
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+        format!("{}/.zcli/wallet", home)
+    }
+
     pub fn sync_height(&self) -> Result<u32, Error> {
         match self
             .db

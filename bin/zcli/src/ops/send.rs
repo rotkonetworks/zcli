@@ -10,7 +10,7 @@ const GRACE_ACTIONS: usize = 2;
 const MIN_ORCHARD_ACTIONS: usize = 2;
 
 /// ZIP-317 fee computation
-pub(crate) fn compute_fee(
+pub fn compute_fee(
     n_spends: usize,
     n_z_outputs: usize,
     n_t_outputs: usize,

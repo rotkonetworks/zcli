@@ -280,6 +280,17 @@ pub enum InitAction {
         #[arg(long, hide = true)]
         position: Option<u64>,
     },
+
+    /// show the 24-word recovery phrase backing this ssh-key wallet
+    Phrase,
+
+    /// migrate a legacy ssh-key wallet to the mnemonic-backed derivation
+    /// (sweeps funds to the new wallet, then switches the derivation)
+    Migrate {
+        /// print what would happen without broadcasting anything
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 #[derive(Subcommand)]
