@@ -14,6 +14,7 @@ members = [
     "crates/zoda-vss",
     "bin/relay",
     "bin/poker",
+    "bin/pokerbot",
     "crates/ring-vrf-wasm",
     "bin/license-server",
 ]

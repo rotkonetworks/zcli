@@ -1,0 +1,43 @@
+[package]
+name = "pokerbot"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "headless heads-up poker bot: drives the production poker-pvm engine over the real E2EE relay for high-pace bug testing (free + paid)"
+
+[[bin]]
+name = "pokerbot"
+path = "src/main.rs"
+
+[dependencies]
+# the PRODUCTION game engine (native std build; dependency-free). tests exactly what ships.
+poker-pvm = { path = "../../../zeratul/crates/poker-pvm" }
+
+# async + websocket relay client (wss:// to zkbtc.org/ws or a local relay)
+tokio = { version = "1", features = ["full"] }
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+futures-util = "0.3"
+# rustls is already in the tree via tokio-tungstenite; declared directly only so we
+# can install its ring CryptoProvider at startup (rustls 0.23 no longer auto-selects one).
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
+
+# E2EE: x25519 ECDH -> HKDF-SHA256 -> AES-256-GCM  (byte-identical to the browser WebCrypto path)
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+hkdf = "0.12"
+sha2 = "0.10"
+aes-gcm = "0.10"
+base64 = "0.22"
+hex = "0.4"
+
+# rng (seeded for reproducible fuzz runs)
+rand = "0.8"
+rand_chacha = "0.3"
+
+# json wire messages + cli + logging
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
