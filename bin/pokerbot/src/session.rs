@@ -13,10 +13,12 @@
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::VecDeque;
 use tracing::{debug, trace};
 
 use crate::crypto::Session;
 use crate::relay::{RelayFrame, Transport};
+use crate::srv::{self, ClientMsg, ServerMsg};
 
 /// A decrypted inner game message: `{"t":..,"d":..}`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -42,6 +44,15 @@ pub struct Peer {
     /// whether we've already emitted our own `_keyex` (idempotent guard).
     keyex_sent: bool,
     pub nick: String,
+    /// OUR session identity pubkey (64 hex) — announced in `seated` as `sessionPub`,
+    /// pinned in the deposit memo, and used to sign settlement. `None` = anon/free.
+    pub session_pub: Option<String>,
+    /// the PEER's announced `sessionPub` (recorded from their `seated`), used to
+    /// verify their settlement co-sign later. `None` until they announce it.
+    pub peer_session_pub: Option<String>,
+    /// inbound top-level `{"t":"srv","msg":..}` server frames, demuxed here so the
+    /// game/paid loop can drain them without racing the E2EE peer channel.
+    srv_inbox: VecDeque<ServerMsg>,
 }
 
 impl Peer {
@@ -52,7 +63,39 @@ impl Peer {
             seat: 0,
             keyex_sent: false,
             nick,
+            session_pub: None,
+            peer_session_pub: None,
+            srv_inbox: VecDeque::new(),
         }
+    }
+
+    /// Set OUR session identity pubkey (announced as `sessionPub` in `seated`).
+    pub fn set_session_pub(&mut self, pubkey_hex: String) {
+        self.session_pub = Some(pubkey_hex);
+    }
+
+    /// Record the peer's announced `sessionPub` (from their `seated` handshake).
+    pub fn record_peer_session_pub(&mut self, pubkey_hex: String) {
+        self.peer_session_pub = Some(pubkey_hex);
+    }
+
+    /// Send a top-level `{"t":"srv","msg":<ClientMsg>}` relay frame. This is NOT
+    /// E2EE-encrypted and NOT wrapped in a peer `msg` — the relay/escrow reads it
+    /// directly (staked tables only). Mirrors the browser `transport.sendServer`.
+    /// Live-paid-path plumbing: wired into the driver alongside the escrow infra.
+    #[allow(dead_code)]
+    pub async fn send_srv(&mut self, msg: ClientMsg) -> Result<()> {
+        let frame = serde_json::json!({ "t": "srv", "msg": msg });
+        let text = serde_json::to_string(&frame)?;
+        trace!(seat = self.seat, "send_srv");
+        self.transport.send(&RelayFrame::Raw { text }).await
+    }
+
+    /// Pop the next demuxed server frame if one has arrived, else `None` (non-blocking).
+    /// Live-paid-path plumbing: drained by the driver alongside the escrow infra.
+    #[allow(dead_code)]
+    pub fn try_recv_srv(&mut self) -> Option<ServerMsg> {
+        self.srv_inbox.pop_front()
     }
 
     /// Wrap an inner WireMessage into a relay `msg` frame (stringified `text`)
@@ -258,6 +301,15 @@ impl Peer {
                             return Ok(Inner::Ignore);
                         }
                     }
+                }
+                RelayFrame::Srv { msg } => {
+                    // Top-level server/escrow bridge frame. Type it and queue it for
+                    // the paid-path driver to drain via `try_recv_srv`; it never
+                    // disturbs the E2EE peer channel.
+                    let sm = srv::parse_server_msg(&msg);
+                    trace!(seat = self.seat, "queued srv ServerMsg");
+                    self.srv_inbox.push_back(sm);
+                    return Ok(Inner::Ignore);
                 }
                 RelayFrame::Undelivered { reason } => {
                     trace!(reason = %reason, "relay: undelivered");

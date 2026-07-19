@@ -71,7 +71,21 @@ pub enum RelayFrame {
     },
     #[serde(rename = "part")]
     Part,
-    /// catch-all so an unmodelled server frame (e.g. `srv`) doesn't kill the loop.
+    /// server/escrow bridge frame: `{"t":"srv","msg":<ServerMsg|ClientMsg>}`. The
+    /// `msg` payload is kept opaque here (a `Value`) and typed by `srv.rs` — the
+    /// relay/escrow reads this directly; it is NOT E2EE-encrypted or peer-routed.
+    #[serde(rename = "srv")]
+    Srv {
+        #[serde(default)]
+        msg: serde_json::Value,
+    },
+    /// A pre-serialized top-level frame (used to send `srv` frames whose exact JSON
+    /// we build by hand). SEND-ONLY: never produced on decode. Constructed by the
+    /// live-paid-path `send_srv`; allow dead-code until that path is driven.
+    #[serde(skip)]
+    #[allow(dead_code)]
+    Raw { text: String },
+    /// catch-all so an unmodelled server frame doesn't kill the loop.
     #[serde(other)]
     Other,
 }
@@ -118,7 +132,12 @@ impl WsTransport {
     }
 
     async fn send(&mut self, frame: &RelayFrame) -> Result<()> {
-        let json = serde_json::to_string(frame)?;
+        // `Raw` carries an already-serialized top-level frame (e.g. a hand-built
+        // `srv` frame); everything else serializes via serde.
+        let json = match frame {
+            RelayFrame::Raw { text } => text.clone(),
+            other => serde_json::to_string(other)?,
+        };
         self.ws.send(Message::Text(json)).await?;
         Ok(())
     }
@@ -209,6 +228,17 @@ impl ChannelTransport {
                     nick: self.nick.clone(),
                     ts: 0,
                 });
+            }
+            RelayFrame::Raw { text } => {
+                // A hand-built top-level frame (e.g. a `srv` frame). The in-process
+                // transport has no server/escrow, so we just forward `srv` frames to
+                // the peer's inbox (loopback) so an offline srv path is still testable;
+                // the real relay routes these to the escrow instead.
+                if let Ok(f) = serde_json::from_str::<RelayFrame>(text) {
+                    if matches!(f, RelayFrame::Srv { .. }) {
+                        let _ = self.to_peer.send(f);
+                    }
+                }
             }
             RelayFrame::Part => {}
             _ => {}

@@ -11,9 +11,19 @@
 //! `play` runs a single seat for interop against a browser or another machine.
 
 mod crypto;
+// Live-paid-path plumbing (memo/command building + FROST payout co-sign). Fully
+// unit-tested, but not yet CALLED by the offline harness — wired into the driver
+// when the escrow/relay/wallet infra lands. Allow dead-code until then.
+#[allow(dead_code)]
+mod deposit;
 mod game;
+mod identity;
+#[allow(dead_code)]
+mod payout;
 mod relay;
 mod session;
+mod settle;
+mod srv;
 
 use anyhow::{anyhow, Result};
 use clap::{Parser, Subcommand};
@@ -21,7 +31,8 @@ use poker_pvm::Rules;
 use tokio::sync::oneshot;
 use tracing::info;
 
-use game::{HandResult, Player, Stats};
+use game::{HandResult, Player, SettleOutcome, Stats};
+use identity::Identity;
 use relay::{Transport, WsTransport};
 use session::Peer;
 
@@ -50,6 +61,16 @@ enum Cmd {
         sb: u32,
         #[arg(long, default_value_t = 10)]
         bb: u32,
+        /// buy-in in zatoshi. 0 = free-play (default; unchanged behaviour). >0 runs
+        /// the SAME engine loop as a STAKED SIMULATION: after the hands, both seats
+        /// build + sign + exchange + verify a settlement co-sign (offline; no escrow).
+        #[arg(long, default_value_t = 0)]
+        stake: u64,
+        /// run both seats over an IN-PROCESS channel instead of the network relay.
+        /// Deterministic + offline (no `--relay` needed); the co-sign assertion is
+        /// identical. Handy where the relay is unreachable/slow from CI.
+        #[arg(long)]
+        local: bool,
     },
     /// Single seat, for interop against a browser or another machine.
     Play {
@@ -71,6 +92,10 @@ enum Cmd {
         bb: u32,
         #[arg(long, default_value = "pokerbot")]
         name: String,
+        /// path to this seat's persistent Ed25519 identity seed (32 raw bytes);
+        /// generated + persisted on first use. Announced as `sessionPub` in `seated`.
+        #[arg(long, default_value = "pokerbot-identity.key")]
+        identity: String,
     },
 }
 
@@ -96,8 +121,12 @@ async fn run_seat(
     me: u8,
     hands: u32,
     nick: String,
+    identity: Option<Identity>,
 ) -> Result<(Vec<HandResult>, Stats, String)> {
     let mut peer = Peer::new(transport, nick);
+    if let Some(id) = &identity {
+        peer.set_session_pub(id.pubkey_hex());
+    }
     let room_code = peer.handshake(create, room).await?;
     let mut player = Player::new(me, rules, seed);
     game::play(&mut player, &mut peer, hands).await?;
@@ -119,19 +148,33 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
     match cli.cmd {
-        Cmd::Selfplay { relay, hands, seed, buyin, sb, bb } => {
-            let code = selfplay(&relay, hands, seed, rules(buyin, sb, bb)).await?;
+        Cmd::Selfplay { relay, hands, seed, buyin, sb, bb, stake, local } => {
+            // Build the two seats' transports: in-process channel (--local) or two
+            // websocket connections to the relay. The rest of the run is identical.
+            let (host_t, guest_t) = if local {
+                let (a, b) = relay::ChannelTransport::pair("selfplay");
+                (Transport::Channel(a), Transport::Channel(b))
+            } else {
+                info!(relay = %relay, "connecting two seats to relay");
+                (
+                    Transport::Ws(WsTransport::connect(&relay).await?),
+                    Transport::Ws(WsTransport::connect(&relay).await?),
+                )
+            };
+            let code = selfplay(host_t, guest_t, hands, seed, rules(buyin, sb, bb), stake).await?;
             std::process::exit(code);
         }
-        Cmd::Play { create, join, relay, hands, seed, buyin, sb, bb, name } => {
+        Cmd::Play { create, join, relay, hands, seed, buyin, sb, bb, name, identity } => {
             if !create && join.is_none() {
                 return Err(anyhow!("play needs either --create or --join <code>"));
             }
             info!(relay = %relay, "connecting");
+            let id = Identity::load_or_create(std::path::Path::new(&identity))?;
+            info!(session_pub = %id.pubkey_hex(), identity_file = %identity, "session identity loaded");
             let transport = Transport::Ws(WsTransport::connect(&relay).await?);
             let me = if create { 0 } else { 1 };
             let (results, stats, room) =
-                run_seat(transport, create, join, rules(buyin, sb, bb), seed, me, hands, name).await?;
+                run_seat(transport, create, join, rules(buyin, sb, bb), seed, me, hands, name, Some(id)).await?;
             if create {
                 info!(room = %room, "room code (share with the other seat)");
             }
@@ -142,20 +185,30 @@ async fn main() -> Result<()> {
 }
 
 /// The regression harness: two seats over the same relay, compared at the end.
-/// Returns the process exit code (0 = full agreement).
-async fn selfplay(relay: &str, hands: u32, seed: u64, rules: Rules) -> Result<i32> {
-    info!(relay, hands, seed, "selfplay: connecting two seats");
-
-    // Two independent websocket connections to the same relay.
-    let host_ws = Transport::Ws(WsTransport::connect(relay).await?);
-    let guest_ws = Transport::Ws(WsTransport::connect(relay).await?);
+/// Returns the process exit code (0 = full agreement). When `stake > 0` the run is a
+/// STAKED SIMULATION: after the hands both seats build + exchange + verify a
+/// settlement co-sign, and the harness asserts they never forked into inconsistent
+/// co-signs — the exact failure that caused the original refund bug.
+async fn selfplay(
+    host_t: Transport,
+    guest_t: Transport,
+    hands: u32,
+    seed: u64,
+    rules: Rules,
+    stake: u64,
+) -> Result<i32> {
+    let staked = stake > 0;
+    info!(hands, seed, stake, staked, "selfplay: two seats");
 
     // Host creates the room and ships the code to the guest via a oneshot.
     let (code_tx, code_rx) = oneshot::channel::<String>();
 
     let host = tokio::spawn(async move {
         let nick = random_nick();
-        let mut peer = Peer::new(host_ws, nick.clone());
+        let mut peer = Peer::new(host_t, nick.clone());
+        // Seat 0's persistent identity, derived from the run seed (reproducible).
+        let identity = Identity::for_selfplay(seed, 0);
+        peer.set_session_pub(identity.pubkey_hex());
         // Join the room FIRST and hand the code to the guest BEFORE blocking on
         // key exchange — the host's keyex can't complete until the guest joins,
         // and the guest can't join without this code.
@@ -164,25 +217,96 @@ async fn selfplay(relay: &str, hands: u32, seed: u64, rules: Rules) -> Result<i3
         peer.key_exchange().await?;
         let mut player = Player::new(0, rules, seed);
         game::play(&mut player, &mut peer, hands).await?;
-        Ok::<_, anyhow::Error>((player.results, player.stats, room))
+        let settle = if staked {
+            Some(game::settle_cosign(&mut player, &mut peer, &identity, &room).await?)
+        } else {
+            None
+        };
+        Ok::<_, anyhow::Error>((player.results, player.stats, room, settle))
     });
 
     let guest = tokio::spawn(async move {
         let room = code_rx.await.map_err(|_| anyhow!("host task never produced a room code"))?;
         let nick = random_nick();
-        let mut peer = Peer::new(guest_ws, nick);
-        peer.join_room(false, Some(room)).await?;
+        let mut peer = Peer::new(guest_t, nick);
+        let identity = Identity::for_selfplay(seed, 1);
+        peer.set_session_pub(identity.pubkey_hex());
+        peer.join_room(false, Some(room.clone())).await?;
         peer.key_exchange().await?;
         let mut player = Player::new(1, rules, seed);
         game::play(&mut player, &mut peer, hands).await?;
-        Ok::<_, anyhow::Error>((player.results, player.stats))
+        let settle = if staked {
+            Some(game::settle_cosign(&mut player, &mut peer, &identity, &room).await?)
+        } else {
+            None
+        };
+        Ok::<_, anyhow::Error>((player.results, player.stats, settle))
     });
 
     let (host_res, guest_res) = tokio::join!(host, guest);
-    let (host_results, host_stats, room) = host_res.map_err(|e| anyhow!("host task panicked: {e}"))??;
-    let (guest_results, guest_stats) = guest_res.map_err(|e| anyhow!("guest task panicked: {e}"))??;
+    let (host_results, host_stats, room, host_settle) = host_res.map_err(|e| anyhow!("host task panicked: {e}"))??;
+    let (guest_results, guest_stats, guest_settle) = guest_res.map_err(|e| anyhow!("guest task panicked: {e}"))??;
 
-    Ok(compare_and_report(&room, &host_results, &host_stats, &guest_results, &guest_stats))
+    let mut code = compare_and_report(&room, &host_results, &host_stats, &guest_results, &guest_stats);
+
+    if staked {
+        // The offline money-safety proof: both seats must have produced identical,
+        // mutually-verifiable settlement co-signs.
+        let settle_code = report_settlement(
+            &room,
+            host_settle.as_ref().expect("staked host must settle"),
+            guest_settle.as_ref().expect("staked guest must settle"),
+        );
+        if settle_code != 0 {
+            code = settle_code;
+        }
+    }
+
+    Ok(code)
+}
+
+/// Assert + report the staked-sim settlement invariant. Returns 0 iff:
+///   (a) both seats' final seat-indexed stacks [s0,s1] are identical,
+///   (b) both computed the IDENTICAL log_hash and settlement_message inputs, and
+///   (c) each seat's sig verifies under the peer's pinned identity pubkey.
+/// Any failure is the "engines forked → no matching co-signed outcome" bug and
+/// yields a non-zero exit code.
+fn report_settlement(room: &str, host: &SettleOutcome, guest: &SettleOutcome) -> i32 {
+    println!("── pokerbot staked-sim settlement ────────────────────────");
+    println!("final stacks: host {:?} / guest {:?}", host.stacks, guest.stacks);
+
+    // (a) both engines' final seat-indexed stacks identical.
+    if host.stacks != guest.stacks {
+        println!("SETTLEMENT MISMATCH: final stacks differ (engines forked) — {:?} vs {:?}",
+            host.stacks, guest.stacks);
+        return 3;
+    }
+
+    // (b) both derived the identical log_hash (⇒ identical settlement_message inputs).
+    //     Each seat's OWN settlement is over [s0,s1]; the peer's copy (received) must
+    //     carry the same log_hash. Cross-check all four.
+    let lh = &host.mine.log_hash;
+    if host.theirs.log_hash != *lh || guest.mine.log_hash != *lh || guest.theirs.log_hash != *lh {
+        println!("SETTLEMENT MISMATCH: log_hash differs across seats");
+        println!("  host.mine={} host.theirs={}", host.mine.log_hash, host.theirs.log_hash);
+        println!("  guest.mine={} guest.theirs={}", guest.mine.log_hash, guest.theirs.log_hash);
+        return 3;
+    }
+
+    // (c) each seat verified the peer's co-sign under its pinned identity pubkey.
+    if !host.peer_verified {
+        println!("SETTLEMENT VERIFY FAILED: host could not verify guest's co-sign");
+        return 3;
+    }
+    if !guest.peer_verified {
+        println!("SETTLEMENT VERIFY FAILED: guest could not verify host's co-sign");
+        return 3;
+    }
+
+    println!("log_hash:    {lh}");
+    println!("payout plan: seat0={} seat1={}", host.mine.a_addr, host.mine.b_addr);
+    println!("settlement:  co-signs MATCH + both verify ✓  (room {room})");
+    0
 }
 
 /// Compare the two seats' per-hand vectors and print the summary.
@@ -246,7 +370,7 @@ mod tests {
 
         let host = tokio::spawn(async move {
             let (r, _s, _room) = run_seat(
-                Transport::Channel(a), true, None, rules, seed, 0, hands, "host".into(),
+                Transport::Channel(a), true, None, rules, seed, 0, hands, "host".into(), None,
             )
             .await
             .expect("host seat failed");
@@ -254,7 +378,7 @@ mod tests {
         });
         let guest = tokio::spawn(async move {
             let (r, _s, _room) = run_seat(
-                Transport::Channel(b), false, Some("test".into()), rules, seed, 1, hands, "guest".into(),
+                Transport::Channel(b), false, Some("test".into()), rules, seed, 1, hands, "guest".into(), None,
             )
             .await
             .expect("guest seat failed");
@@ -277,5 +401,76 @@ mod tests {
             let (a, b) = run_channel_selfplay(300, seed).await;
             assert_eq!(a, b, "seed {seed}: engines must agree");
         }
+    }
+
+    /// Full STAKED-SIM run over the in-process channel: play `hands`, then have each
+    /// seat build + exchange + verify its settlement co-sign, and return both
+    /// outcomes. This is the offline proof of the money invariant — no network.
+    async fn run_channel_staked(hands: u32, seed: u64) -> (SettleOutcome, SettleOutcome) {
+        let rules = rules(1000, 5, 10);
+        let (a, b) = ChannelTransport::pair("stakedtest");
+        // Mirror production `selfplay`: the host hands its ACTUAL room code to the
+        // guest so BOTH seats sign the settlement over the identical `code`.
+        let (code_tx, code_rx) = tokio::sync::oneshot::channel::<String>();
+
+        let host = tokio::spawn(async move {
+            let mut peer = Peer::new(Transport::Channel(a), "host".into());
+            let identity = Identity::for_selfplay(seed, 0);
+            peer.set_session_pub(identity.pubkey_hex());
+            let room = peer.join_room(true, None).await.expect("host join");
+            code_tx.send(room.clone()).expect("send room code");
+            peer.key_exchange().await.expect("host keyex");
+            let mut player = Player::new(0, rules, seed);
+            game::play(&mut player, &mut peer, hands).await.expect("host play");
+            game::settle_cosign(&mut player, &mut peer, &identity, &room).await.expect("host settle")
+        });
+        let guest = tokio::spawn(async move {
+            let room = code_rx.await.expect("recv room code");
+            let mut peer = Peer::new(Transport::Channel(b), "guest".into());
+            let identity = Identity::for_selfplay(seed, 1);
+            peer.set_session_pub(identity.pubkey_hex());
+            peer.join_room(false, Some(room.clone())).await.expect("guest join");
+            peer.key_exchange().await.expect("guest keyex");
+            let mut player = Player::new(1, rules, seed);
+            game::play(&mut player, &mut peer, hands).await.expect("guest play");
+            game::settle_cosign(&mut player, &mut peer, &identity, &room).await.expect("guest settle")
+        });
+        let (h, g) = tokio::join!(host, guest);
+        (h.unwrap(), g.unwrap())
+    }
+
+    // THE money invariant, offline: over many hands + several seeds, both seats
+    // produce IDENTICAL final stacks, the IDENTICAL log_hash, and each seat verifies
+    // the peer's co-sign under the peer's pinned identity pubkey. This is exactly the
+    // guarantee whose ABSENCE caused the refund bug (engines forked → no matching
+    // co-signed outcome → escrow refunded instead of paying the winner).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn staked_sim_cosigns_match_and_verify() {
+        for seed in [1u64, 2, 3, 7] {
+            let (host, guest) = run_channel_staked(200, seed).await;
+            // (a) both engines' final seat-indexed stacks identical.
+            assert_eq!(host.stacks, guest.stacks, "seed {seed}: final stacks must match");
+            // (b) identical log_hash across all four settlement copies.
+            assert_eq!(host.mine.log_hash, guest.mine.log_hash, "seed {seed}: log_hash must match");
+            assert_eq!(host.mine.log_hash, host.theirs.log_hash, "seed {seed}: host's view consistent");
+            assert_eq!(guest.mine.log_hash, guest.theirs.log_hash, "seed {seed}: guest's view consistent");
+            // (c) each seat verified the peer's co-sign.
+            assert!(host.peer_verified, "seed {seed}: host must verify guest co-sign");
+            assert!(guest.peer_verified, "seed {seed}: guest must verify host co-sign");
+            // and the report helper agrees (exit 0).
+            assert_eq!(report_settlement("stakedtest", &host, &guest), 0, "seed {seed}: report ok");
+        }
+    }
+
+    // A forked/tampered settlement (as if an engine forked or a peer lied about
+    // stacks) must NOT verify — the report helper returns non-zero. Guards that the
+    // invariant is real, not vacuous.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn staked_sim_detects_forked_stacks() {
+        let (host, mut guest) = run_channel_staked(50, 5).await;
+        // simulate the guest's engine having forked to a different outcome.
+        guest.stacks[0] = guest.stacks[0].wrapping_add(1);
+        assert_ne!(report_settlement("stakedtest", &host, &guest), 0,
+            "forked final stacks must fail the settlement assertion");
     }
 }

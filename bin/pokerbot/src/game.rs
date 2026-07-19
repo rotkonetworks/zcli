@@ -16,7 +16,9 @@ use rand_chacha::ChaCha8Rng;
 use serde_json::json;
 use tracing::{debug, trace};
 
+use crate::identity::Identity;
 use crate::session::{GameMsg, Peer};
+use crate::settle::{self, Settlement};
 
 /// One hand's agreed result, compared across the two seats' vectors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -294,7 +296,13 @@ pub async fn play(player: &mut Player, peer: &mut Peer, hands: u32) -> Result<()
 /// Minimal negotiate: both announce `seated`; host proposes rules, guest accepts.
 async fn negotiate(player: &mut Player, peer: &mut Peer) -> Result<()> {
     let host = player.me == 0;
-    peer.send_game(&GameMsg::new("seated", json!({ "name": peer.nick, "mode": "anon" }))).await?;
+    // Announce our session identity pubkey (if any) so the peer can pin it and later
+    // verify our settlement co-sign. `sessionPub` matches the browser `seated` field.
+    let mut seated_d = json!({ "name": peer.nick, "mode": "anon" });
+    if let Some(pk) = peer.session_pub.clone() {
+        seated_d["sessionPub"] = json!(pk);
+    }
+    peer.send_game(&GameMsg::new("seated", seated_d)).await?;
 
     if host {
         peer.send_game(&GameMsg::new(
@@ -317,7 +325,14 @@ async fn negotiate(player: &mut Player, peer: &mut Peer) -> Result<()> {
     while !(peer_seated && rules_done) {
         let m = peer.recv_game().await?;
         match m.t.as_str() {
-            "seated" => peer_seated = true,
+            "seated" => {
+                // Record the peer's announced session identity pubkey (if present) so
+                // we can verify their settlement co-sign at game end.
+                if let Some(pk) = m.d.get("sessionPub").and_then(|v| v.as_str()) {
+                    peer.record_peer_session_pub(pk.to_string());
+                }
+                peer_seated = true;
+            }
             "propose_rules" => {
                 if !host {
                     peer.send_game(&GameMsg::new("accept_rules", json!({}))).await?;
@@ -507,6 +522,96 @@ async fn run_showdown(
         hand_number: player.engine.hand_number,
         winner,
         stacks: [player.engine.stacks[0], player.engine.stacks[1]],
+    })
+}
+
+/// Deterministic dummy per-seat payout address for the OFFLINE staked simulation.
+/// (No real wallet/escrow offline; both seats derive the identical seat-indexed
+/// addresses so the co-signed settlement message is byte-identical on both sides.)
+pub fn demo_payout_addr(seat: u8) -> String {
+    format!("utest1seat{seat}demo")
+}
+
+/// The result of the staked-sim settlement co-sign, checked by the harness.
+#[derive(Debug, Clone)]
+pub struct SettleOutcome {
+    /// this seat's final seat-indexed stacks [s0, s1] at settlement.
+    pub stacks: [u64; 2],
+    /// this seat's own settlement (built + signed here).
+    pub mine: Settlement,
+    /// the peer's settlement (received over the E2EE channel).
+    pub theirs: Settlement,
+    /// did the peer's co-sign verify under its pinned identity pubkey?
+    pub peer_verified: bool,
+}
+
+/// Run the offline staked-sim settlement co-sign over the E2EE peer channel.
+///
+/// At the END of a staked run each seat independently: takes its OWN engine's final
+/// seat-indexed stacks [s0, s1], picks the deterministic demo payout addrs, builds +
+/// signs its settlement (`settle::build_and_sign`), sends it as `{"t":"settle","d":..}`,
+/// receives the peer's, and verifies it under the peer's pinned `sessionPub`. This is
+/// the offline proof that the two engines produce IDENTICAL, mutually-verifiable
+/// co-signs — the exact thing whose ABSENCE caused the refund bug.
+pub async fn settle_cosign(
+    player: &mut Player,
+    peer: &mut Peer,
+    identity: &Identity,
+    code: &str,
+) -> Result<SettleOutcome> {
+    // Final seat-indexed stacks from OUR engine (seat 0 = A, seat 1 = B).
+    let stacks = [player.engine.stacks[0] as u64, player.engine.stacks[1] as u64];
+    let a_addr = demo_payout_addr(0);
+    let b_addr = demo_payout_addr(1);
+
+    // Build + sign our half.
+    let mine = settle::build_and_sign(identity, code, stacks[0], stacks[1], &a_addr, &b_addr);
+
+    // Send it to the peer over the E2EE channel.
+    peer.send_game(&GameMsg::new(
+        "settle",
+        json!({
+            "a_stack": mine.a_stack,
+            "b_stack": mine.b_stack,
+            "a_addr": mine.a_addr,
+            "b_addr": mine.b_addr,
+            "log_hash": mine.log_hash,
+            "sig": mine.sig,
+        }),
+    ))
+    .await?;
+
+    // Receive the peer's settlement (skip any late game noise).
+    let theirs = loop {
+        let m = peer.recv_game().await?;
+        if m.t == "settle" {
+            break parse_settlement(&m)?;
+        }
+        trace!(t = %m.t, "settle_cosign: ignoring pre-settle msg");
+    };
+
+    // Verify the peer's co-sign under its pinned identity pubkey.
+    let peer_pub = peer
+        .peer_session_pub
+        .clone()
+        .ok_or_else(|| anyhow!("peer never announced a sessionPub — cannot verify settlement"))?;
+    let peer_verified = settle::verify(&peer_pub, code, &theirs);
+
+    Ok(SettleOutcome { stacks, mine, theirs, peer_verified })
+}
+
+/// Parse a `settle` game message into a `Settlement`.
+fn parse_settlement(m: &GameMsg) -> Result<Settlement> {
+    let d = &m.d;
+    let get_u64 = |k: &str| d.get(k).and_then(|v| v.as_u64()).ok_or_else(|| anyhow!("settle missing {k}"));
+    let get_str = |k: &str| d.get(k).and_then(|v| v.as_str()).map(|s| s.to_string()).ok_or_else(|| anyhow!("settle missing {k}"));
+    Ok(Settlement {
+        a_stack: get_u64("a_stack")?,
+        b_stack: get_u64("b_stack")?,
+        a_addr: get_str("a_addr")?,
+        b_addr: get_str("b_addr")?,
+        log_hash: get_str("log_hash")?,
+        sig: get_str("sig")?,
     })
 }
 
