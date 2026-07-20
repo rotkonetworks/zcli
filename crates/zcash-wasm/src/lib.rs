@@ -33,6 +33,54 @@ pub use wasm_bindgen_rayon::init_thread_pool;
 extern "C" {
     #[wasm_bindgen(js_namespace = console)]
     fn log(s: &str);
+    #[wasm_bindgen(js_namespace = console, js_name = warn)]
+    fn console_warn(s: &str);
+}
+
+/// Compiled-in consensus branch id (NU6.2, mainnet). Used ONLY as a fallback
+/// when the caller does not supply a live branch id (e.g. passes `None`/empty).
+/// The real value must come from the chain via `GetLightdInfo.consensusBranchId`.
+/// After NU6.3 activates (mainnet height 3428143, ~2026-07-28) this fallback is
+/// WRONG for new transactions — callers MUST pass the live branch id.
+pub const FALLBACK_BRANCH_ID: u32 = 0x5437F330;
+
+/// Parse the consensus branch id as returned by lightwalletd/zidecar
+/// `GetLightdInfo.consensusBranchId` — a lowercase (per spec) hex string such as
+/// `"5437f330"` (NU6.2) or `"37a5165b"` (NU6.3), with no `0x` prefix. Tolerates
+/// an optional `0x`/`0X` prefix and surrounding whitespace. Returns `None` on
+/// malformed or empty input so the caller can fall back safely.
+fn parse_branch_id(s: &str) -> Option<u32> {
+    let t = s.trim();
+    let t = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")).unwrap_or(t);
+    if t.is_empty() {
+        return None;
+    }
+    u32::from_str_radix(t, 16).ok()
+}
+
+/// Resolve the consensus branch id to use for a transaction, given the optional
+/// hex string a `#[wasm_bindgen]` builder received from JS.
+///
+/// The value is expected to be `LightdInfo.consensusBranchId` (a hex string like
+/// `"5437f330"`), passed through verbatim so the browser never has to convert it.
+/// If the caller passes `None`, an empty/whitespace string, or an unparseable
+/// value, we emit a `console.warn` and fall back to [`FALLBACK_BRANCH_ID`]
+/// (NU6.2) so behaviour is unchanged pre-NU6.3 — but that fallback is INCORRECT
+/// once NU6.3 activates and the resulting tx will be rejected with an
+/// "incorrect consensus branch id" error. Always pass the live value.
+fn resolve_branch_id(branch_id_hex: Option<&str>) -> u32 {
+    match branch_id_hex.and_then(parse_branch_id) {
+        Some(id) => id,
+        None => {
+            console_warn(&format!(
+                "[zafu-wasm] no/invalid consensus branch id supplied (got {:?}); \
+                 falling back to compiled-in 0x{:08X} (NU6.2). This is WRONG after \
+                 NU6.3 activation — pass LightdInfo.consensusBranchId.",
+                branch_id_hex, FALLBACK_BRANCH_ID
+            ));
+            FALLBACK_BRANCH_ID
+        }
+    }
 }
 
 /// Cached Halo 2 proving key. Building is expensive (~seconds), built once
@@ -1479,6 +1527,41 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_branch_id() {
+        // NU6.2 / NU6.3, lowercase (the on-wire form from GetLightdInfo)
+        assert_eq!(parse_branch_id("5437f330"), Some(0x5437F330));
+        assert_eq!(parse_branch_id("37a5165b"), Some(0x37A5165B));
+        // uppercase tolerated
+        assert_eq!(parse_branch_id("5437F330"), Some(0x5437F330));
+        // 0x / 0X prefix + surrounding whitespace tolerated
+        assert_eq!(parse_branch_id("0x37a5165b"), Some(0x37A5165B));
+        assert_eq!(parse_branch_id("0X37A5165B"), Some(0x37A5165B));
+        assert_eq!(parse_branch_id("  37a5165b\n"), Some(0x37A5165B));
+        // malformed / empty -> None so the caller can fall back
+        assert_eq!(parse_branch_id(""), None);
+        assert_eq!(parse_branch_id("   "), None);
+        assert_eq!(parse_branch_id("0x"), None);
+        assert_eq!(parse_branch_id("zzzz"), None);
+        // out of u32 range -> None (does not silently truncate)
+        assert_eq!(parse_branch_id("137a5165b"), None);
+    }
+
+    // NOTE: resolve_branch_id's fallback path calls console.warn (a JS import
+    // that only links under wasm32), so native `cargo test` can only exercise
+    // the success path here. The fallback→FALLBACK_BRANCH_ID behaviour is
+    // covered by test_parse_branch_id returning None on bad input.
+    #[test]
+    fn test_resolve_branch_id_valid() {
+        assert_eq!(
+            resolve_branch_id(Some("37a5165b")),
+            0x37A5165B,
+            "NU6.3 hex string must resolve to the NU6.3 branch id"
+        );
+        assert_eq!(resolve_branch_id(Some("0x5437f330")), 0x5437F330);
+        assert_eq!(FALLBACK_BRANCH_ID, 0x5437F330);
+    }
+
+    #[test]
     fn test_key_derivation() {
         // Standard 24-word test mnemonic
         let keys = WalletKeys::from_seed_phrase(
@@ -1727,6 +1810,10 @@ pub fn build_unsigned_transaction(
     _account_index: u32,
     mainnet: bool,
     memo_hex: Option<String>,
+    // Live consensus branch id from GetLightdInfo.consensusBranchId, e.g.
+    // "5437f330" (NU6.2) or "37a5165b" (NU6.3). Pass verbatim; None/empty falls
+    // back to the compiled-in NU6.2 value (wrong post-NU6.3).
+    branch_id_hex: Option<String>,
 ) -> Result<JsValue, JsError> {
     use group::ff::PrimeField;
     use orchard::builder::{Builder, BundleType};
@@ -1998,7 +2085,7 @@ pub fn build_unsigned_transaction(
         .ok_or_else(|| JsError::new("extract_effects produced no bundle"))?;
 
     // --- compute ZIP-244 sighash ---
-    let branch_id: u32 = 0x5437F330; // NU6.2
+    let branch_id: u32 = resolve_branch_id(branch_id_hex.as_deref());
     let expiry_height: u32 = 0;
 
     let header_data = {
@@ -3587,6 +3674,10 @@ pub fn build_signed_spend_transaction(
     account_index: u32,
     mainnet: bool,
     memo_hex: Option<String>,
+    // Live consensus branch id from GetLightdInfo.consensusBranchId, e.g.
+    // "5437f330" (NU6.2) or "37a5165b" (NU6.3). Pass verbatim; None/empty falls
+    // back to the compiled-in NU6.2 value (wrong post-NU6.3).
+    branch_id_hex: Option<String>,
 ) -> Result<String, JsError> {
     use orchard::builder::{Builder, BundleType};
     use orchard::bundle::Flags;
@@ -3839,7 +3930,7 @@ pub fn build_signed_spend_transaction(
         .map_err(|e| JsError::new(&format!("create_proof: {:?}", e)))?;
 
     // --- compute ZIP-244 sighash ---
-    let branch_id: u32 = 0x5437F330; // NU6.2
+    let branch_id: u32 = resolve_branch_id(branch_id_hex.as_deref());
     let expiry_height: u32 = 0; // no expiry for orchard-only
 
     let header_data = {
@@ -4200,6 +4291,10 @@ pub fn build_shielding_transaction(
     fee: u64,
     anchor_height: u32,
     mainnet: bool,
+    // Live consensus branch id from GetLightdInfo.consensusBranchId, e.g.
+    // "5437f330" (NU6.2) or "37a5165b" (NU6.3). Pass verbatim; None/empty falls
+    // back to the compiled-in NU6.2 value (wrong post-NU6.3).
+    branch_id_hex: Option<String>,
 ) -> Result<String, JsError> {
     use k256::ecdsa::{signature::hazmat::PrehashSigner, SigningKey};
     use orchard::builder::{Builder, BundleType};
@@ -4284,7 +4379,7 @@ pub fn build_shielding_transaction(
 
     // --- compute transparent digests for ZIP-244 sighash ---
     let n_inputs = selected.len();
-    let branch_id: u32 = 0x5437F330; // NU6.2
+    let branch_id: u32 = resolve_branch_id(branch_id_hex.as_deref());
     let expiry_height = anchor_height.saturating_add(100);
 
     let mut prevout_data = Vec::new();
@@ -4520,6 +4615,10 @@ pub fn build_unsigned_shielding_transaction(
     fee: u64,
     anchor_height: u32,
     mainnet: bool,
+    // Live consensus branch id from GetLightdInfo.consensusBranchId, e.g.
+    // "5437f330" (NU6.2) or "37a5165b" (NU6.3). Pass verbatim; None/empty falls
+    // back to the compiled-in NU6.2 value (wrong post-NU6.3).
+    branch_id_hex: Option<String>,
 ) -> Result<String, JsError> {
     use orchard::builder::{Builder, BundleType};
     use orchard::bundle::Flags;
@@ -4586,7 +4685,7 @@ pub fn build_unsigned_shielding_transaction(
 
     // --- compute transparent digests for ZIP-244 sighash ---
     let n_inputs = selected.len();
-    let branch_id: u32 = 0x5437F330; // NU6.2
+    let branch_id: u32 = resolve_branch_id(branch_id_hex.as_deref());
     let expiry_height = anchor_height.saturating_add(100);
 
     let mut prevout_data = Vec::new();
