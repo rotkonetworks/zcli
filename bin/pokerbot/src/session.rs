@@ -98,6 +98,17 @@ impl Peer {
         self.srv_inbox.pop_front()
     }
 
+    /// Read exactly ONE relay frame through the normal classifier, so any inbound
+    /// `srv` frame is demuxed into the inbox (drain with `try_recv_srv`) and a late
+    /// `_keyex` is still answered. Read-only observation helper for `probe-staked`:
+    /// it never sends a game frame. The caller supplies the blocking via
+    /// `tokio::time::timeout`, since a staked room may go quiet between frames.
+    #[allow(dead_code)]
+    pub async fn pump_once(&mut self) -> Result<()> {
+        let _ = self.next_relay_inner().await?;
+        Ok(())
+    }
+
     /// Wrap an inner WireMessage into a relay `msg` frame (stringified `text`)
     /// and send it. Used for both plaintext `_keyex` and `_enc` envelopes.
     async fn send_raw(&mut self, inner: &Value) -> Result<()> {

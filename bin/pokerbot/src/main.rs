@@ -11,15 +11,15 @@
 //! `play` runs a single seat for interop against a browser or another machine.
 
 mod crypto;
-// Live-paid-path plumbing (memo/command building + FROST payout co-sign). Fully
-// unit-tested, but not yet CALLED by the offline harness — wired into the driver
-// when the escrow/relay/wallet infra lands. Allow dead-code until then.
-#[allow(dead_code)]
+// Live-paid-path plumbing (memo/command building). Used by the `play-staked` driver.
 mod deposit;
+mod dkg;
+mod dkgtest;
 mod game;
 mod identity;
-#[allow(dead_code)]
 mod payout;
+mod playstaked;
+mod probe;
 mod relay;
 mod session;
 mod settle;
@@ -96,6 +96,91 @@ enum Cmd {
         /// generated + persisted on first use. Announced as `sessionPub` in `seated`.
         #[arg(long, default_value = "pokerbot-identity.key")]
         identity: String,
+    },
+    /// READ-ONLY diagnostic: mint a staked room, connect two seats, and log the
+    /// escrow-bridge (`srv`) frames the relay sends (RoomInfo/DepositStatus). Moves
+    /// NO money — no deposit, no settlement, no on-chain tx. Answers whether staked
+    /// rooms run FROST-DKG (frost coords present) or trusted-dealer (coords null).
+    ProbeStaked {
+        /// HTTP(S) base for the room-mint `/new` GET.
+        #[arg(long, default_value = "https://zkbtc.org")]
+        relay_http: String,
+        /// WebSocket relay URL the seats connect to. Defaults to `/p2p` (the
+        /// ESCROW-AWARE poker-server relay that emits the staked `srv` RoomInfo /
+        /// DepositStatus bridge). NOTE: `/ws` in prod is a separate escrow-UNAWARE
+        /// blind relay and will reject a join for an HTTP-minted room — use `/p2p`.
+        #[arg(long, default_value = "wss://zkbtc.org/p2p")]
+        relay_ws: String,
+        /// buy-in in zatoshi, passed to `/new?buyin=..` (nothing is deposited).
+        #[arg(long, default_value_t = 10_000)]
+        buyin: u64,
+        /// how many seconds to observe the srv channel before parting + exiting.
+        #[arg(long, default_value_t = 60)]
+        secs: u64,
+    },
+    /// Drive the REAL FROST 2-of-3 DKG for a staked room and PROVE the escrow UA
+    /// is produced. Mints a room, seats two bots over `/p2p`, runs the ceremony on
+    /// the FROST relay, reports `DkgComplete`, and watches for the relay to surface
+    /// the agreed escrow UA. Generates keys only — NO deposit, settlement, or
+    /// on-chain tx; no ZEC moves.
+    DkgTest {
+        /// HTTP(S) base for the room-mint `/new` GET.
+        #[arg(long, default_value = "https://zkbtc.org")]
+        relay_http: String,
+        /// WebSocket relay the seats connect to (escrow-aware `/p2p`).
+        #[arg(long, default_value = "wss://zkbtc.org/p2p")]
+        relay_ws: String,
+        /// buy-in in zatoshi, passed to `/new?buyin=..` (nothing is deposited).
+        #[arg(long, default_value_t = 10_000)]
+        buyin: u64,
+        /// Zcash network for UA/UFVK encoding. A prod staked room that moves real
+        /// ZEC runs `main`; the FVK echo is the source of truth and the driver
+        /// auto-reconciles if the escrow ran the other network.
+        #[arg(long, default_value = "main")]
+        network: String,
+        /// max seconds to wait for the DKG ceremony to complete.
+        #[arg(long, default_value_t = 120)]
+        dkg_secs: u64,
+        /// seconds to watch for the relay to surface the escrow UA after DkgComplete.
+        #[arg(long, default_value_t = 30)]
+        watch_secs: u64,
+    },
+    /// The FULL paid-match driver: mint a staked room, seat two bots, run the REAL
+    /// FROST DKG, reach the DEPOSIT GATE, then (dry-run, DEFAULT) STOP and print the
+    /// exact `zcli tx send` deposit command + memo the operator WOULD run, plus a
+    /// per-phase latency table — moving NO money. With `--live` it also drives the
+    /// deposit (operator-run), play, settle co-sign, and FROST payout co-sign
+    /// (incl. the C3 recipient check); that path needs a supervised real run.
+    PlayStaked {
+        /// HTTP(S) base for the room-mint `/new` GET.
+        #[arg(long, default_value = "https://zkbtc.org")]
+        relay_http: String,
+        /// WebSocket relay the seats connect to (escrow-aware `/p2p`).
+        #[arg(long, default_value = "wss://zkbtc.org/p2p")]
+        relay_ws: String,
+        /// buy-in in zatoshi, passed to `/new?buyin=..`. In dry-run nothing is deposited.
+        #[arg(long, default_value_t = 10_000)]
+        buyin: u64,
+        /// Zcash network for UA/UFVK encoding + the payout co-sign. Prod staked rooms
+        /// that move real ZEC run `main`; the DKG FVK echo is the source of truth.
+        #[arg(long, default_value = "main")]
+        network: String,
+        /// path to the `zcli` binary the operator's wallet would use for the deposit.
+        /// Only ever BUILT into the printed command — never executed by the bot.
+        #[arg(long, default_value = "zcli")]
+        zcli_bin: String,
+        /// max seconds to wait for the FROST DKG ceremony.
+        #[arg(long, default_value_t = 120)]
+        dkg_secs: u64,
+        /// seconds to wait at/after the deposit gate (surface deposit addrs; live wait).
+        #[arg(long, default_value_t = 60)]
+        gate_secs: u64,
+        /// HARD gate (default OFF). Without it the driver is a pure dry-run that stops
+        /// at the deposit gate — no `zcli tx send`, no on-chain tx, no FROST payout
+        /// broadcast. `--live` enables the operator-run deposit + the full play/settle/
+        /// payout co-sign path (supervised real run only).
+        #[arg(long, default_value_t = false)]
+        live: bool,
     },
 }
 
@@ -180,6 +265,15 @@ async fn main() -> Result<()> {
             }
             print_single(&results, &stats, &room);
             Ok(())
+        }
+        Cmd::ProbeStaked { relay_http, relay_ws, buyin, secs } => {
+            probe::run(relay_http, relay_ws, buyin, secs).await
+        }
+        Cmd::DkgTest { relay_http, relay_ws, buyin, network, dkg_secs, watch_secs } => {
+            dkgtest::run(relay_http, relay_ws, buyin, network, dkg_secs, watch_secs).await
+        }
+        Cmd::PlayStaked { relay_http, relay_ws, buyin, network, zcli_bin, dkg_secs, gate_secs, live } => {
+            playstaked::run(relay_http, relay_ws, buyin, network, zcli_bin, dkg_secs, gate_secs, live).await
         }
     }
 }
