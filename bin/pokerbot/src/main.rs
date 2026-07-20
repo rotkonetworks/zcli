@@ -181,6 +181,14 @@ enum Cmd {
         /// payout co-sign path (supervised real run only).
         #[arg(long, default_value_t = false)]
         live: bool,
+        /// REAL per-seat payout UA for seat 0 (a wallet WE control, so the winner's
+        /// pot returns to us). Required for `--live`; if omitted the driver uses an
+        /// UNSPENDABLE `utest1seat0demo` placeholder (fine for dry-run only).
+        #[arg(long)]
+        payout_addr0: Option<String>,
+        /// REAL per-seat payout UA for seat 1 (see `--payout-addr0`).
+        #[arg(long)]
+        payout_addr1: Option<String>,
     },
 }
 
@@ -272,8 +280,8 @@ async fn main() -> Result<()> {
         Cmd::DkgTest { relay_http, relay_ws, buyin, network, dkg_secs, watch_secs } => {
             dkgtest::run(relay_http, relay_ws, buyin, network, dkg_secs, watch_secs).await
         }
-        Cmd::PlayStaked { relay_http, relay_ws, buyin, network, zcli_bin, dkg_secs, gate_secs, live } => {
-            playstaked::run(relay_http, relay_ws, buyin, network, zcli_bin, dkg_secs, gate_secs, live).await
+        Cmd::PlayStaked { relay_http, relay_ws, buyin, network, zcli_bin, dkg_secs, gate_secs, live, payout_addr0, payout_addr1 } => {
+            playstaked::run(relay_http, relay_ws, buyin, network, zcli_bin, dkg_secs, gate_secs, live, payout_addr0, payout_addr1).await
         }
     }
 }

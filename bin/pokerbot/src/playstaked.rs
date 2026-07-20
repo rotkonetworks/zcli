@@ -493,6 +493,7 @@ fn shell_join(argv: &[String]) -> String {
 
 /// Entry point for `play-staked`.
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 pub async fn run(
     relay_http: String,
     relay_ws: String,
@@ -502,8 +503,25 @@ pub async fn run(
     dkg_secs: u64,
     gate_secs: u64,
     live: bool,
+    payout_addr0: Option<String>,
+    payout_addr1: Option<String>,
 ) -> Result<()> {
     let net = dkg::network_from_str(&network);
+
+    // Install real payout UAs if given. REQUIRED for --live: a `utest1seatNdemo`
+    // placeholder is unspendable, so a live payout to it would strand the pot.
+    match (payout_addr0.clone(), payout_addr1.clone()) {
+        (Some(a0), Some(a1)) => {
+            crate::game::set_payout_addrs([a0, a1]);
+        }
+        _ if live => {
+            return Err(anyhow::anyhow!(
+                "--live requires --payout-addr0 and --payout-addr1 (real UAs we control); \
+                 refusing to run live with unspendable demo placeholders"
+            ));
+        }
+        _ => {} // dry-run: demo placeholders are fine (nothing is deposited)
+    }
     println!("── pokerbot play-staked ({}) ──────────────────────────", if live { "LIVE" } else { "DRY-RUN" });
     println!("relay-http:  {relay_http}");
     println!("relay-ws:    {relay_ws}");

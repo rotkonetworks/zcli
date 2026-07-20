@@ -525,11 +525,29 @@ async fn run_showdown(
     })
 }
 
-/// Deterministic dummy per-seat payout address for the OFFLINE staked simulation.
-/// (No real wallet/escrow offline; both seats derive the identical seat-indexed
-/// addresses so the co-signed settlement message is byte-identical on both sides.)
+/// Set-once real per-seat payout UAs for a `--live` run. When set, `payout_addr`
+/// returns these instead of the demo placeholders, so the winner's pot goes to a
+/// wallet we actually control. Both seats run in one process and read the SAME
+/// array, so the co-signed settlement message stays byte-identical on both sides.
+static PAYOUT_ADDRS: std::sync::OnceLock<[String; 2]> = std::sync::OnceLock::new();
+
+/// Install the real payout UAs (idempotent; first writer wins). Called by the
+/// `--live` play-staked driver before the seats start; left unset for free-play,
+/// the offline staked-sim, and dry-runs (which keep the demo placeholders).
+pub fn set_payout_addrs(addrs: [String; 2]) {
+    let _ = PAYOUT_ADDRS.set(addrs);
+}
+
+/// Per-seat payout address. Real UA once `set_payout_addrs` has run; otherwise a
+/// deterministic demo placeholder (fine OFFLINE — no real wallet/escrow — where
+/// both seats just need identical seat-indexed addresses for a matching co-sign).
+/// UNSPENDABLE placeholders MUST never reach a live escrow — that's what the
+/// override guards against.
 pub fn demo_payout_addr(seat: u8) -> String {
-    format!("utest1seat{seat}demo")
+    match PAYOUT_ADDRS.get() {
+        Some(addrs) => addrs[seat as usize].clone(),
+        None => format!("utest1seat{seat}demo"),
+    }
 }
 
 /// The result of the staked-sim settlement co-sign, checked by the harness.

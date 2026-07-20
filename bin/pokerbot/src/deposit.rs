@@ -43,13 +43,16 @@ pub fn zat_to_zec_string(zat: u64) -> String {
 }
 
 /// Build (do NOT execute) the argv for the operator's wallet to fund a seat:
-///   `zcli send <amount_zec> <escrow_ua> --memo <memo>`
-/// matching `bin/zcli/src/cli.rs`'s `Send { amount, recipient, --memo }` (amount is
-/// the ZEC decimal string, recipient is the positional UA). `zcli_bin` is argv[0]
-/// (path to the zcli binary). The caller (operator) runs this later.
+///   `zcli transaction send <amount_zec> <escrow_ua> --memo <memo>`
+/// matching the installed `zcli`'s command tree: `send` is a subcommand of
+/// `transaction` (alias `tx`), NOT top-level — `Usage: zcli transaction send
+/// [OPTIONS] <AMOUNT> <RECIPIENT>`, AMOUNT is the ZEC decimal string, RECIPIENT is
+/// the positional UA. `zcli_bin` is argv[0] (path to the zcli binary). The caller
+/// (operator) runs this later.
 pub fn deposit_command(zcli_bin: &str, escrow_ua: &str, amount_zat: u64, memo: &str) -> Vec<String> {
     vec![
         zcli_bin.to_string(),
+        "transaction".to_string(),
         "send".to_string(),
         zat_to_zec_string(amount_zat),
         escrow_ua.to_string(),
@@ -119,6 +122,7 @@ mod tests {
             argv,
             vec![
                 "zcli".to_string(),
+                "transaction".to_string(),
                 "send".to_string(),
                 "0.001".to_string(),
                 "u1escrowaddr".to_string(),
