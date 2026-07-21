@@ -10,31 +10,21 @@
 //!
 //! `play` runs a single seat for interop against a browser or another machine.
 
-mod crypto;
-// Live-paid-path plumbing (memo/command building). Used by the `play-staked` driver.
-mod deposit;
-mod dkg;
-mod dkgtest;
-mod game;
-mod identity;
-mod payout;
-mod playstaked;
-mod probe;
-mod relay;
-mod session;
-mod settle;
-mod srv;
-
 use anyhow::{anyhow, Result};
 use clap::{Parser, Subcommand};
 use poker_pvm::Rules;
 use tokio::sync::oneshot;
 use tracing::info;
 
+// All game/relay/escrow logic lives in the `pokerbot` library crate (src/lib.rs);
+// this binary is a thin CLI over it. Re-import the modules the CLI drives.
+use pokerbot::{game, relay, transcript};
+use pokerbot::random_nick;
+
 use game::{HandResult, Player, SettleOutcome, Stats};
-use identity::Identity;
+use pokerbot::identity::Identity;
 use relay::{Transport, WsTransport};
-use session::Peer;
+use pokerbot::session::Peer;
 
 const DEFAULT_RELAY: &str = "wss://zkbtc.org/ws";
 
@@ -71,6 +61,13 @@ enum Cmd {
         /// identical. Handy where the relay is unreachable/slow from CI.
         #[arg(long)]
         local: bool,
+        /// write a REAL signed `Transcript` (seat 0's view of one demo hand) to
+        /// this JSON path for the replay-verifier. Uses the offline transcript
+        /// self-play driver (`game::self_play`) so the file round-trips through
+        /// `verify-transcript`. A staked run (`--stake > 0`) attaches a truthful
+        /// settlement claim; free-play emits the transcript without a claim.
+        #[arg(long)]
+        emit_transcript: Option<String>,
     },
     /// Single seat, for interop against a browser or another machine.
     Play {
@@ -190,18 +187,19 @@ enum Cmd {
         #[arg(long)]
         payout_addr1: Option<String>,
     },
+    /// Adjudicate a signed transcript with the trustless replay-verifier ("the
+    /// jury"). Loads a JSON `Transcript`, replays it through the real `poker_pvm`
+    /// engine, checks every per-action signature / sequence / delegation / claim,
+    /// prints the structured report, and exits 0 iff the transcript is VALID.
+    /// Pure crypto + engine replay — no money, no network, no chain.
+    VerifyTranscript {
+        /// path to the JSON transcript to adjudicate.
+        path: String,
+    },
 }
 
 fn rules(buyin: u32, sb: u32, bb: u32) -> Rules {
     Rules { buyin, small_blind: sb, big_blind: bb, turn_timeout_blocks: 30, rake_bps: 0, rake_cap: 0 }
-}
-
-/// Random nick: literal 'p' + 8 hex chars (identity hidden until E2EE).
-fn random_nick() -> String {
-    use rand::RngCore;
-    let mut b = [0u8; 4];
-    rand::thread_rng().fill_bytes(&mut b);
-    format!("p{}", hex::encode(b))
 }
 
 /// Run one seat end-to-end: handshake, then play `hands` hands.
@@ -241,7 +239,14 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
     match cli.cmd {
-        Cmd::Selfplay { relay, hands, seed, buyin, sb, bb, stake, local } => {
+        Cmd::Selfplay { relay, hands, seed, buyin, sb, bb, stake, local, emit_transcript } => {
+            // Optionally emit a REAL signed transcript (seat 0's view of one demo
+            // hand) for the replay-verifier. Uses the offline transcript self-play
+            // driver, so it needs no relay and always produces a jury-valid file.
+            // A staked run attaches a truthful settlement claim; free-play does not.
+            if let Some(path) = &emit_transcript {
+                emit_transcript_file(path, seed, buyin, sb, bb, stake)?;
+            }
             // Build the two seats' transports: in-process channel (--local) or two
             // websocket connections to the relay. The rest of the run is identical.
             let (host_t, guest_t) = if local {
@@ -275,14 +280,85 @@ async fn main() -> Result<()> {
             Ok(())
         }
         Cmd::ProbeStaked { relay_http, relay_ws, buyin, secs } => {
-            probe::run(relay_http, relay_ws, buyin, secs).await
+            pokerbot::probe::run(relay_http, relay_ws, buyin, secs).await
         }
         Cmd::DkgTest { relay_http, relay_ws, buyin, network, dkg_secs, watch_secs } => {
-            dkgtest::run(relay_http, relay_ws, buyin, network, dkg_secs, watch_secs).await
+            pokerbot::dkgtest::run(relay_http, relay_ws, buyin, network, dkg_secs, watch_secs).await
         }
         Cmd::PlayStaked { relay_http, relay_ws, buyin, network, zcli_bin, dkg_secs, gate_secs, live, payout_addr0, payout_addr1 } => {
-            playstaked::run(relay_http, relay_ws, buyin, network, zcli_bin, dkg_secs, gate_secs, live, payout_addr0, payout_addr1).await
+            pokerbot::playstaked::run(relay_http, relay_ws, buyin, network, zcli_bin, dkg_secs, gate_secs, live, payout_addr0, payout_addr1).await
         }
+        Cmd::VerifyTranscript { path } => {
+            verify_transcript_cmd(&path)
+        }
+    }
+}
+
+/// Emit a REAL signed `Transcript` to `path` via the offline transcript self-play
+/// driver (`game::self_play`). One demo hand (seat 0 AA vs seat 1 72o → showdown),
+/// both seats zafu-delegated. Staked runs (`stake > 0`) attach a truthful
+/// settlement claim (outcome-bound `settle::log_hash`); free-play omits it. The
+/// resulting file round-trips through `verify-transcript` as VALID.
+fn emit_transcript_file(path: &str, seed: u64, buyin: u32, sb: u32, bb: u32, stake: u64) -> Result<()> {
+    let room = format!("selfplay-seed-{seed}");
+    let rules = transcript::RulesSpec {
+        buyin: buyin as u64,
+        sb: sb as u64,
+        bb: bb as u64,
+    };
+    let res = game::self_play(
+        &room,
+        rules,
+        game::demo_deal(),
+        game::IdentityMode::Zafu,
+        [game::Policy::CallDown, game::Policy::CallDown],
+        stake > 0, // attach a truthful settlement claim only for staked sims.
+    );
+    let json = serde_json::to_string_pretty(&res.transcript)
+        .map_err(|e| anyhow!("serialize transcript: {e}"))?;
+    std::fs::write(path, json).map_err(|e| anyhow!("write transcript {path}: {e}"))?;
+    info!(
+        path = %path,
+        room = %room,
+        engine_winner = res.engine_winner,
+        "emitted signed transcript"
+    );
+    Ok(())
+}
+
+/// `verify-transcript <path.json>`: load a JSON `Transcript`, run the jury, print
+/// the structured report, and exit 0 iff the transcript is valid.
+fn verify_transcript_cmd(path: &str) -> Result<()> {
+    let raw = std::fs::read_to_string(path)
+        .map_err(|e| anyhow!("read transcript {path}: {e}"))?;
+    let t: transcript::Transcript = serde_json::from_str(&raw)
+        .map_err(|e| anyhow!("parse transcript {path}: {e}"))?;
+    let report = transcript::verify(&t);
+
+    println!("── pokerbot transcript verify ────────────────────────────");
+    println!("room:        {}", t.room);
+    println!("entries:     {}", t.entries.len());
+    for c in &report.checks {
+        let mark = if c.pass { "PASS" } else { "FAIL" };
+        println!("  [{mark}] {:<22} {}", c.name, c.detail);
+    }
+    match report.true_winner {
+        Some(w) => println!("true winner: seat {w}"),
+        None => println!("true winner: <none> (replay incomplete)"),
+    }
+    println!("final stacks: {:?}", report.final_stacks);
+    if let Some(v) = &report.first_violation {
+        println!("VIOLATION:   {v}");
+    }
+    println!(
+        "verdict:     {}",
+        if report.valid { "VALID ✓" } else { "INVALID ✗" }
+    );
+
+    if report.valid {
+        Ok(())
+    } else {
+        std::process::exit(1);
     }
 }
 
@@ -464,7 +540,7 @@ fn print_single(results: &[HandResult], stats: &Stats, room: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::relay::{ChannelTransport, Transport};
+    use relay::ChannelTransport;
 
     async fn run_channel_selfplay(hands: u32, seed: u64) -> (Vec<HandResult>, Vec<HandResult>) {
         let rules = rules(1000, 5, 10);

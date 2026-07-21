@@ -37,6 +37,26 @@ pub struct Settlement {
     pub sig: String,
 }
 
+/// A disputed settlement claim — what one party ASSERTS the hand ended as, for
+/// the transcript verifier ("the jury") to cross-check against a replay.
+///
+/// `log_hash` here is the SAME outcome hash the production settlement carries:
+/// the SHA-256 of the canonical `"zk.poker/log/v1:{code}:{a}:{b}:{aAddr}:{bAddr}"`
+/// string (see `settle::log_hash`), NOT a hash of the action entries. The jury
+/// replays the transcript, asserts the replayed final stacks equal `a_stack` /
+/// `b_stack`, then recomputes `settle::log_hash(code, a_stack, b_stack, a_addr,
+/// b_addr)` and requires it to equal this `log_hash` — the claim's internal
+/// consistency. (`code` = the transcript `room`.)
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Claim {
+    pub a_stack: u64,
+    pub b_stack: u64,
+    pub a_addr: String,
+    pub b_addr: String,
+    /// hex SHA-256 of the canonical `zk.poker/log/v1:…` outcome string (64 hex).
+    pub log_hash: String,
+}
+
 /// Canonical action-log hash both peers derive identically: the full 32-byte
 /// SHA-256 (64 hex chars) of the agreed, public match-end facts. Matches
 /// browser `sha256Hex("zk.poker/log/v1:…")`.

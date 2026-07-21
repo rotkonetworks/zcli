@@ -100,6 +100,146 @@ pub fn verify(pubkey_hex: &str, msg: &[u8], sig_hex: &str) -> bool {
     vk.verify(msg, &Signature::from_bytes(&sig_arr)).is_ok()
 }
 
+/// Alias for `verify` under the name the transcript verifier ("the jury") calls.
+/// Same failure-closed ed25519 check; kept as a distinct name so the verifier
+/// reads against a stable interface regardless of the production `verify`.
+pub fn verify_hex(pubkey_hex: &str, msg: &[u8], sig_hex: &str) -> bool {
+    verify(pubkey_hex, msg, sig_hex)
+}
+
+// ---------------------------------------------------------------------------
+// action / delegation message helpers — the byte-exact strings the browser
+// client signs (poker-server/web/src/identity.ts). The transcript verifier
+// reconstructs these to check every per-action ed25519 signature and the
+// zafu → session delegation chain.
+// ---------------------------------------------------------------------------
+
+/// canonical lowercase action name — the string that goes into the signed
+/// action message and the transcript. Mirrors ACTION_MAP in the browser
+/// engine-service.ts: { fold:0, check:1, call:2, bet:3, raise:4, allin:5 }.
+pub fn action_name(action: poker_pvm::Action) -> &'static str {
+    use poker_pvm::Action::*;
+    match action {
+        Fold => "fold",
+        Check => "check",
+        Call => "call",
+        Bet => "bet",
+        Raise => "raise",
+        AllIn => "allin",
+    }
+}
+
+/// parse a lowercase action name back to the engine action (inverse of
+/// `action_name`). Used by the verifier to replay a transcript.
+pub fn action_from_name(name: &str) -> Option<poker_pvm::Action> {
+    use poker_pvm::Action::*;
+    match name {
+        "fold" => Some(Fold),
+        "check" => Some(Check),
+        "call" => Some(Call),
+        "bet" => Some(Bet),
+        "raise" => Some(Raise),
+        "allin" => Some(AllIn),
+        _ => None,
+    }
+}
+
+/// the exact bytes signed for a game action:
+/// `"{seat}|{action}|{amount}|{seq}"` — MUST byte-match the browser
+/// `identity.ts::signAction`.
+pub fn action_message(seat: u8, action: &str, amount: u64, seq: u32) -> Vec<u8> {
+    format!("{}|{}|{}|{}", seat, action, amount, seq).into_bytes()
+}
+
+/// the exact bytes a zafu key signs to delegate to a per-room session key:
+/// `"delegate:{sessionPubHex}:{room}"` — MUST byte-match the browser
+/// `identity.ts` delegation (`delegate:{sessionPubKey}:{room}`).
+pub fn delegation_message(session_pub_hex: &str, room: &str) -> Vec<u8> {
+    format!("delegate:{}:{}", session_pub_hex, room).into_bytes()
+}
+
+// ---------------------------------------------------------------------------
+// SessionIdentity — an EPHEMERAL per-room identity used only to PRODUCE signed
+// transcripts (offline self-play + the verifier test-suite). It holds the
+// secret key, so it lives only inside the reference client. Distinct from the
+// production `Identity` above (that one is the on-chain-pinned session key
+// loaded from a seed / file); this one models the browser's per-room ed25519
+// session key plus an optional zafu long-lived key that delegates to it.
+// ---------------------------------------------------------------------------
+
+/// an ephemeral session identity (anon: session key IS the identity; zafu: a
+/// long-lived zafu key delegates to the session key).
+pub struct SessionIdentity {
+    seat: u8,
+    session: SigningKey,
+    /// present only in zafu mode
+    zafu: Option<SigningKey>,
+    /// cached delegation signature (zafu over "delegate:{sessionPub}:{room}")
+    delegation: Option<[u8; 64]>,
+}
+
+impl SessionIdentity {
+    /// anon identity: session key only.
+    pub fn anon(seat: u8) -> Self {
+        Self {
+            seat,
+            session: SigningKey::generate(&mut OsRng),
+            zafu: None,
+            delegation: None,
+        }
+    }
+
+    /// zafu identity: generate a fresh session key and delegate to it from a
+    /// (freshly generated, for sim purposes) zafu key over the given room.
+    pub fn zafu(seat: u8, room: &str) -> Self {
+        let session = SigningKey::generate(&mut OsRng);
+        let zafu = SigningKey::generate(&mut OsRng);
+        let session_pub_hex = hex::encode(session.verifying_key().to_bytes());
+        let sig = zafu.sign(&delegation_message(&session_pub_hex, room));
+        Self {
+            seat,
+            session,
+            zafu: Some(zafu),
+            delegation: Some(sig.to_bytes()),
+        }
+    }
+
+    pub fn seat(&self) -> u8 {
+        self.seat
+    }
+
+    pub fn session_pub(&self) -> [u8; 32] {
+        self.session.verifying_key().to_bytes()
+    }
+
+    pub fn session_pub_hex(&self) -> String {
+        hex::encode(self.session_pub())
+    }
+
+    pub fn zafu_pub_hex(&self) -> Option<String> {
+        self.zafu
+            .as_ref()
+            .map(|z| hex::encode(z.verifying_key().to_bytes()))
+    }
+
+    pub fn delegation_hex(&self) -> Option<String> {
+        self.delegation.map(hex::encode)
+    }
+
+    /// the on-chain-pinned identity for this seat: the zafu pubkey in zafu
+    /// mode, else the session pubkey (anon). this is the `;id:` value a real
+    /// deposit memo would carry.
+    pub fn pinned_id_hex(&self) -> String {
+        self.zafu_pub_hex().unwrap_or_else(|| self.session_pub_hex())
+    }
+
+    /// sign a game action, returning the 64-byte signature as hex.
+    pub fn sign_action(&self, action: &str, amount: u64, seq: u32) -> String {
+        let msg = action_message(self.seat, action, amount, seq);
+        hex::encode(self.session.sign(&msg).to_bytes())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -144,6 +284,44 @@ mod tests {
         assert!(!verify(&id.pubkey_hex(), msg, "not-hex"));
         assert!(!verify("zz", msg, &sig));
         assert!(!verify(&id.pubkey_hex(), msg, ""));
+    }
+
+    #[test]
+    fn action_name_roundtrips() {
+        for a in [
+            poker_pvm::Action::Fold,
+            poker_pvm::Action::Check,
+            poker_pvm::Action::Call,
+            poker_pvm::Action::Bet,
+            poker_pvm::Action::Raise,
+            poker_pvm::Action::AllIn,
+        ] {
+            assert_eq!(action_from_name(action_name(a)), Some(a));
+        }
+        assert_eq!(action_from_name("bogus"), None);
+    }
+
+    #[test]
+    fn session_identity_sign_and_verify_action() {
+        let id = SessionIdentity::anon(0);
+        let sig = id.sign_action("bet", 50, 1);
+        let msg = action_message(0, "bet", 50, 1);
+        assert!(verify_hex(&id.session_pub_hex(), &msg, &sig));
+        // tampering the amount breaks the signature
+        let bad = action_message(0, "bet", 51, 1);
+        assert!(!verify_hex(&id.session_pub_hex(), &bad, &sig));
+    }
+
+    #[test]
+    fn zafu_delegation_verifies() {
+        let id = SessionIdentity::zafu(1, "room-7");
+        let zpub = id.zafu_pub_hex().unwrap();
+        let del = id.delegation_hex().unwrap();
+        let msg = delegation_message(&id.session_pub_hex(), "room-7");
+        assert!(verify_hex(&zpub, &msg, &del));
+        // wrong room fails
+        let msg2 = delegation_message(&id.session_pub_hex(), "room-8");
+        assert!(!verify_hex(&zpub, &msg2, &del));
     }
 
     #[test]

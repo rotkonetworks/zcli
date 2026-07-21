@@ -641,3 +641,231 @@ fn read_hole(m: &GameMsg) -> Result<[u8; 2]> {
     }
     Ok([cards[0].as_u64().unwrap() as u8, cards[1].as_u64().unwrap() as u8])
 }
+
+// ============================================================================
+// Offline transcript self-play — produces a REAL signed `Transcript` for the
+// replay-verifier ("the jury", see `crate::transcript`).
+//
+// The async `play`/`settle_cosign` path above drives two peer `GameState`s over
+// an E2EE channel and is what ships. This SYNCHRONOUS driver runs ONE engine
+// directly with BOTH seats' `SessionIdentity`s in hand, so it can sign every
+// action as the acting seat and record the exact `TranscriptEntry` stream the
+// browser client emits. It exists so `--emit-transcript` and the jury tests can
+// mint an authentic, self-contained signed transcript without a live relay.
+//
+// Each acting seat SIGNS its action (ed25519 over "{seat}|{action}|{amount}|{seq}",
+// via `identity::action_message`, byte-identical to the browser `identity.ts`)
+// and the driver appends a `TranscriptEntry`.
+//
+// relay_ts note: over the network `relayTs` is stamped by the neutral relay
+// clock. Self-play is OFFLINE (no relay), so we stamp a synthetic monotonic
+// counter (`RELAY_STEP` ms per action). It is monotonic and gap-free — exactly
+// what the timing check expects — but it is NOT a real wall-clock time.
+// localTs is left 0 (no recorder machine involved).
+// ============================================================================
+
+use crate::identity::{action_name, SessionIdentity};
+use crate::settle::Claim;
+use crate::transcript::{Deal, RulesSpec, Transcript, TranscriptEntry};
+
+/// synthetic per-action relay-clock increment (ms) for offline self-play.
+const RELAY_STEP: u64 = 1_000;
+
+/// which identity mode the two self-play seats use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IdentityMode {
+    /// no zafu, no delegation — the session key IS the identity.
+    Anon,
+    /// a long-lived zafu key delegates to the per-room session key.
+    Zafu,
+}
+
+/// A simple, ALWAYS-LEGAL self-play policy whose only job is to drive a real
+/// hand to completion so a genuine signed transcript can be emitted. Every
+/// decision it returns is legal against the current engine state, so a replay
+/// of the resulting transcript never rejects an action. (This is NOT the CFR AI
+/// bot — that lives in `poker_pvm::cfr` and is used by the async `Player`.)
+#[derive(Debug, Clone, Copy)]
+pub enum Policy {
+    /// never folds: checks when possible, else calls — always reaches showdown.
+    CallDown,
+    /// plays `CallDown` until the given global seq, then folds on that turn.
+    FoldAt(u32),
+}
+
+/// Decide the acting seat's action for the transcript self-play driver. Returns
+/// `(action, amount)` with amount as the chip delta the engine expects (0 for
+/// fold/check/call — call auto-computes to-call).
+fn decide(gs: &GameState, policy: Policy, next_seq: u32) -> (Action, u32) {
+    let seat = gs.acting_seat as usize;
+    let max_bet = gs
+        .bets
+        .iter()
+        .take(gs.num_players as usize)
+        .copied()
+        .max()
+        .unwrap_or(0);
+    let facing_bet = gs.bets[seat] < max_bet;
+
+    if let Policy::FoldAt(fold_seq) = policy {
+        if next_seq == fold_seq {
+            return (Action::Fold, 0);
+        }
+    }
+
+    // CallDown behaviour (also the pre-fold behaviour of FoldAt).
+    if facing_bet {
+        (Action::Call, 0)
+    } else {
+        (Action::Check, 0)
+    }
+}
+
+/// A `transcript::Player` header built from a `SessionIdentity`.
+fn build_player(id: &SessionIdentity) -> crate::transcript::Player {
+    crate::transcript::Player {
+        seat: id.seat(),
+        session_pub: id.session_pub_hex(),
+        zafu_pub: id.zafu_pub_hex(),
+        delegation: id.delegation_hex(),
+        pinned_id: Some(id.pinned_id_hex()),
+    }
+}
+
+/// Outcome of a transcript self-play hand: the signed transcript plus the
+/// ENGINE's own verdict (ground truth to compare the jury against).
+pub struct SelfPlayResult {
+    pub transcript: Transcript,
+    /// the winner seat per the ENGINE (ground truth to compare the jury against).
+    pub engine_winner: u8,
+    /// final seat-indexed stacks per the engine [seat0, seat1].
+    pub engine_stacks: [u64; 2],
+}
+
+/// Play one heads-up hand through the real `poker_pvm` engine and record a
+/// signed transcript.
+///
+/// `room`       — used in the delegation message (zafu mode) and as the claim `code`.
+/// `rules`      — buyin/sb/bb.
+/// `deal`       — fixed hole + community cards (Tier-1 takes these as given).
+/// `mode`       — anon or zafu identities.
+/// `policies`   — per-seat bot policy [seat0, seat1].
+/// `with_claim` — if true, attach a TRUTHFUL settlement claim (round-trips valid).
+///                the claim's `log_hash` is the production OUTCOME hash
+///                `settle::log_hash(room, s0, s1, a_addr, b_addr)`.
+pub fn self_play(
+    room: &str,
+    rules: RulesSpec,
+    deal: Deal,
+    mode: IdentityMode,
+    policies: [Policy; 2],
+    with_claim: bool,
+) -> SelfPlayResult {
+    // build the two seats' identities.
+    let ids: [SessionIdentity; 2] = match mode {
+        IdentityMode::Anon => [SessionIdentity::anon(0), SessionIdentity::anon(1)],
+        IdentityMode::Zafu => [
+            SessionIdentity::zafu(0, room),
+            SessionIdentity::zafu(1, room),
+        ],
+    };
+
+    let engine_rules = rules.to_engine();
+    let mut gs = GameState::new(engine_rules, 2);
+    gs.deal(&deal.hole, deal.community);
+
+    let mut entries: Vec<TranscriptEntry> = Vec::new();
+    let mut relay_ts: u64 = RELAY_STEP;
+    let mut fold_winner: Option<u8> = None;
+
+    // drive the hand until it leaves the betting phases.
+    while matches!(
+        gs.phase,
+        Phase::Preflop | Phase::Flop | Phase::Turn | Phase::River
+    ) {
+        let seq = (entries.len() as u32) + 1;
+        let seat = gs.acting_seat as usize;
+        let (action, amount) = decide(&gs, policies[seat], seq);
+        let name = action_name(action);
+
+        // the acting seat signs its own action (real ed25519 over the browser
+        // action message).
+        let sig = ids[seat].sign_action(name, amount as u64, seq);
+
+        entries.push(TranscriptEntry {
+            seq,
+            seat: seat as u8,
+            action: name.to_string(),
+            amount: amount as u64,
+            sig,
+            session_pub: ids[seat].session_pub_hex(),
+            relay_ts,
+            local_ts: 0,
+        });
+        relay_ts += RELAY_STEP;
+
+        let sa = SignedAction { seat: seat as u8, action, amount, seq, sig: [0u8; 64] };
+        let res = gs
+            .apply(&sa)
+            .expect("self-play policy must only produce legal actions");
+        if res.hand_over && res.winner != 255 {
+            fold_winner = Some(res.winner);
+        }
+    }
+
+    // resolve the winner + final stacks the same way the jury does.
+    let engine_winner = if let Some(w) = fold_winner {
+        w
+    } else {
+        gs.showdown()
+    };
+    let engine_stacks = [gs.stacks[0] as u64, gs.stacks[1] as u64];
+
+    let players = [build_player(&ids[0]), build_player(&ids[1])];
+
+    // optional TRUTHFUL claim. its log_hash is the production OUTCOME hash over
+    // the final stacks + payout addrs (settle::log_hash) — the settlement
+    // binding — NOT a hash of the action entries.
+    let claim = if with_claim {
+        let a_addr = demo_payout_addr(0);
+        let b_addr = demo_payout_addr(1);
+        Some(Claim {
+            a_stack: engine_stacks[0],
+            b_stack: engine_stacks[1],
+            log_hash: settle::log_hash(room, engine_stacks[0], engine_stacks[1], &a_addr, &b_addr),
+            a_addr,
+            b_addr,
+        })
+    } else {
+        None
+    };
+
+    // record the action-log integrity digest alongside the outcome-bound claim.
+    let transcript_hash = Some(crate::transcript::transcript_hash(&entries));
+
+    let transcript = Transcript {
+        room: room.to_string(),
+        timeout_ms: 30_000,
+        rules,
+        players,
+        deal,
+        entries,
+        claim,
+        transcript_hash,
+    };
+
+    SelfPlayResult { transcript, engine_winner, engine_stacks }
+}
+
+/// A fixed high-ish deal that goes to showdown with a clear winner: seat 0 holds
+/// AA, seat 1 holds 72o — seat 0 wins on a dry board. card idx: rank = idx % 13
+/// (2..A), suit = idx / 13.
+pub fn demo_deal() -> Deal {
+    // A♣ = 0*13+12 = 12 ; A♦ = 1*13+12 = 25
+    // 7♥ = 2*13+5 = 31 ; 2♠ = 3*13+0 = 39
+    // board: K♣ Q♦ 9♥ 4♠ 3♣  (idx 11, 23, 20, 41, 1) — no help for 72
+    Deal {
+        hole: [[12, 25], [31, 39]],
+        community: [11, 23, 20, 41, 1],
+    }
+}

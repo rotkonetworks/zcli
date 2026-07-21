@@ -5,6 +5,10 @@ edition = "2021"
 license = "MIT"
 description = "headless heads-up poker bot: drives the production poker-pvm engine over the real E2EE relay for high-pace bug testing (free + paid)"
 
+[lib]
+name = "pokerbot"
+path = "src/lib.rs"
+
 [[bin]]
 name = "pokerbot"
 path = "src/main.rs"
