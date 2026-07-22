@@ -97,8 +97,8 @@ pub fn derive_address(
     let items = vec![zcash_address::unified::Receiver::Orchard(raw)];
     let ua = zcash_address::unified::Address::try_from_items(items)
         .map_err(|e| Error::Other(format!("UA construction: {}", e)))?;
-    #[allow(deprecated)]
-    let network = zcash_address::Network::Main;
+    // NU6.3 fork: zcash_address::Network removed → zcash_protocol NetworkType.
+    let network = zcash_protocol::consensus::NetworkType::Main;
     Ok(ua.encode(&network))
 }
 

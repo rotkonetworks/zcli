@@ -5,7 +5,6 @@
 
 use ff::PrimeField;
 use orchard::builder::{Builder, BundleType};
-use orchard::bundle::Flags;
 use orchard::keys::{FullViewingKey, Scope};
 use orchard::tree::Anchor;
 use orchard::value::NoteValue;
@@ -288,8 +287,8 @@ fn decode_ufvk(ufvk: &str) -> Result<([u8; 96], bool), Error> {
     let (network, ufvk) =
         Ufvk::decode(ufvk).map_err(|e| Error::Other(format!("UFVK decode: {}", e)))?;
 
-    #[allow(deprecated)]
-    let mainnet = matches!(network, zcash_address::Network::Main);
+    // NU6.3 fork: Ufvk::decode now yields a zcash_protocol NetworkType.
+    let mainnet = matches!(network, zcash_protocol::consensus::NetworkType::Main);
 
     for item in ufvk.items() {
         if let zcash_address::unified::Fvk::Orchard(bytes) = item {
@@ -548,7 +547,16 @@ fn compute_pczt_orchard_digest(bundle: &orchard::pczt::Bundle) -> Result<[u8; 32
     orchard_data.extend_from_slice(&compact_digest);
     orchard_data.extend_from_slice(&memos_digest);
     orchard_data.extend_from_slice(&noncompact_digest);
-    orchard_data.push(bundle.flags().to_byte());
+    // TODO(ironwood correctness): NU6.3 fork made Flags::to_byte take a
+    // BundleFormat and return Option (bit 2 = enableCrossAddress under Nu6_3).
+    // Pinned to PreNu6_3 to preserve the current NU6.1/V5 wire digest; a real
+    // Ironwood/NU6.3 sighash must select Nu6_3 for post-activation bundles.
+    orchard_data.push(
+        bundle
+            .flags()
+            .to_byte(orchard::bundle::BundleFormat::PreNu6_3)
+            .ok_or_else(|| Error::Transaction("orchard flags not representable in pre-NU6.3 format".into()))?,
+    );
     orchard_data.extend_from_slice(&value_balance.to_le_bytes());
     orchard_data.extend_from_slice(&bundle.anchor().to_bytes());
 
@@ -581,11 +589,22 @@ pub fn build_pczt_and_qr(
     let fvk: FullViewingKey = FullViewingKey::from_bytes(fvk_bytes)
         .ok_or_else(|| Error::Transaction("invalid FVK bytes".into()))?;
 
+    // NU6.3 fork: BundleType::Transactional replaced the `flags` field with
+    // explicit spends_enabled/outputs_enabled; Builder::new gained a leading
+    // BundleProtocol. Flags::ENABLED == spends+outputs enabled.
+    // TODO(ironwood correctness): OrchardPreNu6_2 keeps the historical (V5,
+    // branch 0x4DEC4DF0) circuit + flag-byte format used by this PCZT path;
+    // post-activation this must become OrchardPostNu6_3 / IronwoodPostNu6_3.
     let bundle_type = BundleType::Transactional {
-        flags: Flags::ENABLED,
+        spends_enabled: true,
+        outputs_enabled: true,
         bundle_required: true,
     };
-    let mut builder = Builder::new(bundle_type, anchor);
+    let mut builder = Builder::new(
+        orchard::BundleProtocol::OrchardPreNu6_2,
+        bundle_type,
+        anchor,
+    );
 
     for (note, path) in spends {
         builder
@@ -678,7 +697,13 @@ pub fn build_pczt_and_qr(
         .finalize_io(sighash, rng)
         .map_err(|e| Error::Transaction(format!("finalize_io: {}", e)))?;
 
-    let pk = orchard::circuit::ProvingKey::build();
+    // NU6.3 fork: ProvingKey::build takes an OrchardCircuitVersion.
+    // TODO(ironwood correctness): InsecurePreNu6_2 matches the historical V5
+    // verifying key this PCZT path targets (branch 0x4DEC4DF0); post-NU6.3
+    // proving must use PostNu6_3.
+    let pk = orchard::circuit::ProvingKey::build(
+        orchard::circuit::OrchardCircuitVersion::InsecurePreNu6_2,
+    );
     pczt_bundle
         .create_proof(&pk, rng)
         .map_err(|e| Error::Transaction(format!("create_proof: {}", e)))?;

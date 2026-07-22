@@ -3997,39 +3997,6 @@ dependencies = [
 
 [[package]]
 name = "orchard"
-version = "0.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b1ef66fcf99348242a20d582d7434da381a867df8dc155b3a980eca767c56137"
-dependencies = [
- "aes",
- "bitvec",
- "blake2b_simd",
- "core2",
- "ff",
- "fpe",
- "getset",
- "group",
- "halo2_poseidon",
- "hex",
- "incrementalmerkletree 0.8.2",
- "lazy_static",
- "memuse",
- "nonempty 0.11.0",
- "pasta_curves",
- "rand 0.8.5",
- "reddsa 0.5.1 (registry+https://github.com/rust-lang/crates.io-index)",
- "serde",
- "sinsemilla",
- "subtle",
- "tracing",
- "visibility",
- "zcash_note_encryption",
- "zcash_spec 0.2.1",
- "zip32 0.2.1",
-]
-
-[[package]]
-name = "orchard"
 version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6c01cd4ea711aab5f263f2b7aa6966687a2d6c7df4f78eb1b97a66a7a4e78e3b"
@@ -4298,7 +4265,7 @@ dependencies = [
  "zcash_primitives",
  "zcash_protocol 0.9.0",
  "zcash_script",
- "zcash_transparent 0.8.0",
+ "zcash_transparent",
 ]
 
 [[package]]
@@ -8106,11 +8073,11 @@ dependencies = [
  "wasm-bindgen-rayon",
  "wasm-bindgen-test",
  "zcash_address 0.12.0",
- "zcash_keys 0.14.0",
+ "zcash_keys",
  "zcash_note_encryption",
  "zcash_primitives",
  "zcash_protocol 0.9.0",
- "zcash_transparent 0.8.0",
+ "zcash_transparent",
  "zip32 0.2.1",
  "zoda-vss",
 ]
@@ -8127,20 +8094,6 @@ dependencies = [
  "f4jumble 0.1.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "zcash_encoding 0.3.0",
  "zcash_protocol 0.5.4",
-]
-
-[[package]]
-name = "zcash_address"
-version = "0.10.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ee4491dddd232de02df42481757054dc19c8bc51cf709cfec58feebfef7c3c9a"
-dependencies = [
- "bech32",
- "bs58",
- "core2",
- "f4jumble 0.1.1 (registry+https://github.com/rust-lang/crates.io-index)",
- "zcash_encoding 0.3.0",
- "zcash_protocol 0.7.2",
 ]
 
 [[package]]
@@ -8176,32 +8129,6 @@ dependencies = [
 
 [[package]]
 name = "zcash_keys"
-version = "0.12.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c115531caa1b7ca5ccd82dc26dbe3ba44b7542e928a3f77cd04abbe3cde4a4f2"
-dependencies = [
- "bech32",
- "blake2b_simd",
- "bls12_381",
- "bs58",
- "core2",
- "group",
- "memuse",
- "nonempty 0.11.0",
- "orchard 0.11.0",
- "rand_core 0.6.4",
- "secrecy",
- "subtle",
- "tracing",
- "zcash_address 0.10.1",
- "zcash_encoding 0.3.0",
- "zcash_protocol 0.7.2",
- "zcash_transparent 0.6.3",
- "zip32 0.2.1",
-]
-
-[[package]]
-name = "zcash_keys"
 version = "0.14.0"
 dependencies = [
  "bech32",
@@ -8221,7 +8148,7 @@ dependencies = [
  "zcash_address 0.12.0",
  "zcash_encoding 0.4.0",
  "zcash_protocol 0.9.0",
- "zcash_transparent 0.8.0",
+ "zcash_transparent",
  "zip32 0.2.1",
 ]
 
@@ -8263,7 +8190,7 @@ dependencies = [
  "zcash_note_encryption",
  "zcash_protocol 0.9.0",
  "zcash_script",
- "zcash_transparent 0.8.0",
+ "zcash_transparent",
 ]
 
 [[package]]
@@ -8276,16 +8203,6 @@ dependencies = [
  "document-features",
  "hex",
  "memuse",
-]
-
-[[package]]
-name = "zcash_protocol"
-version = "0.7.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "18b1a337bbc9a7d55ae35d31189f03507dbc7934e9a4bee5c1d5c47464860e48"
-dependencies = [
- "core2",
- "hex",
 ]
 
 [[package]]
@@ -8330,30 +8247,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ded3f58b93486aa79b85acba1001f5298f27a46489859934954d262533ee2915"
 dependencies = [
  "blake2b_simd",
-]
-
-[[package]]
-name = "zcash_transparent"
-version = "0.6.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5a9b7b4bc11d8bb20833d1b8ab6807f4dca941b381f1129e5bbd72a84e391991"
-dependencies = [
- "bip32",
- "blake2b_simd",
- "bs58",
- "core2",
- "getset",
- "hex",
- "nonempty 0.11.0",
- "ripemd 0.1.3",
- "sha2 0.10.9",
- "subtle",
- "zcash_address 0.10.1",
- "zcash_encoding 0.3.0",
- "zcash_protocol 0.7.2",
- "zcash_script",
- "zcash_spec 0.2.1",
- "zip32 0.2.1",
 ]
 
 [[package]]
@@ -8424,7 +8317,7 @@ dependencies = [
  "indicatif",
  "is-terminal",
  "k256",
- "orchard 0.12.0",
+ "orchard 0.14.0",
  "osst",
  "pasta_curves",
  "prost",
@@ -8451,10 +8344,10 @@ dependencies = [
  "tonic-build",
  "ur",
  "urlencoding",
- "zcash_address 0.7.1",
- "zcash_keys 0.12.0",
+ "zcash_address 0.12.0",
+ "zcash_keys",
  "zcash_note_encryption",
- "zcash_protocol 0.7.2",
+ "zcash_protocol 0.9.0",
  "zeroize",
  "zip32 0.2.1",
  "zoda-vss",

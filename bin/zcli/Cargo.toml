@@ -47,11 +47,20 @@ cli = [
 bip39 = { version = "2.0", features = ["rand"] }
 
 # orchard / zcash
-orchard = { version = "0.12", default-features = false, features = ["circuit"] }
-zcash_keys = { version = "0.12", default-features = false, features = ["orchard"] }
-zcash_protocol = { version = "0.7", default-features = false }
+# NU6.3 / Ironwood stack — retargeted from the now-YANKED crates.io NU6.1 pins
+# (orchard 0.12 / zcash_keys 0.12 / zcash_protocol 0.7 / zcash_address 0.7) to
+# the SAME valar NU6.3 fork revs that crates/zcash-wasm (zafu) already builds
+# against. See that crate's Cargo.toml for the frozen interface contract.
+#   orchard 0.14:            zcash/orchard   @ adam/qleak-dummy-ciphertexts-on-pr505 (rev 204d8ce9)
+#   librustzcash crates 0.x: valargroup fork @ adam/qleak-pr44-orchard-dummy-ciphertexts (rev 0c3ad735),
+#                            [patch]ed at the workspace root to the branch-id-fixed vendored copy
+#                            under vendor/librustzcash.
+# Build native with: RUSTFLAGS='--cfg zcash_unstable="nu6.3"'
+orchard = { version = "0.14", git = "https://github.com/zcash/orchard", branch = "adam/qleak-dummy-ciphertexts-on-pr505", default-features = false, features = ["circuit"] }
+zcash_keys = { version = "0.14", git = "https://github.com/valargroup/librustzcash", branch = "adam/qleak-pr44-orchard-dummy-ciphertexts", default-features = false, features = ["orchard"] }
+zcash_protocol = { version = "0.9", git = "https://github.com/valargroup/librustzcash", branch = "adam/qleak-pr44-orchard-dummy-ciphertexts", default-features = false }
 zip32 = { version = "0.2", default-features = false }
-zcash_address = "0.7"
+zcash_address = { version = "0.12", git = "https://github.com/valargroup/librustzcash", branch = "adam/qleak-pr44-orchard-dummy-ciphertexts", default-features = false }
 zcash_note_encryption = "0.4"
 
 # merkle tree witness construction
@@ -123,3 +132,9 @@ tonic-build = "0.11"
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }
 tempfile = "3"
+
+# NU6.3 cfg is a first-class cfg for this crate's orchard/librustzcash fork.
+# Registering it here silences the `unexpected_cfgs` lint (mirrors zcash-wasm
+# and poker-escrow). Build with RUSTFLAGS='--cfg zcash_unstable="nu6.3"'.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(zcash_unstable, values("nu6.3"))'] }
