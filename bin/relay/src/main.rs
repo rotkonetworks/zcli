@@ -110,7 +110,12 @@ pub(crate) enum RoomBroadcast {
 struct Room {
     code: String,
     max_participants: u32,
-    expires_at: Option<Instant>,
+    /// TTL the room was created with; `None` = persistent. Expiry is
+    /// sliding: every accepted message pushes `expires_at` out by `ttl`,
+    /// so an active session (a >1h poker game, an ongoing FROST ceremony)
+    /// is never killed mid-protocol by the wall clock.
+    ttl: Option<Duration>,
+    expires_at: RwLock<Option<Instant>>,
     participants: RwLock<Vec<Participant>>,
     messages: RwLock<Vec<StoredMessage>>,
     next_sequence: AtomicU64,
@@ -121,15 +126,106 @@ struct Room {
 // Room manager
 // ============================================================================
 
+// ============================================================================
+// Metrics (prometheus text exposition, no external deps)
+// ============================================================================
+
+#[derive(Default)]
+pub(crate) struct Metrics {
+    pub rooms_created: AtomicU64,
+    pub joins: AtomicU64,
+    pub leaves: AtomicU64,
+    pub messages: AtomicU64,
+    pub message_bytes: AtomicU64,
+    pub rooms_expired: AtomicU64,
+    pub grpc_streams_active: AtomicU64,
+    pub ws_connections_active: AtomicU64,
+    pub lagged_events: AtomicU64,
+}
+
+impl Metrics {
+    fn c(&self, a: &AtomicU64) -> u64 {
+        a.load(Ordering::Relaxed)
+    }
+}
+
 pub(crate) struct RoomManager {
     rooms: RwLock<HashMap<String, Arc<Room>>>,
+    pub(crate) metrics: Metrics,
 }
 
 impl RoomManager {
     fn new() -> Self {
         Self {
             rooms: RwLock::new(HashMap::new()),
+            metrics: Metrics::default(),
         }
+    }
+
+    /// Render prometheus text-format metrics: monotonic counters plus
+    /// point-in-time gauges computed from live room state.
+    pub(crate) async fn render_metrics(&self) -> String {
+        let rooms = self.rooms.read().await;
+        let rooms_active = rooms.len();
+        let mut participants_active = 0usize;
+        let mut stored_messages = 0usize;
+        for r in rooms.values() {
+            participants_active += r.participants.read().await.len();
+            stored_messages += r.messages.read().await.len();
+        }
+        drop(rooms);
+
+        let m = &self.metrics;
+        format!(
+            "# HELP relay_rooms_active current number of rooms\n\
+             # TYPE relay_rooms_active gauge\n\
+             relay_rooms_active {rooms_active}\n\
+             # HELP relay_participants_active participants across all rooms\n\
+             # TYPE relay_participants_active gauge\n\
+             relay_participants_active {participants_active}\n\
+             # HELP relay_stored_messages messages held in room buffers\n\
+             # TYPE relay_stored_messages gauge\n\
+             relay_stored_messages {stored_messages}\n\
+             # HELP relay_grpc_streams_active open JoinRoom gRPC streams\n\
+             # TYPE relay_grpc_streams_active gauge\n\
+             relay_grpc_streams_active {grpc}\n\
+             # HELP relay_ws_connections_active open websocket connections\n\
+             # TYPE relay_ws_connections_active gauge\n\
+             relay_ws_connections_active {ws}\n\
+             # HELP relay_rooms_created_total rooms created since start\n\
+             # TYPE relay_rooms_created_total counter\n\
+             relay_rooms_created_total {created}\n\
+             # HELP relay_joins_total successful room joins\n\
+             # TYPE relay_joins_total counter\n\
+             relay_joins_total {joins}\n\
+             # HELP relay_leaves_total participants removed from rooms\n\
+             # TYPE relay_leaves_total counter\n\
+             relay_leaves_total {leaves}\n\
+             # HELP relay_messages_total messages relayed\n\
+             # TYPE relay_messages_total counter\n\
+             relay_messages_total {messages}\n\
+             # HELP relay_message_bytes_total payload bytes relayed\n\
+             # TYPE relay_message_bytes_total counter\n\
+             relay_message_bytes_total {bytes}\n\
+             # HELP relay_rooms_expired_total rooms swept by TTL cleanup\n\
+             # TYPE relay_rooms_expired_total counter\n\
+             relay_rooms_expired_total {expired}\n\
+             # HELP relay_lagged_events_total broadcast events dropped on slow subscribers\n\
+             # TYPE relay_lagged_events_total counter\n\
+             relay_lagged_events_total {lagged}\n",
+            rooms_active = rooms_active,
+            participants_active = participants_active,
+            stored_messages = stored_messages,
+            grpc = m.c(&m.grpc_streams_active),
+            ws = m.c(&m.ws_connections_active),
+            created = m.c(&m.rooms_created),
+            joins = m.c(&m.joins),
+            leaves = m.c(&m.leaves),
+            messages = m.c(&m.messages),
+            bytes = m.c(&m.message_bytes),
+            expired = m.c(&m.rooms_expired),
+            lagged = m.c(&m.lagged_events),
+        )
     }
 
     pub(crate) async fn create_room(
@@ -146,7 +242,15 @@ impl RoomManager {
         max_participants: u32,
         ttl_seconds: u32,
     ) -> Result<(String, u64), &'static str> {
-        let rooms = self.rooms.read().await;
+        // Codes are looked up lowercased in get_room — normalize at creation
+        // too, or a mixed-case fixed code becomes permanently unjoinable.
+        let fixed_code = fixed_code.map(|c| c.to_lowercase());
+
+        // Hold the write lock across the existence check AND the insert:
+        // with a read-check/drop/write-insert sequence, two concurrent
+        // creates could pick the same code and the second would silently
+        // overwrite a live room, orphaning its participants.
+        let mut rooms = self.rooms.write().await;
         if rooms.len() >= MAX_ROOMS {
             return Err("too many active rooms");
         }
@@ -156,7 +260,6 @@ impl RoomManager {
                 return Ok((c.clone(), 0));
             }
         }
-        drop(rooms);
 
         let ttl = if ttl_seconds > 0 {
             Some(Duration::from_secs(ttl_seconds as u64))
@@ -164,7 +267,23 @@ impl RoomManager {
             None // persistent
         };
 
-        let code = fixed_code.unwrap_or_else(generate_room_code);
+        let code = match fixed_code {
+            Some(c) => c,
+            None => {
+                // regenerate on collision instead of clobbering a live room
+                let mut attempts = 0;
+                loop {
+                    let c = generate_room_code();
+                    if !rooms.contains_key(&c) {
+                        break c;
+                    }
+                    attempts += 1;
+                    if attempts > 16 {
+                        return Err("room code space exhausted");
+                    }
+                }
+            }
+        };
         let expires_at = ttl.map(|t| Instant::now() + t);
         let expires_unix = ttl
             .map(|t| {
@@ -176,7 +295,7 @@ impl RoomManager {
             })
             .unwrap_or(0);
 
-        let (tx, _) = broadcast::channel(256);
+        let (tx, _) = broadcast::channel(1024);
         let room = Arc::new(Room {
             code: code.clone(),
             max_participants: if max_participants == 0 {
@@ -184,14 +303,16 @@ impl RoomManager {
             } else {
                 max_participants
             },
-            expires_at,
+            ttl,
+            expires_at: RwLock::new(expires_at),
             participants: RwLock::new(Vec::new()),
             messages: RwLock::new(Vec::new()),
             next_sequence: AtomicU64::new(0),
             tx,
         });
 
-        self.rooms.write().await.insert(code.clone(), room);
+        rooms.insert(code.clone(), room);
+        self.metrics.rooms_created.fetch_add(1, Ordering::Relaxed);
         Ok((code, expires_unix))
     }
 
@@ -199,7 +320,7 @@ impl RoomManager {
         let code = code.to_lowercase();
         let rooms = self.rooms.read().await;
         let room = rooms.get(&code)?;
-        if let Some(exp) = room.expires_at {
+        if let Some(exp) = *room.expires_at.read().await {
             if exp < Instant::now() {
                 return None;
             }
@@ -219,7 +340,18 @@ impl RoomManager {
 
         let mut participants = room.participants.write().await;
         if participants.iter().any(|p| p.id == participant_id) {
-            return Ok(room.clone());
+            // Rejoin (reconnect with the same participant id): still
+            // broadcast Joined so peers blocked on "waiting for player"
+            // wake up — without this, a host waiting on the Joined event
+            // never learns their opponent came back.
+            let count = participants.len() as u32;
+            drop(participants);
+            let _ = room.tx.send(RoomBroadcast::Joined {
+                participant_id,
+                count,
+                max_participants: room.max_participants,
+            });
+            return Ok(room);
         }
         if participants.len() >= room.max_participants as usize {
             return Err("room is full");
@@ -229,6 +361,7 @@ impl RoomManager {
         });
         let count = participants.len() as u32;
         drop(participants);
+        self.metrics.joins.fetch_add(1, Ordering::Relaxed);
 
         let _ = room.tx.send(RoomBroadcast::Joined {
             participant_id,
@@ -255,6 +388,7 @@ impl RoomManager {
             participants.remove(pos);
             let count = participants.len() as u32;
             drop(participants);
+            self.metrics.leaves.fetch_add(1, Ordering::Relaxed);
             let _ = room.tx.send(RoomBroadcast::Left {
                 participant_id,
                 count,
@@ -302,6 +436,15 @@ impl RoomManager {
         };
         messages.push(msg.clone());
         drop(messages);
+        self.metrics.messages.fetch_add(1, Ordering::Relaxed);
+        self.metrics
+            .message_bytes
+            .fetch_add(msg.payload.len() as u64, Ordering::Relaxed);
+
+        // sliding expiry: activity keeps the room alive for another ttl
+        if let Some(t) = room.ttl {
+            *room.expires_at.write().await = Some(Instant::now() + t);
+        }
 
         let _ = room.tx.send(RoomBroadcast::Message(msg));
         Ok(seq)
@@ -310,17 +453,21 @@ impl RoomManager {
     pub(crate) async fn cleanup(&self) {
         let mut rooms = self.rooms.write().await;
         let now = Instant::now();
-        let expired: Vec<String> = rooms
-            .iter()
-            .filter(|(_, r)| r.expires_at.is_some_and(|e| e < now))
-            .map(|(k, _)| k.clone())
-            .collect();
+        let mut expired: Vec<String> = Vec::new();
+        for (k, r) in rooms.iter() {
+            if r.expires_at.read().await.is_some_and(|e| e < now) {
+                expired.push(k.clone());
+            }
+        }
         for code in &expired {
             if let Some(room) = rooms.remove(code) {
                 let _ = room.tx.send(RoomBroadcast::Closed("expired".into()));
             }
         }
         if !expired.is_empty() {
+            self.metrics
+                .rooms_expired
+                .fetch_add(expired.len() as u64, Ordering::Relaxed);
             info!("cleaned up {} expired rooms", expired.len());
         }
     }
@@ -379,6 +526,36 @@ impl RelayService {
     }
 }
 
+/// Removes the participant from the room when the JoinRoom response stream
+/// is dropped (client disconnect, cancelled RPC, connection reset). Without
+/// this, gRPC disconnects never free room slots: a room fills up with ghost
+/// participants until "room is full" bricks it for everyone.
+struct LeaveOnDrop {
+    manager: Arc<RoomManager>,
+    code: String,
+    participant_id: Vec<u8>,
+}
+
+impl Drop for LeaveOnDrop {
+    fn drop(&mut self) {
+        self.manager
+            .metrics
+            .grpc_streams_active
+            .fetch_sub(1, Ordering::Relaxed);
+        let manager = self.manager.clone();
+        let code = std::mem::take(&mut self.code);
+        let id = std::mem::take(&mut self.participant_id);
+        // Drop is sync; the cleanup is async. The stream is always dropped
+        // on a tokio worker, but guard with try_current so an off-runtime
+        // drop degrades to a leak instead of a panic.
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                let _ = manager.leave_room(&code, id).await;
+            });
+        }
+    }
+}
+
 #[tonic::async_trait]
 impl Relay for RelayService {
     async fn create_room(
@@ -423,8 +600,20 @@ impl Relay for RelayService {
         let existing_messages = room.messages.read().await.clone();
         let rx = room.tx.subscribe();
         let max = room.max_participants;
+        self.manager
+            .metrics
+            .grpc_streams_active
+            .fetch_add(1, Ordering::Relaxed);
+        let leave_guard = LeaveOnDrop {
+            manager: self.manager.clone(),
+            code: req.room_code.clone(),
+            participant_id: req.participant_id.clone(),
+        };
+        let manager_for_stream = self.manager.clone();
 
         let stream = async_stream::stream! {
+            // owned by the stream: dropping the stream leaves the room
+            let _leave_guard = leave_guard;
             // replay existing participants
             for (i, p) in existing_participants.iter().enumerate() {
                 yield Ok(RoomEvent {
@@ -493,13 +682,15 @@ impl Relay for RelayService {
                         });
                         break;
                     }
-                    Err(_) => {
-                        yield Ok(RoomEvent {
-                            event: Some(room_event::Event::Closed(RoomClosed {
-                                reason: "room closed".into(),
-                            })),
-                        });
-                        break;
+                    Err(tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(n)) => {
+                        // Subscriber fell behind the broadcast buffer. This
+                        // is message loss, not room closure — closing here
+                        // turned transient lag into a fatal disconnect.
+                        // Skip ahead; messages remain in room storage, and
+                        // a client that detects a sequence gap can rejoin
+                        // to replay them.
+                        tracing::warn!("subscriber lagged, skipped {} events", n);
+                        manager_for_stream.metrics.lagged_events.fetch_add(n, Ordering::Relaxed);
                     }
                 }
             }
@@ -572,6 +763,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let relay_server = RelayServer::new(service);
         tonic::transport::Server::builder()
             .accept_http1(true)
+            // h2 keepalives so long-lived JoinRoom streams survive idle
+            // periods through proxies, and dead peers are detected instead
+            // of holding room slots until the next write fails.
+            .http2_keepalive_interval(Some(Duration::from_secs(30)))
+            .http2_keepalive_timeout(Some(Duration::from_secs(20)))
             .layer(tower_http::trace::TraceLayer::new_for_grpc())
             .add_service(tonic_web::enable(relay_server))
             .serve(args.listen)

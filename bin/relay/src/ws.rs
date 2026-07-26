@@ -34,6 +34,16 @@ use crate::{RoomManager, RoomBroadcast};
 /// scrollback of new joiners.
 const HISTORY_REPLAY_TTL_MS: u64 = 24 * 60 * 60 * 1000;
 
+/// TTL for WS-created rooms (sliding — any message extends it). Active
+/// chat rooms live indefinitely; abandoned ones get swept.
+const WS_ROOM_TTL_SECS: u32 = 24 * 60 * 60;
+
+/// short hex prefix of a participant id for display; ids come from
+/// untrusted peers and may be shorter than 4 bytes — never slice blindly
+fn id_prefix(id: &[u8]) -> String {
+    hex::encode(id.get(..4).unwrap_or(id))
+}
+
 fn now_ms_local() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -104,7 +114,16 @@ enum ServerMsg {
 pub fn ws_router(manager: Arc<RoomManager>) -> Router {
     Router::new()
         .route("/ws", get(ws_handler))
+        .route("/metrics", get(metrics_handler))
         .with_state(manager)
+}
+
+/// prometheus text-format metrics (scraped internally; not routed publicly)
+async fn metrics_handler(State(manager): State<Arc<RoomManager>>) -> impl IntoResponse {
+    (
+        [("content-type", "text/plain; version=0.0.4")],
+        manager.render_metrics().await,
+    )
 }
 
 async fn ws_handler(
@@ -115,6 +134,10 @@ async fn ws_handler(
 }
 
 async fn handle_socket(socket: WebSocket, manager: Arc<RoomManager>) {
+    manager
+        .metrics
+        .ws_connections_active
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let (mut tx, mut rx) = socket.split();
 
     let mut current_room: Option<String> = None;
@@ -155,7 +178,10 @@ async fn handle_socket(socket: WebSocket, manager: Arc<RoomManager>) {
         match client_msg {
             ClientMsg::Create { nick, room } => {
                 current_nick = nick;
-                match manager.create_room_with_code(room, 100, 0).await {
+                // 24h sliding TTL (activity extends it) instead of ttl=0:
+                // immortal WS rooms accumulate to MAX_ROOMS and then block
+                // every create, including gRPC ones — an unauthenticated DoS.
+                match manager.create_room_with_code(room, 100, WS_ROOM_TTL_SECS).await {
                     Ok((code, _)) => {
                         info!("ws: room created {} by {}", code, current_nick);
                         let _ = out_tx.send(ServerMsg::Created { room: code });
@@ -218,12 +244,12 @@ async fn handle_socket(socket: WebSocket, manager: Arc<RoomManager>) {
                                     }
                                     RoomBroadcast::Joined { participant_id, count, .. } => {
                                         let _ = out_tx2.send(ServerMsg::System {
-                                            text: format!("{}... joined ({})", hex::encode(&participant_id[..4]), count),
+                                            text: format!("{}... joined ({})", id_prefix(&participant_id), count),
                                         });
                                     }
                                     RoomBroadcast::Left { participant_id, count } => {
                                         let _ = out_tx2.send(ServerMsg::Left {
-                                            nick: format!("{}...", hex::encode(&participant_id[..4])),
+                                            nick: format!("{}...", id_prefix(&participant_id)),
                                             count,
                                         });
                                     }
@@ -297,6 +323,10 @@ async fn handle_socket(socket: WebSocket, manager: Arc<RoomManager>) {
     if let Some(ref room) = current_room {
         let _ = manager.leave_room(room, participant_id).await;
     }
+    manager
+        .metrics
+        .ws_connections_active
+        .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
 
     write_task.abort();
 }

@@ -207,7 +207,7 @@ fn hand_strength(hole: &[u8; 2], community: &[u8; 5]) -> u32 {
 #[command(name = "poker", about = "heads-up poker with frostito escrow")]
 struct Args {
     /// relay server address
-    #[arg(long, default_value = "https://relay.zk.bot")]
+    #[arg(long, default_value = "https://zcash.rotko.net")]
     relay: String,
 
     #[command(subcommand)]
@@ -357,11 +357,12 @@ async fn host_game(
 
     // wait for opponent
     let mut opponent_joined = false;
-    while let Some(Ok(event)) = stream.next().await {
+    while let Some(item) = stream.next().await {
+        let event = item.map_err(|e| format!("relay stream error: {e}"))?;
         if let Some(proto::room_event::Event::Joined(j)) = event.event {
             if j.participant_id != my_id {
                 opponent_joined = true;
-                println!("opponent joined! ({}...)\n", hex::encode(&j.participant_id[..4]));
+                println!("opponent joined! ({}...)\n", hex::encode(j.participant_id.get(..4).unwrap_or(&j.participant_id)));
                 break;
             }
         }
@@ -409,7 +410,8 @@ async fn host_game(
 
     // wait for opponent action
     println!("waiting for opponent action...");
-    while let Some(Ok(event)) = stream.next().await {
+    while let Some(item) = stream.next().await {
+        let event = item.map_err(|e| format!("relay stream error: {e}"))?;
         if let Some(proto::room_event::Event::Message(m)) = event.event {
             if m.sender_id != my_id {
                 if let Some(Msg::Action { action: ref a, .. }) = decode_msg(&m.payload) {
@@ -507,7 +509,8 @@ async fn join_game(
 
     println!("waiting for host...");
 
-    while let Some(Ok(event)) = stream.next().await {
+    while let Some(item) = stream.next().await {
+        let event = item.map_err(|e| format!("relay stream error: {e}"))?;
         match event.event {
             Some(proto::room_event::Event::Message(m)) => {
                 if m.sender_id == my_id { continue; }
@@ -578,8 +581,14 @@ async fn join_game(
             }
             Some(proto::room_event::Event::Joined(j)) => {
                 if j.participant_id != my_id {
-                    println!("host connected ({}...)", hex::encode(&j.participant_id[..4]));
+                    println!("host connected ({}...)", hex::encode(j.participant_id.get(..4).unwrap_or(&j.participant_id)));
                 }
+            }
+            Some(proto::room_event::Event::Left(l)) => {
+                println!(
+                    "participant left ({}...)",
+                    hex::encode(l.participant_id.get(..4).unwrap_or(&l.participant_id))
+                );
             }
             Some(proto::room_event::Event::Closed(c)) => {
                 println!("room closed: {}", c.reason);
