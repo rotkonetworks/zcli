@@ -123,9 +123,13 @@ pub fn load_ed25519_seed(path: &str) -> Result<[u8; 32], Error> {
     Ok(seed)
 }
 
-/// load wallet seed from ed25519 ssh private key
+/// load wallet seed from ed25519 ssh private key — LEGACY derivation.
 ///
 /// derivation: BLAKE2b-512("ZcliWalletSeed" || ed25519_seed_32bytes)
+///
+/// Kept only for wallets created before the mnemonic-canonical path
+/// existed (marker `legacy-ssh`); `zcli init migrate` sweeps funds off it.
+/// The seed this produces has no corresponding recovery phrase.
 #[cfg(feature = "cli")]
 pub fn load_ssh_seed(path: &str) -> Result<WalletSeed, Error> {
     let (seed32, _) = parse_ssh_ed25519(path)?;
@@ -138,6 +142,103 @@ pub fn load_ssh_seed(path: &str) -> Result<WalletSeed, Error> {
     let mut bytes = [0u8; 64];
     bytes.copy_from_slice(&hash);
     Ok(WalletSeed { bytes })
+}
+
+/// derive the deterministic 24-word BIP-39 mnemonic backing an ssh-key wallet.
+///
+/// entropy = BLAKE2b-256("ZcliWalletMnemonic-v1" || ed25519_seed_32bytes)
+///
+/// This is the pure core — same ed25519 seed always yields the same phrase.
+/// The phrase is a full-strength standard mnemonic: it can be imported into
+/// any ZIP-339 wallet (or zigner) and recovers the wallet without the ssh key.
+pub fn mnemonic_from_ed25519_seed(seed32: &[u8; 32]) -> String {
+    use blake2::digest::consts::U32;
+    type Blake2b256 = blake2::Blake2b<U32>;
+    use blake2::Digest as _;
+
+    let mut hasher = Blake2b256::new();
+    hasher.update(b"ZcliWalletMnemonic-v1");
+    hasher.update(seed32);
+    let entropy: [u8; 32] = hasher.finalize().into();
+
+    bip39::Mnemonic::from_entropy(&entropy)
+        .expect("32 bytes of entropy is always a valid 24-word mnemonic")
+        .to_string()
+}
+
+/// derive the BIP-39 mnemonic backing an ssh-key wallet (see
+/// [`mnemonic_from_ed25519_seed`] for the derivation).
+#[cfg(feature = "cli")]
+pub fn derive_ssh_mnemonic(path: &str) -> Result<String, Error> {
+    let (seed32, _) = parse_ssh_ed25519(path)?;
+    Ok(mnemonic_from_ed25519_seed(&seed32))
+}
+
+/// load wallet seed from an ssh key via the mnemonic-canonical path:
+/// ssh ed25519 seed → deterministic 24-word mnemonic → bip39 seed.
+///
+/// Identical to `load_mnemonic_seed(derive_ssh_mnemonic(path))`, so the
+/// wallet is fully recoverable from the phrase alone.
+#[cfg(feature = "cli")]
+pub fn load_ssh_mnemonic_seed(path: &str) -> Result<WalletSeed, Error> {
+    let phrase = derive_ssh_mnemonic(path)?;
+    load_mnemonic_seed(&phrase)
+}
+
+/// which seed derivation an ssh-key wallet uses
+#[cfg(feature = "cli")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SshDerivation {
+    /// pre-mnemonic wallets: BLAKE2b-512("ZcliWalletSeed" || ed25519_seed)
+    Legacy,
+    /// mnemonic-canonical: ssh → 24-word phrase → bip39 seed
+    MnemonicV1,
+}
+
+/// Resolve which derivation to use for an ssh-key wallet, persisting the
+/// decision in a marker file so it never silently changes:
+/// - marker present → use it
+/// - no marker, wallet db already exists → it predates the mnemonic path →
+///   `legacy-ssh` (funds stay visible; `zcli init migrate` moves them)
+/// - no marker, no wallet db → fresh setup → `mnemonic-v1`
+#[cfg(feature = "cli")]
+pub fn resolve_ssh_derivation(
+    marker_path: &str,
+    wallet_db_path: &str,
+) -> Result<SshDerivation, Error> {
+    if let Ok(contents) = std::fs::read_to_string(marker_path) {
+        return match contents.trim() {
+            "legacy-ssh" => Ok(SshDerivation::Legacy),
+            "mnemonic-v1" => Ok(SshDerivation::MnemonicV1),
+            other => Err(Error::Key(format!(
+                "unknown seed derivation marker {:?} in {}",
+                other, marker_path
+            ))),
+        };
+    }
+
+    let derivation = if std::path::Path::new(wallet_db_path).exists() {
+        SshDerivation::Legacy
+    } else {
+        SshDerivation::MnemonicV1
+    };
+    write_ssh_derivation(marker_path, derivation)?;
+    Ok(derivation)
+}
+
+/// persist the ssh-wallet derivation marker
+#[cfg(feature = "cli")]
+pub fn write_ssh_derivation(marker_path: &str, derivation: SshDerivation) -> Result<(), Error> {
+    let value = match derivation {
+        SshDerivation::Legacy => "legacy-ssh",
+        SshDerivation::MnemonicV1 => "mnemonic-v1",
+    };
+    if let Some(parent) = std::path::Path::new(marker_path).parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| Error::Key(format!("cannot create {}: {}", parent.display(), e)))?;
+    }
+    std::fs::write(marker_path, value)
+        .map_err(|e| Error::Key(format!("cannot write {}: {}", marker_path, e)))
 }
 
 /// load raw ed25519 keypair from ssh key (for QUIC cert generation)
@@ -230,5 +331,74 @@ mod tests {
         let mnemonic = bip39::Mnemonic::parse(phrase).unwrap();
         let expected = mnemonic.to_seed("");
         assert_eq!(seed.as_bytes(), &expected);
+    }
+
+    /// same ed25519 seed always yields the same 24-word phrase, different
+    /// seeds yield different phrases, and the phrase is a valid mnemonic
+    /// accepted by the normal loading path.
+    #[test]
+    fn ssh_mnemonic_deterministic_and_valid() {
+        let a = mnemonic_from_ed25519_seed(&[0x42u8; 32]);
+        let b = mnemonic_from_ed25519_seed(&[0x42u8; 32]);
+        let c = mnemonic_from_ed25519_seed(&[0x43u8; 32]);
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+        assert_eq!(a.split_whitespace().count(), 24);
+        load_mnemonic_seed(&a).expect("derived phrase must be a valid 24-word mnemonic");
+    }
+
+    /// the mnemonic path must NOT collide with the legacy direct derivation —
+    /// they are different wallets by design (domain separation).
+    #[cfg(feature = "cli")]
+    #[test]
+    fn ssh_mnemonic_seed_differs_from_legacy() {
+        use blake2::Digest as _;
+        let ed_seed = [0x42u8; 32];
+
+        // legacy: BLAKE2b-512("ZcliWalletSeed" || seed)
+        let mut hasher = Blake2b512::new();
+        hasher.update(b"ZcliWalletSeed");
+        hasher.update(ed_seed);
+        let legacy: [u8; 64] = hasher.finalize().into();
+
+        let mnemonic_seed = load_mnemonic_seed(&mnemonic_from_ed25519_seed(&ed_seed)).unwrap();
+        assert_ne!(&legacy, mnemonic_seed.as_bytes());
+    }
+
+    /// marker resolution: existing wallet db without a marker resolves to
+    /// legacy (and persists that), fresh setup resolves to mnemonic-v1, and
+    /// an existing marker always wins.
+    #[cfg(feature = "cli")]
+    #[test]
+    fn ssh_derivation_marker_resolution() {
+        let dir = std::env::temp_dir().join(format!("zcli-marker-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let marker = dir.join("seed_derivation");
+        let marker = marker.to_str().unwrap();
+        let wallet_db = dir.join("wallet");
+        let wallet_db_str = wallet_db.to_str().unwrap();
+
+        // fresh: no wallet db, no marker → mnemonic-v1, marker written
+        let d = resolve_ssh_derivation(marker, wallet_db_str).unwrap();
+        assert_eq!(d, SshDerivation::MnemonicV1);
+        assert_eq!(std::fs::read_to_string(marker).unwrap().trim(), "mnemonic-v1");
+
+        // marker wins even if a wallet db appears later
+        std::fs::create_dir_all(&wallet_db).unwrap();
+        let d = resolve_ssh_derivation(marker, wallet_db_str).unwrap();
+        assert_eq!(d, SshDerivation::MnemonicV1);
+
+        // no marker + existing wallet db → legacy, marker written
+        std::fs::remove_file(marker).unwrap();
+        let d = resolve_ssh_derivation(marker, wallet_db_str).unwrap();
+        assert_eq!(d, SshDerivation::Legacy);
+        assert_eq!(std::fs::read_to_string(marker).unwrap().trim(), "legacy-ssh");
+
+        // garbage marker is an error, not a silent fallback
+        std::fs::write(marker, "wat").unwrap();
+        assert!(resolve_ssh_derivation(marker, wallet_db_str).is_err());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

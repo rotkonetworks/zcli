@@ -633,7 +633,7 @@ pub fn build_pczt_and_qr(
         .build_for_pczt(&mut rng)
         .map_err(|e| Error::Transaction(format!("build_for_pczt: {:?}", e)))?;
 
-    let branch_id: u32 = 0x4DEC4DF0; // NU6.1
+    let branch_id: u32 = 0x5437F330; // NU6.2
     let expiry_height = anchor_height.saturating_add(100);
 
     let t_output_scripts: Vec<(Vec<u8>, u64)> = t_outputs

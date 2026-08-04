@@ -149,6 +149,14 @@ pub const ORCHARD_ACTIVATION_HEIGHT: u32 = 1_687_104;
 /// orchard activation height (testnet)
 pub const ORCHARD_ACTIVATION_HEIGHT_TESTNET: u32 = 1_842_420;
 
+/// ironwood pool activation height (NU6.3, mainnet). Ironwood reuses orchard
+/// addresses and note encryption; from this height v6 transactions may carry
+/// ironwood bundles and orchard receivers can be paid ironwood notes.
+pub const IRONWOOD_ACTIVATION_HEIGHT: u32 = 3_428_143;
+
+/// ironwood pool activation height (testnet)
+pub const IRONWOOD_ACTIVATION_HEIGHT_TESTNET: u32 = 4_134_000;
+
 /// orchard activation block hash (mainnet, LE internal order)
 pub const ACTIVATION_HASH_MAINNET: [u8; 32] = [
     0x00, 0x00, 0x00, 0x00, 0x00, 0xd7, 0x23, 0x15, 0x6d, 0x9b, 0x65, 0xff, 0xcf, 0x49, 0x84, 0xda,

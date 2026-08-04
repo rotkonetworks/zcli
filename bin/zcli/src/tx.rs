@@ -185,7 +185,7 @@ pub fn build_shielding_tx(
 
     // sort utxos by value descending, select enough to cover fee
     let mut selected = utxos.to_vec();
-    selected.sort_by(|a, b| b.value.cmp(&a.value));
+    selected.sort_by_key(|u| std::cmp::Reverse(u.value));
 
     let total_in: u64 = selected.iter().map(|u| u.value).sum();
     if total_in < fee {
@@ -240,7 +240,7 @@ pub fn build_shielding_tx(
 
     // ZIP-244 sighash computation
     let n_inputs = selected.len();
-    let branch_id: u32 = 0x4DEC4DF0; // NU6.1
+    let branch_id: u32 = 0x5437F330; // NU6.2
     let expiry_height = anchor_height.saturating_add(100);
 
     let mut prevout_data = Vec::new();
@@ -512,7 +512,7 @@ pub fn build_orchard_spend_tx(
         .collect::<Result<_, _>>()?;
 
     // ZIP-244 sighash
-    let branch_id: u32 = 0x4DEC4DF0; // NU6.1
+    let branch_id: u32 = 0x5437F330; // NU6.2
     let expiry_height = anchor_height.saturating_add(100);
 
     let header_data = {

@@ -200,31 +200,46 @@ impl EpochManager {
     }
 
     /// background task: generate epoch proof every epoch
-    pub async fn run_background_prover(self: Arc<Self>) {
+    pub async fn run_background_prover(
+        self: Arc<Self>,
+        mut shutdown: tokio::sync::watch::Receiver<bool>,
+    ) {
         info!("starting background epoch proof generator");
 
         loop {
-            // check every 60 seconds for new complete epochs
-            tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
-
-            match self.generate_epoch_proof().await {
-                Ok(_) => {}
-                Err(e) => {
-                    error!("epoch proof generation failed: {}", e);
+            // sleep 60s OR exit on shutdown
+            tokio::select! {
+                _ = tokio::time::sleep(tokio::time::Duration::from_secs(60)) => {}
+                _ = shutdown.changed() => {
+                    info!("epoch proof generator: shutdown received");
+                    return;
                 }
+            }
+
+            if let Err(e) = self.generate_epoch_proof().await {
+                error!("epoch proof generation failed: {}", e);
             }
         }
     }
 
     /// background task: keep tip proof up-to-date (real-time proving)
-    pub async fn run_background_tip_prover(self: Arc<Self>) {
+    pub async fn run_background_tip_prover(
+        self: Arc<Self>,
+        mut shutdown: tokio::sync::watch::Receiver<bool>,
+    ) {
         info!("starting background tip proof generator");
 
         let mut last_proven_height: u32 = 0;
 
         loop {
-            // check every second for new blocks (real-time proving)
-            tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+            // check every second for new blocks OR exit on shutdown
+            tokio::select! {
+                _ = tokio::time::sleep(tokio::time::Duration::from_secs(1)) => {}
+                _ = shutdown.changed() => {
+                    info!("tip proof generator: shutdown received");
+                    return;
+                }
+            }
 
             let current_height = match self.get_current_height().await {
                 Ok(h) => h,
@@ -449,7 +464,10 @@ impl EpochManager {
     }
 
     /// background task: track state roots at epoch boundaries
-    pub async fn run_background_state_tracker(self: Arc<Self>) {
+    pub async fn run_background_state_tracker(
+        self: Arc<Self>,
+        mut shutdown: tokio::sync::watch::Receiver<bool>,
+    ) {
         info!("starting background state root tracker");
 
         let mut last_tracked_height = self.start_height;
@@ -471,8 +489,14 @@ impl EpochManager {
                 }
             }
 
-            // check every 10 minutes
-            tokio::time::sleep(tokio::time::Duration::from_secs(600)).await;
+            // check every 10 minutes OR exit on shutdown
+            tokio::select! {
+                _ = tokio::time::sleep(tokio::time::Duration::from_secs(600)) => {}
+                _ = shutdown.changed() => {
+                    info!("state root tracker: shutdown received");
+                    return;
+                }
+            }
         }
     }
 
@@ -632,16 +656,11 @@ fn hex_to_bytes32(hex: &str) -> Result<[u8; 32]> {
     Ok(result)
 }
 
-/// parse tree root from zebrad hex-encoded final state
+/// Parse the canonical orchard tree root from zebrad's hex-encoded frontier.
+/// This is the value the proof's `tip_tree_root` commits to and what
+/// `SignAnchor` signs — must match the anchor consensus-built txs reference.
 fn parse_tree_root(final_state: &str) -> [u8; 32] {
-    use sha2::{Digest, Sha256};
-
-    // zebrad returns a hex-encoded frontier, we hash it to get a 32-byte root
-    // (in production, properly parse the Orchard Frontier)
-    let mut hasher = Sha256::new();
-    hasher.update(b"ZIDECAR_TREE_ROOT");
-    hasher.update(final_state.as_bytes());
-    hasher.finalize().into()
+    crate::orchard_tree::parse_orchard_tree_root(final_state)
 }
 
 /// Nullifier extracted from a shielded spend
@@ -656,24 +675,35 @@ pub struct ExtractedNullifier {
 pub enum NullifierPool {
     Sapling,
     Orchard,
+    Ironwood,
 }
 
 impl EpochManager {
-    /// Extract all nullifiers from a block.
-    /// Uses verbosity=1 (txid list) + per-tx fetch to avoid zebrad response size limits
-    /// on blocks with many shielded transactions.
-    pub async fn extract_nullifiers_from_block(
+    /// Extract nullifiers, orchard cmxs, and orchard action triples from a block.
+    /// Uses verbosity=2 to get the full block + all transactions in a single
+    /// zebrad RPC, avoiding the N×getrawtransaction fan-out which dominates
+    /// sync time on dense blocks.
+    ///
+    /// The action triples (cmx, nullifier, ephemeral_key) feed
+    /// `compute_actions_root` so the actions_commitment becomes deterministic
+    /// from server state rather than path-dependent on which blocks have been
+    /// queried via GetCompactBlocks.
+    pub async fn extract_block_state(
         &self,
         height: u32,
-    ) -> Result<Vec<ExtractedNullifier>> {
+    ) -> Result<(
+        Vec<ExtractedNullifier>,
+        Vec<[u8; 32]>,
+        Vec<([u8; 32], [u8; 32], [u8; 32])>,
+    )> {
         let hash = self.zebrad.get_block_hash(height).await?;
-        let block = self.zebrad.get_block(&hash, 1).await?;
+        let block = self.zebrad.get_block_verbose(&hash).await?;
 
         let mut nullifiers = Vec::new();
+        let mut cmxs = Vec::new();
+        let mut action_triples = Vec::new();
 
-        for txid in &block.tx {
-            let tx = self.zebrad.get_raw_transaction(txid).await?;
-
+        for tx in &block.tx {
             if let Some(ref spends) = tx.sapling_spends {
                 for spend in spends {
                     if let Some(nf) = spend.nullifier_bytes() {
@@ -687,25 +717,69 @@ impl EpochManager {
 
             if let Some(ref orchard) = tx.orchard {
                 for action in &orchard.actions {
-                    if let Some(nf) = action.nullifier_bytes() {
+                    let nf = action.nullifier_bytes();
+                    let cmx = action.cmx_bytes();
+                    let epk: Option<[u8; 32]> = hex::decode(&action.ephemeral_key)
+                        .ok()
+                        .and_then(|b| b.try_into().ok());
+
+                    if let Some(nf) = nf {
                         nullifiers.push(ExtractedNullifier {
                             nullifier: nf,
                             pool: NullifierPool::Orchard,
                         });
                     }
+                    if let Some(cmx) = cmx {
+                        cmxs.push(cmx);
+                    }
+                    if let (Some(cmx), Some(nf), Some(epk)) = (cmx, nf, epk) {
+                        action_triples.push((cmx, nf, epk));
+                    }
+                }
+            }
+
+            // Ironwood (NU6.3+, v6 txs): nullifiers and cmxs go into the same
+            // NOMT indexes as Orchard so GetNullifierProof / GetCommitmentProof
+            // cover Ironwood notes — the NOMT is existence-keyed, matching how
+            // Sapling and Orchard nullifiers already share one set. Ironwood
+            // actions are deliberately NOT added to `action_triples`: the
+            // actions_root chain feeding the ligerito proofs is Orchard-scoped,
+            // and widening it would invalidate historical commitments.
+            if let Some(ref ironwood) = tx.ironwood {
+                for action in &ironwood.actions {
+                    if let Some(nf) = action.nullifier_bytes() {
+                        nullifiers.push(ExtractedNullifier {
+                            nullifier: nf,
+                            pool: NullifierPool::Ironwood,
+                        });
+                    }
+                    if let Some(cmx) = action.cmx_bytes() {
+                        cmxs.push(cmx);
+                    }
                 }
             }
         }
 
+        Ok((nullifiers, cmxs, action_triples))
+    }
+
+    /// Backwards-compatible wrapper — returns only nullifiers.
+    pub async fn extract_nullifiers_from_block(
+        &self,
+        height: u32,
+    ) -> Result<Vec<ExtractedNullifier>> {
+        let (nullifiers, _, _) = self.extract_block_state(height).await?;
         Ok(nullifiers)
     }
 
-    /// Sync nullifiers from a range of blocks into nomt
+    /// Sync nullifiers, orchard commitments, and per-block actions_root from a
+    /// range of blocks into nomt + sled.
     pub async fn sync_nullifiers(&self, from_height: u32, to_height: u32) -> Result<u32> {
         let mut total_nullifiers = 0u32;
+        let mut total_cmxs = 0u32;
 
         for height in from_height..=to_height {
-            let nullifiers = self.extract_nullifiers_from_block(height).await?;
+            let (nullifiers, cmxs, action_triples) = self.extract_block_state(height).await?;
 
             if !nullifiers.is_empty() {
                 let nf_bytes: Vec<[u8; 32]> = nullifiers.iter().map(|n| n.nullifier).collect();
@@ -713,14 +787,27 @@ impl EpochManager {
                 total_nullifiers += nullifiers.len() as u32;
             }
 
-            // Update sync progress
+            if !cmxs.is_empty() {
+                self.storage.batch_insert_commitments(&cmxs, height)?;
+                total_cmxs += cmxs.len() as u32;
+            }
+
+            // Always store actions_root (even for blocks with no orchard actions —
+            // compute_actions_root over an empty slice gives a well-defined root,
+            // and writing it makes the actions_commitment deterministic over the
+            // full height range instead of relying on lazy population by
+            // GetCompactBlocks.
+            let actions_root = zync_core::actions::compute_actions_root(&action_triples);
+            self.storage.store_actions_root(height, actions_root)?;
+
+            // Update sync progress (covers nullifiers, commitments, and actions_root)
             self.storage.set_nullifier_sync_height(height)?;
 
             // Log progress every 1000 blocks
             if height % 1000 == 0 {
                 info!(
-                    "nullifier sync progress: height {}/{} ({} nullifiers so far)",
-                    height, to_height, total_nullifiers
+                    "state sync progress: height {}/{} ({} nullifiers, {} commitments so far)",
+                    height, to_height, total_nullifiers, total_cmxs
                 );
             }
         }
@@ -728,8 +815,16 @@ impl EpochManager {
         Ok(total_nullifiers)
     }
 
-    /// Background task: sync nullifiers incrementally
-    pub async fn run_background_nullifier_sync(self: Arc<Self>) {
+    /// Background task: sync nullifiers incrementally.
+    ///
+    /// Cancellation is checked only between batches — once a batch starts
+    /// (~100 blocks), it runs to completion so NOMT commits stay aligned
+    /// with sled's progress marker. An in-flight batch is at most ~5-10s of
+    /// extra work after the shutdown signal.
+    pub async fn run_background_nullifier_sync(
+        self: Arc<Self>,
+        mut shutdown: tokio::sync::watch::Receiver<bool>,
+    ) {
         info!("starting background nullifier sync");
 
         // Get current sync progress
@@ -742,12 +837,21 @@ impl EpochManager {
         info!("nullifier sync starting from height {}", last_synced + 1);
 
         loop {
+            // Check for shutdown between batches.
+            if *shutdown.borrow() {
+                info!("nullifier sync: shutdown received, last_synced={}", last_synced);
+                return;
+            }
+
             // Get current chain height
             let current_height = match self.get_current_height().await {
                 Ok(h) => h,
                 Err(e) => {
                     warn!("failed to get current height for nullifier sync: {}", e);
-                    tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+                    tokio::select! {
+                        _ = tokio::time::sleep(tokio::time::Duration::from_secs(10)) => {}
+                        _ = shutdown.changed() => return,
+                    }
                     continue;
                 }
             };
@@ -771,14 +875,23 @@ impl EpochManager {
                     }
                     Err(e) => {
                         error!("nullifier sync failed at height {}: {}", last_synced + 1, e);
-                        tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+                        tokio::select! {
+                            _ = tokio::time::sleep(tokio::time::Duration::from_secs(10)) => {}
+                            _ = shutdown.changed() => return,
+                        }
                         continue;
                     }
                 }
             }
 
-            // Check every 5 seconds for new blocks
-            tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+            // Check every 5 seconds for new blocks OR exit on shutdown
+            tokio::select! {
+                _ = tokio::time::sleep(tokio::time::Duration::from_secs(5)) => {}
+                _ = shutdown.changed() => {
+                    info!("nullifier sync: shutdown received");
+                    return;
+                }
+            }
         }
     }
 

@@ -70,18 +70,9 @@ impl ZidecarService {
                         let proto_block = ProtoCompactBlock {
                             height: block.height,
                             hash: block.hash,
-                            actions: block
-                                .actions
-                                .into_iter()
-                                .map(|a| ProtoCompactAction {
-                                    cmx: a.cmx,
-                                    ephemeral_key: a.ephemeral_key,
-                                    ciphertext: a.ciphertext,
-                                    nullifier: a.nullifier,
-                                    txid: a.txid,
-                                })
-                                .collect(),
+                            actions: to_proto_actions(block.actions),
                             actions_root: actions_root.to_vec(),
+                            ironwood_actions: to_proto_actions(block.ironwood_actions),
                         };
 
                         if tx.send(Ok(proto_block)).await.is_err() {
@@ -130,21 +121,12 @@ impl ZidecarService {
                         let verified_block = VerifiedBlock {
                             height: block.height,
                             hash: block.hash,
-                            actions: block
-                                .actions
-                                .into_iter()
-                                .map(|a| ProtoCompactAction {
-                                    cmx: a.cmx,
-                                    ephemeral_key: a.ephemeral_key,
-                                    ciphertext: a.ciphertext,
-                                    nullifier: a.nullifier,
-                                    txid: a.txid,
-                                })
-                                .collect(),
+                            actions: to_proto_actions(block.actions),
                             actions_root: actions_root.to_vec(),
                             merkle_path: vec![],
                             tree_root_after: tree_root_after.to_vec(),
                             nullifier_root_after: nullifier_root_after.to_vec(),
+                            ironwood_actions: to_proto_actions(block.ironwood_actions),
                         };
 
                         if tx.send(Ok(verified_block)).await.is_err() {
@@ -338,6 +320,10 @@ impl ZidecarService {
                     time: state.time,
                     sapling_tree: state.sapling.commitments.final_state,
                     orchard_tree: state.orchard.commitments.final_state,
+                    ironwood_tree: state
+                        .ironwood
+                        .map(|t| t.commitments.final_state)
+                        .unwrap_or_default(),
                 }))
             }
             Err(e) => {
@@ -440,18 +426,9 @@ impl ZidecarService {
                 let proto = ProtoCompactBlock {
                     height: 0,
                     hash: block.hash,
-                    actions: block
-                        .actions
-                        .into_iter()
-                        .map(|a| ProtoCompactAction {
-                            cmx: a.cmx,
-                            ephemeral_key: a.ephemeral_key,
-                            ciphertext: a.ciphertext,
-                            nullifier: a.nullifier,
-                            txid: a.txid,
-                        })
-                        .collect(),
+                    actions: to_proto_actions(block.actions),
                     actions_root: vec![],
+                    ironwood_actions: to_proto_actions(block.ironwood_actions),
                 };
                 if tx.send(Ok(proto)).await.is_err() {
                     break;
@@ -517,6 +494,21 @@ async fn fetch_or_cached_mempool(
         });
     }
     Ok(blocks)
+}
+
+/// Convert internal compact actions to proto form (Orchard or Ironwood —
+/// both pools share the same action shape).
+fn to_proto_actions(actions: Vec<crate::compact::CompactAction>) -> Vec<ProtoCompactAction> {
+    actions
+        .into_iter()
+        .map(|a| ProtoCompactAction {
+            cmx: a.cmx,
+            ephemeral_key: a.ephemeral_key,
+            ciphertext: a.ciphertext,
+            nullifier: a.nullifier,
+            txid: a.txid,
+        })
+        .collect()
 }
 
 fn compute_actions_root(actions: &[crate::compact::CompactAction]) -> [u8; 32] {

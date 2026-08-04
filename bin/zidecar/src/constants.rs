@@ -25,6 +25,12 @@ pub const ORCHARD_EMPTY_ROOT: [u8; 32] = [
 /// Sapling activation height
 pub const SAPLING_ACTIVATION_HEIGHT: u32 = 419_200;
 
+/// Ironwood pool activation height (NU6.3, mainnet).
+/// From this height, v6 transactions may carry Ironwood bundles and shielded
+/// coinbase routes to Ironwood. Ironwood reuses Orchard addresses and note
+/// encryption, so Orchard receivers can get Ironwood notes without opting in.
+pub const IRONWOOD_ACTIVATION_HEIGHT: u32 = 3_428_143;
+
 /// Sapling empty root
 pub const SAPLING_EMPTY_ROOT: [u8; 32] = [
     0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,

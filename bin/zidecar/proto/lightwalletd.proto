@@ -12,6 +12,8 @@ message CompactTx {
     repeated CompactSaplingSpend spends = 4;
     repeated CompactSaplingOutput outputs = 5;
     repeated CompactOrchardAction actions = 6;
+    // Ironwood reuses the Orchard-shaped action (NU6.3, v6 transactions)
+    repeated CompactOrchardAction ironwoodActions = 9;
 }
 
 message CompactSaplingSpend {
@@ -46,6 +48,7 @@ message CompactBlock {
 message ChainMetadata {
     uint32 saplingCommitmentTreeSize = 1;
     uint32 orchardCommitmentTreeSize = 2;
+    uint32 ironwoodCommitmentTreeSize = 3;
 }
 
 // Block ID message
@@ -124,6 +127,7 @@ message TreeState {
     uint32 time = 4;
     string saplingTree = 5;
     string orchardTree = 6;
+    string ironwoodTree = 7;
 }
 
 // Empty message
@@ -133,6 +137,7 @@ message Empty {}
 enum ShieldedProtocol {
     sapling = 0;
     orchard = 1;
+    ironwood = 2;
 }
 
 // Request for GetSubtreeRoots
@@ -149,6 +154,45 @@ message SubtreeRoot {
     uint64 completingBlockHeight = 4;
 }
 
+message Address {
+    string address = 1;
+}
+
+message AddressList {
+    repeated string addresses = 1;
+}
+
+message Balance {
+    int64 valueZat = 1;
+}
+
+message Duration {
+    int64 intervalUs = 1;
+}
+
+message PingResponse {
+    int64 entry = 1;
+    int64 exit = 2;
+}
+
+// Identifier for a Zcash value pool. Used by GetMempoolTxRequest.pool_types.
+enum PoolType {
+    POOL_TYPE_INVALID = 0;
+    TRANSPARENT = 1;
+    SAPLING = 2;
+    ORCHARD = 3;
+    IRONWOOD = 4;
+}
+
+message GetMempoolTxRequest {
+    // Transaction-ID byte-string suffixes to exclude from the response.
+    repeated bytes excludeTxidSuffixes = 1;
+    // Reserved for a possible future excludeTxidPrefixes field.
+    reserved 2;
+    // If empty, defaults to [SAPLING, ORCHARD] (canonical lwd behavior).
+    repeated PoolType poolTypes = 3;
+}
+
 // Lightwalletd service definition
 service CompactTxStreamer {
     // Get latest block
@@ -157,8 +201,15 @@ service CompactTxStreamer {
     // Get block by ID
     rpc GetBlock(BlockID) returns (CompactBlock);
 
+    // Get block by ID, returning only the nullifier-bearing portions of each tx.
+    rpc GetBlockNullifiers(BlockID) returns (CompactBlock);
+
     // Get block range (streaming)
     rpc GetBlockRange(BlockRange) returns (stream CompactBlock);
+
+    // Get block range (streaming), nullifier-only — same shape as GetBlockRange
+    // but each CompactTx only carries the spend nullifiers (no outputs/cmx).
+    rpc GetBlockRangeNullifiers(BlockRange) returns (stream CompactBlock);
 
     // Get transaction by txid
     rpc GetTransaction(TxFilter) returns (RawTransaction);
@@ -166,8 +217,30 @@ service CompactTxStreamer {
     // Send raw transaction
     rpc SendTransaction(RawTransaction) returns (SendResponse);
 
+    // Stream historic transparent-address txids in a height range
+    rpc GetTaddressTxids(TransparentAddressBlockFilter) returns (stream RawTransaction);
+
+    // Like GetTaddressTxids but emits the full RawTransaction.data per tx.
+    rpc GetTaddressTransactions(TransparentAddressBlockFilter) returns (stream RawTransaction);
+
+    // Total balance for a list of transparent addresses
+    rpc GetTaddressBalance(AddressList) returns (Balance);
+
+    // Client-streaming variant: same semantics as GetTaddressBalance but the
+    // address list is delivered as a stream from the client.
+    rpc GetTaddressBalanceStream(stream Address) returns (Balance);
+
+    // Long-poll stream of mempool transactions; terminates when chain tip moves.
+    rpc GetMempoolStream(Empty) returns (stream RawTransaction);
+
+    // Mempool snapshot in CompactTx form, filtered by exclude-suffix + pool type.
+    rpc GetMempoolTx(GetMempoolTxRequest) returns (stream CompactTx);
+
     // Get tree state at height
     rpc GetTreeState(BlockID) returns (TreeState);
+
+    // Tree state at the current chain tip
+    rpc GetLatestTreeState(Empty) returns (TreeState);
 
     // Get address UTXOs
     rpc GetAddressUtxos(GetAddressUtxosArg) returns (GetAddressUtxosReplyList);
@@ -180,6 +253,9 @@ service CompactTxStreamer {
 
     // Get subtree roots for efficient syncing
     rpc GetSubtreeRoots(GetSubtreeRootsArg) returns (stream SubtreeRoot);
+
+    // Liveness probe; sleeps intervalUs then returns concurrency counters.
+    rpc Ping(Duration) returns (PingResponse);
 }
 
 // Chain specification

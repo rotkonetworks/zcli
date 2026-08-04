@@ -668,13 +668,11 @@ fn update_state_commitment(
     result
 }
 
-/// parse tree root from zebrad hex-encoded final state (returns raw bytes)
+/// Parse the canonical orchard tree root from zebrad's hex-encoded frontier.
+/// Wrapper around the shared parser; matches `epoch::parse_tree_root` so the
+/// fallback path here writes the same value as the cached one in sled.
 fn parse_tree_root_bytes(final_state: &str) -> [u8; 32] {
-    use sha2::{Digest as Sha2Digest, Sha256};
-    let mut hasher = Sha256::new();
-    hasher.update(b"ZIDECAR_TREE_ROOT");
-    hasher.update(final_state.as_bytes());
-    hasher.finalize().into()
+    crate::orchard_tree::parse_orchard_tree_root(final_state)
 }
 
 /// convert nBits (compact difficulty target) to difficulty value

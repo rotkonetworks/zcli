@@ -32,6 +32,20 @@ impl Service<ZebradRequest> for ZebradInner {
     type Error = ZidecarError;
     type Future = Pin<Box<dyn Future<Output = std::result::Result<Value, ZidecarError>> + Send>>;
 
+    /// Always ready — `reqwest::Client` has no `poll_ready` signal to
+    /// propagate, and each `call` is independent (no shared connection-pool
+    /// permits exposed by reqwest 0.11). Real backpressure on this stack
+    /// comes from the outer `Buffer` wrapping `Retry<Self>` in
+    /// `ZebradClient::new`: the Buffer's bounded mpsc returns `Pending` from
+    /// its own `poll_ready` once the queue saturates, which is what every
+    /// tonic handler sees when it does `service.clone().ready().await`. The
+    /// gRPC `ConcurrencyLimitLayer` on the server side caps the upstream
+    /// fan-out further so the Buffer queue is rarely the bottleneck in
+    /// practice. Documented after the Zaino-vs-zidecar architecture review
+    /// flagged this as a design-smell to address — keeping the always-Ready
+    /// behavior is the right call given the layers above; moving real
+    /// backpressure here would require linking `zebra-state` directly,
+    /// which only Zaino does (and only when co-located with zebrad).
     fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<std::result::Result<(), Self::Error>> {
         Poll::Ready(Ok(()))
     }
@@ -78,14 +92,22 @@ struct ZebradRetryPolicy {
     max_retries: usize,
 }
 
+/// Non-idempotent JSON-RPC methods that MUST NOT be retried — replaying these
+/// would re-submit transactions or otherwise duplicate state-mutating effects
+/// on the upstream node.
+const NON_IDEMPOTENT_METHODS: &[&str] = &["sendrawtransaction", "submitblock"];
+
 impl retry::Policy<ZebradRequest, Value, ZidecarError> for ZebradRetryPolicy {
     type Future = Pin<Box<dyn Future<Output = Self> + Send>>;
 
     fn retry(
         &self,
-        _req: &ZebradRequest,
+        req: &ZebradRequest,
         result: std::result::Result<&Value, &ZidecarError>,
     ) -> Option<Self::Future> {
+        if NON_IDEMPOTENT_METHODS.contains(&req.method.as_str()) {
+            return None;
+        }
         match result {
             Ok(_) => None,
             Err(err) if err.is_transient() && self.max_retries > 0 => {
@@ -171,6 +193,20 @@ impl ZebradClient {
         serde_json::from_value(result).map_err(|e| ZidecarError::ZebradRpc(e.to_string()))
     }
 
+    /// Verbose block (getblock <hash> 2): full transaction objects including
+    /// sapling spend / orchard action detail. Restored after a staging merge
+    /// dropped it while epoch.rs still depends on it for nullifier extraction.
+    pub async fn get_block_verbose(&self, hash: &str) -> Result<BlockVerbose> {
+        let result = self.call("getblock", vec![json!(hash), json!(2)]).await?;
+        serde_json::from_value(result).map_err(|e| ZidecarError::ZebradRpc(e.to_string()))
+    }
+
+    /// Raw block hex (getblock <hash> 0); used to extract canonical header bytes.
+    pub async fn get_block_raw(&self, hash: &str) -> Result<String> {
+        let result = self.call("getblock", vec![json!(hash), json!(0)]).await?;
+        serde_json::from_value(result).map_err(|e| ZidecarError::ZebradRpc(e.to_string()))
+    }
+
     pub async fn get_block_header(&self, hash: &str) -> Result<BlockHeader> {
         let block = self.get_block(hash, 1).await?;
         Ok(BlockHeader {
@@ -236,6 +272,14 @@ impl ZebradClient {
     /// get raw mempool transaction IDs
     pub async fn get_raw_mempool(&self) -> Result<Vec<String>> {
         let result = self.call("getrawmempool", vec![]).await?;
+        serde_json::from_value(result).map_err(|e| ZidecarError::ZebradRpc(e.to_string()))
+    }
+
+    /// aggregate balance and received total for a list of transparent addresses
+    pub async fn get_address_balance(&self, addresses: &[String]) -> Result<AddressBalance> {
+        let result = self
+            .call("getaddressbalance", vec![json!({"addresses": addresses})])
+            .await?;
         serde_json::from_value(result).map_err(|e| ZidecarError::ZebradRpc(e.to_string()))
     }
 
@@ -309,6 +353,15 @@ pub struct Block {
     pub tx: Vec<String>,
 }
 
+/// Block fetched with verbosity=2 — transactions inlined as full objects
+/// so we avoid one getrawtransaction RPC per tx.
+#[derive(Debug, Deserialize)]
+pub struct BlockVerbose {
+    pub hash: String,
+    pub height: u32,
+    pub tx: Vec<RawTransaction>,
+}
+
 /// Sapling shielded spend
 #[derive(Debug, Deserialize, Clone)]
 pub struct SaplingSpend {
@@ -361,8 +414,29 @@ pub struct RawTransaction {
     pub height: Option<u32>,
     #[serde(default, rename = "vShieldedSpend")]
     pub sapling_spends: Option<Vec<SaplingSpend>>,
+    #[serde(default, rename = "vShieldedOutput")]
+    pub sapling_outputs: Option<Vec<SaplingOutput>>,
     #[serde(default)]
     pub orchard: Option<OrchardData>,
+    /// Ironwood bundle (v6 transactions, NU6.3+). Zebra reuses the
+    /// Orchard-shaped JSON object for it, so the same struct deserializes both.
+    #[serde(default)]
+    pub ironwood: Option<OrchardData>,
+}
+
+/// Sapling shielded output (vShieldedOutput entry)
+#[derive(Debug, Deserialize, Clone)]
+pub struct SaplingOutput {
+    pub cv: String,
+    pub cmu: String,
+    #[serde(rename = "ephemeralKey")]
+    pub ephemeral_key: String,
+    #[serde(rename = "encCiphertext")]
+    pub enc_ciphertext: String,
+    #[serde(rename = "outCiphertext")]
+    pub out_ciphertext: String,
+    #[serde(default, rename = "proof")]
+    pub zkproof: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -407,6 +481,9 @@ pub struct TreeState {
     pub time: u64,
     pub sapling: TreeCommitment,
     pub orchard: TreeCommitment,
+    /// Ironwood commitment tree (zebrad 6.0+, populated from NU6.3 activation).
+    #[serde(default)]
+    pub ironwood: Option<TreeCommitment>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -433,6 +510,14 @@ pub struct AddressUtxo {
     pub script: String,
     pub satoshis: u64,
     pub height: u32,
+}
+
+/// aggregate balance from getaddressbalance
+#[derive(Debug, Deserialize)]
+pub struct AddressBalance {
+    pub balance: i64,
+    #[serde(default)]
+    pub received: u64,
 }
 
 /// response from z_getsubtreesbyindex

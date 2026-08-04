@@ -1,0 +1,27 @@
+# single-merchant deployment
+# caddy handles TLS automatically via Let's Encrypt
+#
+# replace shop.example.com with your domain
+# or use :8443 for local testing
+
+{$SHOP_DOMAIN:localhost:8443} {
+	root * /srv/shop/static
+	file_server
+
+	# proxy API calls to the shell backend
+	handle /create* {
+		reverse_proxy localhost:8080
+	}
+
+	# requests.json served directly from zcli watch --dir output
+	handle /requests.json {
+		root * /srv/shop/data
+		file_server
+	}
+
+	header {
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy no-referrer
+	}
+}

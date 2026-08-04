@@ -163,6 +163,9 @@ message CompactBlock {
     bytes hash = 2;
     repeated CompactAction actions = 3;
     bytes actions_root = 4;             // precomputed merkle root over actions
+    // Ironwood actions (NU6.3+); same compact shape as Orchard.
+    // Not covered by actions_root (proof chain stays Orchard-scoped for continuity).
+    repeated CompactAction ironwood_actions = 5;
 }
 
 // Compact Orchard action for trial decryption
@@ -237,6 +240,7 @@ message TreeState {
     uint64 time = 3;                   // block timestamp
     string sapling_tree = 4;           // hex-encoded sapling commitment tree
     string orchard_tree = 5;           // hex-encoded orchard commitment tree
+    string ironwood_tree = 6;           // hex-encoded ironwood commitment tree (empty pre-NU6.3)
 }
 
 // Filter for transparent address queries
@@ -399,6 +403,9 @@ message VerifiedBlock {
     // Optional: state after this block
     bytes tree_root_after = 6;      // commitment tree root after block
     bytes nullifier_root_after = 7; // nullifier set root after block
+
+    // Ironwood actions (NU6.3+), not covered by actions_root/merkle_path
+    repeated CompactAction ironwood_actions = 8;
 }
 
 // ===== BATCH QUERY MESSAGES =====

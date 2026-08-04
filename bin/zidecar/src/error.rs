@@ -54,6 +54,13 @@ impl From<ZidecarError> for tonic::Status {
                 tonic::Status::not_found(format!("block not found: {}", h))
             }
             ZidecarError::InvalidRange(msg) => tonic::Status::invalid_argument(msg),
+            // `reqwest::Error::Display` embeds the request URL by default, which
+            // would leak the internal zebrad endpoint (e.g. http://10.7.0.201:8232/)
+            // to anonymous gRPC clients. Return a generic Unavailable status; the
+            // full error stays visible to operators via tracing on the server side.
+            ZidecarError::ZebradTransport(_) => {
+                tonic::Status::unavailable("upstream node unavailable")
+            }
             _ => tonic::Status::internal(err.to_string()),
         }
     }

@@ -102,6 +102,8 @@ async fn run(cli: &Cli) -> Result<(), Error> {
         },
         Command::Init { action } => match action {
             InitAction::Create { words } => cmd_init_create(cli, *words),
+            InitAction::Phrase => cmd_init_phrase(cli),
+            InitAction::Migrate { dry_run } => cmd_init_migrate(cli, mainnet, *dry_run).await,
             InitAction::ImportFvk { hex } => cmd_import_fvk(cli, mainnet, hex.as_deref()),
             InitAction::Sync { from, position, full, no_verify } => {
                 if *full && !cli.json {
@@ -255,11 +257,17 @@ async fn cmd_balance(cli: &Cli, mainnet: bool) -> Result<(), Error> {
     let bal = if cli.watch {
         // watch-only: shielded balance only (from local wallet db)
         let wallet = wallet::Wallet::open(&wallet::Wallet::default_path())?;
-        let (shielded, _) = wallet.shielded_balance()?;
+        let (shielded, notes) = wallet.shielded_balance()?;
+        let ironwood: u64 = notes
+            .iter()
+            .filter(|n| n.pool == wallet::Pool::Ironwood)
+            .map(|n| n.value)
+            .sum();
         ops::balance::Balance {
             transparent: 0,
             shielded,
             total: shielded,
+            ironwood,
         }
     } else {
         let seed = load_seed(cli)?;
@@ -273,9 +281,11 @@ async fn cmd_balance(cli: &Cli, mainnet: bool) -> Result<(), Error> {
                 "transparent": bal.transparent,
                 "shielded": bal.shielded,
                 "total": bal.total,
+                "ironwood": bal.ironwood,
                 "transparent_zec": format!("{:.8}", bal.transparent as f64 / 1e8),
                 "shielded_zec": format!("{:.8}", bal.shielded as f64 / 1e8),
                 "total_zec": format!("{:.8}", bal.total as f64 / 1e8),
+                "ironwood_zec": format!("{:.8}", bal.ironwood as f64 / 1e8),
             })
         );
     } else {
@@ -284,6 +294,12 @@ async fn cmd_balance(cli: &Cli, mainnet: bool) -> Result<(), Error> {
         let total = bal.total as f64 / 1e8;
         println!("transparent: {:.8} ZEC", t);
         println!("shielded:    {:.8} ZEC", s);
+        if bal.ironwood > 0 {
+            println!(
+                "  of which ironwood (not yet spendable): {:.8} ZEC",
+                bal.ironwood as f64 / 1e8
+            );
+        }
         println!("total:       {:.8} ZEC", total);
     }
 
@@ -684,6 +700,10 @@ fn cmd_notes(cli: &Cli) -> Result<(), Error> {
                     "cmx": hex::encode(&n.cmx[..8]),
                     "nullifier": hex::encode(n.nullifier),
                     "spent": spent,
+                    "pool": match n.pool {
+                        wallet::Pool::Orchard => "orchard",
+                        wallet::Pool::Ironwood => "ironwood",
+                    },
                 });
                 if !n.txid.is_empty() {
                     obj["txid"] = hex::encode(&n.txid).into();
@@ -703,14 +723,22 @@ fn cmd_notes(cli: &Cli) -> Result<(), Error> {
             println!("no received notes");
             return Ok(());
         }
-        println!("{:<10} {:>14} {:>7} memo", "height", "ZEC", "spent");
+        println!(
+            "{:<10} {:>14} {:>9} {:>7} memo",
+            "height", "ZEC", "pool", "spent"
+        );
         for n in &notes {
             let spent = wallet.is_spent(&n.nullifier).unwrap_or(false);
             let memo = n.memo.as_deref().unwrap_or("");
+            let pool = match n.pool {
+                wallet::Pool::Orchard => "orchard",
+                wallet::Pool::Ironwood => "ironwood",
+            };
             println!(
-                "{:<10} {:>14.8} {:>7} {}",
+                "{:<10} {:>14.8} {:>9} {:>7} {}",
                 n.block_height,
                 n.value as f64 / 1e8,
+                pool,
                 if spent { "yes" } else { "" },
                 memo,
             );
@@ -1875,6 +1903,183 @@ fn cmd_init_create(cli: &Cli, words: usize) -> Result<(), Error> {
     Ok(())
 }
 
+/// print a mnemonic with the standard backup warning, 4 words per row
+fn print_mnemonic_words(mnemonic: &str) {
+    eprintln!("\n  ╔══════════════════════════════════════════════════════════╗");
+    eprintln!("  ║  WRITE DOWN THESE WORDS. THEY ARE YOUR WALLET.          ║");
+    eprintln!("  ║  Anyone with these words can spend your funds.           ║");
+    eprintln!("  ╚══════════════════════════════════════════════════════════╝\n");
+    for (i, word) in mnemonic.split_whitespace().enumerate() {
+        eprint!("  {:>2}. {:<12}", i + 1, word);
+        if (i + 1) % 4 == 0 {
+            eprintln!();
+        }
+    }
+    eprintln!();
+}
+
+/// show the recovery phrase backing the active wallet
+fn cmd_init_phrase(cli: &Cli) -> Result<(), Error> {
+    use cli::MnemonicSource;
+    let phrase = match cli.mnemonic_source() {
+        Some(MnemonicSource::Plaintext(ref p)) => p.clone(),
+        Some(MnemonicSource::AgeFile(ref path)) => {
+            key::decrypt_age_file(path, &cli.identity_path())?
+        }
+        None => match key::resolve_ssh_derivation(
+            &wallet::Wallet::derivation_marker_path(),
+            &wallet::Wallet::spending_path(),
+        )? {
+            key::SshDerivation::Legacy => {
+                return Err(Error::Key(
+                    "this wallet uses the legacy ssh derivation, which has no recovery \
+                     phrase.\nrun `zcli init migrate` to move funds to the mnemonic-backed \
+                     wallet first."
+                        .into(),
+                ));
+            }
+            key::SshDerivation::MnemonicV1 => key::derive_ssh_mnemonic(&cli.identity_path())?,
+        },
+    };
+
+    if cli.json {
+        println!("{}", serde_json::json!({ "mnemonic": phrase }));
+    } else {
+        print_mnemonic_words(&phrase);
+        eprintln!("  this phrase fully recovers the wallet — no ssh key needed.");
+    }
+    Ok(())
+}
+
+/// migrate a legacy ssh-key wallet to the mnemonic-backed derivation:
+/// sweep spendable funds to the new wallet's address, back up the old
+/// wallet db, and flip the derivation marker.
+async fn cmd_init_migrate(cli: &Cli, mainnet: bool, dry_run: bool) -> Result<(), Error> {
+    if cli.mnemonic_source().is_some() {
+        return Err(Error::Other(
+            "this wallet already uses a mnemonic — nothing to migrate".into(),
+        ));
+    }
+
+    let marker = wallet::Wallet::derivation_marker_path();
+    let db_path = wallet::Wallet::spending_path();
+    if key::resolve_ssh_derivation(&marker, &db_path)? == key::SshDerivation::MnemonicV1 {
+        eprintln!("already on the mnemonic-backed derivation — nothing to migrate");
+        return Ok(());
+    }
+
+    let identity = cli.identity_path();
+    let legacy_seed = key::load_ssh_seed(&identity)?;
+    let phrase = key::derive_ssh_mnemonic(&identity)?;
+    let new_seed = key::load_mnemonic_seed(&phrase)?;
+    let new_addr = address::orchard_address(&new_seed, mainnet)?;
+
+    // sweep covers orchard notes only; ironwood notes need a v6 transaction
+    let (orchard_zat, ironwood_zat, n_notes, birthday) = {
+        let w = wallet::Wallet::open(&db_path)?;
+        let (_, notes) = w.shielded_balance()?;
+        let orchard_zat: u64 = notes
+            .iter()
+            .filter(|n| n.pool == wallet::Pool::Orchard)
+            .map(|n| n.value)
+            .sum();
+        let ironwood_zat: u64 = notes
+            .iter()
+            .filter(|n| n.pool == wallet::Pool::Ironwood)
+            .map(|n| n.value)
+            .sum();
+        let n = notes
+            .iter()
+            .filter(|n| n.pool == wallet::Pool::Orchard)
+            .count();
+        let birthday = w.sync_height().unwrap_or(0);
+        (orchard_zat, ironwood_zat, n, birthday)
+    }; // wallet handle dropped before the db dir is renamed
+
+    if ironwood_zat > 0 {
+        eprintln!(
+            "warning: {:.8} ZEC in ironwood notes cannot be swept yet (needs v6 \
+             transaction support) and will stay on the legacy derivation.\n\
+             consider waiting for v6 support before migrating.",
+            ironwood_zat as f64 / 1e8
+        );
+    }
+
+    if orchard_zat == 0 {
+        eprintln!("no spendable funds on the legacy derivation — switching without a sweep");
+        if dry_run {
+            eprintln!("dry run — nothing changed");
+            return Ok(());
+        }
+        finalize_migration(&db_path, &marker, birthday)?;
+        print_mnemonic_words(&phrase);
+        eprintln!("  migration complete. run `zcli init sync` to use the new wallet.");
+        return Ok(());
+    }
+
+    let fee = ops::send::compute_fee(n_notes, 1, 0, false);
+    if orchard_zat <= fee {
+        return Err(Error::Other(format!(
+            "balance {:.8} ZEC does not cover the sweep fee {:.8} ZEC",
+            orchard_zat as f64 / 1e8,
+            fee as f64 / 1e8
+        )));
+    }
+    let sweep_zat = orchard_zat - fee;
+
+    eprintln!(
+        "sweeping {:.8} ZEC ({} notes, fee {:.8} ZEC) to the mnemonic-backed wallet\n  {}",
+        sweep_zat as f64 / 1e8,
+        n_notes,
+        fee as f64 / 1e8,
+        new_addr
+    );
+    if dry_run {
+        eprintln!("dry run — nothing broadcast");
+        return Ok(());
+    }
+
+    ops::send::send(
+        &legacy_seed,
+        &sweep_zat.to_string(),
+        &new_addr,
+        None,
+        &cli.endpoint,
+        mainnet,
+        cli.json,
+    )
+    .await?;
+
+    finalize_migration(&db_path, &marker, birthday)?;
+    print_mnemonic_words(&phrase);
+    eprintln!("  sweep broadcast. once it confirms, run `zcli init sync` — the funds");
+    eprintln!("  will appear in the mnemonic-backed wallet.");
+    Ok(())
+}
+
+/// back up the legacy wallet db, flip the derivation marker, and seed the
+/// fresh wallet's birthday so sync doesn't rescan from orchard activation
+fn finalize_migration(db_path: &str, marker: &str, birthday: u32) -> Result<(), Error> {
+    if std::path::Path::new(db_path).exists() {
+        let bak = format!("{}.legacy.bak", db_path);
+        if std::path::Path::new(&bak).exists() {
+            return Err(Error::Other(format!(
+                "backup {} already exists — move it aside and re-run",
+                bak
+            )));
+        }
+        std::fs::rename(db_path, &bak)
+            .map_err(|e| Error::Other(format!("cannot back up wallet db: {}", e)))?;
+        eprintln!("legacy wallet db backed up to {}", bak);
+    }
+    key::write_ssh_derivation(marker, key::SshDerivation::MnemonicV1)?;
+    if birthday > 0 {
+        let w = wallet::Wallet::open(db_path)?;
+        w.set_sync_height(birthday.saturating_sub(2))?;
+    }
+    Ok(())
+}
+
 fn load_seed(cli: &Cli) -> Result<key::WalletSeed, Error> {
     use cli::MnemonicSource;
     match cli.mnemonic_source() {
@@ -1883,7 +2088,13 @@ fn load_seed(cli: &Cli) -> Result<key::WalletSeed, Error> {
             let phrase = key::decrypt_age_file(path, &cli.identity_path())?;
             key::load_mnemonic_seed(&phrase)
         }
-        None => key::load_ssh_seed(&cli.identity_path()),
+        None => match key::resolve_ssh_derivation(
+            &wallet::Wallet::derivation_marker_path(),
+            &wallet::Wallet::spending_path(),
+        )? {
+            key::SshDerivation::Legacy => key::load_ssh_seed(&cli.identity_path()),
+            key::SshDerivation::MnemonicV1 => key::load_ssh_mnemonic_seed(&cli.identity_path()),
+        },
     }
 }
 

@@ -10,3 +10,10 @@
 # license-server runtime state
 license.db/
 friends.txt
+
+# wasm-pack parallel build output
+/crates/zcash-wasm/pkg-parallel/
+
+# nested .claude scratch dirs inside subcrates
+/crates/*/.claude/
+/bin/*/.claude/

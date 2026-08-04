@@ -34,12 +34,65 @@ pub use wasm_bindgen_rayon::init_thread_pool;
 extern "C" {
     #[wasm_bindgen(js_namespace = console)]
     fn log(s: &str);
+    #[wasm_bindgen(js_namespace = console, js_name = warn)]
+    fn console_warn(s: &str);
+}
+
+/// Compiled-in consensus branch id (NU6.2, mainnet). Used ONLY as a fallback
+/// when the caller does not supply a live branch id (e.g. passes `None`/empty).
+/// The real value must come from the chain via `GetLightdInfo.consensusBranchId`.
+/// After NU6.3 activates (mainnet height 3428143, ~2026-07-28) this fallback is
+/// WRONG for new transactions — callers MUST pass the live branch id.
+pub const FALLBACK_BRANCH_ID: u32 = 0x5437F330;
+
+/// Parse the consensus branch id as returned by lightwalletd/zidecar
+/// `GetLightdInfo.consensusBranchId` — a lowercase (per spec) hex string such as
+/// `"5437f330"` (NU6.2) or `"37a5165b"` (NU6.3), with no `0x` prefix. Tolerates
+/// an optional `0x`/`0X` prefix and surrounding whitespace. Returns `None` on
+/// malformed or empty input so the caller can fall back safely.
+fn parse_branch_id(s: &str) -> Option<u32> {
+    let t = s.trim();
+    let t = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")).unwrap_or(t);
+    if t.is_empty() {
+        return None;
+    }
+    u32::from_str_radix(t, 16).ok()
+}
+
+/// Resolve the consensus branch id to use for a transaction, given the optional
+/// hex string a `#[wasm_bindgen]` builder received from JS.
+///
+/// The value is expected to be `LightdInfo.consensusBranchId` (a hex string like
+/// `"5437f330"`), passed through verbatim so the browser never has to convert it.
+/// If the caller passes `None`, an empty/whitespace string, or an unparseable
+/// value, we emit a `console.warn` and fall back to [`FALLBACK_BRANCH_ID`]
+/// (NU6.2) so behaviour is unchanged pre-NU6.3 — but that fallback is INCORRECT
+/// once NU6.3 activates and the resulting tx will be rejected with an
+/// "incorrect consensus branch id" error. Always pass the live value.
+fn resolve_branch_id(branch_id_hex: Option<&str>) -> u32 {
+    match branch_id_hex.and_then(parse_branch_id) {
+        Some(id) => id,
+        None => {
+            console_warn(&format!(
+                "[zafu-wasm] no/invalid consensus branch id supplied (got {:?}); \
+                 falling back to compiled-in 0x{:08X} (NU6.2). This is WRONG after \
+                 NU6.3 activation — pass LightdInfo.consensusBranchId.",
+                branch_id_hex, FALLBACK_BRANCH_ID
+            ));
+            FALLBACK_BRANCH_ID
+        }
+    }
 }
 
 /// Native fallback: wasm-bindgen imports panic when called off-wasm, and the
 /// proving-key paths (exercised by cargo tests) log through this.
 #[cfg(not(target_arch = "wasm32"))]
 fn log(s: &str) {
+    eprintln!("{}", s);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn console_warn(s: &str) {
     eprintln!("{}", s);
 }
 
@@ -1505,6 +1558,41 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_branch_id() {
+        // NU6.2 / NU6.3, lowercase (the on-wire form from GetLightdInfo)
+        assert_eq!(parse_branch_id("5437f330"), Some(0x5437F330));
+        assert_eq!(parse_branch_id("37a5165b"), Some(0x37A5165B));
+        // uppercase tolerated
+        assert_eq!(parse_branch_id("5437F330"), Some(0x5437F330));
+        // 0x / 0X prefix + surrounding whitespace tolerated
+        assert_eq!(parse_branch_id("0x37a5165b"), Some(0x37A5165B));
+        assert_eq!(parse_branch_id("0X37A5165B"), Some(0x37A5165B));
+        assert_eq!(parse_branch_id("  37a5165b\n"), Some(0x37A5165B));
+        // malformed / empty -> None so the caller can fall back
+        assert_eq!(parse_branch_id(""), None);
+        assert_eq!(parse_branch_id("   "), None);
+        assert_eq!(parse_branch_id("0x"), None);
+        assert_eq!(parse_branch_id("zzzz"), None);
+        // out of u32 range -> None (does not silently truncate)
+        assert_eq!(parse_branch_id("137a5165b"), None);
+    }
+
+    // NOTE: resolve_branch_id's fallback path calls console.warn (a JS import
+    // that only links under wasm32), so native `cargo test` can only exercise
+    // the success path here. The fallback→FALLBACK_BRANCH_ID behaviour is
+    // covered by test_parse_branch_id returning None on bad input.
+    #[test]
+    fn test_resolve_branch_id_valid() {
+        assert_eq!(
+            resolve_branch_id(Some("37a5165b")),
+            0x37A5165B,
+            "NU6.3 hex string must resolve to the NU6.3 branch id"
+        );
+        assert_eq!(resolve_branch_id(Some("0x5437f330")), 0x5437F330);
+        assert_eq!(FALLBACK_BRANCH_ID, 0x5437F330);
+    }
+
+    #[test]
     fn test_key_derivation() {
         // Standard 24-word test mnemonic
         let keys = WalletKeys::from_seed_phrase(
@@ -1757,6 +1845,10 @@ pub fn build_unsigned_transaction(
     _account_index: u32,
     mainnet: bool,
     memo_hex: Option<String>,
+    // Live consensus branch id from GetLightdInfo.consensusBranchId, e.g.
+    // "5437f330" (NU6.2) or "37a5165b" (NU6.3). Pass verbatim; None/empty falls
+    // back to the compiled-in NU6.2 value (wrong post-NU6.3).
+    branch_id_hex: Option<String>,
 ) -> Result<JsValue, JsError> {
     use group::ff::PrimeField;
     use orchard::builder::{Builder, BundleType};
@@ -2033,7 +2125,7 @@ pub fn build_unsigned_transaction(
         .ok_or_else(|| JsError::new("extract_effects produced no bundle"))?;
 
     // --- compute ZIP-244 sighash ---
-    let branch_id: u32 = 0x4DEC4DF0; // NU6.1
+    let branch_id: u32 = resolve_branch_id(branch_id_hex.as_deref());
     let expiry_height: u32 = 0;
 
     let header_data = {
@@ -2428,6 +2520,13 @@ pub fn redact_pczt_for_signer(pczt: pczt::Pczt) -> pczt::Pczt {
                 // pczt/verify.rs). The actual `Action::sign` never reads the
                 // fvk (only `alpha` + `rk`), so signatures still land.
                 a.clear_spend_fvk();
+                // Output-side (master's hardening): change-output derivation
+                // path, bound user address, proprietary - local-wallet
+                // metadata; the cold signer decodes recipients from the raw
+                // `recipient` bytes, so display still works.
+                a.clear_output_zip32_derivation();
+                a.clear_output_user_address();
+                a.clear_output_proprietary();
             });
         });
     // The ironwood bundle (NU6.3 / V6) is orchard-shaped; apply the identical
@@ -2453,6 +2552,12 @@ pub fn redact_pczt_for_signer(pczt: pczt::Pczt) -> pczt::Pczt {
             // the spend fvk. Safe now that the coordinated signer reconstructs
             // it from the seed and supplies it to `verify_nullifier(Some(fvk))`.
             a.clear_spend_fvk();
+        });
+    });
+    let redactor = redactor.redact_transparent_with(|mut t| {
+        t.redact_outputs(|mut o| {
+            o.clear_user_address();
+            o.clear_proprietary();
         });
     });
     redactor.finish()
@@ -2680,6 +2785,7 @@ fn prepare_orchard_spends(
 /// The TS layer wraps `pczt_hex` in CBOR `{1: bytes}` and UR-encodes as
 /// `zcash-pczt` for animated QR transport.
 #[wasm_bindgen]
+#[allow(clippy::too_many_arguments)] // mirrors the PCZT creator-role parameter surface
 pub fn build_unsigned_pczt(
     ufvk_str: &str,
     notes_json: JsValue,
@@ -2718,6 +2824,12 @@ pub fn build_unsigned_pczt(
             .clone()
     };
     let change_addr = fvk.to_ivk(Scope::Internal).address_at(0u64);
+    // OVK-encrypt outputs so the group FVK can recover them: the FROST joiner
+    // OVK-decodes the bundle to verify (recipient, amount) before signing (gh #17),
+    // and the sender keeps its own send history. `None` here (the old zigner
+    // cold-sign default) left outputs unrecoverable → joiner derived 0 recipients.
+    let ovk_external = fvk.to_ovk(Scope::External);
+    let ovk_internal = fvk.to_ovk(Scope::Internal);
 
     // ── recipient parse ────────────────────────────────────────────────────
     let is_transparent = recipient.starts_with("t1") || recipient.starts_with("tm");
@@ -2817,7 +2929,7 @@ pub fn build_unsigned_pczt(
             if let Some(addr) = orchard_recipient {
                 builder
                     .add_orchard_output::<<FixedFeeRule as zcash_primitives::transaction::fees::FeeRule>::Error>(
-                        None,
+                        Some(ovk_external.clone()),
                         addr,
                         amount_zat,
                         recipient_memo.clone(),
@@ -2829,7 +2941,7 @@ pub fn build_unsigned_pczt(
                     .map_err(|_| JsError::new("invalid change amount"))?;
                 builder
                     .add_orchard_output::<<FixedFeeRule as zcash_primitives::transaction::fees::FeeRule>::Error>(
-                        None,
+                        Some(ovk_internal.clone()),
                         change_addr,
                         change_zat,
                         MemoBytes::empty(),
@@ -2850,14 +2962,41 @@ pub fn build_unsigned_pczt(
         }};
     }
 
-    let pczt = if mainnet {
+    // Capture FROST signing data from the orchard parts BEFORE Creator consumes
+    // them. `into_pczt` sets `alpha` + `dummy_sk` at build_for_pczt time, so real
+    // spends (dummy_sk == None) carry their rerandomizer here. The pczt::Pczt that
+    // Creator produces keeps these pub(crate), so this is the only public read.
+    // Order = action order = the order host + joiner run the FROST rounds in.
+    use group::ff::PrimeField;
+    let extract_frost = |orchard: &Option<orchard::pczt::Bundle>| -> Result<(Vec<String>, Vec<u32>), JsError> {
+        let mut alphas = Vec::new();
+        let mut spend_indices = Vec::new();
+        if let Some(b) = orchard.as_ref() {
+            for (i, action) in b.actions().iter().enumerate() {
+                if action.spend().dummy_sk().is_none() {
+                    let alpha = action.spend().alpha().ok_or_else(|| {
+                        JsError::new(&format!("missing alpha for real spend action {}", i))
+                    })?;
+                    alphas.push(hex_encode(&alpha.to_repr()));
+                    spend_indices.push(i as u32);
+                }
+            }
+        }
+        Ok((alphas, spend_indices))
+    };
+
+    let (pczt, alphas, spend_indices) = if mainnet {
         let parts = build_pczt_for!(MainNetwork);
-        pczt::roles::creator::Creator::build_from_parts(parts)
-            .ok_or_else(|| JsError::new("Creator::build_from_parts: incompatible tx version"))?
+        let (alphas, spend_indices) = extract_frost(&parts.orchard)?;
+        let pczt = pczt::roles::creator::Creator::build_from_parts(parts)
+            .ok_or_else(|| JsError::new("Creator::build_from_parts: incompatible tx version"))?;
+        (pczt, alphas, spend_indices)
     } else {
         let parts = build_pczt_for!(TestNetwork);
-        pczt::roles::creator::Creator::build_from_parts(parts)
-            .ok_or_else(|| JsError::new("Creator::build_from_parts: incompatible tx version"))?
+        let (alphas, spend_indices) = extract_frost(&parts.orchard)?;
+        let pczt = pczt::roles::creator::Creator::build_from_parts(parts)
+            .ok_or_else(|| JsError::new("Creator::build_from_parts: incompatible tx version"))?;
+        (pczt, alphas, spend_indices)
     };
 
     // ── orchard Halo 2 proof (expensive — seconds on a phone CPU) ──────────
@@ -2881,6 +3020,17 @@ pub fn build_unsigned_pczt(
     let action_count = pczt.orchard().actions().len() as u32;
     let pczt_bytes = pczt.serialize();
 
+    // ── canonical sighash for FROST signing ───────────────────────────────
+    // Derive it from the serialized (redacted) PCZT — exactly the bytes the
+    // joiner gets — so host + joiner sign the same message the joiner verified.
+    let sighash = {
+        let reparsed = pczt::Pczt::parse(&pczt_bytes)
+            .map_err(|e| JsError::new(&format!("reparse pczt for sighash: {:?}", e)))?;
+        pczt::roles::signer::Signer::new(reparsed)
+            .map_err(|e| JsError::new(&format!("signer init: {:?}", e)))?
+            .shielded_sighash()
+    };
+
     let recipient_short = if recipient.len() > 20 {
         &recipient[..20]
     } else {
@@ -2894,16 +3044,25 @@ pub fn build_unsigned_pczt(
         num_spends
     );
 
+    // `sighash`/`alphas`/`spend_indices` are additive: the zigner cold-sign
+    // caller ignores them; the FROST host (mnemonic/escrow) needs them to drive
+    // round1/round2 per real-spend action. See gh #17.
     #[derive(Serialize)]
     struct Out {
         pczt_hex: String,
         summary: String,
         action_count: u32,
+        sighash: String,
+        alphas: Vec<String>,
+        spend_indices: Vec<u32>,
     }
     serde_wasm_bindgen::to_value(&Out {
         pczt_hex: hex_encode(&pczt_bytes),
         summary,
         action_count,
+        sighash: hex_encode(&sighash),
+        alphas,
+        spend_indices,
     })
     .map_err(|e| JsError::new(&format!("serialization failed: {}", e)))
 }
@@ -4453,6 +4612,74 @@ pub fn build_signed_ironwood_send(
     ))
 }
 
+/// Complete an orchard-only FROST multisig PCZT: inject the externally-aggregated
+/// SpendAuth signatures (one per real spend, in `spend_indices` order, matching
+/// what `build_unsigned_pczt` returned) into the PCZT, then extract the
+/// broadcast-ready v5 tx. The mnemonic/zigner host and the poker escrow all
+/// finish a FROST signing round this way (gh #17 PCZT migration).
+#[wasm_bindgen]
+pub fn complete_orchard_pczt(
+    pczt_hex: &str,
+    orchard_sigs_json: JsValue,
+    spend_indices_json: JsValue,
+) -> Result<String, JsError> {
+    use orchard::primitives::redpallas;
+
+    let sigs: Vec<String> = serde_wasm_bindgen::from_value(orchard_sigs_json)
+        .map_err(|e| JsError::new(&format!("invalid orchard_sigs: {}", e)))?;
+    let spend_indices: Vec<u32> = serde_wasm_bindgen::from_value(spend_indices_json)
+        .map_err(|e| JsError::new(&format!("invalid spend_indices: {}", e)))?;
+    if sigs.len() != spend_indices.len() {
+        return Err(JsError::new("orchard_sigs and spend_indices length mismatch"));
+    }
+
+    let bytes = hex_decode(pczt_hex).ok_or_else(|| JsError::new("invalid pczt hex"))?;
+    let pczt = pczt::Pczt::parse(&bytes)
+        .map_err(|e| JsError::new(&format!("pczt parse failed: {:?}", e)))?;
+    let mut signer = pczt::roles::signer::Signer::new(pczt)
+        .map_err(|e| JsError::new(&format!("signer init: {:?}", e)))?;
+
+    for (sig_hex, idx) in sigs.iter().zip(spend_indices.iter()) {
+        let raw = hex_decode(sig_hex).ok_or_else(|| JsError::new("invalid orchard sig hex"))?;
+        let arr: [u8; 64] = raw
+            .as_slice()
+            .try_into()
+            .map_err(|_| JsError::new("orchard sig must be 64 bytes"))?;
+        let sig = redpallas::Signature::<redpallas::SpendAuth>::from(arr);
+        signer
+            .apply_orchard_signature(*idx as usize, sig)
+            .map_err(|e| JsError::new(&format!("apply_orchard_signature[{}]: {:?}", idx, e)))?;
+    }
+
+    let signed = signer.finish();
+    let tx_bytes =
+        extract_signed_tx_from_pczt_bytes(&signed.serialize()).map_err(|e| JsError::new(&e))?;
+    Ok(hex_encode(&tx_bytes))
+}
+
+/// Canonical ZIP-244 txid for a raw signed v5 transaction.
+///
+/// Public lightwalletd's `SendResponse` carries no txid, so the wallet derives
+/// it locally instead of trusting the server to echo it. This is the same value
+/// zidecar computes server-side and the same bytes that appear as
+/// `CompactTx.hash` during sync — returned as lowercase hex in internal/wire
+/// byte order so the outgoing record reconciles on the next scan.
+#[wasm_bindgen]
+pub fn compute_txid(tx_hex: &str) -> Result<String, JsError> {
+    use std::io::Cursor;
+    use zcash_primitives::transaction::Transaction;
+    use zcash_protocol::consensus::BranchId;
+
+    let tx_bytes = hex_decode(tx_hex).ok_or_else(|| JsError::new("invalid tx hex"))?;
+    // v5 reads its own consensus branch id from the header; the param only
+    // matters for pre-v5 formats.
+    let tx = Transaction::read(&mut Cursor::new(&tx_bytes), BranchId::Nu5)
+        .map_err(|e| JsError::new(&format!("parse tx: {:?}", e)))?;
+    let txid = tx.txid();
+    let bytes: &[u8; 32] = txid.as_ref();
+    Ok(hex_encode(bytes))
+}
+
 /// Get the commitment proof request data for a note
 /// Returns the cmx that should be sent to zidecar's GetCommitmentProof
 #[wasm_bindgen]
@@ -4670,7 +4897,9 @@ pub fn tree_root_hex_ironwood(tree_state_hex: &str) -> Result<String, JsError> {
 /// * `merkle_result_json` - JSON from build_merkle_paths: `{anchor_hex, paths: [{position, path: [{hash}]}]}`
 /// * `anchor_height` - block height of the anchor
 /// * `mainnet` - true for mainnet, false for testnet
-/// * `attestation_hex` - optional hex-encoded 64-byte FROST attestation signature
+/// * `attestation_hex` - optional hex-encoded 64-byte ed25519 anchor attestation
+///   signature from a trusted verifier (zidecar SignAnchor). Verified on the
+///   cold device against its anchor-verifier registry.
 ///
 /// # Returns
 /// `Uint8Array` of CBOR bytes ready for UR fountain encoding
@@ -4727,12 +4956,12 @@ pub fn encode_notes_bundle(
         .try_into()
         .map_err(|_| JsError::new("anchor must be 32 bytes"))?;
 
-    let attestation: Option<[u8; 96]> = match attestation_hex {
+    let attestation: Option<[u8; 64]> = match attestation_hex {
         Some(h) if !h.is_empty() => {
-            let bytes: [u8; 96] = hex::decode(&h)
+            let bytes: [u8; 64] = hex::decode(&h)
                 .map_err(|e| JsError::new(&format!("bad attestation hex: {e}")))?
                 .try_into()
-                .map_err(|_| JsError::new("attestation must be 96 bytes (sig 64 + randomizer 32)"))?;
+                .map_err(|_| JsError::new("attestation must be 64 bytes (ed25519 signature)"))?;
             Some(bytes)
         }
         _ => None,
@@ -4818,11 +5047,12 @@ pub fn encode_notes_bundle(
         }
     }
 
-    // key 5: attestation (optional, 96 bytes: signature(64) + randomizer(32))
+    // key 5: attestation (optional, 64 bytes: ed25519 signature over the
+    // anchor digest by a trusted verifier — matches zigner's decoder).
     if let Some(att) = attestation {
         cbor.push(0x05);
         cbor.push(0x58);
-        cbor.push(0x60); // bytes(96)
+        cbor.push(0x40); // bytes(64)
         cbor.extend_from_slice(&att);
     }
 
@@ -4873,12 +5103,52 @@ pub fn ur_encode_frames(
 /// Returns hex-encoded payload bytes (caller can hex_decode if it wants raw).
 /// We return hex (rather than `Vec<u8>` directly) to avoid a wasm-bindgen
 /// `Uint8Array` allocation pattern that's been flaky for us in some browsers.
+/// Maximum number of UR fountain parts accepted in a single call. Real PCZT
+/// signing sessions need on the order of tens to low hundreds of parts;
+/// adversarial inputs without a cap can OOM the wasm module since the host
+/// hands us the raw JSON-deserialized `Vec<String>` before we touch any
+/// fountain logic.
+const MAX_UR_PARTS: usize = 256;
+
+/// Maximum bytes per single UR fountain frame. The BC-UR spec doesn't pin
+/// frame size, but real emitters use ~100-500 B; 8 KiB is comfortably above
+/// real traffic and stops oversized adversarial payloads.
+const MAX_UR_PART_BYTES: usize = 8 * 1024;
+
+/// Generous upper bound on the raw JSON envelope. Each part is capped at
+/// MAX_UR_PART_BYTES, so a worst-case legitimate envelope is roughly
+/// MAX_UR_PARTS * (MAX_UR_PART_BYTES + JSON-quoting overhead). Doubling
+/// MAX_UR_PART_BYTES per part covers JSON escaping of binary-ish bytes
+/// without being so generous it negates the cap.
+const MAX_UR_PARTS_JSON_BYTES: usize = MAX_UR_PARTS * (MAX_UR_PART_BYTES * 2 + 16);
+
 #[wasm_bindgen]
 pub fn ur_decode_frames(parts_json: &str, expected_type: &str) -> Result<String, JsError> {
+    // Cap the raw input before serde_json::from_str allocates the Vec — a
+    // 1 GiB JSON string would otherwise materialise in linear memory before
+    // any post-parse length check fires.
+    if parts_json.len() > MAX_UR_PARTS_JSON_BYTES {
+        return Err(JsError::new(&format!(
+            "UR parts JSON length {} exceeds cap {MAX_UR_PARTS_JSON_BYTES} B",
+            parts_json.len()
+        )));
+    }
     let parts: Vec<String> = serde_json::from_str(parts_json)
         .map_err(|e| JsError::new(&format!("ur parts JSON: {e}")))?;
     if parts.is_empty() {
         return Err(JsError::new("no UR parts provided"));
+    }
+    if parts.len() > MAX_UR_PARTS {
+        return Err(JsError::new(&format!(
+            "UR parts count {} exceeds cap {MAX_UR_PARTS}",
+            parts.len()
+        )));
+    }
+    if let Some((i, p)) = parts.iter().enumerate().find(|(_, p)| p.len() > MAX_UR_PART_BYTES) {
+        return Err(JsError::new(&format!(
+            "UR part {i} length {} exceeds cap {MAX_UR_PART_BYTES} B",
+            p.len()
+        )));
     }
     let mut decoder = ur::ur::Decoder::default();
     for (i, p) in parts.iter().enumerate() {
@@ -4921,6 +5191,31 @@ pub fn zt_encode_frames(
     n: u8,
 ) -> Result<String, JsError> {
     let (frames, _) = zoda_vss::transport::Encoder::encode(cbor_data, k, n);
+    let strings: Vec<String> = frames
+        .iter()
+        .map(|f| format!("zt:{}/{}", zt_type, hex::encode(f.to_bytes())))
+        .collect();
+    serde_json::to_string(&strings).map_err(|e| JsError::new(&format!("JSON: {e}")))
+}
+
+/// Encode CBOR bytes as zoda transport QR frames, auto-sizing `k`/`n` so each
+/// hex-encoded `zt:` frame fits a scannable QR regardless of payload size.
+/// Returns JSON array of `zt:type/hex` strings.
+///
+/// - `max_qr_bytes`: max *raw* frame bytes before hex encoding. The QR string
+///   is `len("zt:type/") + 2 * frame_bytes`, so pick this from the target QR
+///   capacity: roughly `qr_byte_capacity / 2 - prefix`. ~600 gives a ~1.2 KB
+///   QR string (≈ v24 at ECC-L), comfortable for handheld scanning.
+/// - `redundancy_pct`: extra parity frames as a percentage of `k` (e.g. 30).
+#[wasm_bindgen]
+pub fn zt_encode_frames_auto(
+    cbor_data: &[u8],
+    zt_type: &str,
+    max_qr_bytes: usize,
+    redundancy_pct: u8,
+) -> Result<String, JsError> {
+    let (frames, _) =
+        zoda_vss::transport::Encoder::encode_auto(cbor_data, max_qr_bytes, redundancy_pct);
     let strings: Vec<String> = frames
         .iter()
         .map(|f| format!("zt:{}/{}", zt_type, hex::encode(f.to_bytes())))
@@ -5151,6 +5446,10 @@ pub fn build_signed_spend_transaction(
     account_index: u32,
     mainnet: bool,
     memo_hex: Option<String>,
+    // Live consensus branch id from GetLightdInfo.consensusBranchId, e.g.
+    // "5437f330" (NU6.2) or "37a5165b" (NU6.3). Pass verbatim; None/empty falls
+    // back to the compiled-in NU6.2 value (wrong post-NU6.3).
+    branch_id_hex: Option<String>,
 ) -> Result<String, JsError> {
     use orchard::builder::{Builder, BundleType};
     use orchard::keys::SpendAuthorizingKey;
@@ -5408,7 +5707,7 @@ pub fn build_signed_spend_transaction(
         .map_err(|e| JsError::new(&format!("create_proof: {:?}", e)))?;
 
     // --- compute ZIP-244 sighash ---
-    let branch_id: u32 = 0x4DEC4DF0; // NU6.1
+    let branch_id: u32 = resolve_branch_id(branch_id_hex.as_deref());
     let expiry_height: u32 = 0; // no expiry for orchard-only
 
     let header_data = {
@@ -5774,6 +6073,10 @@ pub fn build_shielding_transaction(
     fee: u64,
     anchor_height: u32,
     mainnet: bool,
+    // Live consensus branch id from GetLightdInfo.consensusBranchId, e.g.
+    // "5437f330" (NU6.2) or "37a5165b" (NU6.3). Pass verbatim; None/empty falls
+    // back to the compiled-in NU6.2 value (wrong post-NU6.3).
+    branch_id_hex: Option<String>,
 ) -> Result<String, JsError> {
     use k256::ecdsa::{signature::hazmat::PrehashSigner, SigningKey};
     use orchard::builder::{Builder, BundleType};
@@ -5804,7 +6107,7 @@ pub fn build_shielding_transaction(
     // --- parse and select UTXOs ---
     let mut utxos: Vec<TransparentUtxo> = serde_json::from_str(utxos_json)
         .map_err(|e| JsError::new(&format!("invalid utxos json: {}", e)))?;
-    utxos.sort_by(|a, b| b.value.cmp(&a.value));
+    utxos.sort_by_key(|u| std::cmp::Reverse(u.value));
 
     let target = amount
         .checked_add(fee)
@@ -5863,7 +6166,7 @@ pub fn build_shielding_transaction(
 
     // --- compute transparent digests for ZIP-244 sighash ---
     let n_inputs = selected.len();
-    let branch_id: u32 = 0x4DEC4DF0; // NU6.1
+    let branch_id: u32 = resolve_branch_id(branch_id_hex.as_deref());
     let expiry_height = anchor_height.saturating_add(100);
 
     let mut prevout_data = Vec::new();
@@ -6099,6 +6402,10 @@ pub fn build_unsigned_shielding_transaction(
     fee: u64,
     anchor_height: u32,
     mainnet: bool,
+    // Live consensus branch id from GetLightdInfo.consensusBranchId, e.g.
+    // "5437f330" (NU6.2) or "37a5165b" (NU6.3). Pass verbatim; None/empty falls
+    // back to the compiled-in NU6.2 value (wrong post-NU6.3).
+    branch_id_hex: Option<String>,
 ) -> Result<String, JsError> {
     use orchard::builder::{Builder, BundleType};
     use orchard::tree::Anchor;
@@ -6113,7 +6420,7 @@ pub fn build_unsigned_shielding_transaction(
     // --- parse and select UTXOs ---
     let mut utxos: Vec<TransparentUtxo> = serde_json::from_str(utxos_json)
         .map_err(|e| JsError::new(&format!("invalid utxos json: {}", e)))?;
-    utxos.sort_by(|a, b| b.value.cmp(&a.value));
+    utxos.sort_by_key(|u| std::cmp::Reverse(u.value));
 
     let target = amount
         .checked_add(fee)
@@ -6170,7 +6477,7 @@ pub fn build_unsigned_shielding_transaction(
 
     // --- compute transparent digests for ZIP-244 sighash ---
     let n_inputs = selected.len();
-    let branch_id: u32 = 0x4DEC4DF0; // NU6.1
+    let branch_id: u32 = resolve_branch_id(branch_id_hex.as_deref());
     let expiry_height = anchor_height.saturating_add(100);
 
     let mut prevout_data = Vec::new();
@@ -6515,7 +6822,7 @@ fn parse_orchard_address(addr_str: &str, mainnet: bool) -> Result<orchard::Addre
 ///   actions_noncompact_digest = Blake2b-256("ZTxIdOrcActNHash", foreach: cv||rk||enc[564..580]||out[0..80])
 ///   orchard_digest = Blake2b-256("ZTxIdOrchardHash",
 ///                      compact||memos||noncompact||flags(1)||value_balance(8)||anchor(32))
-fn compute_orchard_digest<A: orchard::bundle::Authorization>(
+pub(crate) fn compute_orchard_digest<A: orchard::bundle::Authorization>(
     bundle: &orchard::Bundle<A, zcash_protocol::value::ZatBalance>,
 ) -> Result<[u8; 32], JsError> {
     let mut compact_data = Vec::new();

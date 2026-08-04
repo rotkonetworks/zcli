@@ -77,6 +77,10 @@ message CompactBlock {
     uint32 height = 1;
     bytes hash = 2;
     repeated CompactAction actions = 3;
+    // Field 4 is actions_root in the server proto; kept free here.
+    reserved 4;
+    // Ironwood actions (NU6.3+); same compact shape as Orchard.
+    repeated CompactAction ironwood_actions = 5;
 }
 
 // Compact Orchard action for trial decryption
@@ -150,6 +154,7 @@ message TreeState {
     uint64 time = 3;                   // block timestamp
     string sapling_tree = 4;           // hex-encoded sapling commitment tree
     string orchard_tree = 5;           // hex-encoded orchard commitment tree
+    string ironwood_tree = 6;           // hex-encoded ironwood commitment tree (empty pre-NU6.3)
 }
 
 // Filter for transparent address queries
