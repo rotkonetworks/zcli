@@ -22,11 +22,11 @@
 
 use orchard::keys::Scope;
 use pczt::{
-    Pczt,
     roles::{
         creator::Creator, io_finalizer::IoFinalizer, prover::Prover, signer::Signer,
         spend_finalizer::SpendFinalizer,
     },
+    Pczt,
 };
 use rand_core::OsRng;
 use std::sync::OnceLock;
@@ -34,14 +34,25 @@ use zcash_primitives::transaction::{
     builder::{BuildConfig, Builder},
     fees::zip317,
 };
-use zcash_protocol::{
-    consensus::MainNetwork, memo::MemoBytes, value::Zatoshis,
-};
+use zcash_protocol::{consensus::MainNetwork, memo::MemoBytes, value::Zatoshis};
 use zcash_transparent::{address::TransparentAddress, bundle as transparent};
+
+// Build height for this plain orchard+transparent send. Must be post-NU6.2
+// (3_364_600) so the builder selects the FixedPostNu6_2 circuit, but BELOW the
+// real NU6.3 activation (3_428_143) - at NU6.3 orchard cross-address outputs
+// are DISABLED (the one-way turnstile), which would reject this test's orchard
+// output with OrchardRecipient(CrossAddressDisabled). Since FIX-A wired the
+// real NU6.3 activation height into the fork, this test can no longer build at
+// 10_000_000 (now post-NU6.3); 3_400_000 keeps it a valid pre-NU6.3 orchard tx.
+const ORCHARD_SEND_HEIGHT: u32 = 3_400_000;
 
 static ORCHARD_PROVING_KEY: OnceLock<orchard::circuit::ProvingKey> = OnceLock::new();
 fn orchard_proving_key() -> &'static orchard::circuit::ProvingKey {
-    ORCHARD_PROVING_KEY.get_or_init(orchard::circuit::ProvingKey::build)
+    // Post-NU6.2 / pre-NU6.3 selects BundleProtocol::OrchardPreNu6_3 = the
+    // fixed circuit.
+    ORCHARD_PROVING_KEY.get_or_init(|| {
+        orchard::circuit::ProvingKey::build(orchard::circuit::OrchardCircuitVersion::FixedPostNu6_2)
+    })
 }
 
 #[test]
@@ -67,10 +78,12 @@ fn extract_signed_tx_round_trip() {
     // Build PCZT with a transparent input + two orchard outputs that balance.
     let mut builder = Builder::new(
         params,
-        10_000_000.into(),
+        ORCHARD_SEND_HEIGHT.into(),
         BuildConfig::Standard {
             sapling_anchor: None,
             orchard_anchor: Some(orchard::Anchor::empty_tree()),
+            #[cfg(zcash_unstable = "nu6.3")]
+            ironwood_anchor: None,
         },
     );
     builder
@@ -146,7 +159,11 @@ fn extract_signed_tx_round_trip() {
         5,
         "expected v5 transaction; version word: 0x{version_word:08x}"
     );
-    assert_eq!(version_word & 0x8000_0000, 0x8000_0000, "overwintered bit must be set");
+    assert_eq!(
+        version_word & 0x8000_0000,
+        0x8000_0000,
+        "overwintered bit must be set"
+    );
 
     // Bytes 4..8: version_group_id (must be V5_VERSION_GROUP_ID = 0x26A7270A).
     let vg = u32::from_le_bytes([tx_bytes[4], tx_bytes[5], tx_bytes[6], tx_bytes[7]]);

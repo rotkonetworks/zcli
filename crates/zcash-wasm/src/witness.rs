@@ -192,7 +192,10 @@ pub fn serialize_witness(w: &IncrementalWitness<MerkleHashOrchard, 32>) -> Vec<u
     out
 }
 
-fn read_option_hash_cursor(data: &[u8], pos: &mut usize) -> Result<Option<MerkleHashOrchard>, String> {
+fn read_option_hash_cursor(
+    data: &[u8],
+    pos: &mut usize,
+) -> Result<Option<MerkleHashOrchard>, String> {
     if *pos >= data.len() {
         return Err("witness truncated reading option tag".into());
     }
@@ -212,7 +215,10 @@ fn read_option_hash_cursor(data: &[u8], pos: &mut usize) -> Result<Option<Merkle
     }
 }
 
-fn read_tree_at(data: &[u8], pos: &mut usize) -> Result<CommitmentTree<MerkleHashOrchard, 32>, String> {
+fn read_tree_at(
+    data: &[u8],
+    pos: &mut usize,
+) -> Result<CommitmentTree<MerkleHashOrchard, 32>, String> {
     let left = read_option_hash_cursor(data, pos)?;
     let right = read_option_hash_cursor(data, pos)?;
     let n_parents = read_compact_size(data, pos)?;
@@ -452,8 +458,8 @@ pub fn witness_sync_update_inner(
     existing: &[ExistingWitnessInput],
     new_notes: &[NewNoteInput],
 ) -> Result<WitnessUpdateResult, String> {
-    let tree_bytes =
-        hex::decode(start_frontier_hex).map_err(|e| format!("invalid start frontier hex: {}", e))?;
+    let tree_bytes = hex::decode(start_frontier_hex)
+        .map_err(|e| format!("invalid start frontier hex: {}", e))?;
     let mut tree = deserialize_tree(&tree_bytes)?;
 
     let mut existing_witnesses: Vec<(String, IncrementalWitness<MerkleHashOrchard, 32>)> =
@@ -723,7 +729,11 @@ mod tests {
         }
     }
 
-    fn make_blocks(rng: &mut StdRng, heights: &[u32], actions_per_block: usize) -> Vec<CompactBlockData> {
+    fn make_blocks(
+        rng: &mut StdRng,
+        heights: &[u32],
+        actions_per_block: usize,
+    ) -> Vec<CompactBlockData> {
         heights
             .iter()
             .map(|&h| CompactBlockData {
@@ -787,7 +797,8 @@ mod tests {
         let start_frontier = hex::encode(serialize_tree(&empty));
 
         let positions = vec![3u64, 8u64, 19u64];
-        let oneshot = build_witnesses_and_paths_inner(&start_frontier, &all_blocks, &positions).unwrap();
+        let oneshot =
+            build_witnesses_and_paths_inner(&start_frontier, &all_blocks, &positions).unwrap();
 
         let (first_half, second_half) = all_blocks.split_at(3);
 
@@ -801,7 +812,8 @@ mod tests {
             })
             .collect();
 
-        let step1 = witness_sync_update_inner(&start_frontier, first_half, &[], &new_notes_first).unwrap();
+        let step1 =
+            witness_sync_update_inner(&start_frontier, first_half, &[], &new_notes_first).unwrap();
 
         // Step 2: seed remaining witnesses (position 19) + advance existing ones
         // through second_half.
@@ -842,11 +854,7 @@ mod tests {
                 .iter()
                 .find(|w| w.position == *pos)
                 .unwrap_or_else(|| panic!("witness for position {} missing", pos));
-            let expected = oneshot
-                .entries
-                .iter()
-                .find(|e| e.position == *pos)
-                .unwrap();
+            let expected = oneshot.entries.iter().find(|e| e.position == *pos).unwrap();
 
             let extracted = witness_extract_path_inner(&our.witness_hex).unwrap();
             assert_eq!(extracted.position, *pos);

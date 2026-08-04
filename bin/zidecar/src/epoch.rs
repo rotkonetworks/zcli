@@ -839,7 +839,10 @@ impl EpochManager {
         loop {
             // Check for shutdown between batches.
             if *shutdown.borrow() {
-                info!("nullifier sync: shutdown received, last_synced={}", last_synced);
+                info!(
+                    "nullifier sync: shutdown received, last_synced={}",
+                    last_synced
+                );
                 return;
             }
 

@@ -25,7 +25,9 @@ http = "0.2"
 tower = "0.4"
 
 # orchard (same version as zecli)
-orchard = { version = "0.14", default-features = false }
+# same FORK source as zecli/zafu-wasm - version alone is not enough, the
+# crates.io 0.14 and the valar fork are distinct crates to cargo
+orchard = { version = "0.14", git = "https://github.com/zcash/orchard", branch = "adam/qleak-dummy-ciphertexts-on-pr505", default-features = false }
 zip32 = "0.2"
 pasta_curves = "0.5"
 ff = "0.13"

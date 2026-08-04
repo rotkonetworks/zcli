@@ -4,7 +4,6 @@
 use k256::ecdsa::{signature::hazmat::PrehashSigner, SigningKey};
 use k256::elliptic_curve::sec1::ToEncodedPoint;
 use orchard::builder::{Builder, BundleType};
-use orchard::bundle::Flags;
 use orchard::keys::{FullViewingKey, Scope, SpendingKey};
 use orchard::tree::Anchor;
 use orchard::value::NoteValue;
@@ -83,7 +82,16 @@ pub fn serialize_orchard_bundle(
         out.extend_from_slice(&action.encrypted_note().out_ciphertext);
     }
 
-    out.push(bundle.flags().to_byte());
+    // TODO(ironwood correctness): NU6.3 fork's Flags::to_byte takes a
+    // BundleFormat and returns Option; PreNu6_3 preserves the V5 wire format.
+    out.push(
+        bundle
+            .flags()
+            .to_byte(orchard::bundle::BundleFormat::PreNu6_3)
+            .ok_or_else(|| {
+                Error::Transaction("orchard flags not representable in pre-NU6.3 format".into())
+            })?,
+    );
     out.extend_from_slice(&bundle.value_balance().to_i64_le_bytes());
     out.extend_from_slice(&bundle.anchor().to_bytes());
 
@@ -133,7 +141,16 @@ fn compute_orchard_digest<A: orchard::bundle::Authorization>(
     orchard_data.extend_from_slice(&compact_digest);
     orchard_data.extend_from_slice(&memos_digest);
     orchard_data.extend_from_slice(&noncompact_digest);
-    orchard_data.push(bundle.flags().to_byte());
+    // TODO(ironwood correctness): PreNu6_3 flag byte preserves the V5 sighash;
+    // post-activation this must select BundleFormat::Nu6_3.
+    orchard_data.push(
+        bundle
+            .flags()
+            .to_byte(orchard::bundle::BundleFormat::PreNu6_3)
+            .ok_or_else(|| {
+                Error::Transaction("orchard flags not representable in pre-NU6.3 format".into())
+            })?,
+    );
     orchard_data.extend_from_slice(&bundle.value_balance().to_i64_le_bytes());
     orchard_data.extend_from_slice(&bundle.anchor().to_bytes());
 
@@ -184,11 +201,21 @@ pub fn build_shielding_tx(
     let shielded_value = total_in - fee;
 
     // build orchard bundle (output only, spends disabled)
+    // NU6.3 fork: Transactional lost its `flags` field (now explicit
+    // spends/outputs bools) and Builder::new gained a BundleProtocol.
+    // Flags::SPENDS_DISABLED == spends off, outputs on.
+    // TODO(ironwood correctness): OrchardPreNu6_2 keeps the historical V5
+    // shielding circuit/format; post-activation this becomes a NU6.3 protocol.
     let bundle_type = BundleType::Transactional {
-        flags: Flags::SPENDS_DISABLED,
+        spends_enabled: false,
+        outputs_enabled: true,
         bundle_required: true,
     };
-    let mut builder = Builder::new(bundle_type, Anchor::empty_tree());
+    let mut builder = Builder::new(
+        orchard::BundleProtocol::OrchardPreNu6_2,
+        bundle_type,
+        Anchor::empty_tree(),
+    );
 
     builder
         .add_output(
@@ -206,7 +233,11 @@ pub fn build_shielding_tx(
         .ok_or_else(|| Error::Transaction("builder produced no bundle".into()))?;
 
     // halo 2 proving
-    let pk = orchard::circuit::ProvingKey::build();
+    // TODO(ironwood correctness): InsecurePreNu6_2 reconstructs the historical
+    // V5 verifying key (branch 0x4DEC4DF0); NU6.3 proving needs PostNu6_3.
+    let pk = orchard::circuit::ProvingKey::build(
+        orchard::circuit::OrchardCircuitVersion::InsecurePreNu6_2,
+    );
     let proven = unauthorized
         .create_proof(&pk, &mut rng)
         .map_err(|e| Error::Transaction(format!("create_proof: {:?}", e)))?;
@@ -423,11 +454,20 @@ pub fn build_orchard_spend_tx(
     let change = total_in - total_out;
 
     // build orchard bundle
+    // NU6.3 fork: explicit spends/outputs bools + BundleProtocol on Builder.
+    // Flags::ENABLED == spends on, outputs on.
+    // TODO(ironwood correctness): OrchardPreNu6_2 keeps the historical V5 spend
+    // circuit/format; post-activation this becomes a NU6.3 protocol.
     let bundle_type = BundleType::Transactional {
-        flags: Flags::ENABLED,
+        spends_enabled: true,
+        outputs_enabled: true,
         bundle_required: true,
     };
-    let mut builder = Builder::new(bundle_type, anchor);
+    let mut builder = Builder::new(
+        orchard::BundleProtocol::OrchardPreNu6_2,
+        bundle_type,
+        anchor,
+    );
 
     let n_spends = spends.len();
     for (note, path) in spends {
@@ -460,7 +500,11 @@ pub fn build_orchard_spend_tx(
         .ok_or_else(|| Error::Transaction("builder produced no bundle".into()))?;
 
     // halo 2 proving (rayon parallelism is automatic via halo2's multicore feature)
-    let pk = orchard::circuit::ProvingKey::build();
+    // TODO(ironwood correctness): InsecurePreNu6_2 matches the V5 verifying key
+    // (branch 0x4DEC4DF0); NU6.3 proving needs PostNu6_3.
+    let pk = orchard::circuit::ProvingKey::build(
+        orchard::circuit::OrchardCircuitVersion::InsecurePreNu6_2,
+    );
     let proven = unauthorized
         .create_proof(&pk, &mut rng)
         .map_err(|e| Error::Transaction(format!("create_proof: {:?}", e)))?;

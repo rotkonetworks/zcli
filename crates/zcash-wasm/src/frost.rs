@@ -15,7 +15,8 @@ pub fn frost_dealer_keygen(min_signers: u16, max_signers: u16) -> Result<String,
     serde_json::to_string(&serde_json::json!({
         "packages": result.packages,
         "public_key_package": result.public_key_package_hex,
-    })).map_err(|e| JsError::new(&e.to_string()))
+    }))
+    .map_err(|e| JsError::new(&e.to_string()))
 }
 
 /// DKG round 1: generate ephemeral identity + signed commitment
@@ -26,7 +27,8 @@ pub fn frost_dkg_part1(max_signers: u16, min_signers: u16) -> Result<String, JsE
     serde_json::to_string(&serde_json::json!({
         "secret": result.secret_hex,
         "broadcast": result.broadcast_hex,
-    })).map_err(|e| JsError::new(&e.to_string()))
+    }))
+    .map_err(|e| JsError::new(&e.to_string()))
 }
 
 /// DKG round 2: process signed round1 broadcasts, produce per-peer packages
@@ -39,7 +41,8 @@ pub fn frost_dkg_part2(secret_hex: &str, peer_broadcasts_json: &str) -> Result<S
     serde_json::to_string(&serde_json::json!({
         "secret": result.secret_hex,
         "peer_packages": result.peer_packages,
-    })).map_err(|e| JsError::new(&e.to_string()))
+    }))
+    .map_err(|e| JsError::new(&e.to_string()))
 }
 
 /// DKG round 3: finalize — returns key package + public key package
@@ -59,21 +62,26 @@ pub fn frost_dkg_part3(
         "key_package": result.key_package_hex,
         "public_key_package": result.public_key_package_hex,
         "ephemeral_seed": result.ephemeral_seed_hex,
-    })).map_err(|e| JsError::new(&e.to_string()))
+    }))
+    .map_err(|e| JsError::new(&e.to_string()))
 }
 
 // ── generic signing ──
 
 /// signing round 1: generate nonces + signed commitments
 #[wasm_bindgen]
-pub fn frost_sign_round1(ephemeral_seed_hex: &str, key_package_hex: &str) -> Result<String, JsError> {
+pub fn frost_sign_round1(
+    ephemeral_seed_hex: &str,
+    key_package_hex: &str,
+) -> Result<String, JsError> {
     let seed = parse_seed(ephemeral_seed_hex)?;
     let (nonces, commitments) = frost_spend::orchestrate::sign_round1(&seed, key_package_hex)
         .map_err(|e| JsError::new(&e.to_string()))?;
     serde_json::to_string(&serde_json::json!({
         "nonces": nonces,
         "commitments": commitments,
-    })).map_err(|e| JsError::new(&e.to_string()))
+    }))
+    .map_err(|e| JsError::new(&e.to_string()))
 }
 
 /// coordinator: generate signed randomizer
@@ -84,8 +92,8 @@ pub fn frost_generate_randomizer(
     commitments_json: &str,
 ) -> Result<String, JsError> {
     let seed = parse_seed(ephemeral_seed_hex)?;
-    let msg = hex::decode(message_hex)
-        .map_err(|e| JsError::new(&format!("bad message hex: {}", e)))?;
+    let msg =
+        hex::decode(message_hex).map_err(|e| JsError::new(&format!("bad message hex: {}", e)))?;
     let commitments: Vec<String> = serde_json::from_str(commitments_json)
         .map_err(|e| JsError::new(&format!("bad commitments JSON: {}", e)))?;
     frost_spend::orchestrate::generate_randomizer(&seed, &msg, &commitments)
@@ -103,13 +111,19 @@ pub fn frost_sign_round2(
     randomizer_hex: &str,
 ) -> Result<String, JsError> {
     let seed = parse_seed(ephemeral_seed_hex)?;
-    let msg = hex::decode(message_hex)
-        .map_err(|e| JsError::new(&format!("bad message hex: {}", e)))?;
+    let msg =
+        hex::decode(message_hex).map_err(|e| JsError::new(&format!("bad message hex: {}", e)))?;
     let commitments: Vec<String> = serde_json::from_str(commitments_json)
         .map_err(|e| JsError::new(&format!("bad commitments JSON: {}", e)))?;
     frost_spend::orchestrate::sign_round2(
-        &seed, key_package_hex, nonces_hex, &msg, &commitments, randomizer_hex,
-    ).map_err(|e| JsError::new(&e.to_string()))
+        &seed,
+        key_package_hex,
+        nonces_hex,
+        &msg,
+        &commitments,
+        randomizer_hex,
+    )
+    .map_err(|e| JsError::new(&e.to_string()))
 }
 
 /// coordinator: aggregate signed shares into final signature
@@ -121,15 +135,20 @@ pub fn frost_aggregate_shares(
     shares_json: &str,
     randomizer_hex: &str,
 ) -> Result<String, JsError> {
-    let msg = hex::decode(message_hex)
-        .map_err(|e| JsError::new(&format!("bad message hex: {}", e)))?;
+    let msg =
+        hex::decode(message_hex).map_err(|e| JsError::new(&format!("bad message hex: {}", e)))?;
     let commitments: Vec<String> = serde_json::from_str(commitments_json)
         .map_err(|e| JsError::new(&format!("bad commitments JSON: {}", e)))?;
     let shares: Vec<String> = serde_json::from_str(shares_json)
         .map_err(|e| JsError::new(&format!("bad shares JSON: {}", e)))?;
     frost_spend::orchestrate::aggregate_shares(
-        public_key_package_hex, &msg, &commitments, &shares, randomizer_hex,
-    ).map_err(|e| JsError::new(&e.to_string()))
+        public_key_package_hex,
+        &msg,
+        &commitments,
+        &shares,
+        randomizer_hex,
+    )
+    .map_err(|e| JsError::new(&e.to_string()))
 }
 
 // ── spend authorization (sighash + alpha bound) ──
@@ -143,8 +162,9 @@ pub fn frost_derive_address_raw(
     public_key_package_hex: &str,
     diversifier_index: u32,
 ) -> Result<String, JsError> {
-    let raw = frost_spend::orchestrate::derive_address_raw(public_key_package_hex, diversifier_index)
-        .map_err(|e| JsError::new(&e.to_string()))?;
+    let raw =
+        frost_spend::orchestrate::derive_address_raw(public_key_package_hex, diversifier_index)
+            .map_err(|e| JsError::new(&e.to_string()))?;
     Ok(hex::encode(raw))
 }
 
@@ -161,7 +181,9 @@ pub fn frost_derive_address_from_sk(
 ) -> Result<String, JsError> {
     let sk_bytes = parse_32(sk_hex, "address sk")?;
     let raw = frost_spend::orchestrate::derive_address_from_sk(
-        public_key_package_hex, sk_bytes, diversifier_index,
+        public_key_package_hex,
+        sk_bytes,
+        diversifier_index,
     )
     .map_err(|e| JsError::new(&e.to_string()))?;
     Ok(hex::encode(raw))
@@ -218,7 +240,11 @@ pub fn frost_derive_ufvk(
     let ufvk = Ufvk::try_from_items(vec![Fvk::Orchard(fvk.to_bytes())])
         .map_err(|e| JsError::new(&format!("build UFVK: {e}")))?;
 
-    let network = if mainnet { NetworkType::Main } else { NetworkType::Test };
+    let network = if mainnet {
+        NetworkType::Main
+    } else {
+        NetworkType::Test
+    };
     Ok(ufvk.encode(&network))
 }
 
@@ -236,8 +262,13 @@ pub fn frost_spend_sign_round2(
     let commitments: Vec<String> = serde_json::from_str(commitments_json)
         .map_err(|e| JsError::new(&format!("bad commitments JSON: {}", e)))?;
     frost_spend::orchestrate::spend_sign_round2(
-        key_package_hex, nonces_hex, &sighash, &alpha, &commitments,
-    ).map_err(|e| JsError::new(&e.to_string()))
+        key_package_hex,
+        nonces_hex,
+        &sighash,
+        &alpha,
+        &commitments,
+    )
+    .map_err(|e| JsError::new(&e.to_string()))
 }
 
 /// authenticated variant: wraps share in SignedMessage for relay transport
@@ -256,8 +287,14 @@ pub fn frost_spend_sign_round2_signed(
     let commitments: Vec<String> = serde_json::from_str(commitments_json)
         .map_err(|e| JsError::new(&format!("bad commitments JSON: {}", e)))?;
     frost_spend::orchestrate::spend_sign_round2_signed(
-        &seed, key_package_hex, nonces_hex, &sighash, &alpha, &commitments,
-    ).map_err(|e| JsError::new(&e.to_string()))
+        &seed,
+        key_package_hex,
+        nonces_hex,
+        &sighash,
+        &alpha,
+        &commitments,
+    )
+    .map_err(|e| JsError::new(&e.to_string()))
 }
 
 /// coordinator: aggregate shares into Orchard SpendAuth signature (64 bytes hex)
@@ -276,8 +313,13 @@ pub fn frost_spend_aggregate(
     let shares: Vec<String> = serde_json::from_str(shares_json)
         .map_err(|e| JsError::new(&format!("bad shares JSON: {}", e)))?;
     frost_spend::orchestrate::spend_aggregate(
-        public_key_package_hex, &sighash, &alpha, &commitments, &shares,
-    ).map_err(|e| JsError::new(&e.to_string()))
+        public_key_package_hex,
+        &sighash,
+        &alpha,
+        &commitments,
+        &shares,
+    )
+    .map_err(|e| JsError::new(&e.to_string()))
 }
 
 // ── Multisig verifier: parse outputs from unsigned tx using spender's UFVK ──
@@ -319,9 +361,9 @@ pub fn frost_parse_tx_outputs(
     unsigned_tx_hex: &str,
     orchard_fvk_uview: &str,
 ) -> Result<String, JsError> {
-    use std::io::Cursor;
     use orchard::keys::Scope;
     use orchard::note_encryption::OrchardDomain;
+    use std::io::Cursor;
     use zcash_keys::keys::UnifiedFullViewingKey;
     use zcash_note_encryption::try_output_recovery_with_ovk;
     use zcash_primitives::transaction::Transaction;
@@ -329,15 +371,20 @@ pub fn frost_parse_tx_outputs(
     // into zcash_protocol; BranchId is re-exported there.
     use zcash_protocol::consensus::{BranchId, MainNetwork, TestNetwork};
 
-    let mut tx_bytes = hex::decode(unsigned_tx_hex)
-        .map_err(|e| JsError::new(&format!("bad tx hex: {}", e)))?;
+    let mut tx_bytes =
+        hex::decode(unsigned_tx_hex).map_err(|e| JsError::new(&format!("bad tx hex: {}", e)))?;
 
     // Capture the original branch id before any patching — sighash
     // personalization and header_digest both bake it in, so we MUST use
     // the real value (e.g. NU6.1 = 0x4dec_4df0) when reproducing sighash,
     // not the NU5 substitute we patch in to satisfy zcash_primitives.
     let original_branch_id: Option<u32> = if tx_bytes.len() >= 12 {
-        Some(u32::from_le_bytes([tx_bytes[8], tx_bytes[9], tx_bytes[10], tx_bytes[11]]))
+        Some(u32::from_le_bytes([
+            tx_bytes[8],
+            tx_bytes[9],
+            tx_bytes[10],
+            tx_bytes[11],
+        ]))
     } else {
         None
     };
@@ -353,9 +400,16 @@ pub fn frost_parse_tx_outputs(
     // outside this function.
     if tx_bytes.len() >= 12 {
         let branch = u32::from_le_bytes([tx_bytes[8], tx_bytes[9], tx_bytes[10], tx_bytes[11]]);
-        if !matches!(branch, 0 | 0x5ba8_1b19 | 0x76b8_09bb | 0x2bb4_0e60
-            | 0xf5b9_230b | 0xe9ff_75a6 | 0xc2d6_d0b4 | 0xc8e7_1055)
-        {
+        if !matches!(
+            branch,
+            0 | 0x5ba8_1b19
+                | 0x76b8_09bb
+                | 0x2bb4_0e60
+                | 0xf5b9_230b
+                | 0xe9ff_75a6
+                | 0xc2d6_d0b4
+                | 0xc8e7_1055
+        ) {
             let nu5 = 0xc2d6_d0b4u32.to_le_bytes();
             tx_bytes[8..12].copy_from_slice(&nu5);
         }
@@ -476,44 +530,39 @@ pub fn frost_parse_tx_outputs(
         .is_none_or(|t| t.vin.is_empty() && t.vout.is_empty())
         && tx.sapling_bundle().is_none();
 
-    let computed_sighash_hex: Option<String> = if let (Some(branch_id), true) =
-        (original_branch_id, pure_orchard)
-    {
-        // T.1 header_digest
-        let mut header_data = Vec::with_capacity(20);
-        header_data.extend_from_slice(&(5u32 | (1u32 << 31)).to_le_bytes());
-        header_data.extend_from_slice(&0x26A7270Au32.to_le_bytes());
-        header_data.extend_from_slice(&branch_id.to_le_bytes());
-        header_data.extend_from_slice(&tx.lock_time().to_le_bytes());
-        let expiry: u32 = u32::from(tx.expiry_height());
-        header_data.extend_from_slice(&expiry.to_le_bytes());
-        let header_digest = crate::blake2b_256_personal(b"ZTxIdHeadersHash", &header_data);
+    let computed_sighash_hex: Option<String> =
+        if let (Some(branch_id), true) = (original_branch_id, pure_orchard) {
+            // T.1 header_digest
+            let mut header_data = Vec::with_capacity(20);
+            header_data.extend_from_slice(&(5u32 | (1u32 << 31)).to_le_bytes());
+            header_data.extend_from_slice(&0x26A7270Au32.to_le_bytes());
+            header_data.extend_from_slice(&branch_id.to_le_bytes());
+            header_data.extend_from_slice(&tx.lock_time().to_le_bytes());
+            let expiry: u32 = u32::from(tx.expiry_height());
+            header_data.extend_from_slice(&expiry.to_le_bytes());
+            let header_digest = crate::blake2b_256_personal(b"ZTxIdHeadersHash", &header_data);
 
-        // T.2 transparent_digest (empty — we asserted pure-orchard above)
-        let transparent_digest = crate::blake2b_256_personal(b"ZTxIdTranspaHash", &[]);
-        // T.3 sapling_digest (empty)
-        let sapling_digest = crate::blake2b_256_personal(b"ZTxIdSaplingHash", &[]);
-        // T.4 orchard_digest. Single source of truth in lib.rs; ZIP-244
-        // changes only need to be applied there. The Result return on
-        // compute_orchard_digest is vestigial — the body has no early-Err
-        // paths, only Vec allocations + blake2b — so .expect() never fires.
-        let orchard_digest = crate::compute_orchard_digest(bundle)
-            .expect("compute_orchard_digest is infallible on well-formed orchard bundles");
+            // T.2 transparent_digest (empty — we asserted pure-orchard above)
+            let transparent_digest = crate::blake2b_256_personal(b"ZTxIdTranspaHash", &[]);
+            // T.3 sapling_digest (empty)
+            let sapling_digest = crate::blake2b_256_personal(b"ZTxIdSaplingHash", &[]);
+            // T.4 orchard_digest
+            let orchard_digest = compute_orchard_digest_legacy(bundle);
 
-        let mut personal = [0u8; 16];
-        personal[..12].copy_from_slice(b"ZcashTxHash_");
-        personal[12..16].copy_from_slice(&branch_id.to_le_bytes());
+            let mut personal = [0u8; 16];
+            personal[..12].copy_from_slice(b"ZcashTxHash_");
+            personal[12..16].copy_from_slice(&branch_id.to_le_bytes());
 
-        let mut input = Vec::with_capacity(128);
-        input.extend_from_slice(&header_digest);
-        input.extend_from_slice(&transparent_digest);
-        input.extend_from_slice(&sapling_digest);
-        input.extend_from_slice(&orchard_digest);
+            let mut input = Vec::with_capacity(128);
+            input.extend_from_slice(&header_digest);
+            input.extend_from_slice(&transparent_digest);
+            input.extend_from_slice(&sapling_digest);
+            input.extend_from_slice(&orchard_digest);
 
-        Some(hex::encode(crate::blake2b_256_personal(&personal, &input)))
-    } else {
-        None
-    };
+            Some(hex::encode(crate::blake2b_256_personal(&personal, &input)))
+        } else {
+            None
+        };
 
     Ok(serde_json::json!({
         "actions": actions_json,
@@ -526,6 +575,52 @@ pub fn frost_parse_tx_outputs(
         "computed_sighash_hex": computed_sighash_hex,
     })
     .to_string())
+}
+
+/// ZIP-244 orchard tx body digest (T.4). Mirrors `compute_orchard_digest`
+/// in `lib.rs` byte-for-byte; consumes what `tx.orchard_bundle()` returns
+/// from the librustzcash 5333c01b zcash_primitives.
+fn compute_orchard_digest_legacy<A: orchard::bundle::Authorization>(
+    bundle: &orchard::Bundle<A, zcash_protocol::value::ZatBalance>,
+) -> [u8; 32] {
+    let mut compact_data = Vec::new();
+    let mut memos_data = Vec::new();
+    let mut noncompact_data = Vec::new();
+
+    for action in bundle.actions().iter() {
+        compact_data.extend_from_slice(&action.nullifier().to_bytes());
+        compact_data.extend_from_slice(&action.cmx().to_bytes());
+        let enc = &action.encrypted_note().enc_ciphertext;
+        let epk = &action.encrypted_note().epk_bytes;
+        compact_data.extend_from_slice(epk);
+        compact_data.extend_from_slice(&enc[..52]);
+
+        memos_data.extend_from_slice(&enc[52..564]);
+
+        noncompact_data.extend_from_slice(&action.cv_net().to_bytes());
+        noncompact_data.extend_from_slice(&<[u8; 32]>::from(action.rk()));
+        noncompact_data.extend_from_slice(&enc[564..580]);
+        noncompact_data.extend_from_slice(&action.encrypted_note().out_ciphertext);
+    }
+
+    let compact_digest = crate::blake2b_256_personal(b"ZTxIdOrcActCHash", &compact_data);
+    let memos_digest = crate::blake2b_256_personal(b"ZTxIdOrcActMHash", &memos_data);
+    let noncompact_digest = crate::blake2b_256_personal(b"ZTxIdOrcActNHash", &noncompact_data);
+
+    let mut orchard_data = Vec::new();
+    orchard_data.extend_from_slice(&compact_digest);
+    orchard_data.extend_from_slice(&memos_digest);
+    orchard_data.extend_from_slice(&noncompact_digest);
+    orchard_data.push(
+        bundle
+            .flags()
+            .to_byte(orchard::bundle::BundleFormat::PreNu6_3)
+            .expect("V5 legacy orchard bundle flags always fit the pre-NU6.3 format"),
+    );
+    orchard_data.extend_from_slice(&bundle.value_balance().to_i64_le_bytes());
+    orchard_data.extend_from_slice(&bundle.anchor().to_bytes());
+
+    crate::blake2b_256_personal(b"ZTxIdOrchardHash", &orchard_data)
 }
 
 /// Inspect a PCZT's orchard outputs + recompute its canonical ZIP-244 sighash,
@@ -549,8 +644,7 @@ pub fn frost_inspect_pczt_outputs(
     use zcash_primitives::transaction::txid::TxIdDigester;
     use zcash_protocol::consensus::{MainNetwork, TestNetwork};
 
-    let bytes = hex::decode(pczt_hex)
-        .map_err(|e| JsError::new(&format!("bad pczt hex: {}", e)))?;
+    let bytes = hex::decode(pczt_hex).map_err(|e| JsError::new(&format!("bad pczt hex: {}", e)))?;
     let pczt = pczt::Pczt::parse(&bytes)
         .map_err(|e| JsError::new(&format!("pczt parse failed: {:?}", e)))?;
 
@@ -662,7 +756,6 @@ pub fn frost_inspect_pczt_outputs(
     .to_string())
 }
 
-
 // ── anchor attestation (domain-separated from spend auth) ──
 //
 // Signing uses the existing orchestrate::sign_round1/sign_round2/aggregate_shares
@@ -702,7 +795,11 @@ pub fn frost_attestation_verify(
         .map_err(|_| JsError::new("attestation must be 96 bytes (sig 64 + randomizer 32)"))?;
 
     frost_spend::attestation::verify_from_bytes(
-        &attestation, public_key_package_hex, &anchor, anchor_height, mainnet,
+        &attestation,
+        public_key_package_hex,
+        &anchor,
+        anchor_height,
+        mainnet,
     )
     .map_err(|e| JsError::new(&e.to_string()))
 }
@@ -710,15 +807,16 @@ pub fn frost_attestation_verify(
 // ── helpers ──
 
 fn parse_seed(hex_str: &str) -> Result<[u8; 32], JsError> {
-    let bytes = hex::decode(hex_str)
-        .map_err(|e| JsError::new(&format!("bad seed hex: {}", e)))?;
-    bytes.try_into()
+    let bytes = hex::decode(hex_str).map_err(|e| JsError::new(&format!("bad seed hex: {}", e)))?;
+    bytes
+        .try_into()
         .map_err(|_| JsError::new("seed must be 32 bytes"))
 }
 
 fn parse_32(hex_str: &str, name: &str) -> Result<[u8; 32], JsError> {
-    let bytes = hex::decode(hex_str)
-        .map_err(|e| JsError::new(&format!("bad {} hex: {}", name, e)))?;
-    bytes.try_into()
+    let bytes =
+        hex::decode(hex_str).map_err(|e| JsError::new(&format!("bad {} hex: {}", name, e)))?;
+    bytes
+        .try_into()
         .map_err(|_| JsError::new(&format!("{} must be 32 bytes", name)))
 }

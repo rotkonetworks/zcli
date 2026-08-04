@@ -343,8 +343,7 @@ impl CompactTxStreamer for LwdService {
         let block = InternalBlock::from_zebrad(&self.zebrad, height).await?;
 
         let prev_hash = prev_hash_for(&self.zebrad, height).await;
-        let (sapling_size, orchard_size, ironwood_size) =
-            tree_sizes_at(&self.zebrad, height).await;
+        let (sapling_size, orchard_size, ironwood_size) = tree_sizes_at(&self.zebrad, height).await;
 
         Ok(Response::new(to_lwd_block(
             &block,
@@ -382,15 +381,15 @@ impl CompactTxStreamer for LwdService {
                         return;
                     }
                 };
-                let block =
-                    match select_or_cancel!(tx, InternalBlock::from_zebrad(&zebrad, height)) {
-                        Ok(b) => b,
-                        Err(e) => {
-                            warn!("lwd range height {}: {}", height, e);
-                            let _ = tx.send(Err(Status::internal(e.to_string()))).await;
-                            return;
-                        }
-                    };
+                let block = match select_or_cancel!(tx, InternalBlock::from_zebrad(&zebrad, height))
+                {
+                    Ok(b) => b,
+                    Err(e) => {
+                        warn!("lwd range height {}: {}", height, e);
+                        let _ = tx.send(Err(Status::internal(e.to_string()))).await;
+                        return;
+                    }
+                };
                 let prev_hash = select_or_cancel!(tx, prev_hash_for(&zebrad, height));
                 let (sapling_size, orchard_size, ironwood_size) =
                     select_or_cancel!(tx, tree_sizes_at(&zebrad, height));

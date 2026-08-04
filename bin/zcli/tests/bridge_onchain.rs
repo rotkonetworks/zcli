@@ -35,10 +35,16 @@ mod tests {
         let seed = zecli::key::load_ssh_seed(&key_path).unwrap();
 
         zecli::ops::send::send(
-            &seed, "0.00020", &bridge_addr,
+            &seed,
+            "0.00020",
+            &bridge_addr,
             Some("bridge e2e onchain test"),
-            &endpoint(), true, false,
-        ).await.expect("send to bridge failed");
+            &endpoint(),
+            true,
+            false,
+        )
+        .await
+        .expect("send to bridge failed");
         eprintln!("  funded! waiting for confirmation...");
 
         // ── step 4: sync bridge wallet with FVK ──
@@ -49,7 +55,9 @@ mod tests {
         // skip actions commitment verification for fresh bridge wallet
         std::env::set_var("ZCLI_NO_VERIFY", "1");
 
-        let client = zecli::client::ZidecarClient::connect(&endpoint()).await.unwrap();
+        let client = zecli::client::ZidecarClient::connect(&endpoint())
+            .await
+            .unwrap();
         let (pre_tip, _) = client.get_tip().await.unwrap();
         // scan from 1 block before funding tx so we catch it
         let scan_from = pre_tip.saturating_sub(1);
@@ -71,11 +79,21 @@ mod tests {
             }
         }
 
-        eprintln!("  syncing from {} with position {}...", scan_from, position_at_scan);
+        eprintln!(
+            "  syncing from {} with position {}...",
+            scan_from, position_at_scan
+        );
         let found = zecli::ops::sync::sync_with_fvk(
-            &fvk, &endpoint(), "", true, false,
-            Some(scan_from), Some(position_at_scan),
-        ).await.expect("bridge sync failed");
+            &fvk,
+            &endpoint(),
+            "",
+            true,
+            false,
+            Some(scan_from),
+            Some(position_at_scan),
+        )
+        .await
+        .expect("bridge sync failed");
         eprintln!("  found {} notes", found);
         assert!(found > 0, "no notes found — tx may not have confirmed yet");
 
@@ -85,13 +103,16 @@ mod tests {
         // send back to claude's address (0.00001 ZEC)
         let claude_fvk = {
             let sk = orchard::keys::SpendingKey::from_zip32_seed(
-                seed.as_bytes(), 133, zip32::AccountId::ZERO,
-            ).unwrap();
+                seed.as_bytes(),
+                133,
+                zip32::AccountId::ZERO,
+            )
+            .unwrap();
             orchard::keys::FullViewingKey::from(&sk)
         };
         let claude_addr = claude_fvk.address_at(0u64, orchard::keys::Scope::External);
-        let claude_addr_str = zecli::address::encode_unified_address(&claude_addr, true)
-            .expect("encode claude addr");
+        let claude_addr_str =
+            zecli::address::encode_unified_address(&claude_addr, true).expect("encode claude addr");
 
         let txid = zecli::ops::bridge::bridge_spend(
             &dkg.osst_package,
@@ -102,7 +123,9 @@ mod tests {
             Some("bridge e2e return"),
             &endpoint(),
             true,
-        ).await.expect("bridge spend failed");
+        )
+        .await
+        .expect("bridge spend failed");
 
         eprintln!("\n=== BRIDGE ON-CHAIN E2E: SUCCESS ===");
         eprintln!("  txid: {}", txid);

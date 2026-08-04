@@ -31,7 +31,7 @@
 use crate::{
     frost_keys,
     message::SignedMessage,
-    orchestrate::{self, Error, from_hex},
+    orchestrate::{self, from_hex, Error},
 };
 
 // ── bridge key material ──
@@ -95,7 +95,9 @@ pub fn bridge_dkg_dealer() -> Result<BridgeDkgResult, Error> {
     let (seed_1, kp_1) = unwrap_dealer_pkg(&dealer.packages[1])?;
 
     let pubkeys: frost_keys::PublicKeyPackage = from_hex(&dealer.public_key_package_hex)?;
-    let vk_bytes = pubkeys.verifying_key().serialize()
+    let vk_bytes = pubkeys
+        .verifying_key()
+        .serialize()
         .map_err(|_| Error::Serialize("serialize vk".into()))?;
 
     // derive FVK ONCE — the random nk/rivk are fixed at DKG time and MUST be persisted
@@ -155,7 +157,8 @@ pub struct BridgeSigningState {
 pub fn bridge_sign_round1(pkg: &BridgeKeyPackage) -> Result<BridgeSigningState, Error> {
     let seed = hex::decode(&pkg.ephemeral_seed)
         .map_err(|e| Error::Serialize(format!("bad seed: {}", e)))?;
-    let seed: [u8; 32] = seed.try_into()
+    let seed: [u8; 32] = seed
+        .try_into()
         .map_err(|_| Error::Serialize("seed must be 32 bytes".into()))?;
 
     let (nonces, commitment) = orchestrate::sign_round1(&seed, &pkg.key_package)?;
@@ -304,12 +307,8 @@ mod tests {
         let mut alpha = [0u8; 32];
         alpha[0] = 0x01;
 
-        let sig = bridge_sign_local(
-            &dkg.osst_package,
-            &dkg.validator_package,
-            &sighash,
-            &alpha,
-        ).unwrap();
+        let sig =
+            bridge_sign_local(&dkg.osst_package, &dkg.validator_package, &sighash, &alpha).unwrap();
 
         assert_eq!(sig.len(), 128, "SpendAuth sig should be 64 bytes (128 hex)");
         eprintln!("bridge 2-of-2 SpendAuth: {}...{}", &sig[..16], &sig[112..]);
@@ -345,12 +344,10 @@ mod tests {
 
         let commits = vec![s_a.commitment_hex.clone(), s_b.commitment_hex.clone()];
 
-        let share_a = bridge_sign_round2(
-            &dkg.osst_package, &s_a, &sighash, &alpha, &commits,
-        ).unwrap();
-        let share_b = bridge_sign_round2(
-            &dkg.validator_package, &s_b, &sighash, &alpha, &commits,
-        ).unwrap();
+        let share_a =
+            bridge_sign_round2(&dkg.osst_package, &s_a, &sighash, &alpha, &commits).unwrap();
+        let share_b =
+            bridge_sign_round2(&dkg.validator_package, &s_b, &sighash, &alpha, &commits).unwrap();
 
         let sig = bridge_aggregate(
             &dkg.public_key_package_hex,
@@ -358,7 +355,8 @@ mod tests {
             &alpha,
             &commits,
             &[share_a, share_b],
-        ).unwrap();
+        )
+        .unwrap();
 
         assert_eq!(sig.len(), 128);
     }

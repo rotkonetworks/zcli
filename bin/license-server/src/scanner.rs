@@ -38,8 +38,7 @@ pub struct ReceivedMemo {
 /// Parse an Orchard FullViewingKey from hex (96 bytes raw).
 pub fn parse_fvk(hex_str: &str) -> anyhow::Result<FullViewingKey> {
     let stripped = hex_str.trim().strip_prefix("0x").unwrap_or(hex_str.trim());
-    let bytes = hex::decode(stripped)
-        .map_err(|e| anyhow::anyhow!("invalid FVK hex: {e}"))?;
+    let bytes = hex::decode(stripped).map_err(|e| anyhow::anyhow!("invalid FVK hex: {e}"))?;
     if bytes.len() != 96 {
         anyhow::bail!("FVK must be 96 bytes (got {})", bytes.len());
     }
@@ -54,9 +53,15 @@ struct CompactOutput {
 }
 
 impl ShieldedOutput<OrchardDomain, COMPACT_NOTE_SIZE> for CompactOutput {
-    fn ephemeral_key(&self) -> EphemeralKeyBytes { EphemeralKeyBytes(self.epk) }
-    fn cmstar_bytes(&self) -> [u8; 32] { self.cmx }
-    fn enc_ciphertext(&self) -> &[u8; COMPACT_NOTE_SIZE] { &self.ct }
+    fn ephemeral_key(&self) -> EphemeralKeyBytes {
+        EphemeralKeyBytes(self.epk)
+    }
+    fn cmstar_bytes(&self) -> [u8; 32] {
+        self.cmx
+    }
+    fn enc_ciphertext(&self) -> &[u8; COMPACT_NOTE_SIZE] {
+        &self.ct
+    }
 }
 
 struct FullOutput {
@@ -66,9 +71,15 @@ struct FullOutput {
 }
 
 impl ShieldedOutput<OrchardDomain, ENC_CIPHERTEXT_SIZE> for FullOutput {
-    fn ephemeral_key(&self) -> EphemeralKeyBytes { EphemeralKeyBytes(self.epk) }
-    fn cmstar_bytes(&self) -> [u8; 32] { self.cmx }
-    fn enc_ciphertext(&self) -> &[u8; ENC_CIPHERTEXT_SIZE] { &self.enc }
+    fn ephemeral_key(&self) -> EphemeralKeyBytes {
+        EphemeralKeyBytes(self.epk)
+    }
+    fn cmstar_bytes(&self) -> [u8; 32] {
+        self.cmx
+    }
+    fn enc_ciphertext(&self) -> &[u8; ENC_CIPHERTEXT_SIZE] {
+        &self.enc
+    }
 }
 
 /// Sync from `last_height + 1` to the current tip and return all matched memos.
@@ -78,16 +89,24 @@ pub async fn scan(
     fvk: &FullViewingKey,
     last_height: u32,
 ) -> anyhow::Result<(u32, Vec<ReceivedMemo>)> {
-    let (tip, _) = client.get_tip().await
+    let (tip, _) = client
+        .get_tip()
+        .await
         .map_err(|e| anyhow::anyhow!("get_tip: {e}"))?;
 
-    let start = last_height.saturating_add(1).max(ORCHARD_ACTIVATION_MAINNET);
+    let start = last_height
+        .saturating_add(1)
+        .max(ORCHARD_ACTIVATION_MAINNET);
     if start > tip {
         static LOGGED_ONCE: std::sync::atomic::AtomicBool =
             std::sync::atomic::AtomicBool::new(false);
         let first = !LOGGED_ONCE.swap(true, std::sync::atomic::Ordering::Relaxed);
         if first || start > tip + 100 {
-            tracing::info!("sync start from: {}, current_highest_height: {}", start, tip);
+            tracing::info!(
+                "sync start from: {}, current_highest_height: {}",
+                start,
+                tip
+            );
         }
         return Ok((last_height, vec![]));
     }
@@ -100,24 +119,36 @@ pub async fn scan(
 
     while current <= tip {
         let end = (current + BATCH_SIZE - 1).min(tip);
-        let blocks = client.get_compact_blocks(current, end).await
+        let blocks = client
+            .get_compact_blocks(current, end)
+            .await
             .map_err(|e| anyhow::anyhow!("get_compact_blocks {current}..{end}: {e}"))?;
 
         for block in &blocks {
             for action in &block.actions {
-                if action.ciphertext.len() < 52 { continue; }
+                if action.ciphertext.len() < 52 {
+                    continue;
+                }
 
                 let mut ct = [0u8; 52];
                 ct.copy_from_slice(&action.ciphertext[..52]);
 
-                let nf = match orchard::note::Nullifier::from_bytes(&action.nullifier).into_option() {
-                    Some(n) => n, None => continue,
+                let nf = match orchard::note::Nullifier::from_bytes(&action.nullifier).into_option()
+                {
+                    Some(n) => n,
+                    None => continue,
                 };
-                let cmx_obj = match orchard::note::ExtractedNoteCommitment::from_bytes(&action.cmx).into_option() {
-                    Some(c) => c, None => continue,
+                let cmx_obj = match orchard::note::ExtractedNoteCommitment::from_bytes(&action.cmx)
+                    .into_option()
+                {
+                    Some(c) => c,
+                    None => continue,
                 };
                 let compact = orchard::note_encryption::CompactAction::from_parts(
-                    nf, cmx_obj, EphemeralKeyBytes(action.ephemeral_key), ct,
+                    nf,
+                    cmx_obj,
+                    EphemeralKeyBytes(action.ephemeral_key),
+                    ct,
                 );
                 let domain = OrchardDomain::for_compact_action(&compact);
 
@@ -130,7 +161,9 @@ pub async fn scan(
                 // try compact decrypt first (fast, doesn't need full ciphertext)
                 let Some((note, _addr)) =
                     try_compact_note_decryption(&domain, &ivk_ext, &compact_output)
-                else { continue };
+                else {
+                    continue;
+                };
 
                 // verify cmx (defense against malicious zidecar)
                 let recomputed = orchard::note::ExtractedNoteCommitment::from(note.commitment());
@@ -140,10 +173,14 @@ pub async fn scan(
                 }
 
                 // fetch full tx + extract this action's full ciphertext
-                let raw_tx = client.get_transaction(&action.txid).await
+                let raw_tx = client
+                    .get_transaction(&action.txid)
+                    .await
                     .map_err(|e| anyhow::anyhow!("get_transaction: {e}"))?;
                 let Some(enc) = zync_core::sync::extract_enc_ciphertext(
-                    &raw_tx, &action.cmx, &action.ephemeral_key,
+                    &raw_tx,
+                    &action.cmx,
+                    &action.ephemeral_key,
                 ) else {
                     tracing::debug!("no matching action in raw tx");
                     continue;
@@ -157,14 +194,18 @@ pub async fn scan(
                 };
                 let Some((_note2, _addr2, memo_bytes)) =
                     try_note_decryption(&domain, &ivk_ext, &full_output)
-                else { continue };
+                else {
+                    continue;
+                };
 
                 let memo = strip_null_padding(&memo_bytes);
 
                 // fetch this block's on-chain timestamp — authoritative source
                 // for license expiry. one extra RPC per credited memo, which
                 // is rare in practice.
-                let block_time = client.get_block_time(block.height).await
+                let block_time = client
+                    .get_block_time(block.height)
+                    .await
                     .map_err(|e| anyhow::anyhow!("get_block_time {}: {e}", block.height))?;
 
                 found.push(ReceivedMemo {
@@ -184,6 +225,10 @@ pub async fn scan(
 }
 
 fn strip_null_padding(bytes: &[u8]) -> String {
-    let end = bytes.iter().rposition(|&b| b != 0).map(|i| i + 1).unwrap_or(0);
+    let end = bytes
+        .iter()
+        .rposition(|&b| b != 0)
+        .map(|i| i + 1)
+        .unwrap_or(0);
     String::from_utf8_lossy(&bytes[..end]).to_string()
 }

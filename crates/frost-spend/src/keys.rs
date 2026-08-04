@@ -70,19 +70,17 @@ pub fn group_ak(pubkey_package: &PublicKeyPackage) -> Option<SpendValidatingKey>
 }
 
 /// derive an Orchard receiving address from the FROST group FVK.
-pub fn derive_address(
-    fvk: &FullViewingKey,
-    diversifier_index: u32,
-) -> orchard::Address {
+pub fn derive_address(fvk: &FullViewingKey, diversifier_index: u32) -> orchard::Address {
     let diversifier = orchard::keys::Diversifier::from_bytes(
-        diversifier_index.to_le_bytes()
+        diversifier_index
+            .to_le_bytes()
             .iter()
             .copied()
             .chain(std::iter::repeat(0))
             .take(11)
             .collect::<Vec<_>>()
             .try_into()
-            .unwrap()
+            .unwrap(),
     );
     fvk.address(diversifier, orchard::keys::Scope::External)
 }

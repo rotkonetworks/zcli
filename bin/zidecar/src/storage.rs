@@ -37,7 +37,10 @@ impl Storage {
         // uses commit_concurrency(1). Stay at 1 until upstream addresses it.
         let nomt_threads: usize = 1;
         nomt_opts.commit_concurrency(nomt_threads);
-        info!("nomt commit_concurrency: {} thread (pinned for v1.0.3 safety)", nomt_threads);
+        info!(
+            "nomt commit_concurrency: {} thread (pinned for v1.0.3 safety)",
+            nomt_threads
+        );
 
         let nomt = Nomt::<Blake3Hasher>::open(nomt_opts)
             .map_err(|e| ZidecarError::Storage(format!("nomt: {}", e)))?;
@@ -212,11 +215,7 @@ impl Storage {
     /// Batch insert orchard cmxs with block height (for commitment sync).
     /// Value = block height (4 bytes LE); NOMT hashes this to derive value_hash.
     /// Existence in NOMT is what the wallet's verify_commitment_proof checks.
-    pub fn batch_insert_commitments(
-        &self,
-        cmxs: &[[u8; 32]],
-        block_height: u32,
-    ) -> Result<Root> {
+    pub fn batch_insert_commitments(&self, cmxs: &[[u8; 32]], block_height: u32) -> Result<Root> {
         if cmxs.is_empty() {
             return Ok(self.nomt.root());
         }

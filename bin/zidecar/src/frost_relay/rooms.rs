@@ -120,7 +120,10 @@ impl RoomManager {
         code: &str,
         participant_id: Vec<u8>,
     ) -> Result<Arc<Room>, &'static str> {
-        let room = self.get_room(code).await.ok_or("room not found or expired")?;
+        let room = self
+            .get_room(code)
+            .await
+            .ok_or("room not found or expired")?;
 
         let mut participants = room.participants.write().await;
         if participants.iter().any(|p| p == &participant_id) {
@@ -150,7 +153,10 @@ impl RoomManager {
         sender_id: Vec<u8>,
         payload: Vec<u8>,
     ) -> Result<u64, &'static str> {
-        let room = self.get_room(code).await.ok_or("room not found or expired")?;
+        let room = self
+            .get_room(code)
+            .await
+            .ok_or("room not found or expired")?;
 
         // verify sender is a participant
         let participants = room.participants.read().await;

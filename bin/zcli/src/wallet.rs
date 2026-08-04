@@ -91,8 +91,17 @@ impl WalletNote {
             .ok_or_else(|| Error::Wallet("invalid rho bytes".into()))?;
         let rseed = Option::from(RandomSeed::from_bytes(self.rseed, &rho))
             .ok_or_else(|| Error::Wallet("invalid rseed bytes".into()))?;
-        Option::from(orchard::Note::from_parts(recipient, value, rho, rseed))
-            .ok_or_else(|| Error::Wallet("failed to reconstruct note".into()))
+        // NU6.3 fork: Note::from_parts gained a trailing NoteVersion.
+        // TODO(ironwood correctness): V2 (ZIP-212) is the pre-NU6.3 plaintext;
+        // Ironwood notes use V3 (quantum-recoverable) plaintexts post-activation.
+        Option::from(orchard::Note::from_parts(
+            recipient,
+            value,
+            rho,
+            rseed,
+            orchard::note::NoteVersion::V2,
+        ))
+        .ok_or_else(|| Error::Wallet("failed to reconstruct note".into()))
     }
 }
 
@@ -280,7 +289,7 @@ impl Wallet {
             .open_tree(NOTES_TREE)
             .map_err(|e| Error::Wallet(format!("open notes tree: {}", e)))?;
         let value = tree
-            .get::<&[u8]>(nullifier.as_ref())
+            .get(&nullifier[..])
             .map_err(|e| Error::Wallet(format!("get note: {}", e)))?
             .ok_or_else(|| Error::Wallet("note not found".into()))?;
         serde_json::from_slice(&value)
@@ -293,7 +302,7 @@ impl Wallet {
             .db
             .open_tree(NULLIFIERS_TREE)
             .map_err(|e| Error::Wallet(format!("open nullifiers tree: {}", e)))?;
-        tree.insert::<&[u8], &[u8; 1]>(nullifier.as_ref(), &[1u8])
+        tree.insert(&nullifier[..], &[1u8])
             .map_err(|e| Error::Wallet(format!("mark spent: {}", e)))?;
         Ok(())
     }
@@ -303,7 +312,7 @@ impl Wallet {
             .db
             .open_tree(NULLIFIERS_TREE)
             .map_err(|e| Error::Wallet(format!("open nullifiers tree: {}", e)))?;
-        tree.contains_key::<&[u8]>(nullifier.as_ref())
+        tree.contains_key(&nullifier[..])
             .map_err(|e| Error::Wallet(format!("check spent: {}", e)))
     }
 
@@ -622,7 +631,7 @@ impl Wallet {
 
     pub fn set_actions_commitment(&self, commitment: &[u8; 32]) -> Result<(), Error> {
         self.db
-            .insert::<&[u8], &[u8]>(ACTIONS_COMMITMENT_KEY, commitment.as_ref())
+            .insert(ACTIONS_COMMITMENT_KEY, &commitment[..])
             .map_err(|e| Error::Wallet(format!("write actions_commitment: {}", e)))?;
         Ok(())
     }
@@ -632,7 +641,7 @@ impl Wallet {
     /// store a 96-byte orchard full viewing key in the watch wallet
     pub fn store_fvk(&self, fvk_bytes: &[u8; 96]) -> Result<(), Error> {
         self.db
-            .insert::<&[u8], &[u8]>(FVK_KEY, fvk_bytes.as_ref())
+            .insert(FVK_KEY, &fvk_bytes[..])
             .map_err(|e| Error::Wallet(format!("write fvk: {}", e)))?;
         Ok(())
     }

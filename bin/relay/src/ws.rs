@@ -16,18 +16,21 @@
 //!     {"t":"left","nick":"bob","count":1}
 //!     {"t":"error","msg":"room not found"}
 
-use std::sync::Arc;
 use axum::{
-    extract::{ws::{Message, WebSocket, WebSocketUpgrade}, State},
+    extract::{
+        ws::{Message, WebSocket, WebSocketUpgrade},
+        State,
+    },
     response::IntoResponse,
     routing::get,
     Router,
 };
 use futures::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use tracing::info;
 
-use crate::{RoomManager, RoomBroadcast};
+use crate::{RoomBroadcast, RoomManager};
 
 /// Don't replay messages older than this when a client joins. Avoids
 /// dragging stale ciphertext from earlier client/key versions into the
@@ -89,11 +92,20 @@ enum ServerMsg {
     #[serde(rename = "created")]
     Created { room: String },
     #[serde(rename = "joined")]
-    Joined { room: String, nick: String, count: u32 },
+    Joined {
+        room: String,
+        nick: String,
+        count: u32,
+    },
     #[serde(rename = "left")]
     Left { nick: String, count: u32 },
     #[serde(rename = "msg")]
-    Msg { nick: String, text: String, seq: u64, ts: u64 },
+    Msg {
+        nick: String,
+        text: String,
+        seq: u64,
+        ts: u64,
+    },
     #[serde(rename = "error")]
     Error { msg: String },
     #[serde(rename = "system")]
@@ -170,7 +182,9 @@ async fn handle_socket(socket: WebSocket, manager: Arc<RoomManager>) {
         let client_msg: ClientMsg = match serde_json::from_str(&text) {
             Ok(m) => m,
             Err(_) => {
-                let _ = out_tx.send(ServerMsg::Error { msg: "invalid json".into() });
+                let _ = out_tx.send(ServerMsg::Error {
+                    msg: "invalid json".into(),
+                });
                 continue;
             }
         };
@@ -181,12 +195,17 @@ async fn handle_socket(socket: WebSocket, manager: Arc<RoomManager>) {
                 // 24h sliding TTL (activity extends it) instead of ttl=0:
                 // immortal WS rooms accumulate to MAX_ROOMS and then block
                 // every create, including gRPC ones — an unauthenticated DoS.
-                match manager.create_room_with_code(room, 100, WS_ROOM_TTL_SECS).await {
+                match manager
+                    .create_room_with_code(room, 100, WS_ROOM_TTL_SECS)
+                    .await
+                {
                     Ok((code, _)) => {
                         info!("ws: room created {} by {}", code, current_nick);
                         let _ = out_tx.send(ServerMsg::Created { room: code });
                     }
-                    Err(e) => { let _ = out_tx.send(ServerMsg::Error { msg: e.into() }); }
+                    Err(e) => {
+                        let _ = out_tx.send(ServerMsg::Error { msg: e.into() });
+                    }
                 }
             }
 
@@ -207,7 +226,9 @@ async fn handle_socket(socket: WebSocket, manager: Arc<RoomManager>) {
                         for m in existing.iter().filter(|m| m.timestamp_ms >= cutoff_ms) {
                             let payload = String::from_utf8_lossy(&m.payload);
                             let (msg_nick, msg_text) = match payload.find('\0') {
-                                Some(pos) => (payload[..pos].to_string(), payload[pos+1..].to_string()),
+                                Some(pos) => {
+                                    (payload[..pos].to_string(), payload[pos + 1..].to_string())
+                                }
                                 None => ("???".to_string(), payload.to_string()),
                             };
                             let _ = out_tx.send(ServerMsg::Msg {
@@ -218,7 +239,11 @@ async fn handle_socket(socket: WebSocket, manager: Arc<RoomManager>) {
                             });
                         }
 
-                        let _ = out_tx.send(ServerMsg::Joined { room: room.clone(), nick, count });
+                        let _ = out_tx.send(ServerMsg::Joined {
+                            room: room.clone(),
+                            nick,
+                            count,
+                        });
                         current_room = Some(room.clone());
 
                         // subscribe to live events
@@ -232,7 +257,10 @@ async fn handle_socket(socket: WebSocket, manager: Arc<RoomManager>) {
                                         // payload format: "nick\0text"
                                         let payload = String::from_utf8_lossy(&m.payload);
                                         let (msg_nick, msg_text) = match payload.find('\0') {
-                                            Some(pos) => (payload[..pos].to_string(), payload[pos+1..].to_string()),
+                                            Some(pos) => (
+                                                payload[..pos].to_string(),
+                                                payload[pos + 1..].to_string(),
+                                            ),
                                             None => ("???".to_string(), payload.to_string()),
                                         };
                                         let _ = out_tx2.send(ServerMsg::Msg {
@@ -242,33 +270,60 @@ async fn handle_socket(socket: WebSocket, manager: Arc<RoomManager>) {
                                             ts: m.timestamp_ms,
                                         });
                                     }
-                                    RoomBroadcast::Joined { participant_id, count, .. } => {
+                                    RoomBroadcast::Joined {
+                                        participant_id,
+                                        count,
+                                        ..
+                                    } => {
                                         let _ = out_tx2.send(ServerMsg::System {
-                                            text: format!("{}... joined ({})", id_prefix(&participant_id), count),
+                                            text: format!(
+                                                "{}... joined ({})",
+                                                id_prefix(&participant_id),
+                                                count
+                                            ),
                                         });
                                     }
-                                    RoomBroadcast::Left { participant_id, count } => {
+                                    RoomBroadcast::Left {
+                                        participant_id,
+                                        count,
+                                    } => {
                                         let _ = out_tx2.send(ServerMsg::Left {
                                             nick: format!("{}...", id_prefix(&participant_id)),
                                             count,
                                         });
                                     }
-                                    RoomBroadcast::Announce { v, server, pubkey, nick, ts, sig } => {
+                                    RoomBroadcast::Announce {
+                                        v,
+                                        server,
+                                        pubkey,
+                                        nick,
+                                        ts,
+                                        sig,
+                                    } => {
                                         // forward verbatim to client; verification
                                         // is done client-side under zid-auth-v1.
                                         let _ = out_tx2.send(ServerMsg::Announce {
-                                            v, server, pubkey, nick, ts, sig,
+                                            v,
+                                            server,
+                                            pubkey,
+                                            nick,
+                                            ts,
+                                            sig,
                                         });
                                     }
                                     RoomBroadcast::Closed(reason) => {
-                                        let _ = out_tx2.send(ServerMsg::System { text: format!("room closed: {}", reason) });
+                                        let _ = out_tx2.send(ServerMsg::System {
+                                            text: format!("room closed: {}", reason),
+                                        });
                                         break;
                                     }
                                 }
                             }
                         });
                     }
-                    Err(e) => { let _ = out_tx.send(ServerMsg::Error { msg: e.into() }); }
+                    Err(e) => {
+                        let _ = out_tx.send(ServerMsg::Error { msg: e.into() });
+                    }
                 }
             }
 
@@ -276,12 +331,19 @@ async fn handle_socket(socket: WebSocket, manager: Arc<RoomManager>) {
                 if let Some(ref room) = current_room {
                     // pack nick + text as "nick\0text" in payload, use participant_id as sender
                     let payload = format!("{}\0{}", current_nick, text);
-                    match manager.send_message(room, participant_id.clone(), payload.into_bytes()).await {
+                    match manager
+                        .send_message(room, participant_id.clone(), payload.into_bytes())
+                        .await
+                    {
                         Ok(_) => {} // message will come back via broadcast
-                        Err(e) => { let _ = out_tx.send(ServerMsg::Error { msg: e.into() }); }
+                        Err(e) => {
+                            let _ = out_tx.send(ServerMsg::Error { msg: e.into() });
+                        }
                     }
                 } else {
-                    let _ = out_tx.send(ServerMsg::Error { msg: "not in a room. use /j <room>".into() });
+                    let _ = out_tx.send(ServerMsg::Error {
+                        msg: "not in a room. use /j <room>".into(),
+                    });
                 }
             }
 
@@ -290,10 +352,19 @@ async fn handle_socket(socket: WebSocket, manager: Arc<RoomManager>) {
                     let _ = manager.leave_room(room, participant_id.clone()).await;
                 }
                 current_room = None;
-                let _ = out_tx.send(ServerMsg::System { text: "left channel".into() });
+                let _ = out_tx.send(ServerMsg::System {
+                    text: "left channel".into(),
+                });
             }
 
-            ClientMsg::Announce { v, server, pubkey, nick, ts, sig } => {
+            ClientMsg::Announce {
+                v,
+                server,
+                pubkey,
+                nick,
+                ts,
+                sig,
+            } => {
                 // forward the announce to other room members. relay does
                 // not verify signatures - clients verify under
                 // zid-auth-v1 (see apps/extension/src/zitadel/main.tsx).
@@ -303,7 +374,12 @@ async fn handle_socket(socket: WebSocket, manager: Arc<RoomManager>) {
                 if let Some(ref room) = current_room {
                     if let Some(r) = manager.get_room(room).await {
                         let _ = r.tx.send(crate::RoomBroadcast::Announce {
-                            v, server, pubkey, nick, ts, sig,
+                            v,
+                            server,
+                            pubkey,
+                            nick,
+                            ts,
+                            sig,
                         });
                     }
                 }

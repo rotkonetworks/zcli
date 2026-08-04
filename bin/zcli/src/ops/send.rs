@@ -111,7 +111,16 @@ async fn send_to_transparent(
     if !json {
         eprintln!("building merkle witnesses (replaying chain)...");
     }
-    let (anchor, paths) = witness::build_witnesses(&client, &selected, tip, mainnet, json, cached_frontier.clone(), sync_height).await?;
+    let (anchor, paths) = witness::build_witnesses(
+        &client,
+        &selected,
+        tip,
+        mainnet,
+        json,
+        cached_frontier.clone(),
+        sync_height,
+    )
+    .await?;
 
     // build spends vec
     let spends: Vec<(orchard::Note, orchard::tree::MerklePath)> =
@@ -256,7 +265,16 @@ async fn send_to_shielded(
     if !json {
         eprintln!("building merkle witnesses (replaying chain)...");
     }
-    let (anchor, paths) = witness::build_witnesses(&client, &selected, tip, mainnet, json, cached_frontier.clone(), sync_height).await?;
+    let (anchor, paths) = witness::build_witnesses(
+        &client,
+        &selected,
+        tip,
+        mainnet,
+        json,
+        cached_frontier.clone(),
+        sync_height,
+    )
+    .await?;
 
     let spends: Vec<(orchard::Note, orchard::tree::MerklePath)> =
         orchard_notes.into_iter().zip(paths).collect();

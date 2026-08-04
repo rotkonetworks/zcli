@@ -18,23 +18,16 @@
 //! follow-up if signing-path bugs slip past this guard.
 
 use orchard::keys::Scope;
-use pczt::{Pczt, roles::creator::Creator};
+use pczt::{roles::creator::Creator, Pczt};
 use rand_core::OsRng;
-use zcash_transparent::{
-    address::TransparentAddress,
-    bundle as transparent,
-};
+use zcash_transparent::{address::TransparentAddress, bundle as transparent};
 
 // Signer::new is feature-gated; we have it on (see Cargo features list).
 use zcash_primitives::transaction::{
     builder::{BuildConfig, Builder},
     fees::zip317,
 };
-use zcash_protocol::{
-    consensus::MainNetwork,
-    memo::MemoBytes,
-    value::Zatoshis,
-};
+use zcash_protocol::{consensus::MainNetwork, memo::MemoBytes, value::Zatoshis};
 
 /// Build a minimal unproven PCZT: 1 transparent input → 1 orchard output.
 /// Skips proof/sighash steps — sufficient for testing the redactor + the
@@ -58,12 +51,17 @@ fn build_test_pczt() -> Pczt {
     let orchard_fvk = orchard::keys::FullViewingKey::from(&orchard_sk);
     let recipient = orchard_fvk.address_at(0u32, Scope::External);
 
+    // Post-NU6.2, below the real NU6.3 activation (3_428_143). At NU6.3 the
+    // orchard cross-address outputs this fixture adds are DISABLED, so we must
+    // build a pre-NU6.3 orchard tx now that FIX-A wired the real activation.
     let mut builder = Builder::new(
         params,
-        10_000_000.into(),
+        3_400_000.into(),
         BuildConfig::Standard {
             sapling_anchor: None,
             orchard_anchor: Some(orchard::Anchor::empty_tree()),
+            #[cfg(zcash_unstable = "nu6.3")]
+            ironwood_anchor: None,
         },
     );
     builder
@@ -145,9 +143,7 @@ fn redaction_preserves_sighash() {
     use pczt::roles::{io_finalizer::IoFinalizer, signer::Signer};
 
     let pczt = build_test_pczt();
-    let pczt = IoFinalizer::new(pczt)
-        .finalize_io()
-        .expect("finalize_io");
+    let pczt = IoFinalizer::new(pczt).finalize_io().expect("finalize_io");
 
     // Sighash from the un-redacted (but finalized) PCZT.
     let sighash_pre = Signer::new(pczt.clone())
@@ -165,7 +161,8 @@ fn redaction_preserves_sighash() {
         .shielded_sighash();
 
     assert_eq!(
-        sighash_pre, sighash_post,
+        sighash_pre,
+        sighash_post,
         "redaction altered the sighash (pre={}, post={}). \
          this breaks the display↔sighash binding the migration relies on. \
          most likely cause: a clear_* call accidentally landed on a field \

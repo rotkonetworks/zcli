@@ -13,24 +13,19 @@
 // zero custom crypto. this crate is glue.
 
 pub mod attestation;
-pub mod keys;
-pub mod sign;
-pub mod message;
-pub mod orchestrate;
-pub mod memo_codec;
-pub mod transport;
 pub mod hierarchical;
+pub mod keys;
+pub mod memo_codec;
+pub mod message;
 pub mod nested;
+pub mod orchestrate;
+pub mod sign;
+pub mod transport;
 
 // re-export core types
 pub use reddsa::frost::redpallas::{
-    self as frost,
-    keys as frost_keys,
-    keys::dkg,
-    round1, round2,
-    aggregate,
-    Identifier, SigningPackage,
-    RandomizedParams, Randomizer,
+    self as frost, aggregate, keys as frost_keys, keys::dkg, round1, round2, Identifier,
+    RandomizedParams, Randomizer, SigningPackage,
 };
 
 pub use ed25519_consensus;

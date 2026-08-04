@@ -143,7 +143,10 @@ async fn main() {
     let args = Args::parse();
 
     let signing_key = if !args.signing_key.is_empty() {
-        let hex = args.signing_key.strip_prefix("0x").unwrap_or(&args.signing_key);
+        let hex = args
+            .signing_key
+            .strip_prefix("0x")
+            .unwrap_or(&args.signing_key);
         let seed: [u8; 32] = hex::decode(hex)
             .expect("ZCLI_SIGNING_KEY must be valid hex")
             .try_into()
@@ -164,7 +167,11 @@ async fn main() {
         .filter(|l| !l.is_empty())
         .collect();
     if !friends.is_empty() {
-        info!("loaded {} friends from {}", friends.len(), args.friends_file);
+        info!(
+            "loaded {} friends from {}",
+            friends.len(),
+            args.friends_file
+        );
     }
 
     let db = sled::open(&args.db_path).expect("failed to open license database");
@@ -172,7 +179,8 @@ async fn main() {
     // advance sync cursor to --sync-from if the stored cursor is behind it.
     // never goes backward, so this is safe to leave in env permanently.
     if let Some(from) = args.sync_from {
-        let stored = db.get(SYNC_HEIGHT_KEY)
+        let stored = db
+            .get(SYNC_HEIGHT_KEY)
             .ok()
             .flatten()
             .and_then(|v| {
@@ -191,7 +199,9 @@ async fn main() {
     let mut ring_keys = Vec::new();
     for entry in db.iter().flatten() {
         // skip non-license keys (e.g. sync height)
-        if entry.0.as_ref().starts_with(b"__") { continue; }
+        if entry.0.as_ref().starts_with(b"__") {
+            continue;
+        }
         if let Ok(lic) = bincode::deserialize::<LicenseEntry>(&entry.1) {
             if lic.valid {
                 ring_keys.push(lic.zid.clone());
@@ -199,7 +209,12 @@ async fn main() {
             licenses.insert(lic.zid.clone(), lic);
         }
     }
-    info!("loaded {} licenses, {} ring keys from {}", licenses.len(), ring_keys.len(), args.db_path);
+    info!(
+        "loaded {} licenses, {} ring keys from {}",
+        licenses.len(),
+        ring_keys.len(),
+        args.db_path
+    );
 
     let state = AppState {
         licenses: Arc::new(RwLock::new(licenses)),
@@ -250,7 +265,9 @@ async fn sync_once(
     client: &ZidecarClient,
     fvk: &FullViewingKey,
 ) -> anyhow::Result<()> {
-    let last_height = state.db.get(SYNC_HEIGHT_KEY)?
+    let last_height = state
+        .db
+        .get(SYNC_HEIGHT_KEY)?
         .and_then(|v| {
             let b: [u8; 4] = v.as_ref().try_into().ok()?;
             Some(u32::from_le_bytes(b))
@@ -259,7 +276,12 @@ async fn sync_once(
 
     let (new_tip, memos) = scanner::scan(client, fvk, last_height).await?;
     if new_tip > last_height {
-        info!("synced blocks {}..{} ({} memos found)", last_height + 1, new_tip, memos.len());
+        info!(
+            "synced blocks {}..{} ({} memos found)",
+            last_height + 1,
+            new_tip,
+            memos.len()
+        );
     }
 
     if memos.is_empty() && new_tip == last_height {
@@ -275,9 +297,13 @@ async fn sync_once(
     let mut changed = false;
 
     for memo in &memos {
-        if !memo.memo.starts_with("zid") { continue; }
+        if !memo.memo.starts_with("zid") {
+            continue;
+        }
         let zid = memo.memo.trim_start_matches("zid").trim().to_string();
-        if zid.is_empty() || zid.len() < 32 { continue; }
+        if zid.is_empty() || zid.len() < 32 {
+            continue;
+        }
 
         let txid_hex = hex::encode(&memo.txid);
         let entry = licenses.entry(zid.clone()).or_insert_with(|| LicenseEntry {
@@ -290,7 +316,9 @@ async fn sync_once(
             seen_txids: vec![],
         });
 
-        if entry.seen_txids.contains(&txid_hex) { continue; }
+        if entry.seen_txids.contains(&txid_hex) {
+            continue;
+        }
         entry.seen_txids.push(txid_hex.clone());
 
         // stacking model: each payment adds its worth of days on top of the
@@ -321,7 +349,11 @@ async fn sync_once(
         changed = true;
         info!(
             "license: {} +{} days ({} zat) at block {} → expires {}",
-            &zid[..12.min(zid.len())], added_days, memo.value_zat, memo.block_height, expires,
+            &zid[..12.min(zid.len())],
+            added_days,
+            memo.value_zat,
+            memo.block_height,
+            expires,
         );
     }
 
@@ -340,10 +372,7 @@ async fn sync_once(
 
 // -- handlers --
 
-async fn get_license(
-    State(state): State<AppState>,
-    Path(zid): Path<String>,
-) -> Json<LicenseResp> {
+async fn get_license(State(state): State<AppState>, Path(zid): Path<String>) -> Json<LicenseResp> {
     // friends get permanent pro
     if state.friends.contains(&zid) {
         let mut sig = String::new();

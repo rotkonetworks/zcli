@@ -9,8 +9,8 @@ use std::io::{self, BufRead, Write};
 use clap::{Parser, Subcommand};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
-use tonic::transport::Channel;
 use tokio_stream::StreamExt;
+use tonic::transport::Channel;
 
 mod proto {
     tonic::include_proto!("relay.v1");
@@ -26,15 +26,31 @@ use proto::relay_client::RelayClient;
 #[serde(tag = "t")]
 enum Msg {
     /// host announces escrow address + unified address for deposits
-    Escrow { address: String, unified_address: String, jury_n: u32, jury_t: u32 },
+    Escrow {
+        address: String,
+        unified_address: String,
+        jury_n: u32,
+        jury_t: u32,
+    },
     /// deal cards (host → opponent). in production: mental poker shuffle
-    Deal { your_cards: [u8; 2], community: [u8; 5] },
+    Deal {
+        your_cards: [u8; 2],
+        community: [u8; 5],
+    },
     /// player action
     Action { action: String, amount: u64 },
     /// settlement proposal
-    Settle { a_payout: u64, b_payout: u64, message: String },
+    Settle {
+        a_payout: u64,
+        b_payout: u64,
+        message: String,
+    },
     /// settlement signature (frostito RedPallas)
-    Signature { r: String, z: String, verified: bool },
+    Signature {
+        r: String,
+        z: String,
+        verified: bool,
+    },
     /// chat
     Chat { text: String },
 }
@@ -114,8 +130,11 @@ impl Escrow {
         // this prevents anyone from deriving the spending key from the public address.
         let coin_type = if testnet { 1u32 } else { 133u32 };
         let sk = orchard::keys::SpendingKey::from_zip32_seed(
-            &jury.fvk_seed, coin_type, zip32::AccountId::ZERO,
-        ).expect("spending key derivation should succeed");
+            &jury.fvk_seed,
+            coin_type,
+            zip32::AccountId::ZERO,
+        )
+        .expect("spending key derivation should succeed");
         let fvk = orchard::keys::FullViewingKey::from(&sk);
         let orchard_addr = fvk.address_at(0u64, orchard::keys::Scope::External);
 
@@ -136,7 +155,14 @@ impl Escrow {
 
         let fvk_bytes: [u8; 96] = fvk.to_bytes();
 
-        Self { player_a, player_b, jury, address, unified_address, fvk_bytes }
+        Self {
+            player_a,
+            player_b,
+            jury,
+            address,
+            unified_address,
+            fvk_bytes,
+        }
     }
 
     /// happy path: both players sign (RedPallas BLAKE2b)
@@ -147,9 +173,13 @@ impl Escrow {
         let pkg = redpallas::RedPallasPackage::new(message.to_vec(), vec![ca, cb]).ok()?;
         let sa = redpallas::sign(&pkg, na, &self.player_a, &self.jury.outer_group_pubkey).ok()?;
         let sb = redpallas::sign(&pkg, nb, &self.player_b, &self.jury.outer_group_pubkey).ok()?;
-        let sig = redpallas::aggregate(&pkg, &[sa, sb], &self.jury.outer_group_pubkey, None).ok()?;
+        let sig =
+            redpallas::aggregate(&pkg, &[sa, sb], &self.jury.outer_group_pubkey, None).ok()?;
         if redpallas::verify_signature(&self.jury.outer_group_pubkey, message, &sig) {
-            Some((hex::encode(OsstPoint::compress(&sig.r)), hex::encode(OsstScalar::to_bytes(&sig.z))))
+            Some((
+                hex::encode(OsstPoint::compress(&sig.r)),
+                hex::encode(OsstScalar::to_bytes(&sig.z)),
+            ))
         } else {
             None
         }
@@ -157,9 +187,16 @@ impl Escrow {
 
     /// dispute: OSST authorize → nested RedPallas sign (s₃ never reconstructed)
     fn dispute(&self, message: &[u8], player_is_a: bool) -> Option<(String, String)> {
-        let player_share = if player_is_a { &self.player_a } else { &self.player_b };
+        let player_share = if player_is_a {
+            &self.player_a
+        } else {
+            &self.player_b
+        };
         let (sig, _osst_ok) = redpallas::nested_redpallas_sign(&self.jury, player_share, message)?;
-        Some((hex::encode(OsstPoint::compress(&sig.r)), hex::encode(OsstScalar::to_bytes(&sig.z))))
+        Some((
+            hex::encode(OsstPoint::compress(&sig.r)),
+            hex::encode(OsstScalar::to_bytes(&sig.z)),
+        ))
     }
 }
 
@@ -167,8 +204,10 @@ impl Escrow {
 // Simple card logic
 // ============================================================================
 
-const RANKS: &[&str] = &["2","3","4","5","6","7","8","9","T","J","Q","K","A"];
-const SUITS: &[&str] = &["♠","♥","♦","♣"];
+const RANKS: &[&str] = &[
+    "2", "3", "4", "5", "6", "7", "8", "9", "T", "J", "Q", "K", "A",
+];
+const SUITS: &[&str] = &["♠", "♥", "♦", "♣"];
 
 fn card_name(c: u8) -> String {
     let r = (c % 13) as usize;
@@ -194,7 +233,9 @@ fn hand_strength(hole: &[u8; 2], community: &[u8; 5]) -> u32 {
     let mut best = 0u32;
     for &c in hole.iter().chain(community.iter()) {
         let rank = (c % 13) as u32;
-        if rank > best { best = rank; }
+        if rank > best {
+            best = rank;
+        }
     }
     best
 }
@@ -273,9 +314,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut client = RelayClient::new(channel);
             join_game(&mut client, my_id, code).await?
         }
-        Cmd::Sign { sighash, jury_n, jury_t, happy } => {
-            sign_sighash(&sighash, jury_n, jury_t, happy)?
-        }
+        Cmd::Sign {
+            sighash,
+            jury_n,
+            jury_t,
+            happy,
+        } => sign_sighash(&sighash, jury_n, jury_t, happy)?,
     }
 
     Ok(())
@@ -283,13 +327,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 /// sign a zcash sighash with frostito escrow
 /// outputs a 64-byte hex RedPallas signature compatible with zcli's PCZT flow
-fn sign_sighash(sighash_hex: &str, jury_n: u32, jury_t: u32, happy: bool) -> Result<(), Box<dyn std::error::Error>> {
+fn sign_sighash(
+    sighash_hex: &str,
+    jury_n: u32,
+    jury_t: u32,
+    happy: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     let sighash = hex::decode(sighash_hex)?;
     if sighash.len() != 32 {
         return Err("sighash must be 32 bytes (64 hex chars)".into());
     }
 
-    eprintln!("creating frostito escrow ({}-of-{} jury)...", jury_t, jury_n);
+    eprintln!(
+        "creating frostito escrow ({}-of-{} jury)...",
+        jury_t, jury_n
+    );
     let escrow = Escrow::create(jury_n, jury_t, false); // mainnet
 
     eprintln!("escrow address: {}", escrow.unified_address);
@@ -301,12 +353,18 @@ fn sign_sighash(sighash_hex: &str, jury_n: u32, jury_t: u32, happy: bool) -> Res
     } else {
         eprintln!("mode: dispute (OSST authorize + nested FROST)");
         eprintln!("  s₃ will NOT be reconstructed");
-        escrow.dispute(&sighash, true).ok_or("dispute signing failed")?
+        escrow
+            .dispute(&sighash, true)
+            .ok_or("dispute signing failed")?
     };
 
     // output signature as 64-byte hex (R || z) — compatible with zcli complete-pczt
     let sig_hex = format!("{}{}", r, z);
-    eprintln!("signature: {}...{}", &sig_hex[..16], &sig_hex[sig_hex.len()-16..]);
+    eprintln!(
+        "signature: {}...{}",
+        &sig_hex[..16],
+        &sig_hex[sig_hex.len() - 16..]
+    );
     eprintln!("verified: true (RedPallas/BLAKE2b)");
 
     // print just the signature to stdout for piping
@@ -320,10 +378,13 @@ async fn host_game(
     buyin: u64,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // create room
-    let room = client.create_room(proto::CreateRoomRequest {
-        max_participants: 7,  // 2 players + 5 jury
-        ttl_seconds: 3600,
-    }).await?.into_inner();
+    let room = client
+        .create_room(proto::CreateRoomRequest {
+            max_participants: 7, // 2 players + 5 jury
+            ttl_seconds: 3600,
+        })
+        .await?
+        .into_inner();
 
     println!("=== POKER TABLE ===");
     println!("room: {}", room.room_code);
@@ -337,21 +398,27 @@ async fn host_game(
     println!("s₃ status:         NEVER EXISTED\n");
 
     // join room
-    let mut stream = client.join_room(proto::JoinRoomRequest {
-        room_code: room.room_code.clone(),
-        participant_id: my_id.clone(),
-    }).await?.into_inner();
+    let mut stream = client
+        .join_room(proto::JoinRoomRequest {
+            room_code: room.room_code.clone(),
+            participant_id: my_id.clone(),
+        })
+        .await?
+        .into_inner();
 
     // announce escrow
-    client.send_message(proto::SendMessageRequest {
-        room_code: room.room_code.clone(),
-        sender_id: my_id.clone(),
-        payload: encode_msg(&Msg::Escrow {
-            address: hex::encode(escrow.address),
-            unified_address: escrow.unified_address.clone(),
-            jury_n: 5, jury_t: 3,
-        }),
-    }).await?;
+    client
+        .send_message(proto::SendMessageRequest {
+            room_code: room.room_code.clone(),
+            sender_id: my_id.clone(),
+            payload: encode_msg(&Msg::Escrow {
+                address: hex::encode(escrow.address),
+                unified_address: escrow.unified_address.clone(),
+                jury_n: 5,
+                jury_t: 3,
+            }),
+        })
+        .await?;
 
     println!("waiting for opponent...");
 
@@ -362,26 +429,45 @@ async fn host_game(
         if let Some(proto::room_event::Event::Joined(j)) = event.event {
             if j.participant_id != my_id {
                 opponent_joined = true;
-                println!("opponent joined! ({}...)\n", hex::encode(j.participant_id.get(..4).unwrap_or(&j.participant_id)));
+                println!(
+                    "opponent joined! ({}...)\n",
+                    hex::encode(j.participant_id.get(..4).unwrap_or(&j.participant_id))
+                );
                 break;
             }
         }
     }
-    if !opponent_joined { return Err("opponent didn't join".into()); }
+    if !opponent_joined {
+        return Err("opponent didn't join".into());
+    }
 
     // deal
     let (my_cards, opp_cards, community) = deal_cards();
-    println!("your cards: {} {}", card_name(my_cards[0]), card_name(my_cards[1]));
-    println!("community:  {} {} {} {} {}\n",
-        card_name(community[0]), card_name(community[1]), card_name(community[2]),
-        card_name(community[3]), card_name(community[4]));
+    println!(
+        "your cards: {} {}",
+        card_name(my_cards[0]),
+        card_name(my_cards[1])
+    );
+    println!(
+        "community:  {} {} {} {} {}\n",
+        card_name(community[0]),
+        card_name(community[1]),
+        card_name(community[2]),
+        card_name(community[3]),
+        card_name(community[4])
+    );
 
     // send opponent their cards
-    client.send_message(proto::SendMessageRequest {
-        room_code: room.room_code.clone(),
-        sender_id: my_id.clone(),
-        payload: encode_msg(&Msg::Deal { your_cards: opp_cards, community }),
-    }).await?;
+    client
+        .send_message(proto::SendMessageRequest {
+            room_code: room.room_code.clone(),
+            sender_id: my_id.clone(),
+            payload: encode_msg(&Msg::Deal {
+                your_cards: opp_cards,
+                community,
+            }),
+        })
+        .await?;
 
     // simple betting round
     println!("buy-in: {} each (pot: {})", buyin, buyin * 2);
@@ -392,16 +478,24 @@ async fn host_game(
     let line = stdin.lock().lines().next().unwrap_or(Ok("check".into()))?;
     let parts: Vec<&str> = line.split_whitespace().collect();
     let (action, amount) = match parts.first().map(|s| s.to_lowercase()).as_deref() {
-        Some("bet") => ("bet".to_string(), parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(100)),
+        Some("bet") => (
+            "bet".to_string(),
+            parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(100),
+        ),
         Some("fold") => ("fold".to_string(), 0u64),
         _ => ("check".to_string(), 0u64),
     };
 
-    client.send_message(proto::SendMessageRequest {
-        room_code: room.room_code.clone(),
-        sender_id: my_id.clone(),
-        payload: encode_msg(&Msg::Action { action: action.clone(), amount }),
-    }).await?;
+    client
+        .send_message(proto::SendMessageRequest {
+            room_code: room.room_code.clone(),
+            sender_id: my_id.clone(),
+            payload: encode_msg(&Msg::Action {
+                action: action.clone(),
+                amount,
+            }),
+        })
+        .await?;
 
     if action == "fold" {
         println!("you folded. opponent wins.");
@@ -439,8 +533,18 @@ async fn host_game(
     let opp_strength = hand_strength(&opp_cards, &community);
 
     println!("\n=== SHOWDOWN ===");
-    println!("your hand:     {} {} (strength: {})", card_name(my_cards[0]), card_name(my_cards[1]), my_strength);
-    println!("opponent hand: {} {} (strength: {})", card_name(opp_cards[0]), card_name(opp_cards[1]), opp_strength);
+    println!(
+        "your hand:     {} {} (strength: {})",
+        card_name(my_cards[0]),
+        card_name(my_cards[1]),
+        my_strength
+    );
+    println!(
+        "opponent hand: {} {} (strength: {})",
+        card_name(opp_cards[0]),
+        card_name(opp_cards[1]),
+        opp_strength
+    );
 
     let (a_payout, b_payout) = if my_strength >= opp_strength {
         println!("you win!");
@@ -454,16 +558,25 @@ async fn host_game(
     let settle_msg = format!("settle:A={},B={}", a_payout, b_payout);
     println!("\nsettling via frostito (happy path: both players sign)...");
     if let Some((r, z)) = escrow.settle(settle_msg.as_bytes()) {
-        println!("  escrow address: {}...", hex::encode(&escrow.address[..16]));
+        println!(
+            "  escrow address: {}...",
+            hex::encode(&escrow.address[..16])
+        );
         println!("  R: {}...", &r[..32]);
         println!("  z: {}...", &z[..32]);
         println!("  verified: true (standard schnorr)");
 
-        client.send_message(proto::SendMessageRequest {
-            room_code: room.room_code.clone(),
-            sender_id: my_id.clone(),
-            payload: encode_msg(&Msg::Signature { r, z, verified: true }),
-        }).await?;
+        client
+            .send_message(proto::SendMessageRequest {
+                room_code: room.room_code.clone(),
+                sender_id: my_id.clone(),
+                payload: encode_msg(&Msg::Signature {
+                    r,
+                    z,
+                    verified: true,
+                }),
+            })
+            .await?;
     }
 
     // dispute demo
@@ -495,10 +608,13 @@ async fn join_game(
     println!("=== JOINING TABLE ===");
     println!("room: {}\n", code);
 
-    let mut stream = client.join_room(proto::JoinRoomRequest {
-        room_code: code.clone(),
-        participant_id: my_id.clone(),
-    }).await?.into_inner();
+    let mut stream = client
+        .join_room(proto::JoinRoomRequest {
+            room_code: code.clone(),
+            participant_id: my_id.clone(),
+        })
+        .await?
+        .into_inner();
 
     let stdin = io::stdin();
     let mut _escrow_addr = String::new();
@@ -513,25 +629,57 @@ async fn join_game(
         let event = item.map_err(|e| format!("relay stream error: {e}"))?;
         match event.event {
             Some(proto::room_event::Event::Message(m)) => {
-                if m.sender_id == my_id { continue; }
+                if m.sender_id == my_id {
+                    continue;
+                }
                 if let Some(msg) = decode_msg(&m.payload) {
                     match msg {
-                        Msg::Escrow { address, unified_address, jury_n, jury_t } => {
+                        Msg::Escrow {
+                            address,
+                            unified_address,
+                            jury_n,
+                            jury_t,
+                        } => {
                             _escrow_addr = address.clone();
-                            println!("escrow: {}... ({}-of-{} jury)", &address[..32], jury_t, jury_n);
+                            println!(
+                                "escrow: {}... ({}-of-{} jury)",
+                                &address[..32],
+                                jury_t,
+                                jury_n
+                            );
                             println!("deposit: {}", unified_address);
                         }
-                        Msg::Deal { your_cards, community: comm } => {
+                        Msg::Deal {
+                            your_cards,
+                            community: comm,
+                        } => {
                             my_cards = your_cards;
                             _community = comm;
                             got_cards = true;
-                            println!("\nyour cards: {} {}", card_name(my_cards[0]), card_name(my_cards[1]));
-                            println!("community:  {} {} {} {} {}\n",
-                                card_name(comm[0]), card_name(comm[1]), card_name(comm[2]),
-                                card_name(comm[3]), card_name(comm[4]));
+                            println!(
+                                "\nyour cards: {} {}",
+                                card_name(my_cards[0]),
+                                card_name(my_cards[1])
+                            );
+                            println!(
+                                "community:  {} {} {} {} {}\n",
+                                card_name(comm[0]),
+                                card_name(comm[1]),
+                                card_name(comm[2]),
+                                card_name(comm[3]),
+                                card_name(comm[4])
+                            );
                         }
                         Msg::Action { action, amount } => {
-                            println!("host: {} {}", action, if amount > 0 { format!("({})", amount) } else { String::new() });
+                            println!(
+                                "host: {} {}",
+                                action,
+                                if amount > 0 {
+                                    format!("({})", amount)
+                                } else {
+                                    String::new()
+                                }
+                            );
 
                             if action == "fold" {
                                 println!("host folded. you win!");
@@ -541,18 +689,31 @@ async fn join_game(
                             if got_cards {
                                 print!("your action (bet <amount> / call / fold): ");
                                 io::stdout().flush()?;
-                                let line = stdin.lock().lines().next().unwrap_or(Ok("call".into()))?;
+                                let line =
+                                    stdin.lock().lines().next().unwrap_or(Ok("call".into()))?;
                                 let parts: Vec<&str> = line.split_whitespace().collect();
-                                let (act, amt) = match parts.first().map(|s| s.to_lowercase()).as_deref() {
+                                let (act, amt) = match parts
+                                    .first()
+                                    .map(|s| s.to_lowercase())
+                                    .as_deref()
+                                {
                                     Some("fold") => ("fold", 0u64),
-                                    Some("bet") => ("bet", parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(100)),
+                                    Some("bet") => (
+                                        "bet",
+                                        parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(100),
+                                    ),
                                     _ => ("call", 0u64),
                                 };
-                                client.send_message(proto::SendMessageRequest {
-                                    room_code: code.clone(),
-                                    sender_id: my_id.clone(),
-                                    payload: encode_msg(&Msg::Action { action: act.to_string(), amount: amt }),
-                                }).await?;
+                                client
+                                    .send_message(proto::SendMessageRequest {
+                                        room_code: code.clone(),
+                                        sender_id: my_id.clone(),
+                                        payload: encode_msg(&Msg::Action {
+                                            action: act.to_string(),
+                                            amount: amt,
+                                        }),
+                                    })
+                                    .await?;
 
                                 if act == "fold" {
                                     println!("you folded.");
@@ -570,7 +731,9 @@ async fn join_game(
                             println!("\nggwp");
                             return Ok(());
                         }
-                        Msg::Settle { a_payout, b_payout, .. } => {
+                        Msg::Settle {
+                            a_payout, b_payout, ..
+                        } => {
                             println!("settlement: host={}, you={}", a_payout, b_payout);
                         }
                         Msg::Chat { text } => {
@@ -581,7 +744,10 @@ async fn join_game(
             }
             Some(proto::room_event::Event::Joined(j)) => {
                 if j.participant_id != my_id {
-                    println!("host connected ({}...)", hex::encode(j.participant_id.get(..4).unwrap_or(&j.participant_id)));
+                    println!(
+                        "host connected ({}...)",
+                        hex::encode(j.participant_id.get(..4).unwrap_or(&j.participant_id))
+                    );
                 }
             }
             Some(proto::room_event::Event::Left(l)) => {

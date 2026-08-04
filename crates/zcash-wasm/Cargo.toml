@@ -21,14 +21,20 @@ subtle = "2.5"
 ff = "0.13"
 group = "0.13"
 
-# Orchard protocol - real key derivation and note encryption
-# NU6.2 stack (librustzcash nu6.2 release): orchard 0.14 ships the fixed
-# Orchard Action circuit (FixedPostNu6_2 VK); the whole librustzcash set
-# moves together (zcash_protocol 0.9 / zcash_primitives 0.28 / pczt 0.7).
-orchard = { version = "0.14", default-features = false, features = ["circuit"] }
-zcash_keys = { version = "0.14", default-features = false, features = ["orchard", "transparent-inputs"] }
-zcash_address = { version = "0.12", default-features = false }
-zcash_protocol = { version = "0.9", default-features = false }
+# Orchard protocol - real key derivation and note encryption.
+# NU6.3 / Ironwood stack (frozen interface contract, section 0):
+#   librustzcash crates: valargroup fork, branch adam/qleak-pr44-orchard-dummy-ciphertexts
+#     (zcash_primitives 0.28 / pczt 0.7 / zcash_keys 0.14 / zcash_protocol 0.9 /
+#      zcash_transparent 0.8) - lock pins rev 0c3ad735
+#   orchard 0.14: zcash/orchard branch adam/qleak-dummy-ciphertexts-on-pr505
+#     - lock pins rev 204d8ce9
+# These are the SAME pins the zigner spike rust/pczt_signing_valar uses (its
+# Cargo.lock is the source of truth for revs). Build native AND wasm with:
+#   RUSTFLAGS='--cfg zcash_unstable="nu6.3"'
+orchard = { version = "0.14", git = "https://github.com/zcash/orchard", branch = "adam/qleak-dummy-ciphertexts-on-pr505", default-features = false, features = ["circuit"] }
+zcash_keys = { version = "0.14", git = "https://github.com/valargroup/librustzcash", branch = "adam/qleak-pr44-orchard-dummy-ciphertexts", default-features = false, features = ["orchard", "transparent-inputs"] }
+zcash_address = { version = "0.12", git = "https://github.com/valargroup/librustzcash", branch = "adam/qleak-pr44-orchard-dummy-ciphertexts", default-features = false }
+zcash_protocol = { version = "0.9", git = "https://github.com/valargroup/librustzcash", branch = "adam/qleak-pr44-orchard-dummy-ciphertexts", default-features = false }
 rand_core = "0.6"
 zip32 = { version = "0.2", default-features = false }
 
@@ -47,15 +53,15 @@ zcash_note_encryption = "0.4"
 
 # transaction primitives
 # zcash_primitives 0.28 + sapling-crypto 0.7 + orchard 0.14 line up with the
-# librustzcash nu6.2 release — the same version coords zigner and
-# zashi/keystone-sdk consume. Required for `pczt` interop.
-zcash_primitives = { version = "0.28", default-features = false, features = ["non-standard-fees", "transparent-inputs"] }
-zcash_transparent = { version = "0.8", package = "zcash_transparent", default-features = false, features = ["transparent-inputs"] }
+# valargroup librustzcash workspace on the NU6.3 branch — the same version
+# coords the zigner valar spike consumes. Required for `pczt` V6 interop.
+zcash_primitives = { version = "0.28", git = "https://github.com/valargroup/librustzcash", branch = "adam/qleak-pr44-orchard-dummy-ciphertexts", default-features = false, features = ["non-standard-fees", "transparent-inputs"] }
+zcash_transparent = { version = "0.8", git = "https://github.com/valargroup/librustzcash", branch = "adam/qleak-pr44-orchard-dummy-ciphertexts", package = "zcash_transparent", default-features = false, features = ["transparent-inputs"] }
 
 # Partially-Created Zcash Transaction (PCZT) construction.
-# Same nu6.2 release coords zigner consumes so orchard/sapling/zcash_primitives
-# versions match byte-for-byte.
-pczt = { version = "0.7", default-features = false, features = ["orchard", "transparent", "sapling", "zcp-builder", "prover", "io-finalizer", "tx-extractor", "signer", "spend-finalizer"] }
+# Pinned to the same librustzcash fork branch that zigner's valar spike
+# consumes so orchard/sapling/zcash_primitives versions match byte-for-byte.
+pczt = { version = "0.7", git = "https://github.com/valargroup/librustzcash", branch = "adam/qleak-pr44-orchard-dummy-ciphertexts", default-features = false, features = ["orchard", "transparent", "sapling", "zcp-builder", "prover", "io-finalizer", "tx-extractor", "signer", "spend-finalizer"] }
 # zcash_primitives renames sapling-crypto to `sapling` internally; mirror the
 # alias so BuildConfig's `Option<sapling::Anchor>` field type-checks.
 # `circuit` feature pulls bellman+groth16 proving — bloats the wasm but is
@@ -115,3 +121,6 @@ secp256k1 = { version = "0.29", default-features = false, features = ["alloc"] }
 [[bench]]
 name = "scanning"
 harness = false
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(zcash_unstable, values("nu6.3"))'] }

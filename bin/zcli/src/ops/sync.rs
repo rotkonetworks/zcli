@@ -204,7 +204,11 @@ async fn sync_inner(
                 .map_err(|e| Error::Other(format!("invalid tree hex: {}", e)))?;
             let pos = crate::witness::frontier_tree_size(&tree_bytes)?;
             if !json {
-                eprintln!("initial position from tree state at height {}: {}", start - 1, pos);
+                eprintln!(
+                    "initial position from tree state at height {}: {}",
+                    start - 1,
+                    pos
+                );
             }
             wallet.set_orchard_position(pos)?;
             pos

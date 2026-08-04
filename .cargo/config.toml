@@ -1,5 +1,12 @@
 [target.wasm32-unknown-unknown]
+# NU6.3 / Ironwood is enabled for the wasm blob by adding the cfg HERE rather
+# than via the RUSTFLAGS env var: setting RUSTFLAGS on the command line REPLACES
+# this whole array (dropping the link-args below), which produces a private,
+# non-shared memory and breaks rayon's postMessage + halo2 proving. See
+# packages/zcash-wasm/BUILD_PROVENANCE.md. Keeping the cfg inline preserves the
+# link-args and still exports the ironwood turnstile functions.
 rustflags = [
+    "--cfg", "zcash_unstable=\"nu6.3\"",
     "-C", "target-feature=+atomics,+bulk-memory,+mutable-globals,+simd128",
     "-C", "link-args=--shared-memory",
     "-C", "link-args=--import-memory",

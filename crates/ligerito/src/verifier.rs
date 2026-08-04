@@ -1104,8 +1104,8 @@ where
     T: BinaryFieldElement + Send + Sync + serde::de::DeserializeOwned,
     U: BinaryFieldElement + Send + Sync + From<T> + serde::de::DeserializeOwned,
 {
-    let proof: FinalizedLigeritoProof<T, U> = postcard::from_bytes(proof_bytes)
-        .map_err(|_| crate::LigeritoError::InvalidProof)?;
+    let proof: FinalizedLigeritoProof<T, U> =
+        postcard::from_bytes(proof_bytes).map_err(|_| crate::LigeritoError::InvalidProof)?;
 
     let mut fs = FiatShamir::new_sha256(0);
     fs.absorb_bytes(b"public_outputs", public_outputs_bytes);
@@ -1124,8 +1124,7 @@ where
     T: BinaryFieldElement + Send + Sync + serde::Serialize,
     U: BinaryFieldElement + Send + Sync + serde::Serialize,
 {
-    postcard::to_allocvec(proof)
-        .map_err(|_| crate::LigeritoError::InvalidProof)
+    postcard::to_allocvec(proof).map_err(|_| crate::LigeritoError::InvalidProof)
 }
 
 #[cfg(test)]

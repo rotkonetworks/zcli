@@ -149,7 +149,10 @@ mod tests {
             let signed: crate::message::SignedMessage = from_hex(pkg_hex).unwrap();
             let bundle: serde_json::Value = serde_json::from_slice(&signed.payload).unwrap();
             let seed = hex::decode(bundle["ephemeral_seed"].as_str().unwrap()).unwrap();
-            (seed.try_into().unwrap(), bundle["key_package"].as_str().unwrap().to_string())
+            (
+                seed.try_into().unwrap(),
+                bundle["key_package"].as_str().unwrap().to_string(),
+            )
         }
 
         let (seed0, kp0) = unwrap_pkg(&keygen.packages[0]);
@@ -166,16 +169,33 @@ mod tests {
 
         // round 2
         let share0 = crate::orchestrate::sign_round2(
-            &seed0, &kp0, &nonces0, &digest, &commits, &randomizer_hex,
-        ).unwrap();
+            &seed0,
+            &kp0,
+            &nonces0,
+            &digest,
+            &commits,
+            &randomizer_hex,
+        )
+        .unwrap();
         let share1 = crate::orchestrate::sign_round2(
-            &seed1, &kp1, &nonces1, &digest, &commits, &randomizer_hex,
-        ).unwrap();
+            &seed1,
+            &kp1,
+            &nonces1,
+            &digest,
+            &commits,
+            &randomizer_hex,
+        )
+        .unwrap();
 
         // aggregate
         let sig_hex = crate::orchestrate::aggregate_shares(
-            &keygen.public_key_package_hex, &digest, &commits, &[share0, share1], &randomizer_hex,
-        ).unwrap();
+            &keygen.public_key_package_hex,
+            &digest,
+            &commits,
+            &[share0, share1],
+            &randomizer_hex,
+        )
+        .unwrap();
 
         // extract raw bytes: randomizer
         let signed_rand: crate::message::SignedMessage = from_hex(&randomizer_hex).unwrap();
@@ -199,14 +219,24 @@ mod tests {
 
         // verify
         let result = verify_from_bytes(
-            &attestation, &keygen.public_key_package_hex, &anchor, height, mainnet,
-        ).unwrap();
+            &attestation,
+            &keygen.public_key_package_hex,
+            &anchor,
+            height,
+            mainnet,
+        )
+        .unwrap();
         assert!(result, "attestation should verify");
 
         // tampered anchor should fail
         let bad = verify_from_bytes(
-            &attestation, &keygen.public_key_package_hex, &[0xcd; 32], height, mainnet,
-        ).unwrap();
+            &attestation,
+            &keygen.public_key_package_hex,
+            &[0xcd; 32],
+            height,
+            mainnet,
+        )
+        .unwrap();
         assert!(!bad, "tampered anchor should fail");
     }
 }

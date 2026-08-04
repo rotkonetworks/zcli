@@ -10,6 +10,14 @@ pub mod cam;
 #[cfg(feature = "cli")]
 pub mod client;
 #[cfg(feature = "cli")]
+pub mod frost;
+#[cfg(feature = "cli")]
+pub mod frost_qr;
+#[cfg(feature = "cli")]
+pub mod frost_relay;
+#[cfg(feature = "cli")]
+pub mod notes_export;
+#[cfg(feature = "cli")]
 pub mod ops;
 #[cfg(feature = "cli")]
 pub mod quic;
@@ -17,11 +25,3 @@ pub mod quic;
 pub mod wallet;
 #[cfg(feature = "cli")]
 pub mod witness;
-#[cfg(feature = "cli")]
-pub mod notes_export;
-#[cfg(feature = "cli")]
-pub mod frost;
-#[cfg(feature = "cli")]
-pub mod frost_qr;
-#[cfg(feature = "cli")]
-pub mod frost_relay;

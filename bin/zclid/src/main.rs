@@ -105,7 +105,8 @@ impl DaemonState {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
-        self.prepared_txs.retain(|_, entry| now - entry.created_at < 600);
+        self.prepared_txs
+            .retain(|_, entry| now - entry.created_at < 600);
     }
 }
 
