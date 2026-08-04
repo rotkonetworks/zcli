@@ -393,6 +393,8 @@ pub async fn process_withdrawals(
 
         let seed_bytes = *seed.as_bytes();
         let anchor_height = tip;
+        // consensus branch id from the LIVE chain (auto-tracks network upgrades)
+        let branch_id = client.resolve_branch_id().await;
         let addr = wr.address.clone();
         let amount = wr.amount_zat;
 
@@ -408,6 +410,7 @@ pub async fn process_withdrawals(
                     fee,
                     anchor,
                     anchor_height,
+                    branch_id,
                     mainnet,
                 )
             })
@@ -438,6 +441,7 @@ pub async fn process_withdrawals(
                     fee,
                     anchor,
                     anchor_height,
+                    branch_id,
                     mainnet,
                 )
             })
@@ -551,6 +555,8 @@ async fn forward_single_note(
 
     let seed_bytes = *seed.as_bytes();
     let anchor_height = tip;
+    // consensus branch id from the LIVE chain (auto-tracks network upgrades)
+    let branch_id = client.resolve_branch_id().await;
     let fwd = forward_addr.to_string();
 
     let tx_bytes = if is_transparent {
@@ -565,6 +571,7 @@ async fn forward_single_note(
                 fee,
                 anchor,
                 anchor_height,
+                branch_id,
                 mainnet,
             )
         })
@@ -584,6 +591,7 @@ async fn forward_single_note(
                 fee,
                 anchor,
                 anchor_height,
+                branch_id,
                 mainnet,
             )
         })

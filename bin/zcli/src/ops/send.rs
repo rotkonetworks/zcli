@@ -135,6 +135,8 @@ async fn send_to_transparent(
     // run proving in spawn_blocking (halo2 uses rayon internally)
     let seed_bytes = *seed.as_bytes();
     let anchor_height = tip;
+    // consensus branch id from the LIVE chain (auto-tracks network upgrades)
+    let branch_id = client.resolve_branch_id().await;
     let tx_bytes = tokio::task::spawn_blocking(move || {
         let seed = crate::key::WalletSeed::from_bytes(seed_bytes);
         tx::build_orchard_spend_tx(
@@ -145,6 +147,7 @@ async fn send_to_transparent(
             fee,
             anchor,
             anchor_height,
+            branch_id,
             mainnet,
         )
     })
@@ -295,6 +298,8 @@ async fn send_to_shielded(
 
     let seed_bytes = *seed.as_bytes();
     let anchor_height = tip;
+    // consensus branch id from the LIVE chain (auto-tracks network upgrades)
+    let branch_id = client.resolve_branch_id().await;
     let tx_bytes = tokio::task::spawn_blocking(move || {
         let seed = crate::key::WalletSeed::from_bytes(seed_bytes);
         tx::build_orchard_spend_tx(
@@ -305,6 +310,7 @@ async fn send_to_shielded(
             fee,
             anchor,
             anchor_height,
+            branch_id,
             mainnet,
         )
     })

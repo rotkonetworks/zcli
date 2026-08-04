@@ -169,12 +169,14 @@ pub struct TransparentUtxo {
 
 // -- shielding transaction (t→z) --
 
+#[allow(clippy::too_many_arguments)]
 pub fn build_shielding_tx(
     seed: &WalletSeed,
     utxos: &[TransparentUtxo],
     recipient_addr: &orchard::Address,
     fee: u64,
     anchor_height: u32,
+    branch_id: u32,
     _mainnet: bool,
 ) -> Result<Vec<u8>, Error> {
     // derive transparent signing key at m/44'/133'/0'/0/0
@@ -244,7 +246,7 @@ pub fn build_shielding_tx(
 
     // ZIP-244 sighash computation
     let n_inputs = selected.len();
-    let branch_id: u32 = 0x5437F330; // NU6.2
+    // branch_id comes from the live chain (GetLightdInfo.consensus_branch_id)
     let expiry_height = anchor_height.saturating_add(100);
 
     let mut prevout_data = Vec::new();
@@ -424,6 +426,7 @@ pub fn build_shielding_tx(
 // -- orchard spend transaction (z→t, z→z) --
 
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 pub fn build_orchard_spend_tx(
     seed: &WalletSeed,
     spends: &[(orchard::Note, orchard::tree::MerklePath)],
@@ -432,6 +435,7 @@ pub fn build_orchard_spend_tx(
     fee: u64,
     anchor: Anchor,
     anchor_height: u32,
+    branch_id: u32,
     mainnet: bool,
 ) -> Result<Vec<u8>, Error> {
     let coin_type = if mainnet { 133 } else { 1 };
@@ -516,7 +520,7 @@ pub fn build_orchard_spend_tx(
         .collect::<Result<_, _>>()?;
 
     // ZIP-244 sighash
-    let branch_id: u32 = 0x5437F330; // NU6.2
+    // branch_id comes from the live chain (GetLightdInfo.consensus_branch_id)
     let expiry_height = anchor_height.saturating_add(100);
 
     let header_data = {

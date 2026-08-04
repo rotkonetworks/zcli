@@ -111,6 +111,8 @@ pub async fn bridge_spend(
 
     let fvk_bytes = fvk.to_bytes();
     let anchor_height = tip;
+    // consensus branch id from the LIVE chain (auto-tracks network upgrades)
+    let branch_id = client.resolve_branch_id().await;
 
     let pczt_state = tokio::task::spawn_blocking(move || {
         let (_, state) = pczt::build_pczt_and_qr(
@@ -121,6 +123,7 @@ pub async fn bridge_spend(
             change,
             anchor,
             anchor_height,
+            branch_id,
             mainnet,
         )?;
         Ok::<_, Error>(state)

@@ -43,6 +43,8 @@ pub async fn shield(
 
     // get current tip for expiry
     let (tip, _) = client.get_tip().await?;
+    // consensus branch id from the LIVE chain (auto-tracks network upgrades)
+    let branch_id = client.resolve_branch_id().await;
 
     // convert to tx builder format
     let tx_utxos: Vec<tx::TransparentUtxo> = utxos
@@ -68,7 +70,7 @@ pub async fn shield(
         eprintln!("building transaction (halo 2 proving, this takes a moment)...");
     }
 
-    let tx_bytes = tx::build_shielding_tx(seed, &tx_utxos, &recipient, fee, tip, mainnet)?;
+    let tx_bytes = tx::build_shielding_tx(seed, &tx_utxos, &recipient, fee, tip, branch_id, mainnet)?;
 
     // broadcast
     let result = client.send_transaction(tx_bytes).await?;

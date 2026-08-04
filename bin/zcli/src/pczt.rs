@@ -586,6 +586,7 @@ pub fn build_pczt_and_qr(
     change: u64,
     anchor: Anchor,
     anchor_height: u32,
+    branch_id: u32,
     mainnet: bool,
 ) -> Result<(Vec<u8>, PcztState), Error> {
     let fvk: FullViewingKey = FullViewingKey::from_bytes(fvk_bytes)
@@ -635,7 +636,7 @@ pub fn build_pczt_and_qr(
         .build_for_pczt(&mut rng)
         .map_err(|e| Error::Transaction(format!("build_for_pczt: {:?}", e)))?;
 
-    let branch_id: u32 = 0x5437F330; // NU6.2
+    // branch_id comes from the live chain (GetLightdInfo.consensus_branch_id)
     let expiry_height = anchor_height.saturating_add(100);
 
     let t_output_scripts: Vec<(Vec<u8>, u64)> = t_outputs

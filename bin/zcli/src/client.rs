@@ -67,6 +67,26 @@ pub mod lightwalletd_proto {
     tonic::include_proto!("cash.z.wallet.sdk.rpc");
 }
 
+/// Compiled-in consensus branch id (NU6.2, mainnet). Used ONLY as a fallback
+/// when the live branch id can't be fetched/parsed from the node. The real
+/// value comes from `GetLightdInfo.consensus_branch_id`; see
+/// `ZidecarClient::resolve_branch_id`.
+pub const FALLBACK_BRANCH_ID: u32 = 0x5437F330;
+
+/// Parse the consensus branch id as returned by lightwalletd/zidecar
+/// `GetLightdInfo` — a lowercase (per spec) hex string such as `"5437f330"`
+/// (NU6.2) or `"37a5165b"` (NU6.3), with no `0x` prefix. Tolerates an optional
+/// `0x`/`0X` prefix and surrounding whitespace. Returns `None` on malformed or
+/// empty input so the caller can fall back safely.
+pub fn parse_branch_id(s: &str) -> Option<u32> {
+    let t = s.trim();
+    let t = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")).unwrap_or(t);
+    if t.is_empty() {
+        return None;
+    }
+    u32::from_str_radix(t, 16).ok()
+}
+
 // -- shared types --
 
 #[derive(Debug, Clone)]
@@ -372,6 +392,51 @@ impl ZidecarClient {
             .call_unary("zidecar.v1.Zidecar/GetTip", &zidecar_proto::Empty {})
             .await?;
         Ok((tip.height, tip.hash))
+    }
+
+    /// Fetch server info (GetLightdInfo). The zidecar always serves the
+    /// lightwalletd CompactTxStreamer surface on the same endpoint, so we can
+    /// query it over the same grpc-web transport used for the zidecar.v1 RPCs.
+    pub async fn get_lightd_info(&self) -> Result<lightwalletd_proto::LightdInfo, Error> {
+        self.call_unary(
+            "cash.z.wallet.sdk.rpc.CompactTxStreamer/GetLightdInfo",
+            &lightwalletd_proto::Empty {},
+        )
+        .await
+    }
+
+    /// Resolve the consensus branch id to use for building/signing from the
+    /// LIVE chain (GetLightdInfo.consensus_branch_id, a hex string like
+    /// "5437f330"). Falls back to the compiled-in NU6.2 default if the fetch or
+    /// parse fails, so a transient RPC hiccup can't stall tx building — but that
+    /// path is unsafe across a network upgrade, hence the loud warning.
+    ///
+    /// Correctness note: today the node reports "5437f330" (NU6.2) so this
+    /// yields 0x5437F330; once NU6.3 activates it will report "37a5165b" and
+    /// building switches automatically — no rebuild required.
+    pub async fn resolve_branch_id(&self) -> u32 {
+        match self.get_lightd_info().await {
+            Ok(info) => match parse_branch_id(&info.consensus_branch_id) {
+                Some(id) => id,
+                None => {
+                    eprintln!(
+                        "WARN: could not parse consensus_branch_id {:?} from node; \
+                         falling back to hardcoded NU6.2 {:#010x} — tx may be rejected \
+                         after a network upgrade",
+                        info.consensus_branch_id, FALLBACK_BRANCH_ID
+                    );
+                    FALLBACK_BRANCH_ID
+                }
+            },
+            Err(e) => {
+                eprintln!(
+                    "WARN: GetLightdInfo failed ({e}); falling back to hardcoded NU6.2 \
+                     {FALLBACK_BRANCH_ID:#010x} for branch id — tx may be rejected after \
+                     a network upgrade"
+                );
+                FALLBACK_BRANCH_ID
+            }
+        }
     }
 
     pub async fn get_address_utxos(&self, addresses: Vec<String>) -> Result<Vec<Utxo>, Error> {
@@ -718,5 +783,39 @@ impl LightwalletdClient {
             )
             .await?;
         Ok((resp.height, resp.hash, resp.prev_hash))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_branch_id, FALLBACK_BRANCH_ID};
+
+    #[test]
+    fn parses_nu62_branch_id() {
+        // what the node reports today; must equal the compiled-in NU6.2 value
+        assert_eq!(parse_branch_id("5437f330"), Some(0x5437F330));
+        assert_eq!(parse_branch_id("5437f330"), Some(FALLBACK_BRANCH_ID));
+    }
+
+    #[test]
+    fn parses_nu63_branch_id() {
+        // what the node reports after NU6.3 activation (~height 3428143)
+        assert_eq!(parse_branch_id("37a5165b"), Some(0x37a5165b));
+    }
+
+    #[test]
+    fn tolerates_prefix_case_and_whitespace() {
+        assert_eq!(parse_branch_id("0x5437f330"), Some(0x5437F330));
+        assert_eq!(parse_branch_id("5437F330"), Some(0x5437F330));
+        assert_eq!(parse_branch_id("  37a5165b\n"), Some(0x37a5165b));
+    }
+
+    #[test]
+    fn rejects_malformed_input() {
+        assert_eq!(parse_branch_id(""), None);
+        assert_eq!(parse_branch_id("zzzz"), None);
+        assert_eq!(parse_branch_id("0x"), None);
+        // 9 hex digits = 0x1_0000_0000, overflows u32
+        assert_eq!(parse_branch_id("100000000"), None);
     }
 }

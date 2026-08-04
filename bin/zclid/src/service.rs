@@ -161,6 +161,8 @@ async fn prepare_spend(
         .get_tip()
         .await
         .map_err(|e| Status::internal(format!("get_tip: {}", e)))?;
+    // consensus branch id from the LIVE chain (auto-tracks network upgrades)
+    let branch_id = client.resolve_branch_id().await;
 
     let (anchor, paths) = zecli::witness::build_witnesses(
         &client,
@@ -216,6 +218,7 @@ async fn prepare_spend(
         _fee: fee,
         anchor,
         anchor_height: tip,
+        branch_id,
         fvk_bytes: fvk.to_bytes(),
     })
 }
@@ -228,6 +231,7 @@ struct PreparedSpend {
     _fee: u64,
     anchor: orchard::tree::Anchor,
     anchor_height: u32,
+    branch_id: u32,
     fvk_bytes: [u8; 96],
 }
 
@@ -399,6 +403,7 @@ impl WalletDaemon for WalletDaemonService {
         let change = prepared.change;
         let anchor = prepared.anchor;
         let anchor_height = prepared.anchor_height;
+        let branch_id = prepared.branch_id;
         let mainnet = self.mainnet;
 
         let (qr_data, pczt_state) = tokio::task::spawn_blocking(move || {
@@ -410,6 +415,7 @@ impl WalletDaemon for WalletDaemonService {
                 change,
                 anchor,
                 anchor_height,
+                branch_id,
                 mainnet,
             )
         })
@@ -491,6 +497,7 @@ impl WalletDaemon for WalletDaemonService {
         let change = prepared.change;
         let anchor = prepared.anchor;
         let anchor_height = prepared.anchor_height;
+        let branch_id = prepared.branch_id;
         let mainnet = self.mainnet;
         let sk_clone = Arc::clone(sk);
 
@@ -504,6 +511,7 @@ impl WalletDaemon for WalletDaemonService {
                 change,
                 anchor,
                 anchor_height,
+                branch_id,
                 mainnet,
             )?;
 

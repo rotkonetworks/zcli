@@ -256,6 +256,8 @@ async fn send_airgap_shielded_fvk(
 
     let fvk_bytes = fvk.to_bytes();
     let anchor_height = tip;
+    // consensus branch id from the LIVE chain (auto-tracks network upgrades)
+    let branch_id = client.resolve_branch_id().await;
     let recipient_str = recipient.to_string();
 
     let (qr_data, pczt_state) = tokio::task::spawn_blocking(move || {
@@ -267,6 +269,7 @@ async fn send_airgap_shielded_fvk(
             change,
             anchor,
             anchor_height,
+            branch_id,
             mainnet,
         )
     })
@@ -447,6 +450,8 @@ async fn send_airgap_to_transparent_fvk(
     let fvk_bytes = fvk.to_bytes();
     let t_recipient = recipient.to_string();
     let recipient_str = recipient.to_string();
+    // consensus branch id from the LIVE chain (auto-tracks network upgrades)
+    let branch_id = client.resolve_branch_id().await;
 
     let (qr_data, pczt_state) = tokio::task::spawn_blocking(move || {
         pczt::build_pczt_and_qr(
@@ -457,6 +462,7 @@ async fn send_airgap_to_transparent_fvk(
             change,
             anchor,
             tip,
+            branch_id,
             mainnet,
         )
     })

@@ -17,3 +17,4 @@ friends.txt
 # nested .claude scratch dirs inside subcrates
 /crates/*/.claude/
 /bin/*/.claude/
+*-identity.key
