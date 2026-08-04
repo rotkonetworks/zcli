@@ -555,7 +555,9 @@ fn compute_pczt_orchard_digest(bundle: &orchard::pczt::Bundle) -> Result<[u8; 32
         bundle
             .flags()
             .to_byte(orchard::bundle::BundleFormat::PreNu6_3)
-            .ok_or_else(|| Error::Transaction("orchard flags not representable in pre-NU6.3 format".into()))?,
+            .ok_or_else(|| {
+                Error::Transaction("orchard flags not representable in pre-NU6.3 format".into())
+            })?,
     );
     orchard_data.extend_from_slice(&value_balance.to_le_bytes());
     orchard_data.extend_from_slice(&bundle.anchor().to_bytes());

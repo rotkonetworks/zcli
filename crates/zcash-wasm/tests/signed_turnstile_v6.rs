@@ -120,7 +120,10 @@ fn signed_turnstile_orchard_to_ironwood_verifies() {
     // inherited MainNetwork activation (the orchard builder needs NU5 active).
     let target_height = 10_000_000u32;
     assert_eq!(
-        u32::from(BranchId::for_height(&Nu63TestNet, BlockHeight::from_u32(target_height))),
+        u32::from(BranchId::for_height(
+            &Nu63TestNet,
+            BlockHeight::from_u32(target_height)
+        )),
         NU6_3_BRANCH_ID,
         "turnstile must bind the real NU6.3 branch id 0x37a5165b"
     );
@@ -197,9 +200,7 @@ fn signed_turnstile_orchard_to_ironwood_verifies() {
     // (3a) parses as a valid V6 transaction with the orchard spend(s) + ironwood
     // output bundle.
     assert_eq!(tx.version(), TxVersion::V6, "must be a V6 transaction");
-    let orchard_bundle = tx
-        .orchard_bundle()
-        .expect("orchard spend bundle present");
+    let orchard_bundle = tx.orchard_bundle().expect("orchard spend bundle present");
     let ironwood_bundle = tx
         .ironwood_bundle()
         .expect("ironwood output bundle present");
@@ -248,8 +249,7 @@ fn signed_turnstile_orchard_to_ironwood_verifies() {
         Some(ironwood_bundle.clone()),
     );
     let txid_parts = sighash_tx.digest(TxIdDigester);
-    let sighash =
-        *signature_hash(&sighash_tx, &SignableInput::Shielded, &txid_parts).as_ref();
+    let sighash = *signature_hash(&sighash_tx, &SignableInput::Shielded, &txid_parts).as_ref();
 
     {
         use orchard::circuit::{OrchardCircuitVersion, VerifyingKey};
@@ -266,9 +266,8 @@ fn signed_turnstile_orchard_to_ironwood_verifies() {
             "orchard spend-auth + binding signatures + proof FAILED to verify"
         );
 
-        let ironwood_vk = VerifyingKey::build(
-            orchard::BundleProtocol::IronwoodPostNu6_3.circuit_version(),
-        );
+        let ironwood_vk =
+            VerifyingKey::build(orchard::BundleProtocol::IronwoodPostNu6_3.circuit_version());
         let mut vi = orchard::bundle::BatchValidator::new(&ironwood_vk);
         assert!(
             vi.add_bundle(ironwood_bundle, sighash).is_ok(),

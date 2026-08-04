@@ -7,27 +7,22 @@ use crate::error::Error;
 use frost_spend::orchestrate;
 
 // re-export result types
-pub use orchestrate::{
-    DealerResult, Dkg1Result, Dkg2Result, Dkg3Result,
-};
+pub use orchestrate::{DealerResult, Dkg1Result, Dkg2Result, Dkg3Result};
 
 // ── dealer ──
 
 pub fn dealer_keygen(min_signers: u16, max_signers: u16) -> Result<DealerResult, Error> {
-    orchestrate::dealer_keygen(min_signers, max_signers)
-        .map_err(|e| Error::Other(e.to_string()))
+    orchestrate::dealer_keygen(min_signers, max_signers).map_err(|e| Error::Other(e.to_string()))
 }
 
 // ── DKG ──
 
 pub fn dkg_part1(max_signers: u16, min_signers: u16) -> Result<Dkg1Result, Error> {
-    orchestrate::dkg_part1(max_signers, min_signers)
-        .map_err(|e| Error::Other(e.to_string()))
+    orchestrate::dkg_part1(max_signers, min_signers).map_err(|e| Error::Other(e.to_string()))
 }
 
 pub fn dkg_part2(secret_hex: &str, peer_broadcasts_hex: &[String]) -> Result<Dkg2Result, Error> {
-    orchestrate::dkg_part2(secret_hex, peer_broadcasts_hex)
-        .map_err(|e| Error::Other(e.to_string()))
+    orchestrate::dkg_part2(secret_hex, peer_broadcasts_hex).map_err(|e| Error::Other(e.to_string()))
 }
 
 pub fn dkg_part3(
@@ -67,9 +62,14 @@ pub fn sign_round2(
     signed_randomizer_hex: &str,
 ) -> Result<String, Error> {
     orchestrate::sign_round2(
-        ephemeral_seed, key_package_hex, nonces_hex,
-        message, signed_commitments_hex, signed_randomizer_hex,
-    ).map_err(|e| Error::Other(e.to_string()))
+        ephemeral_seed,
+        key_package_hex,
+        nonces_hex,
+        message,
+        signed_commitments_hex,
+        signed_randomizer_hex,
+    )
+    .map_err(|e| Error::Other(e.to_string()))
 }
 
 pub fn aggregate_shares(
@@ -80,9 +80,13 @@ pub fn aggregate_shares(
     signed_randomizer_hex: &str,
 ) -> Result<String, Error> {
     orchestrate::aggregate_shares(
-        public_key_package_hex, message,
-        signed_commitments_hex, signed_shares_hex, signed_randomizer_hex,
-    ).map_err(|e| Error::Other(e.to_string()))
+        public_key_package_hex,
+        message,
+        signed_commitments_hex,
+        signed_shares_hex,
+        signed_randomizer_hex,
+    )
+    .map_err(|e| Error::Other(e.to_string()))
 }
 
 // ── spend authorization ──
@@ -110,8 +114,13 @@ pub fn spend_sign_round2(
     signed_commitments_hex: &[String],
 ) -> Result<String, Error> {
     orchestrate::spend_sign_round2(
-        key_package_hex, nonces_hex, sighash, alpha, signed_commitments_hex,
-    ).map_err(|e| Error::Other(e.to_string()))
+        key_package_hex,
+        nonces_hex,
+        sighash,
+        alpha,
+        signed_commitments_hex,
+    )
+    .map_err(|e| Error::Other(e.to_string()))
 }
 
 pub fn spend_aggregate(
@@ -122,6 +131,11 @@ pub fn spend_aggregate(
     shares_hex: &[String],
 ) -> Result<String, Error> {
     orchestrate::spend_aggregate(
-        public_key_package_hex, sighash, alpha, signed_commitments_hex, shares_hex,
-    ).map_err(|e| Error::Other(e.to_string()))
+        public_key_package_hex,
+        sighash,
+        alpha,
+        signed_commitments_hex,
+        shares_hex,
+    )
+    .map_err(|e| Error::Other(e.to_string()))
 }

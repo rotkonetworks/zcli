@@ -13,7 +13,8 @@ use tokio::sync::RwLock;
 type Suite = suite::BandersnatchSha512Ell2;
 
 /// SRS bytes (BLS12-381 Powers of Tau, 2^11 elements)
-const SRS_BYTES: &[u8] = include_bytes!("../../../crates/ring-vrf-wasm/data/bls12-381-srs-2-11-uncompressed-zcash.bin");
+const SRS_BYTES: &[u8] =
+    include_bytes!("../../../crates/ring-vrf-wasm/data/bls12-381-srs-2-11-uncompressed-zcash.bin");
 
 /// ring is always padded to a power of 2, minimum 64.
 /// hides exact subscriber count. padding uses the arkworks padding point.

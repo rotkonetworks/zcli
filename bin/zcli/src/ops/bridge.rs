@@ -15,8 +15,7 @@ use crate::wallet::Wallet;
 use crate::witness;
 
 use frost_spend::hierarchical::{
-    BridgeKeyPackage,
-    bridge_sign_round1, bridge_sign_round2, bridge_aggregate,
+    bridge_aggregate, bridge_sign_round1, bridge_sign_round2, BridgeKeyPackage,
 };
 
 /// spend from the bridge custody wallet using local 2-of-2 FROST signing.
@@ -87,7 +86,16 @@ pub async fn bridge_spend(
 
     eprintln!("building merkle witnesses...");
     let (cached_frontier, sync_height) = witness::load_frontier_from_wallet();
-    let (anchor, paths) = witness::build_witnesses(&client, &selected, tip, mainnet, false, cached_frontier, sync_height).await?;
+    let (anchor, paths) = witness::build_witnesses(
+        &client,
+        &selected,
+        tip,
+        mainnet,
+        false,
+        cached_frontier,
+        sync_height,
+    )
+    .await?;
 
     let spends: Vec<(orchard::Note, orchard::tree::MerklePath)> =
         orchard_notes.into_iter().zip(paths).collect();
@@ -133,8 +141,8 @@ pub async fn bridge_spend(
 
     for (action_idx, alpha) in pczt_state.alphas.iter().enumerate() {
         // round 1: both positions commit
-        let state_a = bridge_sign_round1(osst_pkg)
-            .map_err(|e| Error::Other(format!("round1 A: {}", e)))?;
+        let state_a =
+            bridge_sign_round1(osst_pkg).map_err(|e| Error::Other(format!("round1 A: {}", e)))?;
         let state_b = bridge_sign_round1(validator_pkg)
             .map_err(|e| Error::Other(format!("round1 B: {}", e)))?;
 
@@ -144,13 +152,18 @@ pub async fn bridge_spend(
         ];
 
         // round 2: both positions sign with sighash + alpha
-        let share_a = bridge_sign_round2(
-            osst_pkg, &state_a, &pczt_state.sighash, alpha, &commitments,
-        ).map_err(|e| Error::Other(format!("round2 A: {}", e)))?;
+        let share_a =
+            bridge_sign_round2(osst_pkg, &state_a, &pczt_state.sighash, alpha, &commitments)
+                .map_err(|e| Error::Other(format!("round2 A: {}", e)))?;
 
         let share_b = bridge_sign_round2(
-            validator_pkg, &state_b, &pczt_state.sighash, alpha, &commitments,
-        ).map_err(|e| Error::Other(format!("round2 B: {}", e)))?;
+            validator_pkg,
+            &state_b,
+            &pczt_state.sighash,
+            alpha,
+            &commitments,
+        )
+        .map_err(|e| Error::Other(format!("round2 B: {}", e)))?;
 
         // aggregate
         let sig_hex = bridge_aggregate(
@@ -159,11 +172,13 @@ pub async fn bridge_spend(
             alpha,
             &commitments,
             &[share_a, share_b],
-        ).map_err(|e| Error::Other(format!("aggregate: {}", e)))?;
+        )
+        .map_err(|e| Error::Other(format!("aggregate: {}", e)))?;
 
-        let sig_bytes = hex::decode(&sig_hex)
-            .map_err(|e| Error::Other(format!("sig hex: {}", e)))?;
-        let sig: [u8; 64] = sig_bytes.try_into()
+        let sig_bytes =
+            hex::decode(&sig_hex).map_err(|e| Error::Other(format!("sig hex: {}", e)))?;
+        let sig: [u8; 64] = sig_bytes
+            .try_into()
             .map_err(|_| Error::Other("sig not 64 bytes".into()))?;
 
         orchard_sigs.push(sig);
@@ -173,11 +188,10 @@ pub async fn bridge_spend(
     // ── complete and broadcast ──
     eprintln!("finalizing transaction...");
 
-    let tx_bytes = tokio::task::spawn_blocking(move || {
-        pczt::complete_pczt_tx(pczt_state, &orchard_sigs)
-    })
-    .await
-    .map_err(|e| Error::Other(format!("spawn_blocking: {}", e)))??;
+    let tx_bytes =
+        tokio::task::spawn_blocking(move || pczt::complete_pczt_tx(pczt_state, &orchard_sigs))
+            .await
+            .map_err(|e| Error::Other(format!("spawn_blocking: {}", e)))??;
 
     let result = client.send_transaction(tx_bytes).await?;
 

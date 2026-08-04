@@ -313,7 +313,10 @@ fn turnstile_orchard_to_ironwood_builds_signs_extracts() {
 
     let tx = Transaction::read(&tx_bytes[..], BranchId::Nu6_3).expect("tx parses");
     assert_eq!(tx.version(), TxVersion::V6);
-    assert!(tx.orchard_bundle().is_some(), "orchard spend bundle present");
+    assert!(
+        tx.orchard_bundle().is_some(),
+        "orchard spend bundle present"
+    );
     assert!(
         tx.ironwood_bundle().is_some(),
         "ironwood output bundle present"

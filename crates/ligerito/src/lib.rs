@@ -187,7 +187,7 @@ pub use verifier::{
 };
 
 #[cfg(feature = "postcard-serde")]
-pub use verifier::{verify_bytes, proof_to_bytes};
+pub use verifier::{proof_to_bytes, verify_bytes};
 
 #[cfg(feature = "transcript-merlin")]
 pub use transcript::MerlinTranscript;

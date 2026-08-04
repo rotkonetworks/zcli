@@ -15,10 +15,10 @@ use crate::{
         EpochBoundary as ProtoEpochBoundary, EpochBoundaryList, EpochRangeRequest, EpochRequest,
         FrostCheckpoint as ProtoFrostCheckpoint, GetCommitmentProofsRequest,
         GetCommitmentProofsResponse, GetNullifierProofsRequest, GetNullifierProofsResponse,
-        HeaderProof, NullifierProof, NullifierQuery, ProofRequest, RawTransaction, SendResponse,
-        LicenseRequest, LicenseResponse, ProRing, SignAnchorRequest, SignAnchorResponse, SyncStatus,
-        TransparentAddressFilter, TreeState,
-        TrustlessStateProof, TxFilter, TxidList, UtxoList, VerifiedBlock,
+        HeaderProof, LicenseRequest, LicenseResponse, NullifierProof, NullifierQuery, ProRing,
+        ProofRequest, RawTransaction, SendResponse, SignAnchorRequest, SignAnchorResponse,
+        SyncStatus, TransparentAddressFilter, TreeState, TrustlessStateProof, TxFilter, TxidList,
+        UtxoList, VerifiedBlock,
     },
 };
 use std::sync::Arc;
@@ -54,8 +54,8 @@ impl ZidecarService {
         start_height: u32,
         mempool_cache_ttl: Duration,
     ) -> Self {
-        let license_url = std::env::var("ZCLI_LICENSE_URL")
-            .unwrap_or_else(|_| "http://127.0.0.1:3334".into());
+        let license_url =
+            std::env::var("ZCLI_LICENSE_URL").unwrap_or_else(|_| "http://127.0.0.1:3334".into());
         Self {
             zebrad,
             storage,
@@ -262,8 +262,8 @@ impl Zidecar for ZidecarService {
         let req = request.into_inner();
 
         // proxy to license-server HTTP endpoint
-        let license_url = std::env::var("ZCLI_LICENSE_URL")
-            .unwrap_or_else(|_| "http://127.0.0.1:3334".into());
+        let license_url =
+            std::env::var("ZCLI_LICENSE_URL").unwrap_or_else(|_| "http://127.0.0.1:3334".into());
 
         let url = format!("{}/license/{}", license_url, req.zid_pubkey);
 
@@ -291,7 +291,9 @@ impl Zidecar for ZidecarService {
                     required_confs: u32,
                 }
 
-                let body: LicResp = resp.json().await
+                let body: LicResp = resp
+                    .json()
+                    .await
                     .map_err(|e| Status::internal(format!("parse license response: {e}")))?;
 
                 let sig_bytes = hex::decode(&body.signature).unwrap_or_default();

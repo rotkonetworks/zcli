@@ -397,7 +397,10 @@ impl Decoder {
                 let target_x = GF256((target_idx + 1) as u8);
 
                 // check if we already have this data point
-                if let Some((_, data)) = available.iter().find(|(idx, _)| *idx as usize == target_idx) {
+                if let Some((_, data)) = available
+                    .iter()
+                    .find(|(idx, _)| *idx as usize == target_idx)
+                {
                     payload.extend_from_slice(data);
                     continue;
                 }

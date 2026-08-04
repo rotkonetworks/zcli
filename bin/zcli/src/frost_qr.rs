@@ -67,11 +67,7 @@ pub fn sign_init_qr(wallet_id: &str) -> String {
 }
 
 /// Generate sign request QR JSON (round 2) for zigner to scan
-pub fn sign_request_qr(
-    sighash: &str,
-    alphas: &[String],
-    commitments: &[String],
-) -> String {
+pub fn sign_request_qr(sighash: &str, alphas: &[String], commitments: &[String]) -> String {
     serde_json::json!({
         "frost": "sign2",
         "sighash": sighash,

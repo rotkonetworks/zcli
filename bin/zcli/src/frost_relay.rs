@@ -5,8 +5,8 @@
 //
 // transport 1 of 3: relay (zidecar grpc), quic (p2p), memos (tx chain)
 
-use std::pin::Pin;
 use std::future::Future;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -14,9 +14,7 @@ use prost::Message;
 use rand_core::RngCore;
 use reqwest::Client;
 
-use frost_spend::transport::{
-    FrostTransport, RoundMessage, TransportError, TransportResult,
-};
+use frost_spend::transport::{FrostTransport, RoundMessage, TransportError, TransportResult};
 
 // ── protobuf messages (inline, matching frost_relay.proto) ──
 
@@ -104,10 +102,16 @@ impl RelayTransport {
     ) -> TransportResult<(Self, String)> {
         let http = Client::new();
         let resp: CreateRoomResponse = grpc_unary(
-            &http, base_url,
+            &http,
+            base_url,
             "frost_relay.v1.FrostRelay/CreateRoom",
-            &CreateRoomRequest { threshold, max_signers, ttl_seconds },
-        ).await?;
+            &CreateRoomRequest {
+                threshold,
+                max_signers,
+                ttl_seconds,
+            },
+        )
+        .await?;
 
         let mut participant_id = vec![0u8; 32];
         rand_core::OsRng.fill_bytes(&mut participant_id);
@@ -169,14 +173,16 @@ impl FrostTransport for RelayTransport {
         let data = data.to_vec();
         Box::pin(async move {
             let _resp: SendMessageResponse = grpc_unary(
-                &self.http, &self.base_url,
+                &self.http,
+                &self.base_url,
                 "frost_relay.v1.FrostRelay/SendMessage",
                 &SendMessageRequest {
                     room_code: self.room_code.clone(),
                     sender_id: self.participant_id.clone(),
                     payload: data,
                 },
-            ).await?;
+            )
+            .await?;
             Ok(())
         })
     }
@@ -234,10 +240,16 @@ async fn grpc_unary<Req: Message, Resp: Message + Default>(
         .map_err(|e| TransportError::Io(format!("{}: {}", method, e)))?;
 
     if !resp.status().is_success() {
-        return Err(TransportError::Io(format!("{}: HTTP {}", method, resp.status())));
+        return Err(TransportError::Io(format!(
+            "{}: HTTP {}",
+            method,
+            resp.status()
+        )));
     }
 
-    let bytes = resp.bytes().await
+    let bytes = resp
+        .bytes()
+        .await
         .map_err(|e| TransportError::Io(format!("{}: read: {}", method, e)))?;
 
     if bytes.len() < 5 {
@@ -279,10 +291,15 @@ async fn listen_stream(
         .map_err(|e| TransportError::Io(format!("JoinRoom: {}", e)))?;
 
     if !resp.status().is_success() {
-        return Err(TransportError::Io(format!("JoinRoom: HTTP {}", resp.status())));
+        return Err(TransportError::Io(format!(
+            "JoinRoom: HTTP {}",
+            resp.status()
+        )));
     }
 
-    let bytes = resp.bytes().await
+    let bytes = resp
+        .bytes()
+        .await
         .map_err(|e| TransportError::Io(format!("JoinRoom stream: {}", e)))?;
 
     // parse all frames from the response body
@@ -290,12 +307,16 @@ async fn listen_stream(
     while offset + 5 <= bytes.len() {
         let flags = bytes[offset];
         let len = u32::from_be_bytes([
-            bytes[offset + 1], bytes[offset + 2],
-            bytes[offset + 3], bytes[offset + 4],
+            bytes[offset + 1],
+            bytes[offset + 2],
+            bytes[offset + 3],
+            bytes[offset + 4],
         ]) as usize;
         offset += 5;
 
-        if offset + len > bytes.len() { break; }
+        if offset + len > bytes.len() {
+            break;
+        }
 
         if flags & 0x80 != 0 {
             // trailer frame — stream done

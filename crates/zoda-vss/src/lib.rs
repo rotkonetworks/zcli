@@ -215,11 +215,7 @@ impl Dealer {
     }
 
     /// share a secret, returns header and shares
-    pub fn share<R: rand_core::RngCore>(
-        &self,
-        secret: &[u8],
-        rng: &mut R,
-    ) -> (Header, Vec<Share>) {
+    pub fn share<R: rand_core::RngCore>(&self, secret: &[u8], rng: &mut R) -> (Header, Vec<Share>) {
         // for each byte position, create a polynomial
         // coefficients[i] contains the polynomial for byte i
         let mut coefficients: Vec<Vec<GF256>> = Vec::with_capacity(secret.len());
@@ -392,7 +388,8 @@ mod tests {
         let reconstructed = Player::reconstruct(&header, &shares[1..3]).unwrap();
         assert_eq!(reconstructed, secret);
 
-        let reconstructed = Player::reconstruct(&header, &[shares[0].clone(), shares[2].clone()]).unwrap();
+        let reconstructed =
+            Player::reconstruct(&header, &[shares[0].clone(), shares[2].clone()]).unwrap();
         assert_eq!(reconstructed, secret);
     }
 

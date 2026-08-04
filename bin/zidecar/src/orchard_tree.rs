@@ -95,9 +95,7 @@ pub fn parse_frontier_tree_root<H: FrontierHash>(final_state_hex: &str) -> [u8; 
 ///
 /// Option encoding: 0x00 = None, 0x01 = Some followed by 32 bytes.
 /// CompactSize: 0x00-0xfc = 1 byte, 0xfd = u16 LE, 0xfe = u32 LE, 0xff = u64 LE.
-fn deserialize_tree<H: FrontierHash>(
-    data: &[u8],
-) -> Result<CommitmentTree<H, 32>, &'static str> {
+fn deserialize_tree<H: FrontierHash>(data: &[u8]) -> Result<CommitmentTree<H, 32>, &'static str> {
     if data.is_empty() {
         return Ok(CommitmentTree::empty());
     }
@@ -120,10 +118,7 @@ fn deserialize_tree<H: FrontierHash>(
     CommitmentTree::from_parts(left, right, parents).map_err(|_| "invalid frontier structure")
 }
 
-fn read_option<H: FrontierHash>(
-    data: &[u8],
-    pos: &mut usize,
-) -> Result<Option<H>, &'static str> {
+fn read_option<H: FrontierHash>(data: &[u8], pos: &mut usize) -> Result<Option<H>, &'static str> {
     if *pos >= data.len() {
         return Err("frontier truncated reading option tag");
     }
@@ -163,12 +158,8 @@ fn read_compact_size(data: &[u8], pos: &mut usize) -> Result<u64, &'static str> 
             if *pos + 4 > data.len() {
                 return Err("compact size: truncated u32");
             }
-            let v = u32::from_le_bytes([
-                data[*pos],
-                data[*pos + 1],
-                data[*pos + 2],
-                data[*pos + 3],
-            ]);
+            let v =
+                u32::from_le_bytes([data[*pos], data[*pos + 1], data[*pos + 2], data[*pos + 3]]);
             *pos += 4;
             Ok(v as u64)
         }

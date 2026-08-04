@@ -22,11 +22,11 @@
 
 use orchard::keys::Scope;
 use pczt::{
-    Pczt,
     roles::{
         creator::Creator, io_finalizer::IoFinalizer, prover::Prover, signer::Signer,
         spend_finalizer::SpendFinalizer,
     },
+    Pczt,
 };
 use rand_core::OsRng;
 use std::sync::OnceLock;
@@ -34,9 +34,7 @@ use zcash_primitives::transaction::{
     builder::{BuildConfig, Builder},
     fees::zip317,
 };
-use zcash_protocol::{
-    consensus::MainNetwork, memo::MemoBytes, value::Zatoshis,
-};
+use zcash_protocol::{consensus::MainNetwork, memo::MemoBytes, value::Zatoshis};
 use zcash_transparent::{address::TransparentAddress, bundle as transparent};
 
 // Build height for this plain orchard+transparent send. Must be post-NU6.2
@@ -53,9 +51,7 @@ fn orchard_proving_key() -> &'static orchard::circuit::ProvingKey {
     // Post-NU6.2 / pre-NU6.3 selects BundleProtocol::OrchardPreNu6_3 = the
     // fixed circuit.
     ORCHARD_PROVING_KEY.get_or_init(|| {
-        orchard::circuit::ProvingKey::build(
-            orchard::circuit::OrchardCircuitVersion::FixedPostNu6_2,
-        )
+        orchard::circuit::ProvingKey::build(orchard::circuit::OrchardCircuitVersion::FixedPostNu6_2)
     })
 }
 
@@ -163,7 +159,11 @@ fn extract_signed_tx_round_trip() {
         5,
         "expected v5 transaction; version word: 0x{version_word:08x}"
     );
-    assert_eq!(version_word & 0x8000_0000, 0x8000_0000, "overwintered bit must be set");
+    assert_eq!(
+        version_word & 0x8000_0000,
+        0x8000_0000,
+        "overwintered bit must be set"
+    );
 
     // Bytes 4..8: version_group_id (must be V5_VERSION_GROUP_ID = 0x26A7270A).
     let vg = u32::from_le_bytes([tx_bytes[4], tx_bytes[5], tx_bytes[6], tx_bytes[7]]);

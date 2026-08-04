@@ -52,7 +52,10 @@ impl FrostRelay for FrostRelayService {
             .await
             .map_err(|e| Status::resource_exhausted(e))?;
 
-        info!("frost relay: created room {} ({}-of-{})", code, threshold, max_signers);
+        info!(
+            "frost relay: created room {} ({}-of-{})",
+            code, threshold, max_signers
+        );
 
         Ok(Response::new(CreateRoomResponse {
             room_code: code,
@@ -60,9 +63,8 @@ impl FrostRelay for FrostRelayService {
         }))
     }
 
-    type JoinRoomStream = std::pin::Pin<
-        Box<dyn tokio_stream::Stream<Item = Result<RoomEvent, Status>> + Send>,
-    >;
+    type JoinRoomStream =
+        std::pin::Pin<Box<dyn tokio_stream::Stream<Item = Result<RoomEvent, Status>> + Send>>;
 
     async fn join_room(
         &self,

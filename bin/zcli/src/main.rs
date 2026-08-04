@@ -10,7 +10,10 @@ use tokio::net::TcpListener;
 use zecli::cam;
 use zecli::{address, client, frost_qr, key, notes_export, ops, quic, wallet, witness};
 
-use cli::{Cli, Command, InitAction, MerchantAction, MultisigAction, ServiceAction, SignerAction, TxAction, ViewAction};
+use cli::{
+    Cli, Command, InitAction, MerchantAction, MultisigAction, ServiceAction, SignerAction,
+    TxAction, ViewAction,
+};
 use zecli::error::Error;
 
 #[tokio::main]
@@ -41,46 +44,73 @@ async fn run(cli: &Cli) -> Result<(), Error> {
             // Auto-sync if wallet has never been synced
             ensure_synced(cli, mainnet).await?;
             match action {
-            ViewAction::Balance => cmd_balance(cli, mainnet).await,
-            ViewAction::Address { transparent, ephemeral } => {
-                if *transparent {
-                    cmd_address(cli, mainnet, false, true)
-                } else {
-                    cmd_receive(cli, mainnet, *ephemeral)
+                ViewAction::Balance => cmd_balance(cli, mainnet).await,
+                ViewAction::Address {
+                    transparent,
+                    ephemeral,
+                } => {
+                    if *transparent {
+                        cmd_address(cli, mainnet, false, true)
+                    } else {
+                        cmd_receive(cli, mainnet, *ephemeral)
+                    }
+                }
+                ViewAction::Notes => cmd_notes(cli),
+                ViewAction::History => cmd_history(cli),
+                ViewAction::Export => {
+                    if cli.watch {
+                        return Err(Error::Other(
+                            "watch-only wallet: export requires spending key".into(),
+                        ));
+                    }
+                    let seed = load_seed(cli)?;
+                    ops::export::export(&seed, mainnet, cli.json)
                 }
             }
-            ViewAction::Notes => cmd_notes(cli),
-            ViewAction::History => cmd_history(cli),
-            ViewAction::Export => {
-                if cli.watch {
-                    return Err(Error::Other(
-                        "watch-only wallet: export requires spending key".into(),
-                    ));
-                }
-                let seed = load_seed(cli)?;
-                ops::export::export(&seed, mainnet, cli.json)
-            }
-        }},
+        }
         Command::Transaction { action } => match action {
-            TxAction::Send { amount, recipient, memo, airgap } => {
+            TxAction::Send {
+                amount,
+                recipient,
+                memo,
+                airgap,
+            } => {
                 if cli.watch {
                     let fvk = load_fvk(cli, mainnet)?;
                     ops::airgap::send_airgap_with_fvk(
-                        &fvk, amount, recipient, memo.as_deref(),
-                        &cli.endpoint, mainnet, cli.json,
-                    ).await
+                        &fvk,
+                        amount,
+                        recipient,
+                        memo.as_deref(),
+                        &cli.endpoint,
+                        mainnet,
+                        cli.json,
+                    )
+                    .await
                 } else if *airgap {
                     let seed = load_seed(cli)?;
                     ops::airgap::send_airgap(
-                        &seed, amount, recipient, memo.as_deref(),
-                        &cli.endpoint, mainnet, cli.json,
-                    ).await
+                        &seed,
+                        amount,
+                        recipient,
+                        memo.as_deref(),
+                        &cli.endpoint,
+                        mainnet,
+                        cli.json,
+                    )
+                    .await
                 } else {
                     let seed = load_seed(cli)?;
                     ops::send::send(
-                        &seed, amount, recipient, memo.as_deref(),
-                        &cli.endpoint, mainnet, cli.json,
-                    ).await
+                        &seed,
+                        amount,
+                        recipient,
+                        memo.as_deref(),
+                        &cli.endpoint,
+                        mainnet,
+                        cli.json,
+                    )
+                    .await
                 }
             }
             TxAction::Shield { fee } => {
@@ -94,8 +124,25 @@ async fn run(cli: &Cli) -> Result<(), Error> {
             }
         },
         Command::Signer { action } => match action {
-            SignerAction::ExportNotes { interval, fragment_size, signing_key, transport, zt_frame_size, zt_redundancy } => {
-                cmd_export_notes(cli, mainnet, *interval, *fragment_size, signing_key.as_deref(), transport, *zt_frame_size, *zt_redundancy).await
+            SignerAction::ExportNotes {
+                interval,
+                fragment_size,
+                signing_key,
+                transport,
+                zt_frame_size,
+                zt_redundancy,
+            } => {
+                cmd_export_notes(
+                    cli,
+                    mainnet,
+                    *interval,
+                    *fragment_size,
+                    signing_key.as_deref(),
+                    transport,
+                    *zt_frame_size,
+                    *zt_redundancy,
+                )
+                .await
             }
             SignerAction::Scan { device, timeout } => cmd_scan(cli, device, *timeout),
             SignerAction::Verify => cmd_verify(cli, mainnet).await,
@@ -105,7 +152,12 @@ async fn run(cli: &Cli) -> Result<(), Error> {
             InitAction::Phrase => cmd_init_phrase(cli),
             InitAction::Migrate { dry_run } => cmd_init_migrate(cli, mainnet, *dry_run).await,
             InitAction::ImportFvk { hex } => cmd_import_fvk(cli, mainnet, hex.as_deref()),
-            InitAction::Sync { from, position, full, no_verify } => {
+            InitAction::Sync {
+                from,
+                position,
+                full,
+                no_verify,
+            } => {
                 if *full && !cli.json {
                     eprintln!("full rescan from orchard activation...");
                 }
@@ -117,17 +169,38 @@ async fn run(cli: &Cli) -> Result<(), Error> {
         },
         Command::Service { action } => match action {
             ServiceAction::Merchant { action } => cmd_merchant(cli, mainnet, action).await,
-            ServiceAction::Board { port, interval, dir } => {
+            ServiceAction::Board {
+                port,
+                interval,
+                dir,
+            } => {
                 let seed = load_seed(cli)?;
                 cmd_board(cli, &seed, mainnet, *port, *interval, dir.as_deref()).await
             }
-            ServiceAction::LicenseServer { port, interval, dir, signing_key, confirmations, instant_threshold } => {
+            ServiceAction::LicenseServer {
+                port,
+                interval,
+                dir,
+                signing_key,
+                confirmations,
+                instant_threshold,
+            } => {
                 let seed = load_seed(cli)?;
                 let config = ops::license::LicenseConfig {
                     required_confs: *confirmations,
                     instant_threshold_zat: *instant_threshold,
                 };
-                cmd_license_server(cli, &seed, mainnet, *port, *interval, dir.as_deref(), signing_key.as_deref(), &config).await
+                cmd_license_server(
+                    cli,
+                    &seed,
+                    mainnet,
+                    *port,
+                    *interval,
+                    dir.as_deref(),
+                    signing_key.as_deref(),
+                    &config,
+                )
+                .await
             }
             ServiceAction::TreeInfo { height } => cmd_tree_info(cli, *height).await,
         },
@@ -311,7 +384,10 @@ async fn ensure_synced(cli: &Cli, mainnet: bool) -> Result<(), Error> {
     let wallet = wallet::Wallet::open(&wallet::Wallet::default_path())?;
     let height = wallet.sync_height()?;
     let birth = wallet.birth_height()?;
-    let has_notes = wallet.shielded_balance().map(|(b, _)| b > 0).unwrap_or(false);
+    let has_notes = wallet
+        .shielded_balance()
+        .map(|(b, _)| b > 0)
+        .unwrap_or(false);
     drop(wallet);
 
     if height > 0 || has_notes {
@@ -347,7 +423,9 @@ async fn ensure_synced(cli: &Cli, mainnet: bool) -> Result<(), Error> {
                     }
                 }
             } else {
-                eprintln!("restoring wallet — will scan from orchard activation (this takes a while)");
+                eprintln!(
+                    "restoring wallet — will scan from orchard activation (this takes a while)"
+                );
             }
         }
     }
@@ -1030,22 +1108,22 @@ async fn cmd_license_server(
     // resolve signing key: CLI flag > env var
     let key_hex = match signing_key_hex {
         Some(k) => k.to_string(),
-        None => std::env::var("ZCLI_SIGNING_KEY")
-            .map_err(|_| Error::Other(
-                "signing key required: pass --signing-key or set ZCLI_SIGNING_KEY".into()
-            ))?,
+        None => std::env::var("ZCLI_SIGNING_KEY").map_err(|_| {
+            Error::Other("signing key required: pass --signing-key or set ZCLI_SIGNING_KEY".into())
+        })?,
     };
     let signing_key = ops::license::parse_signing_key(&key_hex)?;
     let vk = signing_key.verification_key();
-    eprintln!("license-server: verifier key = {}", hex::encode(vk.as_ref()));
+    eprintln!(
+        "license-server: verifier key = {}",
+        hex::encode(vk.as_ref())
+    );
 
     // open license database
-    let license_dir = dir
-        .map(String::from)
-        .unwrap_or_else(|| {
-            let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-            format!("{}/.zcli/license", home)
-        });
+    let license_dir = dir.map(String::from).unwrap_or_else(|| {
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+        format!("{}/.zcli/license", home)
+    });
     let license_db = ops::license::open_license_db(&license_dir)?;
     eprintln!("license-server: db at {}/license-db", license_dir);
 
@@ -1136,10 +1214,7 @@ async fn cmd_license_server(
 
             // parse HTTP request line: "GET /path HTTP/1.1\r\n..."
             let request = String::from_utf8_lossy(&buf[..n]);
-            let path = request
-                .split_whitespace()
-                .nth(1)
-                .unwrap_or("/");
+            let path = request.split_whitespace().nth(1).unwrap_or("/");
 
             let (status, body) = state.handle_request(path);
             let status_text = match status {
@@ -1157,7 +1232,10 @@ async fn cmd_license_server(
                  Content-Length: {}\r\n\
                  \r\n\
                  {}",
-                status, status_text, body.len(), body,
+                status,
+                status_text,
+                body.len(),
+                body,
             );
             let _ = stream.write_all(response.as_bytes()).await;
         });
@@ -1857,7 +1935,9 @@ fn cmd_init_create(cli: &Cli, words: usize) -> Result<(), Error> {
         eprintln!("  ╚══════════════════════════════════════════════════════════╝\n");
         for (i, word) in mnemonic.split_whitespace().enumerate() {
             eprint!("  {:>2}. {:<12}", i + 1, word);
-            if (i + 1) % 4 == 0 { eprintln!(); }
+            if (i + 1) % 4 == 0 {
+                eprintln!();
+            }
         }
         eprintln!();
     }
@@ -1874,9 +1954,13 @@ fn cmd_init_create(cli: &Cli, words: usize) -> Result<(), Error> {
         .output()
         .map_err(|e| Error::Other(format!("ssh-keygen: {}", e)))?;
     if !pubkey_output.status.success() {
-        return Err(Error::Other("failed to extract public key from SSH key".into()));
+        return Err(Error::Other(
+            "failed to extract public key from SSH key".into(),
+        ));
     }
-    let pubkey = String::from_utf8_lossy(&pubkey_output.stdout).trim().to_string();
+    let pubkey = String::from_utf8_lossy(&pubkey_output.stdout)
+        .trim()
+        .to_string();
 
     // Encrypt with age
     let mut child = std::process::Command::new("age")
@@ -1886,10 +1970,15 @@ fn cmd_init_create(cli: &Cli, words: usize) -> Result<(), Error> {
         .map_err(|e| Error::Other(format!("age not found: {}", e)))?;
 
     use std::io::Write;
-    child.stdin.take().unwrap().write_all(mnemonic.as_bytes())
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(mnemonic.as_bytes())
         .map_err(|e| Error::Other(format!("write to age: {}", e)))?;
 
-    let status = child.wait()
+    let status = child
+        .wait()
         .map_err(|e| Error::Other(format!("age wait: {}", e)))?;
     if !status.success() {
         return Err(Error::Other("age encryption failed".into()));
@@ -2099,16 +2188,18 @@ fn load_seed(cli: &Cli) -> Result<key::WalletSeed, Error> {
 }
 
 fn parse_ephemeral_seed(hex_str: &str) -> Result<[u8; 32], Error> {
-    let bytes = hex::decode(hex_str)
-        .map_err(|e| Error::Other(format!("bad ephemeral seed hex: {}", e)))?;
-    bytes.try_into()
+    let bytes =
+        hex::decode(hex_str).map_err(|e| Error::Other(format!("bad ephemeral seed hex: {}", e)))?;
+    bytes
+        .try_into()
         .map_err(|_| Error::Other("ephemeral seed must be 32 bytes".into()))
 }
 
 fn parse_32_bytes(hex_str: &str, name: &str) -> Result<[u8; 32], Error> {
-    let bytes = hex::decode(hex_str)
-        .map_err(|e| Error::Other(format!("bad {} hex: {}", name, e)))?;
-    bytes.try_into()
+    let bytes =
+        hex::decode(hex_str).map_err(|e| Error::Other(format!("bad {} hex: {}", name, e)))?;
+    bytes
+        .try_into()
         .map_err(|_| Error::Other(format!("{} must be 32 bytes", name)))
 }
 
@@ -2147,8 +2238,16 @@ async fn cmd_export_notes(
     }
 
     let (cached_frontier, sync_height) = witness::load_frontier_from_wallet();
-    let (anchor, paths) =
-        witness::build_witnesses(&client_obj, &notes, tip, mainnet, cli.json, cached_frontier, sync_height).await?;
+    let (anchor, paths) = witness::build_witnesses(
+        &client_obj,
+        &notes,
+        tip,
+        mainnet,
+        cli.json,
+        cached_frontier,
+        sync_height,
+    )
+    .await?;
 
     // sign anchor attestation if signing key provided
     let attestation: Option<[u8; 64]> = match signing_key {
@@ -2179,7 +2278,10 @@ async fn cmd_export_notes(
             let signature = signing_key.sign(&digest);
 
             if !cli.json {
-                eprintln!("signed by verifier: {}", hex::encode(verification_key.as_ref()));
+                eprintln!(
+                    "signed by verifier: {}",
+                    hex::encode(verification_key.as_ref())
+                );
             }
 
             Some(signature.to_bytes())
@@ -2187,12 +2289,7 @@ async fn cmd_export_notes(
         None => None,
     };
     let mut cbor = notes_export::encode_notes_cbor(
-        &anchor,
-        tip,
-        mainnet,
-        &notes,
-        &paths,
-        None, // we'll append attestation manually
+        &anchor, tip, mainnet, &notes, &paths, None, // we'll append attestation manually
     );
     // append attestation as CBOR key 5 if present
     if let Some(sig) = &attestation {
@@ -2225,7 +2322,11 @@ async fn cmd_export_notes(
                 .collect();
             if !cli.json && !frames.is_empty() {
                 let frame_bytes = frames[0].to_bytes().len();
-                eprintln!("~{} bytes/frame, ~{} hex chars/QR", frame_bytes, frame_bytes * 2 + 15);
+                eprintln!(
+                    "~{} bytes/frame, ~{} hex chars/QR",
+                    frame_bytes,
+                    frame_bytes * 2 + 15
+                );
             }
             (strings, format!("zt {n} frames"))
         }
@@ -2275,13 +2376,19 @@ async fn cmd_export_notes(
 
 fn cmd_multisig(cli: &Cli, action: &MultisigAction) -> Result<(), Error> {
     match action {
-        MultisigAction::Dealer { min_signers, max_signers } => {
+        MultisigAction::Dealer {
+            min_signers,
+            max_signers,
+        } => {
             let result = ops::multisig::dealer_keygen(*min_signers, *max_signers)?;
             if cli.json {
-                println!("{}", serde_json::json!({
-                    "packages": result.packages,
-                    "public_key_package": result.public_key_package_hex,
-                }));
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "packages": result.packages,
+                        "public_key_package": result.public_key_package_hex,
+                    })
+                );
             } else {
                 eprintln!("generated {}-of-{} key packages:", min_signers, max_signers);
                 for (i, pkg) in result.packages.iter().enumerate() {
@@ -2291,14 +2398,20 @@ fn cmd_multisig(cli: &Cli, action: &MultisigAction) -> Result<(), Error> {
             }
             Ok(())
         }
-        MultisigAction::DkgPart1 { max_signers, min_signers, qr, label } => {
+        MultisigAction::DkgPart1 {
+            max_signers,
+            min_signers,
+            qr,
+            label,
+        } => {
             if *qr {
                 // Display QR for zigner to initiate DKG
-                let json = frost_qr::dkg_init_qr(
-                    *max_signers, *min_signers,
-                    label, cli.is_mainnet(),
+                let json =
+                    frost_qr::dkg_init_qr(*max_signers, *min_signers, label, cli.is_mainnet());
+                eprintln!(
+                    "scan this QR with zigner to start {}-of-{} DKG:",
+                    min_signers, max_signers
                 );
-                eprintln!("scan this QR with zigner to start {}-of-{} DKG:", min_signers, max_signers);
                 frost_qr::display_text_qr(&json);
                 eprintln!("after zigner completes round 1, scan its broadcast QR with:");
                 eprintln!("  zcli multisig dkg-part2 ...");
@@ -2306,10 +2419,13 @@ fn cmd_multisig(cli: &Cli, action: &MultisigAction) -> Result<(), Error> {
             }
             let result = ops::multisig::dkg_part1(*max_signers, *min_signers)?;
             if cli.json {
-                println!("{}", serde_json::json!({
-                    "secret": result.secret_hex,
-                    "broadcast": result.broadcast_hex,
-                }));
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "secret": result.secret_hex,
+                        "broadcast": result.broadcast_hex,
+                    })
+                );
             } else {
                 eprintln!("DKG round 1 complete");
                 eprintln!("secret (keep safe): {}", result.secret_hex);
@@ -2317,7 +2433,11 @@ fn cmd_multisig(cli: &Cli, action: &MultisigAction) -> Result<(), Error> {
             }
             Ok(())
         }
-        MultisigAction::DkgPart2 { secret, packages, qr } => {
+        MultisigAction::DkgPart2 {
+            secret,
+            packages,
+            qr,
+        } => {
             if *qr {
                 let json = frost_qr::dkg_round2_qr(packages);
                 eprintln!("scan this QR with zigner for DKG round 2:");
@@ -2326,10 +2446,13 @@ fn cmd_multisig(cli: &Cli, action: &MultisigAction) -> Result<(), Error> {
             }
             let result = ops::multisig::dkg_part2(secret, packages)?;
             if cli.json {
-                println!("{}", serde_json::json!({
-                    "secret": result.secret_hex,
-                    "peer_packages": result.peer_packages,
-                }));
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "secret": result.secret_hex,
+                        "peer_packages": result.peer_packages,
+                    })
+                );
             } else {
                 eprintln!("DKG round 2 complete");
                 eprintln!("secret (keep safe): {}", result.secret_hex);
@@ -2339,7 +2462,12 @@ fn cmd_multisig(cli: &Cli, action: &MultisigAction) -> Result<(), Error> {
             }
             Ok(())
         }
-        MultisigAction::DkgPart3 { secret, round1_packages, round2_packages, qr } => {
+        MultisigAction::DkgPart3 {
+            secret,
+            round1_packages,
+            round2_packages,
+            qr,
+        } => {
             if *qr {
                 let json = frost_qr::dkg_round3_qr(round1_packages, round2_packages);
                 eprintln!("scan this QR with zigner for DKG round 3:");
@@ -2348,27 +2476,40 @@ fn cmd_multisig(cli: &Cli, action: &MultisigAction) -> Result<(), Error> {
             }
             let result = ops::multisig::dkg_part3(secret, round1_packages, round2_packages)?;
             if cli.json {
-                println!("{}", serde_json::json!({
-                    "key_package": result.key_package_hex,
-                    "public_key_package": result.public_key_package_hex,
-                    "ephemeral_seed": result.ephemeral_seed_hex,
-                }));
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "key_package": result.key_package_hex,
+                        "public_key_package": result.public_key_package_hex,
+                        "ephemeral_seed": result.ephemeral_seed_hex,
+                    })
+                );
             } else {
                 eprintln!("DKG complete!");
-                eprintln!("ephemeral seed (for signing): {}", result.ephemeral_seed_hex);
+                eprintln!(
+                    "ephemeral seed (for signing): {}",
+                    result.ephemeral_seed_hex
+                );
                 eprintln!("key package (SECRET): {}", result.key_package_hex);
                 eprintln!("public key package: {}", result.public_key_package_hex);
             }
             Ok(())
         }
-        MultisigAction::SignRound1 { ephemeral_seed, key_package } => {
+        MultisigAction::SignRound1 {
+            ephemeral_seed,
+            key_package,
+        } => {
             let seed = parse_ephemeral_seed(ephemeral_seed)?;
-            let (nonces_hex, signed_commitments_hex) = ops::multisig::sign_round1(&seed, key_package)?;
+            let (nonces_hex, signed_commitments_hex) =
+                ops::multisig::sign_round1(&seed, key_package)?;
             if cli.json {
-                println!("{}", serde_json::json!({
-                    "nonces": nonces_hex,
-                    "commitments": signed_commitments_hex,
-                }));
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "nonces": nonces_hex,
+                        "commitments": signed_commitments_hex,
+                    })
+                );
             } else {
                 eprintln!("signing round 1 complete");
                 eprintln!("nonces (keep safe): {}", nonces_hex);
@@ -2376,13 +2517,16 @@ fn cmd_multisig(cli: &Cli, action: &MultisigAction) -> Result<(), Error> {
             }
             Ok(())
         }
-        MultisigAction::Randomize { ephemeral_seed, message, commitments } => {
+        MultisigAction::Randomize {
+            ephemeral_seed,
+            message,
+            commitments,
+        } => {
             let seed = parse_ephemeral_seed(ephemeral_seed)?;
             let msg_bytes = hex::decode(message)
                 .map_err(|e| Error::Other(format!("bad message hex: {}", e)))?;
-            let signed_randomizer = ops::multisig::generate_randomizer(
-                &seed, &msg_bytes, commitments,
-            )?;
+            let signed_randomizer =
+                ops::multisig::generate_randomizer(&seed, &msg_bytes, commitments)?;
             if cli.json {
                 println!("{}", serde_json::json!({"randomizer": signed_randomizer}));
             } else {
@@ -2390,12 +2534,24 @@ fn cmd_multisig(cli: &Cli, action: &MultisigAction) -> Result<(), Error> {
             }
             Ok(())
         }
-        MultisigAction::SignRound2 { ephemeral_seed, key_package, nonces, message, randomizer, commitments } => {
+        MultisigAction::SignRound2 {
+            ephemeral_seed,
+            key_package,
+            nonces,
+            message,
+            randomizer,
+            commitments,
+        } => {
             let seed = parse_ephemeral_seed(ephemeral_seed)?;
             let msg_bytes = hex::decode(message)
                 .map_err(|e| Error::Other(format!("bad message hex: {}", e)))?;
             let signed_share = ops::multisig::sign_round2(
-                &seed, key_package, nonces, &msg_bytes, commitments, randomizer,
+                &seed,
+                key_package,
+                nonces,
+                &msg_bytes,
+                commitments,
+                randomizer,
             )?;
             if cli.json {
                 println!("{}", serde_json::json!({"signature_share": signed_share}));
@@ -2404,11 +2560,21 @@ fn cmd_multisig(cli: &Cli, action: &MultisigAction) -> Result<(), Error> {
             }
             Ok(())
         }
-        MultisigAction::Aggregate { public_key_package, message, randomizer, commitments, shares } => {
+        MultisigAction::Aggregate {
+            public_key_package,
+            message,
+            randomizer,
+            commitments,
+            shares,
+        } => {
             let msg_bytes = hex::decode(message)
                 .map_err(|e| Error::Other(format!("bad message hex: {}", e)))?;
             let sig_hex = ops::multisig::aggregate_shares(
-                public_key_package, &msg_bytes, commitments, shares, randomizer,
+                public_key_package,
+                &msg_bytes,
+                commitments,
+                shares,
+                randomizer,
             )?;
             if cli.json {
                 println!("{}", serde_json::json!({"signature": sig_hex}));
@@ -2417,7 +2583,10 @@ fn cmd_multisig(cli: &Cli, action: &MultisigAction) -> Result<(), Error> {
             }
             Ok(())
         }
-        MultisigAction::DeriveAddress { public_key_package, index } => {
+        MultisigAction::DeriveAddress {
+            public_key_package,
+            index,
+        } => {
             let address = ops::multisig::derive_address(public_key_package, *index)?;
             if cli.json {
                 println!("{}", serde_json::json!({"address": address}));
@@ -2426,11 +2595,21 @@ fn cmd_multisig(cli: &Cli, action: &MultisigAction) -> Result<(), Error> {
             }
             Ok(())
         }
-        MultisigAction::SpendSign { key_package, nonces, sighash, alpha, commitments } => {
+        MultisigAction::SpendSign {
+            key_package,
+            nonces,
+            sighash,
+            alpha,
+            commitments,
+        } => {
             let sighash = parse_32_bytes(sighash, "sighash")?;
             let alpha = parse_32_bytes(alpha, "alpha")?;
             let share_hex = ops::multisig::spend_sign_round2(
-                key_package, nonces, &sighash, &alpha, commitments,
+                key_package,
+                nonces,
+                &sighash,
+                &alpha,
+                commitments,
             )?;
             if cli.json {
                 println!("{}", serde_json::json!({"signature_share": share_hex}));
@@ -2439,11 +2618,21 @@ fn cmd_multisig(cli: &Cli, action: &MultisigAction) -> Result<(), Error> {
             }
             Ok(())
         }
-        MultisigAction::SpendAggregate { public_key_package, sighash, alpha, commitments, shares } => {
+        MultisigAction::SpendAggregate {
+            public_key_package,
+            sighash,
+            alpha,
+            commitments,
+            shares,
+        } => {
             let sighash = parse_32_bytes(sighash, "sighash")?;
             let alpha = parse_32_bytes(alpha, "alpha")?;
             let sig_hex = ops::multisig::spend_aggregate(
-                public_key_package, &sighash, &alpha, commitments, shares,
+                public_key_package,
+                &sighash,
+                &alpha,
+                commitments,
+                shares,
             )?;
             if cli.json {
                 println!("{}", serde_json::json!({"spend_auth_signature": sig_hex}));

@@ -382,7 +382,10 @@ mod tests {
         // fresh: no wallet db, no marker → mnemonic-v1, marker written
         let d = resolve_ssh_derivation(marker, wallet_db_str).unwrap();
         assert_eq!(d, SshDerivation::MnemonicV1);
-        assert_eq!(std::fs::read_to_string(marker).unwrap().trim(), "mnemonic-v1");
+        assert_eq!(
+            std::fs::read_to_string(marker).unwrap().trim(),
+            "mnemonic-v1"
+        );
 
         // marker wins even if a wallet db appears later
         std::fs::create_dir_all(&wallet_db).unwrap();
@@ -393,7 +396,10 @@ mod tests {
         std::fs::remove_file(marker).unwrap();
         let d = resolve_ssh_derivation(marker, wallet_db_str).unwrap();
         assert_eq!(d, SshDerivation::Legacy);
-        assert_eq!(std::fs::read_to_string(marker).unwrap().trim(), "legacy-ssh");
+        assert_eq!(
+            std::fs::read_to_string(marker).unwrap().trim(),
+            "legacy-ssh"
+        );
 
         // garbage marker is an error, not a silent fallback
         std::fs::write(marker, "wat").unwrap();

@@ -27,7 +27,11 @@ fn build_unsigned_pczt_calls_the_redactor_role() {
     // Sanity that the source we baked in via include_str! matches the live
     // file (catches stale incremental builds while iterating).
     let live = fs::read_to_string("src/lib.rs").expect("read live lib.rs");
-    assert_eq!(SRC.len(), live.len(), "include_str! lib.rs is stale; rebuild");
+    assert_eq!(
+        SRC.len(),
+        live.len(),
+        "include_str! lib.rs is stale; rebuild"
+    );
 
     let pczt_fn = SRC
         .find("pub fn build_unsigned_pczt")

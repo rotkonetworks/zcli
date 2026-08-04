@@ -6,9 +6,8 @@
 pub use frost_spend::orchestrate;
 
 // re-export core types for any zcli code that needs them directly
-pub use frost_spend::{
-    frost, frost_keys, dkg, round1, round2,
-    aggregate, Identifier, SigningPackage,
-    RandomizedParams, Randomizer,
-};
 pub use frost_spend::message::SignedMessage;
+pub use frost_spend::{
+    aggregate, dkg, frost, frost_keys, round1, round2, Identifier, RandomizedParams, Randomizer,
+    SigningPackage,
+};

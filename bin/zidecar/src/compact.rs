@@ -13,11 +13,11 @@ pub type BlockTxIndex = u32;
 /// compact orchard action for trial decryption
 #[derive(Debug, Clone)]
 pub struct CompactAction {
-    pub cmx: Vec<u8>,                // 32 bytes
-    pub ephemeral_key: Vec<u8>,      // 32 bytes
-    pub ciphertext: Vec<u8>,         // 52 bytes (compact)
-    pub nullifier: Vec<u8>,          // 32 bytes
-    pub txid: Vec<u8>,               // 32 bytes - for memo retrieval
+    pub cmx: Vec<u8>,                 // 32 bytes
+    pub ephemeral_key: Vec<u8>,       // 32 bytes
+    pub ciphertext: Vec<u8>,          // 52 bytes (compact)
+    pub nullifier: Vec<u8>,           // 32 bytes
+    pub txid: Vec<u8>,                // 32 bytes - for memo retrieval
     pub block_tx_index: BlockTxIndex, // position of the containing tx in its block
 }
 

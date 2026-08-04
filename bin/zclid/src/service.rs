@@ -105,8 +105,7 @@ async fn prepare_spend(
     intent: &proto::TransactionIntent,
     pending_nfs: &[[u8; 32]],
 ) -> Result<PreparedSpend, Status> {
-    let is_transparent =
-        intent.to_address.starts_with("t1") || intent.to_address.starts_with("tm");
+    let is_transparent = intent.to_address.starts_with("t1") || intent.to_address.starts_with("tm");
     let n_t_outputs = if is_transparent { 1 } else { 0 };
     let n_z_outputs = if is_transparent { 0 } else { 1 };
 
@@ -423,8 +422,7 @@ impl WalletDaemon for WalletDaemonService {
 
         // generate random ID for this prepared transaction
         let mut tx_id = [0u8; 32];
-        getrandom::getrandom(&mut tx_id)
-            .map_err(|e| Status::internal(format!("rng: {}", e)))?;
+        getrandom::getrandom(&mut tx_id).map_err(|e| Status::internal(format!("rng: {}", e)))?;
 
         // store pczt_state in daemon state (GC stale entries first)
         {
@@ -589,12 +587,11 @@ impl WalletDaemon for WalletDaemonService {
         }
 
         // complete transaction (apply sigs, extract bundle, serialize)
-        let tx_bytes = tokio::task::spawn_blocking(move || {
-            zecli::pczt::complete_pczt_tx(pczt_state, &sigs)
-        })
-        .await
-        .map_err(|e| Status::internal(format!("complete task panic: {}", e)))?
-        .map_err(|e| Status::internal(format!("tx complete: {}", e)))?;
+        let tx_bytes =
+            tokio::task::spawn_blocking(move || zecli::pczt::complete_pczt_tx(pczt_state, &sigs))
+                .await
+                .map_err(|e| Status::internal(format!("complete task panic: {}", e)))?
+                .map_err(|e| Status::internal(format!("tx complete: {}", e)))?;
 
         // broadcast
         let client = zecli::client::ZidecarClient::connect(&self.endpoint)

@@ -4,9 +4,9 @@
 // the ed25519 key is ephemeral (per-session), not long-lived.
 // FROST identifiers derive from ephemeral pubkeys.
 
-use ed25519_consensus::{SigningKey, VerificationKey, Signature};
+use ed25519_consensus::{Signature, SigningKey, VerificationKey};
 use rand_core::{CryptoRng, RngCore};
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 use crate::Identifier;
 
@@ -48,9 +48,15 @@ impl SignedMessage {
     }
 
     pub fn verify(&self) -> Result<(VerificationKey, &[u8]), String> {
-        let pk_bytes: [u8; 32] = self.pk.as_slice().try_into()
+        let pk_bytes: [u8; 32] = self
+            .pk
+            .as_slice()
+            .try_into()
             .map_err(|_| "invalid ed25519 pubkey length")?;
-        let sig_bytes: [u8; 64] = self.sig.as_slice().try_into()
+        let sig_bytes: [u8; 64] = self
+            .sig
+            .as_slice()
+            .try_into()
             .map_err(|_| "invalid ed25519 signature length")?;
         let vk = VerificationKey::try_from(pk_bytes)
             .map_err(|e| format!("invalid ed25519 pubkey: {}", e))?;

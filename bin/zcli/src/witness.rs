@@ -166,7 +166,6 @@ pub fn frontier_tree_size(data: &[u8]) -> Result<u64, Error> {
     Ok(tree.size() as u64)
 }
 
-
 /// build merkle witnesses for a set of notes.
 ///
 /// uses the cached tree frontier from sync to avoid the binary search
@@ -192,7 +191,10 @@ pub async fn build_witnesses(
         (hex, h)
     } else if sync_height > 0 && sync_height <= anchor_height {
         if !json {
-            eprintln!("no cached frontier, fetching at sync height {}", sync_height);
+            eprintln!(
+                "no cached frontier, fetching at sync height {}",
+                sync_height
+            );
         }
         let (hex, _) = client.get_tree_state(sync_height).await?;
         (hex, sync_height)
@@ -210,7 +212,9 @@ pub async fn build_witnesses(
     if !json {
         eprintln!(
             "frontier: height={} size={} gap={} blocks",
-            frontier_height, position_counter, anchor_height - frontier_height
+            frontier_height,
+            position_counter,
+            anchor_height - frontier_height
         );
     }
 
@@ -223,7 +227,11 @@ pub async fn build_witnesses(
     // start replay from frontier_height + 1 since the tree state
     // at frontier_height already includes that block's actions
     let replay_start = frontier_height + 1;
-    let replay_blocks = if anchor_height >= replay_start { anchor_height - replay_start + 1 } else { 0 };
+    let replay_blocks = if anchor_height >= replay_start {
+        anchor_height - replay_start + 1
+    } else {
+        0
+    };
     let pb = if !json && is_terminal::is_terminal(std::io::stderr()) {
         let pb = ProgressBar::new(replay_blocks as u64);
         pb.set_style(

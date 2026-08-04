@@ -18,23 +18,16 @@
 //! follow-up if signing-path bugs slip past this guard.
 
 use orchard::keys::Scope;
-use pczt::{Pczt, roles::creator::Creator};
+use pczt::{roles::creator::Creator, Pczt};
 use rand_core::OsRng;
-use zcash_transparent::{
-    address::TransparentAddress,
-    bundle as transparent,
-};
+use zcash_transparent::{address::TransparentAddress, bundle as transparent};
 
 // Signer::new is feature-gated; we have it on (see Cargo features list).
 use zcash_primitives::transaction::{
     builder::{BuildConfig, Builder},
     fees::zip317,
 };
-use zcash_protocol::{
-    consensus::MainNetwork,
-    memo::MemoBytes,
-    value::Zatoshis,
-};
+use zcash_protocol::{consensus::MainNetwork, memo::MemoBytes, value::Zatoshis};
 
 /// Build a minimal unproven PCZT: 1 transparent input → 1 orchard output.
 /// Skips proof/sighash steps — sufficient for testing the redactor + the
@@ -150,9 +143,7 @@ fn redaction_preserves_sighash() {
     use pczt::roles::{io_finalizer::IoFinalizer, signer::Signer};
 
     let pczt = build_test_pczt();
-    let pczt = IoFinalizer::new(pczt)
-        .finalize_io()
-        .expect("finalize_io");
+    let pczt = IoFinalizer::new(pczt).finalize_io().expect("finalize_io");
 
     // Sighash from the un-redacted (but finalized) PCZT.
     let sighash_pre = Signer::new(pczt.clone())
@@ -170,7 +161,8 @@ fn redaction_preserves_sighash() {
         .shielded_sighash();
 
     assert_eq!(
-        sighash_pre, sighash_post,
+        sighash_pre,
+        sighash_post,
         "redaction altered the sighash (pre={}, post={}). \
          this breaks the display↔sighash binding the migration relies on. \
          most likely cause: a clear_* call accidentally landed on a field \

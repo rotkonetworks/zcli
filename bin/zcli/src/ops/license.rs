@@ -161,13 +161,7 @@ pub fn process_payments(
         }
 
         // enough confirmations — credit the license
-        credit_payment(
-            &licenses_tree,
-            signing_key,
-            zid_pubkey,
-            note.value,
-            now,
-        )?;
+        credit_payment(&licenses_tree, signing_key, zid_pubkey, note.value, now)?;
 
         // mark nullifier as processed, remove from pending
         processed_tree

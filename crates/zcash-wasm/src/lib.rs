@@ -52,7 +52,10 @@ pub const FALLBACK_BRANCH_ID: u32 = 0x5437F330;
 /// malformed or empty input so the caller can fall back safely.
 fn parse_branch_id(s: &str) -> Option<u32> {
     let t = s.trim();
-    let t = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")).unwrap_or(t);
+    let t = t
+        .strip_prefix("0x")
+        .or_else(|| t.strip_prefix("0X"))
+        .unwrap_or(t);
     if t.is_empty() {
         return None;
     }
@@ -572,7 +575,11 @@ fn scan_compact_actions_with_keys(
     };
 
     #[cfg(feature = "parallel")]
-    let found: Vec<FoundNote> = actions.par_iter().enumerate().filter_map(to_found).collect();
+    let found: Vec<FoundNote> = actions
+        .par_iter()
+        .enumerate()
+        .filter_map(to_found)
+        .collect();
     #[cfg(not(feature = "parallel"))]
     let found: Vec<FoundNote> = actions.iter().enumerate().filter_map(to_found).collect();
 
@@ -731,11 +738,12 @@ fn decode_memo_hex(hex: Option<&str>) -> Result<[u8; 512], JsError> {
     let mut memo = [0u8; 512];
     if let Some(h) = hex {
         if !h.is_empty() {
-            let bytes = hex_decode(h)
-                .ok_or_else(|| JsError::new("memo_hex: invalid hex encoding"))?;
+            let bytes =
+                hex_decode(h).ok_or_else(|| JsError::new("memo_hex: invalid hex encoding"))?;
             if bytes.len() > 512 {
                 return Err(JsError::new(&format!(
-                    "memo_hex: {} bytes exceeds 512-byte limit", bytes.len()
+                    "memo_hex: {} bytes exceeds 512-byte limit",
+                    bytes.len()
                 )));
             }
             memo[..bytes.len()].copy_from_slice(&bytes);
@@ -1747,7 +1755,7 @@ mod tests {
     #[test]
     fn test_orchard_builder_shielding() {
         use orchard::builder::{Builder, BundleType};
-            use orchard::keys::{FullViewingKey, Scope, SpendingKey};
+        use orchard::keys::{FullViewingKey, Scope, SpendingKey};
         use orchard::tree::Anchor;
         use orchard::value::NoteValue;
         use rand::rngs::OsRng;
@@ -1983,27 +1991,44 @@ pub fn build_unsigned_transaction(
                 .map_err(|_| JsError::new(&format!("recipient must be 43 bytes for note {}", i)))?;
             let addr = Option::from(orchard::Address::from_raw_address_bytes(&addr_arr))
                 .ok_or_else(|| JsError::new(&format!("invalid orchard address for note {}", i)))?;
-            Option::from(orchard::Note::from_parts(addr, note_value, rho, rseed, orchard::note::NoteVersion::V2)).ok_or_else(
-                || {
-                    JsError::new(&format!(
-                        "failed to reconstruct note {} from stored address",
-                        i
-                    ))
-                },
-            )?
+            Option::from(orchard::Note::from_parts(
+                addr,
+                note_value,
+                rho,
+                rseed,
+                orchard::note::NoteVersion::V2,
+            ))
+            .ok_or_else(|| {
+                JsError::new(&format!(
+                    "failed to reconstruct note {} from stored address",
+                    i
+                ))
+            })?
         } else {
             let ext_addr = fvk.to_ivk(Scope::External).address_at(0u64);
             let int_addr = fvk.to_ivk(Scope::Internal).address_at(0u64);
-            Option::from(orchard::Note::from_parts(ext_addr, note_value, rho, rseed, orchard::note::NoteVersion::V2))
-                .or_else(|| {
-                    Option::from(orchard::Note::from_parts(int_addr, note_value, rho, rseed, orchard::note::NoteVersion::V2))
-                })
-                .ok_or_else(|| {
-                    JsError::new(&format!(
-                        "failed to reconstruct note {} — rseed/rho/value mismatch",
-                        i
-                    ))
-                })?
+            Option::from(orchard::Note::from_parts(
+                ext_addr,
+                note_value,
+                rho,
+                rseed,
+                orchard::note::NoteVersion::V2,
+            ))
+            .or_else(|| {
+                Option::from(orchard::Note::from_parts(
+                    int_addr,
+                    note_value,
+                    rho,
+                    rseed,
+                    orchard::note::NoteVersion::V2,
+                ))
+            })
+            .ok_or_else(|| {
+                JsError::new(&format!(
+                    "failed to reconstruct note {} — rseed/rho/value mismatch",
+                    i
+                ))
+            })?
         };
 
         // verify cmx
@@ -2053,8 +2078,8 @@ pub fn build_unsigned_transaction(
         let mut merkle_hashes_arr: [MerkleHashOrchard; 32] =
             [MerkleHashOrchard::from_bytes(&[0u8; 32]).unwrap(); 32];
         for (j, bytes) in auth_path.iter().enumerate() {
-            merkle_hashes_arr[j] = Option::from(MerkleHashOrchard::from_bytes(bytes))
-                .ok_or_else(|| {
+            merkle_hashes_arr[j] =
+                Option::from(MerkleHashOrchard::from_bytes(bytes)).ok_or_else(|| {
                     JsError::new(&format!(
                         "merkle sibling {}/{} is not a canonical Pallas base element: {}",
                         i,
@@ -2097,14 +2122,24 @@ pub fn build_unsigned_transaction(
     // add recipient output (orchard only — transparent outputs are added to the tx directly)
     if let Some(ref addr) = recipient_addr {
         builder
-            .add_output(Some(ovk_external.clone()), *addr, NoteValue::from_raw(amount), recipient_memo)
+            .add_output(
+                Some(ovk_external.clone()),
+                *addr,
+                NoteValue::from_raw(amount),
+                recipient_memo,
+            )
             .map_err(|e| JsError::new(&format!("add_output (recipient): {:?}", e)))?;
     }
 
     // add change output if needed (for z→t, all orchard value minus amount+fee goes to change)
     if change > 0 {
         builder
-            .add_output(Some(ovk_internal.clone()), change_addr, NoteValue::from_raw(change), [0u8; 512])
+            .add_output(
+                Some(ovk_internal.clone()),
+                change_addr,
+                NoteValue::from_raw(change),
+                [0u8; 512],
+            )
             .map_err(|e| JsError::new(&format!("add_output (change): {:?}", e)))?;
     }
 
@@ -2673,7 +2708,10 @@ fn prepare_orchard_spends(
             let b = hex_decode(&n.rho_hex)
                 .ok_or_else(|| JsError::new(&format!("invalid rho hex for note {}", i)))?;
             if b.len() != 32 {
-                return Err(JsError::new(&format!("rho must be 32 bytes for note {}", i)));
+                return Err(JsError::new(&format!(
+                    "rho must be 32 bytes for note {}",
+                    i
+                )));
             }
             let mut a = [0u8; 32];
             a.copy_from_slice(&b);
@@ -2703,16 +2741,39 @@ fn prepare_orchard_spends(
                 .map_err(|_| JsError::new(&format!("recipient must be 43 bytes for note {}", i)))?;
             let addr = Option::from(orchard::Address::from_raw_address_bytes(&arr))
                 .ok_or_else(|| JsError::new(&format!("invalid orchard address for note {}", i)))?;
-            Option::from(orchard::Note::from_parts(addr, value, rho, rseed, orchard::note::NoteVersion::V2))
-                .ok_or_else(|| JsError::new(&format!("note {} reconstruction failed", i)))?
+            Option::from(orchard::Note::from_parts(
+                addr,
+                value,
+                rho,
+                rseed,
+                orchard::note::NoteVersion::V2,
+            ))
+            .ok_or_else(|| JsError::new(&format!("note {} reconstruction failed", i)))?
         } else {
             let ext = fvk.to_ivk(Scope::External).address_at(0u64);
             let int = fvk.to_ivk(Scope::Internal).address_at(0u64);
-            Option::from(orchard::Note::from_parts(ext, value, rho, rseed, orchard::note::NoteVersion::V2))
-                .or_else(|| Option::from(orchard::Note::from_parts(int, value, rho, rseed, orchard::note::NoteVersion::V2)))
-                .ok_or_else(|| {
-                    JsError::new(&format!("note {} reconstruction failed (rseed/rho/value)", i))
-                })?
+            Option::from(orchard::Note::from_parts(
+                ext,
+                value,
+                rho,
+                rseed,
+                orchard::note::NoteVersion::V2,
+            ))
+            .or_else(|| {
+                Option::from(orchard::Note::from_parts(
+                    int,
+                    value,
+                    rho,
+                    rseed,
+                    orchard::note::NoteVersion::V2,
+                ))
+            })
+            .ok_or_else(|| {
+                JsError::new(&format!(
+                    "note {} reconstruction failed (rseed/rho/value)",
+                    i
+                ))
+            })?
         };
         // Pool / note-version guard (defense-in-depth): the orchard spend path
         // is ONLY for legacy V2 orchard notes. A V3 (ironwood) note must never
@@ -2765,9 +2826,8 @@ fn prepare_orchard_spends(
                 .ok_or_else(|| JsError::new(&format!("invalid merkle hash at {}/{}", i, j)))?;
         }
         let merkle_path = OrchardMerklePath::from_parts(
-            u32::try_from(mp.position).map_err(|_| {
-                JsError::new(&format!("position {} exceeds u32 max", mp.position))
-            })?,
+            u32::try_from(mp.position)
+                .map_err(|_| JsError::new(&format!("position {} exceeds u32 max", mp.position)))?,
             hashes,
         );
         prepared.push((note, merkle_path));
@@ -2798,16 +2858,16 @@ pub fn build_unsigned_pczt(
     mainnet: bool,
     memo_hex: Option<String>,
 ) -> Result<JsValue, JsError> {
+    use ::zcash_transparent as transparent;
     use orchard::tree::Anchor;
     use rand::rngs::OsRng;
+    use zcash_keys::encoding::AddressCodec;
     use zcash_keys::keys::UnifiedFullViewingKey;
     use zcash_primitives::transaction::builder::{BuildConfig, Builder};
     use zcash_primitives::transaction::fees::fixed::FeeRule as FixedFeeRule;
     use zcash_protocol::consensus::{BlockHeight, MainNetwork, TestNetwork};
     use zcash_protocol::memo::MemoBytes;
-    use zcash_keys::encoding::AddressCodec;
     use zcash_protocol::value::Zatoshis;
-    use ::zcash_transparent as transparent;
 
     // ── decode FVK from UFVK ───────────────────────────────────────────────
     // zcash_keys 5333c01b uses the same orchard 0.12 we do, so no byte
@@ -2874,8 +2934,8 @@ pub fn build_unsigned_pczt(
 
     // ── memo (recipient only — change uses empty per zcash convention) ─────
     let memo_arr = decode_memo_hex(memo_hex.as_deref())?;
-    let recipient_memo = MemoBytes::from_bytes(&memo_arr)
-        .map_err(|e| JsError::new(&format!("memo: {:?}", e)))?;
+    let recipient_memo =
+        MemoBytes::from_bytes(&memo_arr).map_err(|e| JsError::new(&format!("memo: {:?}", e)))?;
 
     // ── reconstruct each owned note from raw fields, verify cmx ────────────
     // Same logic as build_unsigned_transaction. Verifying cmx defends against
@@ -2893,10 +2953,8 @@ pub fn build_unsigned_pczt(
         #[cfg(zcash_unstable = "nu6.3")]
         ironwood_anchor: None,
     };
-    let fee_amount = Zatoshis::from_u64(fee)
-        .map_err(|_| JsError::new("invalid fee amount"))?;
-    let amount_zat = Zatoshis::from_u64(amount)
-        .map_err(|_| JsError::new("invalid send amount"))?;
+    let fee_amount = Zatoshis::from_u64(fee).map_err(|_| JsError::new("invalid fee amount"))?;
+    let amount_zat = Zatoshis::from_u64(amount).map_err(|_| JsError::new("invalid send amount"))?;
     let fee_rule = FixedFeeRule::non_standard(fee_amount);
     let target = BlockHeight::from(target_height);
 
@@ -2968,22 +3026,23 @@ pub fn build_unsigned_pczt(
     // Creator produces keeps these pub(crate), so this is the only public read.
     // Order = action order = the order host + joiner run the FROST rounds in.
     use group::ff::PrimeField;
-    let extract_frost = |orchard: &Option<orchard::pczt::Bundle>| -> Result<(Vec<String>, Vec<u32>), JsError> {
-        let mut alphas = Vec::new();
-        let mut spend_indices = Vec::new();
-        if let Some(b) = orchard.as_ref() {
-            for (i, action) in b.actions().iter().enumerate() {
-                if action.spend().dummy_sk().is_none() {
-                    let alpha = action.spend().alpha().ok_or_else(|| {
-                        JsError::new(&format!("missing alpha for real spend action {}", i))
-                    })?;
-                    alphas.push(hex_encode(&alpha.to_repr()));
-                    spend_indices.push(i as u32);
+    let extract_frost =
+        |orchard: &Option<orchard::pczt::Bundle>| -> Result<(Vec<String>, Vec<u32>), JsError> {
+            let mut alphas = Vec::new();
+            let mut spend_indices = Vec::new();
+            if let Some(b) = orchard.as_ref() {
+                for (i, action) in b.actions().iter().enumerate() {
+                    if action.spend().dummy_sk().is_none() {
+                        let alpha = action.spend().alpha().ok_or_else(|| {
+                            JsError::new(&format!("missing alpha for real spend action {}", i))
+                        })?;
+                        alphas.push(hex_encode(&alpha.to_repr()));
+                        spend_indices.push(i as u32);
+                    }
                 }
             }
-        }
-        Ok((alphas, spend_indices))
-    };
+            Ok((alphas, spend_indices))
+        };
 
     let (pczt, alphas, spend_indices) = if mainnet {
         let parts = build_pczt_for!(MainNetwork);
@@ -3104,8 +3163,7 @@ pub fn extract_signed_tx_from_pczt_bytes(pczt_bytes: &[u8]) -> Result<Vec<u8>, S
     use orchard::circuit::OrchardCircuitVersion;
     use zcash_protocol::consensus::BranchId;
 
-    let pczt = pczt::Pczt::parse(pczt_bytes)
-        .map_err(|e| format!("pczt parse failed: {:?}", e))?;
+    let pczt = pczt::Pczt::parse(pczt_bytes).map_err(|e| format!("pczt parse failed: {:?}", e))?;
 
     let branch = BranchId::try_from(*pczt.global().consensus_branch_id())
         .map_err(|e| format!("unknown consensus branch in pczt: {:?}", e))?;
@@ -3185,6 +3243,9 @@ pub struct PcztSummary {
 
 /// Recompute a `PcztSummary` from a (redacted) PCZT. Mirrors zigner's
 /// `summarize` extraction logic exactly - keep in sync.
+// only the nu6.3-gated turnstile producers call this; without the cfg it is
+// intentionally unused
+#[cfg_attr(not(zcash_unstable = "nu6.3"), allow(dead_code))]
 fn summarize_pczt(pczt: &pczt::Pczt, fee_zat: Option<u64>) -> PcztSummary {
     let mut outputs: Vec<(String, u64)> = Vec::new();
     for out in pczt.transparent().outputs() {
@@ -3473,8 +3534,7 @@ where
     let pczt = redact_turnstile_dummy_outputs(pczt);
 
     let summary = summarize_pczt(&pczt, Some(fee));
-    let action_count =
-        (pczt.orchard().actions().len() + pczt.ironwood().actions().len()) as u32;
+    let action_count = (pczt.orchard().actions().len() + pczt.ironwood().actions().len()) as u32;
     Ok(TurnstileBuild {
         pczt_bytes: pczt.serialize(),
         summary,
@@ -3652,8 +3712,8 @@ pub fn build_turnstile_migration_pczt(
         .map_err(|e| JsError::new(&format!("invalid orchard_merkle_paths_json: {}", e)))?;
     let prepared = prepare_orchard_spends(&fvk, &notes, &merkle_paths)?;
 
-    let anchor_bytes = hex_decode(orchard_anchor_hex)
-        .ok_or_else(|| JsError::new("invalid anchor hex"))?;
+    let anchor_bytes =
+        hex_decode(orchard_anchor_hex).ok_or_else(|| JsError::new("invalid anchor hex"))?;
     let anchor_arr: [u8; 32] = anchor_bytes
         .try_into()
         .map_err(|_| JsError::new("anchor must be 32 bytes"))?;
@@ -3661,8 +3721,8 @@ pub fn build_turnstile_migration_pczt(
         .ok_or_else(|| JsError::new("invalid anchor"))?;
 
     let memo_arr = decode_memo_hex(memo_hex.as_deref())?;
-    let memo = MemoBytes::from_bytes(&memo_arr)
-        .map_err(|e| JsError::new(&format!("memo: {:?}", e)))?;
+    let memo =
+        MemoBytes::from_bytes(&memo_arr).map_err(|e| JsError::new(&format!("memo: {:?}", e)))?;
 
     let built = if mainnet {
         build_turnstile_migration_pczt_core(
@@ -3800,8 +3860,8 @@ pub fn build_signed_turnstile_migration(
         .ok_or_else(|| JsError::new("invalid anchor"))?;
 
     let memo_arr = decode_memo_hex(memo_hex.as_deref())?;
-    let memo = MemoBytes::from_bytes(&memo_arr)
-        .map_err(|e| JsError::new(&format!("memo: {:?}", e)))?;
+    let memo =
+        MemoBytes::from_bytes(&memo_arr).map_err(|e| JsError::new(&format!("memo: {:?}", e)))?;
 
     let tx_bytes = if mainnet {
         build_signed_turnstile_migration_core(
@@ -3901,7 +3961,10 @@ fn prepare_ironwood_spends(
             let b = hex_decode(&n.rho_hex)
                 .ok_or_else(|| JsError::new(&format!("invalid rho hex for note {}", i)))?;
             if b.len() != 32 {
-                return Err(JsError::new(&format!("rho must be 32 bytes for note {}", i)));
+                return Err(JsError::new(&format!(
+                    "rho must be 32 bytes for note {}",
+                    i
+                )));
             }
             let mut a = [0u8; 32];
             a.copy_from_slice(&b);
@@ -3959,7 +4022,10 @@ fn prepare_ironwood_spends(
                 ))
             })
             .ok_or_else(|| {
-                JsError::new(&format!("note {} reconstruction failed (rseed/rho/value)", i))
+                JsError::new(&format!(
+                    "note {} reconstruction failed (rseed/rho/value)",
+                    i
+                ))
             })?
         };
         // Pool / note-version guard (defense-in-depth): the ironwood spend path
@@ -4008,9 +4074,8 @@ fn prepare_ironwood_spends(
                 .ok_or_else(|| JsError::new(&format!("invalid merkle hash at {}/{}", i, j)))?;
         }
         let merkle_path = OrchardMerklePath::from_parts(
-            u32::try_from(mp.position).map_err(|_| {
-                JsError::new(&format!("position {} exceeds u32 max", mp.position))
-            })?,
+            u32::try_from(mp.position)
+                .map_err(|_| JsError::new(&format!("position {} exceeds u32 max", mp.position)))?,
             hashes,
         );
         prepared.push((note, merkle_path));
@@ -4375,8 +4440,8 @@ pub fn build_ironwood_send_pczt(
         .ok_or_else(|| JsError::new("invalid anchor"))?;
 
     let memo_arr = decode_memo_hex(memo_hex.as_deref())?;
-    let memo = MemoBytes::from_bytes(&memo_arr)
-        .map_err(|e| JsError::new(&format!("memo: {:?}", e)))?;
+    let memo =
+        MemoBytes::from_bytes(&memo_arr).map_err(|e| JsError::new(&format!("memo: {:?}", e)))?;
 
     // Build+prove the UNREDACTED ironwood-send PCZT (Creator -> IoFinalizer ->
     // Prover, ironwood proof only). The fail-closed branch-id guard fires inside.
@@ -4427,8 +4492,7 @@ pub fn build_ironwood_send_pczt(
     // builder-side bookkeeping) so what the device displays is bound to what it
     // signs - identical to `build_turnstile_migration_pczt_core`.
     let summary = summarize_pczt(&pczt, Some(fee));
-    let action_count =
-        (pczt.orchard().actions().len() + pczt.ironwood().actions().len()) as u32;
+    let action_count = (pczt.orchard().actions().len() + pczt.ironwood().actions().len()) as u32;
 
     #[derive(Serialize)]
     struct Out {
@@ -4545,8 +4609,8 @@ pub fn build_signed_ironwood_send(
         .ok_or_else(|| JsError::new("invalid anchor"))?;
 
     let memo_arr = decode_memo_hex(memo_hex.as_deref())?;
-    let memo = MemoBytes::from_bytes(&memo_arr)
-        .map_err(|e| JsError::new(&format!("memo: {:?}", e)))?;
+    let memo =
+        MemoBytes::from_bytes(&memo_arr).map_err(|e| JsError::new(&format!("memo: {:?}", e)))?;
 
     let tx_bytes = if mainnet {
         build_signed_ironwood_send_core(
@@ -4630,7 +4694,9 @@ pub fn complete_orchard_pczt(
     let spend_indices: Vec<u32> = serde_wasm_bindgen::from_value(spend_indices_json)
         .map_err(|e| JsError::new(&format!("invalid spend_indices: {}", e)))?;
     if sigs.len() != spend_indices.len() {
-        return Err(JsError::new("orchard_sigs and spend_indices length mismatch"));
+        return Err(JsError::new(
+            "orchard_sigs and spend_indices length mismatch",
+        ));
     }
 
     let bytes = hex_decode(pczt_hex).ok_or_else(|| JsError::new("invalid pczt hex"))?;
@@ -4764,18 +4830,15 @@ pub fn witness_sync_update(
 ) -> Result<JsValue, JsError> {
     let blocks: Vec<witness::CompactBlockData> = serde_json::from_str(compact_blocks_json)
         .map_err(|e| JsError::new(&format!("invalid compact_blocks_json: {}", e)))?;
-    let existing: Vec<witness::ExistingWitnessInput> = serde_json::from_str(existing_witnesses_json)
-        .map_err(|e| JsError::new(&format!("invalid existing_witnesses_json: {}", e)))?;
+    let existing: Vec<witness::ExistingWitnessInput> =
+        serde_json::from_str(existing_witnesses_json)
+            .map_err(|e| JsError::new(&format!("invalid existing_witnesses_json: {}", e)))?;
     let new_notes: Vec<witness::NewNoteInput> = serde_json::from_str(new_notes_json)
         .map_err(|e| JsError::new(&format!("invalid new_notes_json: {}", e)))?;
 
-    let result = witness::witness_sync_update_inner(
-        start_frontier_hex,
-        &blocks,
-        &existing,
-        &new_notes,
-    )
-    .map_err(|e| JsError::new(&e.to_string()))?;
+    let result =
+        witness::witness_sync_update_inner(start_frontier_hex, &blocks, &existing, &new_notes)
+            .map_err(|e| JsError::new(&e.to_string()))?;
 
     let json = serde_json::to_string(&result)
         .map_err(|e| JsError::new(&format!("failed to serialize result: {}", e)))?;
@@ -5016,8 +5079,7 @@ pub fn encode_notes_bundle(
         cbor.push(0x03);
         cbor.push(0x58);
         cbor.push(0x20);
-        let cm = hex::decode(&note.cmx)
-            .map_err(|e| JsError::new(&format!("bad cmx hex: {e}")))?;
+        let cm = hex::decode(&note.cmx).map_err(|e| JsError::new(&format!("bad cmx hex: {e}")))?;
         cbor.extend_from_slice(&cm);
 
         // 4: position
@@ -5073,9 +5135,8 @@ pub fn ur_encode_frames(
         let single = ur::ur::encode(cbor_data, &ur::ur::Type::Custom(ur_type));
         vec![single]
     } else {
-        let mut encoder =
-            ur::ur::Encoder::new(cbor_data, fragment_size as usize, ur_type)
-                .map_err(|e| JsError::new(&format!("UR encoder: {e:?}")))?;
+        let mut encoder = ur::ur::Encoder::new(cbor_data, fragment_size as usize, ur_type)
+            .map_err(|e| JsError::new(&format!("UR encoder: {e:?}")))?;
         let count = encoder.fragment_count();
         let mut parts = Vec::with_capacity(count * 2);
         // Generate 2x fragments for fountain code redundancy
@@ -5144,7 +5205,11 @@ pub fn ur_decode_frames(parts_json: &str, expected_type: &str) -> Result<String,
             parts.len()
         )));
     }
-    if let Some((i, p)) = parts.iter().enumerate().find(|(_, p)| p.len() > MAX_UR_PART_BYTES) {
+    if let Some((i, p)) = parts
+        .iter()
+        .enumerate()
+        .find(|(_, p)| p.len() > MAX_UR_PART_BYTES)
+    {
         return Err(JsError::new(&format!(
             "UR part {i} length {} exceeds cap {MAX_UR_PART_BYTES} B",
             p.len()
@@ -5184,12 +5249,7 @@ pub fn ur_decode_frames(parts_json: &str, expected_type: &str) -> Result<String,
 /// Returns JSON array of `zt:type/hex` strings.
 /// k = minimum frames to reconstruct, n = total frames.
 #[wasm_bindgen]
-pub fn zt_encode_frames(
-    cbor_data: &[u8],
-    zt_type: &str,
-    k: u8,
-    n: u8,
-) -> Result<String, JsError> {
+pub fn zt_encode_frames(cbor_data: &[u8], zt_type: &str, k: u8, n: u8) -> Result<String, JsError> {
     let (frames, _) = zoda_vss::transport::Encoder::encode(cbor_data, k, n);
     let strings: Vec<String> = frames
         .iter()
@@ -5578,28 +5638,45 @@ pub fn build_signed_spend_transaction(
                 .map_err(|_| JsError::new(&format!("recipient must be 43 bytes for note {}", i)))?;
             let addr = Option::from(orchard::Address::from_raw_address_bytes(&addr_arr))
                 .ok_or_else(|| JsError::new(&format!("invalid orchard address for note {}", i)))?;
-            Option::from(orchard::Note::from_parts(addr, note_value, rho, rseed, orchard::note::NoteVersion::V2)).ok_or_else(
-                || {
-                    JsError::new(&format!(
-                        "failed to reconstruct note {} from stored address",
-                        i
-                    ))
-                },
-            )?
+            Option::from(orchard::Note::from_parts(
+                addr,
+                note_value,
+                rho,
+                rseed,
+                orchard::note::NoteVersion::V2,
+            ))
+            .ok_or_else(|| {
+                JsError::new(&format!(
+                    "failed to reconstruct note {} from stored address",
+                    i
+                ))
+            })?
         } else {
             // fallback: try default addresses (legacy notes without stored recipient)
             let ext_addr = fvk.to_ivk(Scope::External).address_at(0u64);
             let int_addr = fvk.to_ivk(Scope::Internal).address_at(0u64);
-            Option::from(orchard::Note::from_parts(ext_addr, note_value, rho, rseed, orchard::note::NoteVersion::V2))
-                .or_else(|| {
-                    Option::from(orchard::Note::from_parts(int_addr, note_value, rho, rseed, orchard::note::NoteVersion::V2))
-                })
-                .ok_or_else(|| {
-                    JsError::new(&format!(
-                        "failed to reconstruct note {} — rseed/rho/value mismatch",
-                        i
-                    ))
-                })?
+            Option::from(orchard::Note::from_parts(
+                ext_addr,
+                note_value,
+                rho,
+                rseed,
+                orchard::note::NoteVersion::V2,
+            ))
+            .or_else(|| {
+                Option::from(orchard::Note::from_parts(
+                    int_addr,
+                    note_value,
+                    rho,
+                    rseed,
+                    orchard::note::NoteVersion::V2,
+                ))
+            })
+            .ok_or_else(|| {
+                JsError::new(&format!(
+                    "failed to reconstruct note {} — rseed/rho/value mismatch",
+                    i
+                ))
+            })?
         };
 
         // verify the reconstructed note matches the expected cmx
@@ -5646,8 +5723,8 @@ pub fn build_signed_spend_transaction(
         let mut merkle_hashes_arr: [MerkleHashOrchard; 32] =
             [MerkleHashOrchard::from_bytes(&[0u8; 32]).unwrap(); 32];
         for (j, bytes) in auth_path.iter().enumerate() {
-            merkle_hashes_arr[j] = Option::from(MerkleHashOrchard::from_bytes(bytes))
-                .ok_or_else(|| {
+            merkle_hashes_arr[j] =
+                Option::from(MerkleHashOrchard::from_bytes(bytes)).ok_or_else(|| {
                     JsError::new(&format!(
                         "merkle sibling {}/{} is not a canonical Pallas base element: {}",
                         i,
@@ -5684,14 +5761,24 @@ pub fn build_signed_spend_transaction(
     // add recipient output (orchard only — transparent outputs are added to the tx directly)
     if let Some(ref addr) = recipient_addr {
         builder
-            .add_output(Some(ovk_external.clone()), *addr, NoteValue::from_raw(amount), recipient_memo)
+            .add_output(
+                Some(ovk_external.clone()),
+                *addr,
+                NoteValue::from_raw(amount),
+                recipient_memo,
+            )
             .map_err(|e| JsError::new(&format!("add_output (recipient): {:?}", e)))?;
     }
 
     // add change output if needed (for z→t, all orchard value minus amount+fee goes to change)
     if change > 0 {
         builder
-            .add_output(Some(ovk_internal.clone()), change_addr, NoteValue::from_raw(change), [0u8; 512])
+            .add_output(
+                Some(ovk_internal.clone()),
+                change_addr,
+                NoteValue::from_raw(change),
+                [0u8; 512],
+            )
             .map_err(|e| JsError::new(&format!("add_output (change): {:?}", e)))?;
     }
 
@@ -6065,6 +6152,8 @@ pub(crate) fn blake2b_256_personal(personalization: &[u8; 16], data: &[u8]) -> [
 /// * `anchor_height` - block height for expiry (expiry_height = anchor_height + 100)
 /// * `mainnet` - true for mainnet, false for testnet
 #[wasm_bindgen]
+// wasm-bindgen surface mirrors the TS caller's argument list
+#[allow(clippy::too_many_arguments)]
 pub fn build_shielding_transaction(
     utxos_json: &str,
     privkey_hex: &str,

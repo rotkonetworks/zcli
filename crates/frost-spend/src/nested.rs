@@ -16,12 +16,12 @@
 // messages per round: 25 (one per physical validator), not 200 (one per share)
 // stake weighting: automatic via Lagrange coefficients over the share set
 
-use osst::curve::{OsstPoint, OsstScalar};
 use osst::compute_lagrange_coefficients;
+use osst::curve::{OsstPoint, OsstScalar};
 use osst::nested;
 use osst::SecretShare;
-use pasta_curves::pallas::{Point, Scalar};
 use pasta_curves::group::ff::Field;
+use pasta_curves::pallas::{Point, Scalar};
 
 // re-export types from osst::nested that we still use
 pub use nested::{InnerCommitments, InnerNonces, InnerSignatureShare, InnerSigningParams};
@@ -38,7 +38,10 @@ pub struct ValidatorShares {
 
 impl ValidatorShares {
     pub fn new(validator_index: u32, shares: Vec<SecretShare<Scalar>>) -> Self {
-        Self { validator_index, shares }
+        Self {
+            validator_index,
+            shares,
+        }
     }
 
     /// total share count (stake weight)
@@ -58,7 +61,9 @@ impl ValidatorShares {
 
         let mut effective = Scalar::ZERO;
         for share in &self.shares {
-            let pos = all_active_indices.iter().position(|&i| i == share.index)
+            let pos = all_active_indices
+                .iter()
+                .position(|&i| i == share.index)
                 .ok_or(osst::OsstError::InvalidIndex)?;
             effective += all_lambda[pos] * share.scalar();
         }
@@ -113,10 +118,7 @@ pub struct FrostitoResponse {
 // ── frostito protocol ──
 
 /// round 1: validator generates ONE nonce commitment
-pub fn frostito_commit(
-    validator_index: u32,
-    weight: u32,
-) -> (FrostitoNonce, FrostitoCommitment) {
+pub fn frostito_commit(validator_index: u32, weight: u32) -> (FrostitoNonce, FrostitoCommitment) {
     let mut rng = rand_core::OsRng;
     let hiding = <Scalar as Field>::random(&mut rng);
     let binding = <Scalar as Field>::random(&mut rng);
@@ -128,15 +130,19 @@ pub fn frostito_commit(
         weight,
     };
 
-    (FrostitoNonce { validator_index, hiding, binding }, commitment)
+    (
+        FrostitoNonce {
+            validator_index,
+            hiding,
+            binding,
+        },
+        commitment,
+    )
 }
 
 /// coordinator: aggregate commitments into R_nested with binding factors
-pub fn frostito_aggregate_commitments(
-    commitments: &[FrostitoCommitment],
-    message: &[u8],
-) -> Point {
-    use sha2::{Sha512, Digest};
+pub fn frostito_aggregate_commitments(commitments: &[FrostitoCommitment], message: &[u8]) -> Point {
+    use sha2::{Digest, Sha512};
 
     let mut r_agg = Point::identity();
     for c in commitments {
@@ -175,7 +181,7 @@ pub fn frostito_sign(
     commitments: &[FrostitoCommitment],
     message: &[u8],
 ) -> Result<FrostitoResponse, osst::OsstError> {
-    use sha2::{Sha512, Digest};
+    use sha2::{Digest, Sha512};
 
     // recompute binding factor for this validator (same as in aggregate_commitments)
     let rho = {
@@ -218,9 +224,7 @@ pub fn frostito_aggregate_responses(responses: &[FrostitoResponse]) -> Scalar {
 
 // ── legacy wrappers (one share per participant) ──
 
-pub fn validator_commit(
-    holder_index: u32,
-) -> (InnerNonces<Scalar>, InnerCommitments<Point>) {
+pub fn validator_commit(holder_index: u32) -> (InnerNonces<Scalar>, InnerCommitments<Point>) {
     nested::inner_commit::<Point, _>(holder_index, &mut rand_core::OsRng)
 }
 
@@ -240,13 +244,16 @@ pub fn validator_sign(
     sighash: &[u8],
 ) -> Result<InnerSignatureShare<Scalar>, osst::OsstError> {
     nested::inner_sign::<Point>(
-        nonces, share, params, inner_commitments, active_indices, sighash,
+        nonces,
+        share,
+        params,
+        inner_commitments,
+        active_indices,
+        sighash,
     )
 }
 
-pub fn aggregate_validator_shares(
-    shares: &[InnerSignatureShare<Scalar>],
-) -> Scalar {
+pub fn aggregate_validator_shares(shares: &[InnerSignatureShare<Scalar>]) -> Scalar {
     nested::aggregate_inner_shares(shares)
 }
 
@@ -272,9 +279,9 @@ mod tests {
 
         // 3 validators with different stake weights
         let stake_allocation = vec![
-            (1u32, vec![1u32, 2, 3, 4]),    // validator 1: 4 shares (40%)
-            (2u32, vec![5u32, 6, 7]),        // validator 2: 3 shares (30%)
-            (3u32, vec![8u32, 9, 10]),       // validator 3: 3 shares (30%)
+            (1u32, vec![1u32, 2, 3, 4]), // validator 1: 4 shares (40%)
+            (2u32, vec![5u32, 6, 7]),    // validator 2: 3 shares (30%)
+            (3u32, vec![8u32, 9, 10]),   // validator 3: 3 shares (30%)
         ];
 
         // generate a group secret and split into shares
@@ -304,7 +311,8 @@ mod tests {
         // distribute shares to validators
         let mut validator_bundles: Vec<ValidatorShares> = Vec::new();
         for (vid, share_indices) in &stake_allocation {
-            let shares: Vec<SecretShare<Scalar>> = share_indices.iter()
+            let shares: Vec<SecretShare<Scalar>> = share_indices
+                .iter()
                 .map(|&idx| all_shares[(idx - 1) as usize].clone())
                 .collect();
             validator_bundles.push(ValidatorShares::new(*vid, shares));
@@ -335,7 +343,8 @@ mod tests {
 
         // check threshold
         assert!(frostito_threshold_met(&all_commits, inner_threshold));
-        eprintln!("  threshold met: {} shares from {} validators",
+        eprintln!(
+            "  threshold met: {} shares from {} validators",
             all_commits.iter().map(|c| c.weight).sum::<u32>(),
             all_commits.len(),
         );
@@ -345,7 +354,7 @@ mod tests {
 
         // simulate outer challenge (in real flow, computed from outer signing package)
         let outer_challenge = {
-            use sha2::{Sha512, Digest};
+            use sha2::{Digest, Sha512};
             let mut h = Sha512::new();
             h.update(b"frost-challenge-v1");
             h.update(OsstPoint::compress(&r_nested));
@@ -356,7 +365,8 @@ mod tests {
         let outer_lambda = Scalar::ONE; // simplified: no outer Lagrange for standalone test
 
         // collect all active share indices
-        let active_share_indices: Vec<u32> = validator_bundles.iter()
+        let active_share_indices: Vec<u32> = validator_bundles
+            .iter()
             .flat_map(|vs| vs.share_indices())
             .collect();
 
@@ -369,9 +379,7 @@ mod tests {
         // round 2: each validator signs with ONE response
         let mut all_responses = Vec::new();
         for (nonce, vs) in all_nonces.into_iter().zip(validator_bundles.iter()) {
-            let response = frostito_sign(
-                nonce, vs, &params, &all_commits, message,
-            ).unwrap();
+            let response = frostito_sign(nonce, vs, &params, &all_commits, message).unwrap();
             all_responses.push(response);
         }
 
@@ -431,7 +439,10 @@ mod tests {
 
         let fa_at_p = dealer_a.generate_subshare(nested_position);
         let (fa_pieces, _) = osst::nested::split_evaluation_for_inner::<Point, _>(
-            fa_at_p.value(), inner_n, inner_t, &mut rng,
+            fa_at_p.value(),
+            inner_n,
+            inner_t,
+            &mut rng,
         );
 
         let mut validator_shares_legacy: Vec<SecretShare<Scalar>> = Vec::new();
@@ -447,7 +458,9 @@ mod tests {
         let s1 = *dealer_a.generate_subshare(1).value() + fp_at_1;
         let position_a_share = SecretShare::new(1, s1);
 
-        let group_key = dealer_a.commitment().share_commitment()
+        let group_key = dealer_a
+            .commitment()
+            .share_commitment()
             .add(&coeff_commitments[0]);
 
         let sighash = b"bridge spend authorization test";
@@ -470,21 +483,22 @@ mod tests {
             hiding: r_nested,
             binding: Point::identity(),
         };
-        let package = osst::frost::SigningPackage::new(
-            sighash.to_vec(),
-            vec![a_commits, nested_commits],
-        ).unwrap();
+        let package =
+            osst::frost::SigningPackage::new(sighash.to_vec(), vec![a_commits, nested_commits])
+                .unwrap();
 
-        let a_sig = osst::frost::sign::<Point>(
-            &package, a_nonces, &position_a_share, &group_key,
-        ).unwrap();
+        let a_sig =
+            osst::frost::sign::<Point>(&package, a_nonces, &position_a_share, &group_key).unwrap();
 
         let outer_indices = package.signer_indices();
         let outer_lambda = compute_lagrange_coefficients::<Scalar>(&outer_indices).unwrap();
-        let nested_pos = outer_indices.iter().position(|&i| i == nested_position).unwrap();
+        let nested_pos = outer_indices
+            .iter()
+            .position(|&i| i == nested_position)
+            .unwrap();
 
         let outer_gc = {
-            use sha2::{Sha512, Digest};
+            use sha2::{Digest, Sha512};
             let mut r = Point::identity();
             for &idx in &outer_indices {
                 let c = package.get_commitments(idx).unwrap();
@@ -496,7 +510,7 @@ mod tests {
                     encoded.extend_from_slice(&sc.binding.compress());
                 }
                 let rho = {
-                    use sha2::{Sha512, Digest};
+                    use sha2::{Digest, Sha512};
                     let mut h = Sha512::new();
                     h.update(b"frost-binding-v1");
                     h.update(idx.to_le_bytes());
@@ -511,7 +525,7 @@ mod tests {
         };
 
         let outer_challenge = {
-            use sha2::{Sha512, Digest};
+            use sha2::{Digest, Sha512};
             let mut h = Sha512::new();
             h.update(b"frost-challenge-v1");
             h.update(OsstPoint::compress(&outer_gc));
@@ -534,7 +548,8 @@ mod tests {
                 &all_commits,
                 &active_validators,
                 sighash,
-            ).unwrap();
+            )
+            .unwrap();
             inner_sigs.push(sig);
         }
 
@@ -545,12 +560,9 @@ mod tests {
             response: z_nested,
         };
 
-        let signature = osst::frost::aggregate::<Point>(
-            &package,
-            &[a_sig, nested_sig],
-            &group_key,
-            None,
-        ).unwrap();
+        let signature =
+            osst::frost::aggregate::<Point>(&package, &[a_sig, nested_sig], &group_key, None)
+                .unwrap();
 
         assert!(
             osst::frost::verify_signature(&group_key, sighash, &signature),

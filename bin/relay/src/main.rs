@@ -233,7 +233,8 @@ impl RoomManager {
         max_participants: u32,
         ttl_seconds: u32,
     ) -> Result<(String, u64), &'static str> {
-        self.create_room_with_code(None, max_participants, ttl_seconds).await
+        self.create_room_with_code(None, max_participants, ttl_seconds)
+            .await
     }
 
     pub(crate) async fn create_room_with_code(
@@ -478,37 +479,28 @@ impl RoomManager {
 // ============================================================================
 
 const WORDS: &[&str] = &[
-    "ace", "bet", "bid", "box", "cap", "cut", "dab", "den", "dip",
-    "dot", "dry", "dub", "dug", "elm", "fan", "fig", "fin", "fit",
-    "fix", "fog", "fun", "gap", "gem", "gin", "gum", "gut", "hex",
-    "hip", "hit", "hog", "hot", "hub", "hue", "hum", "ice", "imp",
-    "ink", "inn", "ion", "ivy", "jab", "jam", "jar", "jaw", "jet",
-    "jig", "jog", "joy", "jug", "keg", "key", "kid", "kit", "lab",
-    "lap", "law", "log", "lot", "low", "lux", "map", "mat", "max",
-    "mix", "mob", "mod", "mop", "mud", "mug", "nap", "net", "nip",
-    "nod", "nor", "not", "now", "nut", "oak", "oar", "odd", "opt",
-    "orb", "ore", "owl", "own", "pad", "pan", "paw", "peg", "pen",
-    "pet", "pie", "pig", "pin", "pit", "pod", "pop", "pot", "pug",
-    "put", "rag", "ram", "ran", "rap", "raw", "ray", "red", "ref",
-    "rib", "rid", "rig", "rim", "rip", "rob", "rod", "rot", "row",
-    "rug", "rum", "run", "rut", "rye", "sap", "saw", "set", "sew",
-    "shy", "sin", "sip", "sit", "six", "ski", "sky", "sly", "sob",
-    "sod", "son", "sow", "spy", "sub", "sue", "sum", "sun", "sup",
-    "tab", "tag", "tan", "tap", "tar", "tax", "ten", "the", "tie",
-    "tin", "tip", "toe", "ton", "too", "top", "tow", "try", "tub",
-    "tug", "two", "urn", "van", "vat", "vet", "via", "vim", "vow",
-    "wag", "war", "was", "wax", "way", "web", "wed", "wet", "who",
-    "wig", "win", "wit", "woe", "wok", "won", "wry", "yak", "yam",
-    "yap", "yaw", "yep", "yet", "yew", "yin", "zip", "zoo",
+    "ace", "bet", "bid", "box", "cap", "cut", "dab", "den", "dip", "dot", "dry", "dub", "dug",
+    "elm", "fan", "fig", "fin", "fit", "fix", "fog", "fun", "gap", "gem", "gin", "gum", "gut",
+    "hex", "hip", "hit", "hog", "hot", "hub", "hue", "hum", "ice", "imp", "ink", "inn", "ion",
+    "ivy", "jab", "jam", "jar", "jaw", "jet", "jig", "jog", "joy", "jug", "keg", "key", "kid",
+    "kit", "lab", "lap", "law", "log", "lot", "low", "lux", "map", "mat", "max", "mix", "mob",
+    "mod", "mop", "mud", "mug", "nap", "net", "nip", "nod", "nor", "not", "now", "nut", "oak",
+    "oar", "odd", "opt", "orb", "ore", "owl", "own", "pad", "pan", "paw", "peg", "pen", "pet",
+    "pie", "pig", "pin", "pit", "pod", "pop", "pot", "pug", "put", "rag", "ram", "ran", "rap",
+    "raw", "ray", "red", "ref", "rib", "rid", "rig", "rim", "rip", "rob", "rod", "rot", "row",
+    "rug", "rum", "run", "rut", "rye", "sap", "saw", "set", "sew", "shy", "sin", "sip", "sit",
+    "six", "ski", "sky", "sly", "sob", "sod", "son", "sow", "spy", "sub", "sue", "sum", "sun",
+    "sup", "tab", "tag", "tan", "tap", "tar", "tax", "ten", "the", "tie", "tin", "tip", "toe",
+    "ton", "too", "top", "tow", "try", "tub", "tug", "two", "urn", "van", "vat", "vet", "via",
+    "vim", "vow", "wag", "war", "was", "wax", "way", "web", "wed", "wet", "who", "wig", "win",
+    "wit", "woe", "wok", "won", "wry", "yak", "yam", "yap", "yaw", "yep", "yet", "yew", "yin",
+    "zip", "zoo",
 ];
 
 fn generate_room_code() -> String {
     use rand::seq::SliceRandom;
     let mut rng = rand::thread_rng();
-    let w: Vec<&str> = WORDS
-        .choose_multiple(&mut rng, 3)
-        .copied()
-        .collect();
+    let w: Vec<&str> = WORDS.choose_multiple(&mut rng, 3).copied().collect();
     format!("{}-{}-{}", w[0], w[1], w[2])
 }
 
@@ -569,8 +561,10 @@ impl Relay for RelayService {
             .await
             .map_err(Status::resource_exhausted)?;
 
-        info!("room created: {} (max={}, ttl={}s)",
-            code, req.max_participants, req.ttl_seconds);
+        info!(
+            "room created: {} (max={}, ttl={}s)",
+            code, req.max_participants, req.ttl_seconds
+        );
 
         Ok(Response::new(CreateRoomResponse {
             room_code: code,
@@ -578,9 +572,8 @@ impl Relay for RelayService {
         }))
     }
 
-    type JoinRoomStream = std::pin::Pin<
-        Box<dyn tokio_stream::Stream<Item = Result<RoomEvent, Status>> + Send>,
-    >;
+    type JoinRoomStream =
+        std::pin::Pin<Box<dyn tokio_stream::Stream<Item = Result<RoomEvent, Status>> + Send>>;
 
     async fn join_room(
         &self,
@@ -593,8 +586,11 @@ impl Relay for RelayService {
             .await
             .map_err(Status::not_found)?;
 
-        info!("joined: {} ({}...)", room.code,
-            hex::encode(&req.participant_id[..4.min(req.participant_id.len())]));
+        info!(
+            "joined: {} ({}...)",
+            room.code,
+            hex::encode(&req.participant_id[..4.min(req.participant_id.len())])
+        );
 
         let existing_participants = room.participants.read().await.clone();
         let existing_messages = room.messages.read().await.clone();
@@ -719,7 +715,10 @@ impl Relay for RelayService {
 // ============================================================================
 
 #[derive(Parser)]
-#[command(name = "relay", about = "dumb relay. rooms, participants, opaque bytes.")]
+#[command(
+    name = "relay",
+    about = "dumb relay. rooms, participants, opaque bytes."
+)]
 struct Args {
     /// gRPC listen address
     #[arg(long, default_value = "0.0.0.0:50052", env = "RELAY_LISTEN")]
@@ -782,9 +781,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let listener = tokio::net::TcpListener::bind(args.ws_listen)
             .await
             .expect("WS bind failed");
-        axum::serve(listener, app)
-            .await
-            .expect("WS server failed");
+        axum::serve(listener, app).await.expect("WS server failed");
     });
 
     tokio::select! {

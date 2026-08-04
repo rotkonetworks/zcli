@@ -14,8 +14,7 @@ use std::collections::BTreeMap;
 use rand_core::{CryptoRng, RngCore};
 
 use crate::{
-    frost, frost_keys, round1, round2,
-    Identifier, RandomizedParams, Randomizer, SigningPackage,
+    frost, frost_keys, round1, round2, Identifier, RandomizedParams, Randomizer, SigningPackage,
 };
 
 /// data the coordinator sends to signers for one signing session.
@@ -68,8 +67,8 @@ pub fn signer_round2(
 ) -> Result<round2::SignatureShare, frost::Error> {
     // alpha IS the FROST randomizer — same mathematical operation
     // (added to the signing key: rsk = ask_share + alpha)
-    let alpha = Randomizer::deserialize(alpha_bytes)
-        .map_err(|_| frost::Error::MalformedSigningKey)?;
+    let alpha =
+        Randomizer::deserialize(alpha_bytes).map_err(|_| frost::Error::MalformedSigningKey)?;
 
     let signing_package = SigningPackage::new(all_commitments.clone(), sighash);
 
@@ -85,23 +84,21 @@ pub fn coordinator_aggregate(
     all_commitments: &BTreeMap<Identifier, round1::SigningCommitments>,
     shares: &BTreeMap<Identifier, round2::SignatureShare>,
 ) -> Result<[u8; 64], frost::Error> {
-    let alpha = Randomizer::deserialize(alpha_bytes)
-        .map_err(|_| frost::Error::MalformedSigningKey)?;
+    let alpha =
+        Randomizer::deserialize(alpha_bytes).map_err(|_| frost::Error::MalformedSigningKey)?;
 
     let signing_package = SigningPackage::new(all_commitments.clone(), sighash);
 
-    let randomized_params = RandomizedParams::from_randomizer(
-        pubkey_package.verifying_key(),
-        alpha,
-    );
+    let randomized_params =
+        RandomizedParams::from_randomizer(pubkey_package.verifying_key(), alpha);
 
-    let signature = crate::aggregate(
-        &signing_package, shares, pubkey_package, &randomized_params,
-    )?;
+    let signature = crate::aggregate(&signing_package, shares, pubkey_package, &randomized_params)?;
 
-    let sig_bytes = signature.serialize()
+    let sig_bytes = signature
+        .serialize()
         .map_err(|_| frost::Error::MalformedSignature)?;
-    let sig_array: [u8; 64] = sig_bytes.try_into()
+    let sig_array: [u8; 64] = sig_bytes
+        .try_into()
         .map_err(|_| frost::Error::MalformedSignature)?;
     Ok(sig_array)
 }

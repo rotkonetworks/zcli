@@ -6,8 +6,8 @@
 //! run with: cargo test -p zecli --test bridge_e2e -- --nocapture
 
 use frost_spend::hierarchical::{
-    bridge_dkg_dealer, bridge_sign_round1, bridge_sign_round2,
-    bridge_aggregate, bridge_derive_address, bridge_sign_local,
+    bridge_aggregate, bridge_derive_address, bridge_dkg_dealer, bridge_sign_local,
+    bridge_sign_round1, bridge_sign_round2,
 };
 /// full bridge signing path: DKG → address → 2-of-2 sign → valid sig
 #[test]
@@ -28,12 +28,8 @@ fn test_bridge_2of2_full_path() {
     let mut alpha = [0u8; 32];
     alpha[0] = 0x01;
 
-    let sig = bridge_sign_local(
-        &dkg.osst_package,
-        &dkg.validator_package,
-        &sighash,
-        &alpha,
-    ).unwrap();
+    let sig =
+        bridge_sign_local(&dkg.osst_package, &dkg.validator_package, &sighash, &alpha).unwrap();
 
     assert_eq!(sig.len(), 128);
     eprintln!("  sig: {}...{} ✓", &sig[..16], &sig[112..]);
@@ -56,22 +52,27 @@ fn test_bridge_stepwise_signing() {
     let state_b = bridge_sign_round1(&dkg.validator_package).unwrap();
     eprintln!("  round1: 2 commitments");
 
-    let commits = vec![state_a.commitment_hex.clone(), state_b.commitment_hex.clone()];
+    let commits = vec![
+        state_a.commitment_hex.clone(),
+        state_b.commitment_hex.clone(),
+    ];
 
     // round 2: each position signs independently
-    let share_a = bridge_sign_round2(
-        &dkg.osst_package, &state_a, &sighash, &alpha, &commits,
-    ).unwrap();
-    let share_b = bridge_sign_round2(
-        &dkg.validator_package, &state_b, &sighash, &alpha, &commits,
-    ).unwrap();
+    let share_a =
+        bridge_sign_round2(&dkg.osst_package, &state_a, &sighash, &alpha, &commits).unwrap();
+    let share_b =
+        bridge_sign_round2(&dkg.validator_package, &state_b, &sighash, &alpha, &commits).unwrap();
     eprintln!("  round2: 2 shares");
 
     // aggregate
     let sig = bridge_aggregate(
-        &dkg.public_key_package_hex, &sighash, &alpha,
-        &commits, &[share_a, share_b],
-    ).unwrap();
+        &dkg.public_key_package_hex,
+        &sighash,
+        &alpha,
+        &commits,
+        &[share_a, share_b],
+    )
+    .unwrap();
 
     assert_eq!(sig.len(), 128);
     eprintln!("  aggregate: valid 64-byte SpendAuth sig ✓");
@@ -82,19 +83,18 @@ fn test_bridge_stepwise_signing() {
 #[test]
 fn test_bridge_nested_3of5_inner() {
     use frost_spend::nested::{
-        validator_commit, aggregate_validator_commitments,
-        validator_sign, aggregate_validator_shares,
-        InnerSigningParams,
+        aggregate_validator_commitments, aggregate_validator_shares, validator_commit,
+        validator_sign, InnerSigningParams,
     };
-    use osst::curve::{OsstPoint, OsstScalar};
     use osst::compute_lagrange_coefficients;
+    use osst::curve::{OsstPoint, OsstScalar};
     use osst::dkg;
+    use osst::frost as osst_frost;
     use osst::nested::interleaved_dkg;
     use osst::SecretShare;
-    use osst::frost as osst_frost;
-    use pasta_curves::pallas::{Point, Scalar};
     use pasta_curves::group::ff::Field;
-    use sha2::{Sha512, Digest};
+    use pasta_curves::pallas::{Point, Scalar};
+    use sha2::{Digest, Sha512};
 
     eprintln!("\n=== bridge nested: 2-of-2 outer × 3-of-5 inner ===");
 
@@ -123,17 +123,17 @@ fn test_bridge_nested_3of5_inner() {
     // split dealer_a's evaluation for inner holders
     let fa_at_p = dealer_a.generate_subshare(nested_position);
     let (fa_pieces, _) = osst::nested::split_evaluation_for_inner::<Point, _>(
-        fa_at_p.value(), inner_n, inner_t, &mut rng,
+        fa_at_p.value(),
+        inner_n,
+        inner_t,
+        &mut rng,
     );
 
     // each validator combines shares
     let mut validator_shares: Vec<SecretShare<Scalar>> = Vec::new();
     for k in 0..inner_n as usize {
-        let sigma = osst::nested::combine_shares(
-            &inner_shares[k],
-            nested_position,
-            &[(1, fa_pieces[k].1)],
-        );
+        let sigma =
+            osst::nested::combine_shares(&inner_shares[k], nested_position, &[(1, fa_pieces[k].1)]);
         validator_shares.push(SecretShare::new((k + 1) as u32, sigma));
     }
 
@@ -142,7 +142,9 @@ fn test_bridge_nested_3of5_inner() {
     let position_a_share = SecretShare::new(1, s1);
 
     // group key
-    let group_key = dealer_a.commitment().share_commitment()
+    let group_key = dealer_a
+        .commitment()
+        .share_commitment()
         .add(&coeff_commitments[0]);
     let gk_hex = hex::encode(&OsstPoint::compress(&group_key));
     eprintln!("  group key: {}...", &gk_hex[..16]);
@@ -171,21 +173,21 @@ fn test_bridge_nested_3of5_inner() {
         hiding: r_nested,
         binding: Point::identity(),
     };
-    let package = osst_frost::SigningPackage::new(
-        sighash.to_vec(),
-        vec![a_commits, nested_commits],
-    ).unwrap();
+    let package =
+        osst_frost::SigningPackage::new(sighash.to_vec(), vec![a_commits, nested_commits]).unwrap();
 
     // position A signs
-    let a_sig = osst_frost::sign::<Point>(
-        &package, a_nonces, &position_a_share, &group_key,
-    ).unwrap();
+    let a_sig =
+        osst_frost::sign::<Point>(&package, a_nonces, &position_a_share, &group_key).unwrap();
     eprintln!("  position A: signed ✓");
 
     // compute outer params for inner validators
     let outer_indices = package.signer_indices();
     let outer_lambda = compute_lagrange_coefficients::<Scalar>(&outer_indices).unwrap();
-    let nested_pos = outer_indices.iter().position(|&i| i == nested_position).unwrap();
+    let nested_pos = outer_indices
+        .iter()
+        .position(|&i| i == nested_position)
+        .unwrap();
 
     let outer_gc = {
         let mut r = Point::identity();
@@ -236,7 +238,8 @@ fn test_bridge_nested_3of5_inner() {
             &all_commits,
             &active_validators,
             sighash,
-        ).unwrap();
+        )
+        .unwrap();
         inner_sigs.push(sig);
     }
     let z_nested = aggregate_validator_shares(&inner_sigs);
@@ -248,12 +251,8 @@ fn test_bridge_nested_3of5_inner() {
     };
 
     // outer aggregate
-    let signature = osst_frost::aggregate::<Point>(
-        &package,
-        &[a_sig, nested_sig],
-        &group_key,
-        None,
-    ).unwrap();
+    let signature =
+        osst_frost::aggregate::<Point>(&package, &[a_sig, nested_sig], &group_key, None).unwrap();
 
     // verify
     assert!(
@@ -268,19 +267,18 @@ fn test_bridge_nested_3of5_inner() {
 #[test]
 fn test_bridge_nested_different_subsets() {
     use frost_spend::nested::{
-        validator_commit, aggregate_validator_commitments,
-        validator_sign, aggregate_validator_shares,
-        InnerSigningParams,
+        aggregate_validator_commitments, aggregate_validator_shares, validator_commit,
+        validator_sign, InnerSigningParams,
     };
-    use osst::curve::{OsstPoint, OsstScalar};
     use osst::compute_lagrange_coefficients;
+    use osst::curve::{OsstPoint, OsstScalar};
     use osst::dkg;
+    use osst::frost as osst_frost;
     use osst::nested::interleaved_dkg;
     use osst::SecretShare;
-    use osst::frost as osst_frost;
-    use pasta_curves::pallas::{Point, Scalar};
     use pasta_curves::group::ff::Field;
-    use sha2::{Sha512, Digest};
+    use pasta_curves::pallas::{Point, Scalar};
+    use sha2::{Digest, Sha512};
 
     eprintln!("\n=== bridge nested: liveness test (different subsets) ===");
 
@@ -303,28 +301,28 @@ fn test_bridge_nested_different_subsets() {
 
     let fa_at_p = dealer_a.generate_subshare(nested_position);
     let (fa_pieces, _) = osst::nested::split_evaluation_for_inner::<Point, _>(
-        fa_at_p.value(), inner_n, inner_t, &mut rng,
+        fa_at_p.value(),
+        inner_n,
+        inner_t,
+        &mut rng,
     );
 
     let mut validator_shares: Vec<SecretShare<Scalar>> = Vec::new();
     for k in 0..inner_n as usize {
-        let sigma = osst::nested::combine_shares(
-            &inner_shares[k], nested_position, &[(1, fa_pieces[k].1)],
-        );
+        let sigma =
+            osst::nested::combine_shares(&inner_shares[k], nested_position, &[(1, fa_pieces[k].1)]);
         validator_shares.push(SecretShare::new((k + 1) as u32, sigma));
     }
 
     let s1 = *dealer_a.generate_subshare(1).value() + fp_at_1;
     let position_a_share = SecretShare::new(1, s1);
-    let group_key = dealer_a.commitment().share_commitment().add(&coeff_commitments[0]);
+    let group_key = dealer_a
+        .commitment()
+        .share_commitment()
+        .add(&coeff_commitments[0]);
 
     // test 4 different validator subsets — all must produce valid sigs
-    let subsets: &[&[u32]] = &[
-        &[1, 2, 3],
-        &[1, 3, 5],
-        &[2, 4, 5],
-        &[3, 4, 5],
-    ];
+    let subsets: &[&[u32]] = &[&[1, 2, 3], &[1, 3, 5], &[2, 4, 5], &[3, 4, 5]];
 
     for subset in subsets {
         let sighash = format!("subset {:?}", subset);
@@ -346,18 +344,19 @@ fn test_bridge_nested_different_subsets() {
             hiding: r_nested,
             binding: Point::identity(),
         };
-        let package = osst_frost::SigningPackage::new(
-            sighash.to_vec(),
-            vec![a_commits, nested_commits],
-        ).unwrap();
+        let package =
+            osst_frost::SigningPackage::new(sighash.to_vec(), vec![a_commits, nested_commits])
+                .unwrap();
 
-        let a_sig = osst_frost::sign::<Point>(
-            &package, a_nonces, &position_a_share, &group_key,
-        ).unwrap();
+        let a_sig =
+            osst_frost::sign::<Point>(&package, a_nonces, &position_a_share, &group_key).unwrap();
 
         let outer_indices = package.signer_indices();
         let outer_lambda = compute_lagrange_coefficients::<Scalar>(&outer_indices).unwrap();
-        let nested_pos = outer_indices.iter().position(|&i| i == nested_position).unwrap();
+        let nested_pos = outer_indices
+            .iter()
+            .position(|&i| i == nested_position)
+            .unwrap();
 
         let outer_gc = {
             let mut r = Point::identity();
@@ -402,9 +401,14 @@ fn test_bridge_nested_different_subsets() {
         for (nonces, &k) in nonces_vec.into_iter().zip(subset.iter()) {
             inner_sigs.push(
                 validator_sign(
-                    nonces, &validator_shares[(k - 1) as usize],
-                    &params, &commits_vec, subset, sighash,
-                ).unwrap(),
+                    nonces,
+                    &validator_shares[(k - 1) as usize],
+                    &params,
+                    &commits_vec,
+                    subset,
+                    sighash,
+                )
+                .unwrap(),
             );
         }
 
@@ -414,13 +418,14 @@ fn test_bridge_nested_different_subsets() {
             response: z_nested,
         };
 
-        let signature = osst_frost::aggregate::<Point>(
-            &package, &[a_sig, nested_sig], &group_key, None,
-        ).unwrap();
+        let signature =
+            osst_frost::aggregate::<Point>(&package, &[a_sig, nested_sig], &group_key, None)
+                .unwrap();
 
         assert!(
             osst_frost::verify_signature(&group_key, sighash, &signature),
-            "subset {:?} failed", subset
+            "subset {:?} failed",
+            subset
         );
         eprintln!("  subset {:?}: ✓", subset);
     }

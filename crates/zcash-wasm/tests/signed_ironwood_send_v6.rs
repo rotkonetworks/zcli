@@ -70,7 +70,8 @@ fn keys_from_seed(
     let mnemonic = bip39::Mnemonic::parse(seed_phrase).expect("valid test mnemonic");
     let seed = mnemonic.to_seed("");
     let account_id = zip32::AccountId::try_from(account).unwrap();
-    let sk = orchard::keys::SpendingKey::from_zip32_seed(&seed, COIN_TYPE_TEST, account_id).unwrap();
+    let sk =
+        orchard::keys::SpendingKey::from_zip32_seed(&seed, COIN_TYPE_TEST, account_id).unwrap();
     let fvk = orchard::keys::FullViewingKey::from(&sk);
     let ask = orchard::keys::SpendAuthorizingKey::from(&sk);
     (fvk, ask)
@@ -267,9 +268,7 @@ fn signed_ironwood_send_spends_real_v3_note_verifies() {
 
     // (3a) valid V6 with an ironwood bundle carrying the real spend + outputs.
     assert_eq!(tx.version(), TxVersion::V6, "must be a V6 transaction");
-    let ironwood_bundle = tx
-        .ironwood_bundle()
-        .expect("ironwood bundle present");
+    let ironwood_bundle = tx.ironwood_bundle().expect("ironwood bundle present");
     assert!(
         !ironwood_bundle.actions().is_empty(),
         "ironwood bundle must have at least one action"

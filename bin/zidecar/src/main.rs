@@ -237,10 +237,8 @@ async fn main() -> Result<()> {
             args.start_height,
             mempool_cache_ttl,
         );
-        let zidecar_server = zidecar::zidecar_server::ZidecarServer::with_interceptor(
-            service,
-            auth.clone(),
-        );
+        let zidecar_server =
+            zidecar::zidecar_server::ZidecarServer::with_interceptor(service, auth.clone());
         router = router.add_service(tonic_web::enable(zidecar_server));
     } else {
         info!("zidecar-rpc surface: disabled (use --zidecar-rpc to enable)");
@@ -251,10 +249,11 @@ async fn main() -> Result<()> {
     if args.frost_relay {
         let frost = frost_relay::FrostRelayService::new();
         info!("frost relay: enabled");
-        let frost_server = frost_relay_proto::frost_relay_server::FrostRelayServer::with_interceptor(
-            frost,
-            auth.clone(),
-        );
+        let frost_server =
+            frost_relay_proto::frost_relay_server::FrostRelayServer::with_interceptor(
+                frost,
+                auth.clone(),
+            );
         router = router.add_service(tonic_web::enable(frost_server));
     } else {
         info!("frost relay: disabled (use --frost-relay to enable)");

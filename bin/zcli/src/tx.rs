@@ -88,7 +88,9 @@ pub fn serialize_orchard_bundle(
         bundle
             .flags()
             .to_byte(orchard::bundle::BundleFormat::PreNu6_3)
-            .ok_or_else(|| Error::Transaction("orchard flags not representable in pre-NU6.3 format".into()))?,
+            .ok_or_else(|| {
+                Error::Transaction("orchard flags not representable in pre-NU6.3 format".into())
+            })?,
     );
     out.extend_from_slice(&bundle.value_balance().to_i64_le_bytes());
     out.extend_from_slice(&bundle.anchor().to_bytes());
@@ -145,7 +147,9 @@ fn compute_orchard_digest<A: orchard::bundle::Authorization>(
         bundle
             .flags()
             .to_byte(orchard::bundle::BundleFormat::PreNu6_3)
-            .ok_or_else(|| Error::Transaction("orchard flags not representable in pre-NU6.3 format".into()))?,
+            .ok_or_else(|| {
+                Error::Transaction("orchard flags not representable in pre-NU6.3 format".into())
+            })?,
     );
     orchard_data.extend_from_slice(&bundle.value_balance().to_i64_le_bytes());
     orchard_data.extend_from_slice(&bundle.anchor().to_bytes());
