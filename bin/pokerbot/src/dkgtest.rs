@@ -305,12 +305,12 @@ pub async fn run(
     let overall_deadline = Instant::now() + Duration::from_secs(dkg_secs + watch_secs + 30);
     let dkg_timeout = Duration::from_secs(dkg_secs);
 
-    let host_ws = Transport::Ws(
+    let host_ws = Transport::Ws(Box::new(
         WsTransport::connect(&relay_ws).await.context("seat 0 ws connect")?,
-    );
-    let guest_ws = Transport::Ws(
+    ));
+    let guest_ws = Transport::Ws(Box::new(
         WsTransport::connect(&relay_ws).await.context("seat 1 ws connect")?,
-    );
+    ));
 
     let host_id = Identity::for_selfplay(0xDC6, 0);
     let guest_id = Identity::for_selfplay(0xDC6, 1);
@@ -406,8 +406,7 @@ fn print_summary(room: &str, host: &SeatResult, guest: &SeatResult) -> bool {
             }
         }
         None => println!(
-            "relay did NOT surface a non-empty escrow UA within {}s watch window",
-            "(watch)",
+            "relay did NOT surface a non-empty escrow UA within (watch)s watch window",
         ),
     }
 

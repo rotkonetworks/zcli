@@ -9,9 +9,9 @@
 //!     and broadcasts it inside its round-1 message. `is_host=true` on the escrow.
 //!   * SEAT A / SEAT B — the two players. Both are DKG *joiners* (`is_host=false`);
 //!     they learn the host's `sk` from its R1. THIS bot drives seats A + B.
-//!   FROST identifiers are NOT positional — each party derives its own identifier
-//!   from an ephemeral ed25519 verifying key (`identifier_from_vk`), so there is no
-//!   fixed seat→index map inside DKG; the relay just needs all 3 present.
+//!     FROST identifiers are NOT positional — each party derives its own identifier
+//!     from an ephemeral ed25519 verifying key (`identifier_from_vk`), so there is no
+//!     fixed seat→index map inside DKG; the relay just needs all 3 present.
 //!
 //! ── Wire protocol on the FROST relay (`wss://zrelay.rotko.net/ws`) ────────────
 //!   JSON text frames, blind broadcast to the room (`create`/`join`/`msg`/`part`):
@@ -175,7 +175,7 @@ impl FrostRelayClient {
     async fn send_json<T: Serialize>(&mut self, msg: &T) -> Result<(), RelayError> {
         let body = serde_json::to_string(msg).map_err(|e| RelayError::Protocol(e.to_string()))?;
         self.ws
-            .send(Message::Text(body.into()))
+            .send(Message::Text(body))
             .await
             .map_err(|e| RelayError::Io(e.to_string()))?;
         Ok(())

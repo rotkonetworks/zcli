@@ -4051,6 +4051,40 @@ dependencies = [
 [[package]]
 name = "orchard"
 version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a54f8d29bfb1e76a9d4e868a1a08cce2e57dd2bdc66232982822ad3114b91ab3"
+dependencies = [
+ "aes",
+ "bitvec",
+ "blake2b_simd",
+ "corez",
+ "ff",
+ "fpe",
+ "getset",
+ "group",
+ "halo2_poseidon",
+ "hex",
+ "incrementalmerkletree 0.8.2",
+ "lazy_static",
+ "memuse",
+ "nonempty 0.11.0",
+ "pasta_curves",
+ "rand 0.8.5",
+ "rand_core 0.6.4",
+ "reddsa 0.5.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "serde",
+ "sinsemilla",
+ "subtle",
+ "tracing",
+ "visibility",
+ "zcash_note_encryption",
+ "zcash_spec 0.2.1",
+ "zip32 0.2.1",
+]
+
+[[package]]
+name = "orchard"
+version = "0.14.0"
 source = "git+https://github.com/zcash/orchard?branch=adam%2Fqleak-dummy-ciphertexts-on-pr505#204d8ce99f2f35c01654694dd294e3a20ef882d5"
 dependencies = [
  "aes",
@@ -4269,7 +4303,7 @@ dependencies = [
  "getset",
  "jubjub",
  "nonempty 0.11.0",
- "orchard 0.14.0",
+ "orchard 0.14.0 (git+https://github.com/zcash/orchard?branch=adam%2Fqleak-dummy-ciphertexts-on-pr505)",
  "pasta_curves",
  "postcard",
  "rand_core 0.6.4",
@@ -4283,6 +4317,23 @@ dependencies = [
  "zcash_protocol 0.9.0",
  "zcash_script",
  "zcash_transparent",
+]
+
+[[package]]
+name = "pczt"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4712bd8688e1d1aa0eb0e78dc5c846bc2d70dcd1de544ecf053516df174c4fcd"
+dependencies = [
+ "ff",
+ "getset",
+ "nonempty 0.11.0",
+ "orchard 0.14.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "pasta_curves",
+ "postcard",
+ "serde",
+ "serde_with",
+ "zcash_protocol 0.9.0 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]
@@ -4493,7 +4544,7 @@ dependencies = [
  "hex",
  "hkdf",
  "pasta_curves",
- "pczt",
+ "pczt 0.7.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "poker-pvm",
  "rand 0.8.5",
  "rand_chacha 0.3.1",
@@ -4509,8 +4560,8 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "x25519-dalek",
- "zcash_address 0.12.0",
- "zcash_protocol 0.9.0",
+ "zcash_address 0.12.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "zcash_protocol 0.9.0 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]
@@ -8284,9 +8335,9 @@ dependencies = [
  "indexmap 1.9.3",
  "js-sys",
  "k256",
- "orchard 0.14.0",
+ "orchard 0.14.0 (git+https://github.com/zcash/orchard?branch=adam%2Fqleak-dummy-ciphertexts-on-pr505)",
  "pasta_curves",
- "pczt",
+ "pczt 0.7.0",
  "rand 0.8.5",
  "rand_core 0.6.4",
  "rayon",
@@ -8339,6 +8390,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "zcash_address"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "58342d0aaa8e2fa98849636f52800ac4bf020574c944c974742fc933db58cac2"
+dependencies = [
+ "bech32",
+ "bs58",
+ "corez",
+ "f4jumble 0.1.1 (registry+https://github.com/rust-lang/crates.io-index)",
+ "zcash_encoding 0.4.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "zcash_protocol 0.9.0 (registry+https://github.com/rust-lang/crates.io-index)",
+]
+
+[[package]]
 name = "zcash_encoding"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8358,6 +8423,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "zcash_encoding"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1440921903cdb86133fb9e2fe800be488015db2939a30bedb413078a1acb0306"
+dependencies = [
+ "corez",
+ "hex",
+ "nonempty 0.11.0",
+]
+
+[[package]]
 name = "zcash_keys"
 version = "0.14.0"
 dependencies = [
@@ -8370,7 +8446,7 @@ dependencies = [
  "group",
  "memuse",
  "nonempty 0.11.0",
- "orchard 0.14.0",
+ "orchard 0.14.0 (git+https://github.com/zcash/orchard?branch=adam%2Fqleak-dummy-ciphertexts-on-pr505)",
  "rand_core 0.6.4",
  "secrecy",
  "subtle",
@@ -8410,7 +8486,7 @@ dependencies = [
  "jubjub",
  "memuse",
  "nonempty 0.11.0",
- "orchard 0.14.0",
+ "orchard 0.14.0 (git+https://github.com/zcash/orchard?branch=adam%2Fqleak-dummy-ciphertexts-on-pr505)",
  "rand_core 0.6.4",
  "redjubjub",
  "sapling-crypto",
@@ -8442,6 +8518,19 @@ dependencies = [
  "corez",
  "hex",
  "zcash_encoding 0.4.0",
+]
+
+[[package]]
+name = "zcash_protocol"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5bec496a0bd62dae98c4b26f51c5dab112d0c5350bbc2ccfdfd05bb3454f714d"
+dependencies = [
+ "corez",
+ "document-features",
+ "hex",
+ "memuse",
+ "zcash_encoding 0.4.0 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]
@@ -8512,7 +8601,7 @@ dependencies = [
  "hex",
  "http 0.2.12",
  "libc",
- "orchard 0.14.0",
+ "orchard 0.14.0 (git+https://github.com/zcash/orchard?branch=adam%2Fqleak-dummy-ciphertexts-on-pr505)",
  "pasta_curves",
  "prost 0.12.6",
  "rand 0.8.5",
@@ -8547,7 +8636,7 @@ dependencies = [
  "indicatif",
  "is-terminal",
  "k256",
- "orchard 0.14.0",
+ "orchard 0.14.0 (git+https://github.com/zcash/orchard?branch=adam%2Fqleak-dummy-ciphertexts-on-pr505)",
  "osst",
  "pasta_curves",
  "prost 0.12.6",

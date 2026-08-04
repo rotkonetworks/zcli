@@ -14,6 +14,7 @@
 //!   3. each seat sends ONE `srv` `ClientMsg::Join{ name, pubkey, zcash_address:None }`
 //!      so the escrow has the seat identity. That is a plain control frame — NOT a
 //!      deposit, settlement, or any on-chain command.
+//!
 //! Then it logs every inbound `srv` ServerMsg verbatim for `--secs`, prints a
 //! summary, sends `part`, and closes. No `ReportDeposit`, no `Settlement`, no
 //! `zcli send`, no deposit/payout endpoint is ever called.
@@ -182,8 +183,8 @@ pub async fn run(relay_http: String, relay_ws: String, buyin: u64, secs: u64) ->
 
     // 2. connect two websocket seats and observe for `secs`.
     let deadline = Instant::now() + Duration::from_secs(secs);
-    let host_ws = Transport::Ws(WsTransport::connect(&relay_ws).await.context("seat 0 ws connect")?);
-    let guest_ws = Transport::Ws(WsTransport::connect(&relay_ws).await.context("seat 1 ws connect")?);
+    let host_ws = Transport::Ws(Box::new(WsTransport::connect(&relay_ws).await.context("seat 0 ws connect")?));
+    let guest_ws = Transport::Ws(Box::new(WsTransport::connect(&relay_ws).await.context("seat 1 ws connect")?));
 
     // Distinct, throwaway identities for the two observer seats.
     let host_id = Identity::for_selfplay(0xC0FFEE, 0);

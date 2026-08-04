@@ -97,7 +97,7 @@ pub enum RelayFrame {
 /// The `Channel` variant is only constructed by the `#[cfg(test)]` offline
 /// proof, so a plain (non-test) build sees it as unused — allow that.
 pub enum Transport {
-    Ws(WsTransport),
+    Ws(Box<WsTransport>),
     #[cfg_attr(not(test), allow(dead_code))]
     Channel(ChannelTransport),
 }

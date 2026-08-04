@@ -493,7 +493,6 @@ fn shell_join(argv: &[String]) -> String {
 
 /// Entry point for `play-staked`.
 #[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_arguments)]
 pub async fn run(
     relay_http: String,
     relay_ws: String,
@@ -546,8 +545,8 @@ pub async fn run(
     let overall_deadline = Instant::now() + Duration::from_secs(dkg_secs + gate_secs + 60);
     let dkg_timeout = Duration::from_secs(dkg_secs);
 
-    let host_ws = Transport::Ws(WsTransport::connect(&relay_ws).await.context("seat 0 ws connect")?);
-    let guest_ws = Transport::Ws(WsTransport::connect(&relay_ws).await.context("seat 1 ws connect")?);
+    let host_ws = Transport::Ws(Box::new(WsTransport::connect(&relay_ws).await.context("seat 0 ws connect")?));
+    let guest_ws = Transport::Ws(Box::new(WsTransport::connect(&relay_ws).await.context("seat 1 ws connect")?));
     let host_id = Identity::for_selfplay(0x57A, 0);
     let guest_id = Identity::for_selfplay(0x57A, 1);
 

@@ -203,6 +203,7 @@ fn rules(buyin: u32, sb: u32, bb: u32) -> Rules {
 }
 
 /// Run one seat end-to-end: handshake, then play `hands` hands.
+#[allow(clippy::too_many_arguments)]
 async fn run_seat(
     transport: Transport,
     create: bool,
@@ -255,8 +256,8 @@ async fn main() -> Result<()> {
             } else {
                 info!(relay = %relay, "connecting two seats to relay");
                 (
-                    Transport::Ws(WsTransport::connect(&relay).await?),
-                    Transport::Ws(WsTransport::connect(&relay).await?),
+                    Transport::Ws(Box::new(WsTransport::connect(&relay).await?)),
+                    Transport::Ws(Box::new(WsTransport::connect(&relay).await?)),
                 )
             };
             let code = selfplay(host_t, guest_t, hands, seed, rules(buyin, sb, bb), stake).await?;
@@ -269,7 +270,7 @@ async fn main() -> Result<()> {
             info!(relay = %relay, "connecting");
             let id = Identity::load_or_create(std::path::Path::new(&identity))?;
             info!(session_pub = %id.pubkey_hex(), identity_file = %identity, "session identity loaded");
-            let transport = Transport::Ws(WsTransport::connect(&relay).await?);
+            let transport = Transport::Ws(Box::new(WsTransport::connect(&relay).await?));
             let me = if create { 0 } else { 1 };
             let (results, stats, room) =
                 run_seat(transport, create, join, rules(buyin, sb, bb), seed, me, hands, name, Some(id)).await?;

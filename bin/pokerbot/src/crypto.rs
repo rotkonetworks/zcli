@@ -35,6 +35,12 @@ pub struct Session {
     cipher: Option<Aes256Gcm>,
 }
 
+impl Default for Session {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Session {
     /// Generate a fresh ephemeral keypair for this seat.
     pub fn new() -> Self {
