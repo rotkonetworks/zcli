@@ -4047,40 +4047,6 @@ dependencies = [
 [[package]]
 name = "orchard"
 version = "0.14.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a54f8d29bfb1e76a9d4e868a1a08cce2e57dd2bdc66232982822ad3114b91ab3"
-dependencies = [
- "aes",
- "bitvec",
- "blake2b_simd",
- "corez",
- "ff",
- "fpe",
- "getset",
- "group",
- "halo2_poseidon",
- "hex",
- "incrementalmerkletree 0.8.2",
- "lazy_static",
- "memuse",
- "nonempty 0.11.0",
- "pasta_curves",
- "rand 0.8.5",
- "rand_core 0.6.4",
- "reddsa 0.5.1 (registry+https://github.com/rust-lang/crates.io-index)",
- "serde",
- "sinsemilla",
- "subtle",
- "tracing",
- "visibility",
- "zcash_note_encryption",
- "zcash_spec 0.2.1",
- "zip32 0.2.1",
-]
-
-[[package]]
-name = "orchard"
-version = "0.14.0"
 source = "git+https://github.com/zcash/orchard?branch=adam%2Fqleak-dummy-ciphertexts-on-pr505#204d8ce99f2f35c01654694dd294e3a20ef882d5"
 dependencies = [
  "aes",
@@ -4299,7 +4265,7 @@ dependencies = [
  "getset",
  "jubjub",
  "nonempty 0.11.0",
- "orchard 0.14.0 (git+https://github.com/zcash/orchard?branch=adam%2Fqleak-dummy-ciphertexts-on-pr505)",
+ "orchard 0.14.0",
  "pasta_curves",
  "postcard",
  "rand_core 0.6.4",
@@ -8218,7 +8184,7 @@ dependencies = [
  "indexmap 1.9.3",
  "js-sys",
  "k256",
- "orchard 0.14.0 (git+https://github.com/zcash/orchard?branch=adam%2Fqleak-dummy-ciphertexts-on-pr505)",
+ "orchard 0.14.0",
  "pasta_curves",
  "pczt",
  "rand 0.8.5",
@@ -8304,7 +8270,7 @@ dependencies = [
  "group",
  "memuse",
  "nonempty 0.11.0",
- "orchard 0.14.0 (git+https://github.com/zcash/orchard?branch=adam%2Fqleak-dummy-ciphertexts-on-pr505)",
+ "orchard 0.14.0",
  "rand_core 0.6.4",
  "secrecy",
  "subtle",
@@ -8344,7 +8310,7 @@ dependencies = [
  "jubjub",
  "memuse",
  "nonempty 0.11.0",
- "orchard 0.14.0 (git+https://github.com/zcash/orchard?branch=adam%2Fqleak-dummy-ciphertexts-on-pr505)",
+ "orchard 0.14.0",
  "rand_core 0.6.4",
  "redjubjub",
  "sapling-crypto",
@@ -8446,7 +8412,7 @@ dependencies = [
  "hex",
  "http 0.2.12",
  "libc",
- "orchard 0.14.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "orchard 0.14.0",
  "pasta_curves",
  "prost 0.12.6",
  "rand 0.8.5",
@@ -8481,7 +8447,7 @@ dependencies = [
  "indicatif",
  "is-terminal",
  "k256",
- "orchard 0.14.0 (git+https://github.com/zcash/orchard?branch=adam%2Fqleak-dummy-ciphertexts-on-pr505)",
+ "orchard 0.14.0",
  "osst",
  "pasta_curves",
  "prost 0.12.6",
