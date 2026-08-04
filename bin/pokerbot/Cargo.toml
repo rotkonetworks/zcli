@@ -15,7 +15,9 @@ path = "src/main.rs"
 
 [dependencies]
 # the PRODUCTION game engine (native std build; dependency-free). tests exactly what ships.
-poker-pvm = { path = "../../../zeratul/crates/poker-pvm" }
+# pinned git dep — CI has no sibling zeratul checkout; the engine is pulled
+# from the public repo at the exact rev the bot was validated against
+poker-pvm = { git = "https://github.com/rotkonetworks/zeratul.git", rev = "6309866acd850114971d9834a27bdaec5d6e2a29" }
 
 # async + websocket relay client (wss:// to zkbtc.org/ws or a local relay)
 tokio = { version = "1", features = ["full"] }

@@ -4528,6 +4528,7 @@ dependencies = [
 [[package]]
 name = "poker-pvm"
 version = "0.1.0"
+source = "git+https://github.com/rotkonetworks/zeratul.git?rev=6309866acd850114971d9834a27bdaec5d6e2a29#6309866acd850114971d9834a27bdaec5d6e2a29"
 
 [[package]]
 name = "pokerbot"
