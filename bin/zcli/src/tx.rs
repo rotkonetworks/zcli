@@ -426,7 +426,6 @@ pub fn build_shielding_tx(
 // -- orchard spend transaction (z→t, z→z) --
 
 #[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_arguments)]
 pub fn build_orchard_spend_tx(
     seed: &WalletSeed,
     spends: &[(orchard::Note, orchard::tree::MerklePath)],
