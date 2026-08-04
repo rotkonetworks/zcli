@@ -1,0 +1,73 @@
+[package]
+name = "pokerbot"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "headless heads-up poker bot: drives the production poker-pvm engine over the real E2EE relay for high-pace bug testing (free + paid)"
+
+[lib]
+name = "pokerbot"
+path = "src/lib.rs"
+
+[[bin]]
+name = "pokerbot"
+path = "src/main.rs"
+
+[dependencies]
+# the PRODUCTION game engine (native std build; dependency-free). tests exactly what ships.
+poker-pvm = { path = "../../../zeratul/crates/poker-pvm" }
+
+# async + websocket relay client (wss:// to zkbtc.org/ws or a local relay)
+tokio = { version = "1", features = ["full"] }
+# read-only HTTPS GET for `probe-staked` (the plain `/new?buyin=..` room mint that
+# 303-redirects with the room code in `location`). Redirect following is DISABLED
+# so we only read the header, never load the redirect target. Feature set matches
+# the workspace `zcli` reqwest so no extra crates compile; rustls, no native-tls.
+reqwest = { version = "0.12", features = ["rustls-tls", "http2"], default-features = false }
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+futures-util = "0.3"
+# rustls is already in the tree via tokio-tungstenite; declared directly only so we
+# can install its ring CryptoProvider at startup (rustls 0.23 no longer auto-selects one).
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
+
+# E2EE: x25519 ECDH -> HKDF-SHA256 -> AES-256-GCM  (byte-identical to the browser WebCrypto path)
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+hkdf = "0.12"
+sha2 = "0.10"
+aes-gcm = "0.10"
+base64 = "0.22"
+hex = "0.4"
+
+# rng (seeded for reproducible fuzz runs)
+rand = "0.8"
+rand_chacha = "0.3"
+
+# json wire messages + cli + logging
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+thiserror = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# FROST DKG: the SAME shared lib the escrow + zcli use — dkg_part1/2/3 +
+# derive_address_from_sk / derive_fvk_from_sk. Path dep (workspace member).
+frost-spend = { path = "../../crates/frost-spend" }
+# Orchard UA + UFVK encoding for the DKG-derived group key (mirrors the escrow's
+# orchard_ua.rs so both sides land on the byte-identical escrow UA / UFVK string).
+zcash_address = "0.12"
+# PCZT decode for the C3 blind-signer safety check (verify_pczt_recipients): parse
+# the payout PCZT the escrow asks us to FROST-sign and read every Orchard output's
+# recipient (raw 43-byte receiver) + value in the clear. SAME version poker-escrow
+# builds the PCZT with (pczt 0.7, orchard NU6.2 stack) so the bytes are compatible.
+# We only READ output.recipient()/value() — plain accessors on pczt's own structs —
+# so we do NOT pull the orchard crate in directly. `signer` gives us shielded_sighash
+# should the live host path ever need it; `orchard` feature enables the orchard bundle.
+pczt = { version = "0.7", default-features = false, features = ["orchard"] }
+zcash_protocol = { version = "0.9", default-features = false }
+# ff::PrimeField — sample a valid Pallas scalar for the fvk-seed sk (host mode).
+ff = "0.13"
+pasta_curves = "0.5"
+rand_core = "0.6"
