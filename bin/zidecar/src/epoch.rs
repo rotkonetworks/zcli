@@ -21,10 +21,15 @@ use tracing::{error, info, warn};
 /// biggest win available here. 250 bounds crash-replay to roughly a minute.
 const STATE_SYNC_CHUNK: u32 = 250;
 
-/// Concurrent block fetches in flight. Each block needs two sequential zebrad
-/// round-trips, so a serial walk left the node almost idle; zebrad handles
-/// well over a hundred connections, and this stays far below that.
-const STATE_SYNC_CONCURRENCY: usize = 64;
+/// Concurrent block fetches in flight.
+///
+/// Tuned against this node, not guessed. Verbose-block throughput measured
+/// 18/s at 8 concurrent, 29/s at 32, 33/s at 64 — but at 128 zebra starts
+/// returning truncated bodies ("expected value at line 1 column 1") and the
+/// sync collapses into a retry loop, which is far worse than being slightly
+/// under the ceiling. 32 sits at the knee: most of the throughput, no
+/// overload.
+const STATE_SYNC_CONCURRENCY: usize = 32;
 
 /// Depth of the fetch→commit queue. Deep enough that a commit never stalls the
 /// fetchers, bounded so a fast producer cannot grow the heap without limit.
@@ -817,7 +822,11 @@ impl EpochManager {
         // the expensive side, so the committer should never be what stops it.
         let (tx, mut rx) = tokio::sync::mpsc::channel::<(u32, BlockState)>(STATE_SYNC_QUEUE);
 
-        let fetcher = async {
+        // `async move` matters: the fetcher must OWN the sender so it drops on
+        // completion. Borrowing it leaves a live sender in this scope, rx.recv()
+        // never yields None, and the committer waits forever — the batch's work
+        // lands but sync_nullifiers never returns.
+        let fetcher = async move {
             let mut stream = stream::iter(from_height..=to_height)
                 .map(|height| async move {
                     self.extract_block_state(height)

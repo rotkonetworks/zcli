@@ -145,6 +145,10 @@ impl ZebradClient {
     pub fn new(url: &str) -> Self {
         let client = Client::builder()
             .timeout(Duration::from_secs(30))
+            // HTTP/1.1 needs one connection per in-flight request; the default
+            // idle-pool sizing would otherwise churn connections under the
+            // state sync's fan-out.
+            .pool_max_idle_per_host(256)
             .build()
             .expect("failed to build reqwest client");
 
@@ -153,8 +157,13 @@ impl ZebradClient {
             client,
         };
 
+        // Buffer depth caps in-flight zebrad requests for the whole process.
+        // At 32 it throttled the state sync below zebra's capacity; pushed to
+        // 512 it overwhelmed zebra into returning truncated response bodies.
+        // 64 leaves headroom over the sync's 32-way fan-out for live client
+        // traffic without driving the node past what it can serve.
         let service = ServiceBuilder::new()
-            .buffer(32)
+            .buffer(64)
             .retry(ZebradRetryPolicy { max_retries: 3 })
             .service(inner);
 
