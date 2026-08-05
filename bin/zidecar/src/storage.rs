@@ -964,12 +964,15 @@ pub struct EpochBoundary {
 ///       orchard cmxs into NOMT (commitment-proof RPC was previously hitting
 ///       an empty tree). NOMT nullifier keys are re-inserted idempotently;
 ///       the cost is re-fetching historical blocks once.
-///   4 — current: nullifier_sync_height is reset again after the production
-///       NOMT store was lost to the nomt v1.0.3 bbn tear (2026-07-11) and
-///       recreated empty. state_roots and cached proofs are NOT wiped this
-///       time: NOMT roots are content-derived, so the rebuilt store converges
-///       to the same per-height roots the cached entries already hold.
-const SCHEMA_VERSION: u32 = 4;
+///   4 — nullifier_sync_height reset after the production NOMT store was
+///       lost to the nomt v1.0.3 bbn tear (2026-07-11) and recreated empty.
+///       state_roots and cached proofs are NOT wiped: NOMT roots are
+///       content-derived, so the rebuilt store converges to the same
+///       per-height roots the cached entries already hold.
+///   5 — current: same recovery again after a second bbn tear on restart
+///       (2026-08-05) — the flush/fsync mitigations reduce but do not
+///       eliminate the v1.0.3 hazard. TODO: upgrade nomt off v1.0.3.
+const SCHEMA_VERSION: u32 = 5;
 const SCHEMA_VERSION_KEY: &[u8] = b"_schema_version";
 
 fn run_schema_migrations(sled: &sled::Db) -> Result<()> {
@@ -1043,11 +1046,11 @@ fn run_schema_migrations(sled: &sled::Db) -> Result<()> {
     }
 
     // v3: reset so the sync loop backfills cmxs (not just nullifiers) into
-    // NOMT from start_height. v4: reset again to repopulate the NOMT store
-    // recreated after the v1.0.3 bbn tear. Re-insertion is idempotent either
+    // NOMT from start_height. v4/v5: reset again to repopulate NOMT stores
+    // recreated after v1.0.3 bbn tears. Re-insertion is idempotent either
     // way; the cost is re-fetching historical blocks once.
     let mut reset_sync = false;
-    if from < 4
+    if from < 5
         && sled
             .remove(b"nullifier_sync_height")
             .map_err(|e| ZidecarError::Storage(format!("sled: {}", e)))?
