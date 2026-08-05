@@ -122,6 +122,32 @@ async fn run(cli: &Cli) -> Result<(), Error> {
                 let seed = load_seed(cli)?;
                 ops::shield::shield(&seed, &cli.endpoint, *fee, mainnet, cli.json).await
             }
+            TxAction::Migrate {
+                dry_run,
+                fee,
+                memo,
+                max_notes,
+            } => {
+                if cli.watch {
+                    return Err(Error::Other(
+                        "watch-only wallet: the turnstile migration signs orchard \
+                         spends and requires the spending key"
+                            .into(),
+                    ));
+                }
+                let seed = load_seed(cli)?;
+                ops::migrate::migrate(
+                    &seed,
+                    &cli.endpoint,
+                    *fee,
+                    memo.as_deref(),
+                    *max_notes,
+                    *dry_run,
+                    mainnet,
+                    cli.json,
+                )
+                .await
+            }
         },
         Command::Signer { action } => match action {
             SignerAction::ExportNotes {
