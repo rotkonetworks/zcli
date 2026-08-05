@@ -38,6 +38,7 @@ cli = [
     "dep:urlencoding",
     "dep:zync-core",
     "dep:anyhow",
+    "dep:zafu-wasm",
 ]
 
 [dependencies]
@@ -125,6 +126,25 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 rcgen = { version = "0.13", features = ["ring"], optional = true }
 ring = { version = "0.17", optional = true }
 urlencoding = { version = "2", optional = true }
+
+# The NU6.3 / Ironwood transaction builders (turnstile migration, ironwood
+# send) live in the zafu crate. They are `pub fn ... <P: Parameters>` precisely
+# so a NATIVE caller can drive them, and the crate is
+# `crate-type = ["cdylib", "rlib"]` so linking it into a native binary works.
+#
+# `default-features = false` drops the `parallel` feature (rayon +
+# wasm-bindgen-rayon), which is a wasm-only threading shim and has no business
+# in a native build. The `#[wasm_bindgen]`-annotated wrappers still compile
+# natively (wasm-bindgen degrades to plain functions off-wasm); only the
+# generic `*_core` entry points are called from here.
+#
+# Gated behind the `cli` feature so a wasm build of `zecli` itself does not
+# pull the whole proving stack in.
+#
+# NOTE: everything ironwood in that crate is `#[cfg(zcash_unstable = "nu6.3")]`.
+# Build with RUSTFLAGS='--cfg zcash_unstable="nu6.3"' or `zcli tx migrate`
+# compiles to a "not built with NU6.3 support" stub.
+zafu-wasm = { version = "0.2.0", path = "../../crates/zcash-wasm", default-features = false, optional = true }
 
 [build-dependencies]
 tonic-build = "0.11"

@@ -200,6 +200,31 @@ pub enum TxAction {
         #[arg(long)]
         fee: Option<u64>,
     },
+
+    /// NU6.3 turnstile: migrate orchard notes to your own ironwood address
+    ///
+    /// Orchard outputs are consensus-disabled at NU6.3 while orchard spends
+    /// stay valid, so `tx send` cannot run. This spends your orchard notes and
+    /// re-outputs the value (minus fee) to your OWN ironwood address. It moves
+    /// no value to anyone else, but it IS irreversible: the turnstile is
+    /// one-way. Use --dry-run first.
+    Migrate {
+        /// build and prove the transaction but do NOT broadcast it
+        #[arg(long)]
+        dry_run: bool,
+
+        /// fee override in zatoshis (ZIP-317 auto-computed if omitted)
+        #[arg(long)]
+        fee: Option<u64>,
+
+        /// memo text attached to the ironwood output
+        #[arg(long)]
+        memo: Option<String>,
+
+        /// migrate at most this many orchard notes (largest first)
+        #[arg(long)]
+        max_notes: Option<usize>,
+    },
 }
 
 #[derive(Subcommand)]
