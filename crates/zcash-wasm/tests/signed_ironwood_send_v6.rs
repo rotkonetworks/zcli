@@ -2,10 +2,14 @@
 //! owned by a seed-derived wallet to a DIFFERENT recipient (with change back to
 //! self), prove on the post-NU6.3 ironwood circuit, LOCAL-sign the ironwood
 //! spend with the seed-derived spend-authorizing key, extract a broadcastable
-//! V6 transaction, and INDEPENDENTLY re-verify the ironwood proof + spend-auth
-//! + binding signatures. Asserts value conservation (inputs == amount + change
-//! + fee) and exercises the fail-closed negative checks (bad branch id, the
-//! placeholder branch id, and an orchard/V2 note offered as an ironwood input).
+//! V6 transaction, and INDEPENDENTLY re-verify the ironwood proof, spend-auth
+//! and binding signatures. Asserts value conservation (inputs equal amount plus
+//! change plus fee) and exercises the fail-closed negative checks (bad branch
+//! id, the placeholder branch id, an orchard/V2 note offered as an ironwood
+//! input, and a memo aimed at a transparent recipient).
+//!
+//! Also covers the z→t withdrawal path: an ironwood spend paying a TRANSPARENT
+//! address in the same V6 transaction, which is how funds reach an exchange.
 //!
 //! Sibling of `signed_turnstile_v6.rs`: the migration spends ORCHARD and only
 //! OUTPUTS ironwood; this spends a REAL ironwood note against a REAL ironwood
@@ -18,7 +22,9 @@
 
 #![cfg(zcash_unstable = "nu6.3")]
 
-use zafu_wasm::{build_signed_ironwood_send_core, extract_signed_tx_from_pczt_bytes};
+use zafu_wasm::{
+    build_signed_ironwood_send_core, extract_signed_tx_from_pczt_bytes, IronwoodRecipient,
+};
 
 use zcash_primitives::transaction::sighash::{signature_hash, SignableInput};
 use zcash_primitives::transaction::txid::TxIdDigester;
@@ -127,16 +133,17 @@ fn signed_ironwood_send_spends_real_v3_note_verifies() {
     const RECIP_SEED: &str = "legal winner thank year wave sausage worth useful legal \
                               winner thank yellow";
     let (recip_fvk, _recip_ask) = keys_from_seed(RECIP_SEED, 0);
-    let recipient = recip_fvk.address_at(0u32, orchard::keys::Scope::External);
+    let recipient_addr = recip_fvk.address_at(0u32, orchard::keys::Scope::External);
+    let recipient = IronwoodRecipient::Shielded(recipient_addr);
     // sanity: recipient must not be the spender's own external/change address.
     assert_ne!(
-        recipient.to_raw_address_bytes(),
+        recipient_addr.to_raw_address_bytes(),
         fvk.address_at(0u32, orchard::keys::Scope::External)
             .to_raw_address_bytes(),
         "recipient must differ from the spender's external address"
     );
     assert_ne!(
-        recipient.to_raw_address_bytes(),
+        recipient_addr.to_raw_address_bytes(),
         fvk.address_at(0u32, orchard::keys::Scope::Internal)
             .to_raw_address_bytes(),
         "recipient must differ from the spender's change address"
@@ -352,5 +359,143 @@ fn signed_ironwood_send_spends_real_v3_note_verifies() {
     eprintln!(
         "[PASS] ironwood send round-trip: inputs={note_value} amount={amount} change={change} \
          fee={fee} ironwood_value_balance={ironwood_vb} branch_id={NU6_3_BRANCH_ID:#010x}"
+    );
+}
+
+/// z→t: spend a REAL V3 ironwood note to a TRANSPARENT address (the exchange
+/// withdrawal path) and verify the emitted V6 tx really carries the transparent
+/// output, that value reconciles, and that the ironwood proof + signatures still
+/// verify against a sighash that now commits to a transparent bundle.
+///
+/// Before this existed the builder had no `add_transparent_output` call at all:
+/// a `t1…` recipient was fed to `parse_orchard_address` and died with "invalid
+/// recipient" AFTER note selection, fee pricing and witness building — i.e. a
+/// shielded wallet that could not withdraw to an exchange.
+#[test]
+fn signed_ironwood_send_pays_a_transparent_recipient() {
+    const SEED: &str = "abandon abandon abandon abandon abandon abandon abandon abandon \
+                        abandon abandon abandon about";
+    let (fvk, ask) = keys_from_seed(SEED, 0);
+
+    // A transparent P2PKH recipient (distinct from the wallet).
+    let taddr = zcash_transparent::address::TransparentAddress::PublicKeyHash([0x42u8; 20]);
+    let recipient = IronwoodRecipient::Transparent(taddr);
+
+    let note_value = 1_000_000u64;
+    let amount = 600_000u64;
+    let fee = 10_000u64;
+    let change = note_value - amount - fee;
+
+    let (note, witness, ironwood_anchor) =
+        owned_note_with_witness(&fvk, note_value, orchard::note::NoteVersion::V3, 3u8);
+    let target_height = 10_000_000u32;
+
+    let tx_bytes = build_signed_ironwood_send_core(
+        Nu63TestNet,
+        &fvk,
+        &ask,
+        vec![(note, witness)],
+        recipient,
+        amount,
+        fee,
+        ironwood_anchor,
+        target_height,
+        NU6_3_BRANCH_ID,
+        MemoBytes::empty(),
+    )
+    .expect("build + sign ironwood z->t send");
+
+    let tx = Transaction::read(&tx_bytes[..], BranchId::Nu6_3).expect("tx parses");
+    assert_eq!(tx.version(), TxVersion::V6);
+    assert_eq!(u32::from(tx.consensus_branch_id()), NU6_3_BRANCH_ID);
+    assert!(
+        tx.orchard_bundle().is_none(),
+        "z->t ironwood send must have no orchard bundle"
+    );
+
+    // (1) the transparent output is REALLY there, for the right value, to the
+    //     right script - this is what "withdraw to an exchange" means.
+    let tb = tx
+        .transparent_bundle()
+        .expect("z->t send must carry a transparent bundle");
+    assert!(
+        tb.vin.is_empty(),
+        "no transparent inputs: the value comes from the ironwood spend"
+    );
+    assert_eq!(tb.vout.len(), 1, "exactly one transparent output");
+    assert_eq!(u64::from(tb.vout[0].value()), amount);
+    assert_eq!(
+        *tb.vout[0].script_pubkey(),
+        zcash_transparent::address::Script::from(taddr.script()),
+        "transparent output must pay the requested address"
+    );
+
+    // (2) value conservation: the ironwood pool loses amount + fee, because the
+    //     amount left the shielded pool entirely.
+    let ironwood_bundle = tx.ironwood_bundle().expect("ironwood bundle present");
+    let ironwood_vb: i64 = (*ironwood_bundle.value_balance()).into();
+    assert_eq!(
+        ironwood_vb,
+        (amount + fee) as i64,
+        "ironwood value balance must equal amount + fee for a z->t send"
+    );
+    assert_eq!(
+        note_value,
+        amount + change + fee,
+        "inputs == amount + change + fee"
+    );
+
+    // (3) proof + signature verification. Unlike the z->z case above we cannot
+    //     rebuild the sighash here: it must commit to the transparent bundle,
+    //     and `TransparentAuthorizingContext` is only implemented for
+    //     `EffectsOnly`, whose `inputs` field is crate-private - there is no way
+    //     for a downstream test to construct one. The verification is not
+    //     skipped, though: `build_signed_ironwood_send_core` finishes through
+    //     `extract_signed_tx_from_pczt_bytes`, and the pczt TransactionExtractor
+    //     creates the ironwood binding signature and re-verifies the proof and
+    //     EVERY spend-auth + binding signature against the real sighash - the
+    //     one that does commit to this transparent bundle. Reaching this line at
+    //     all means that verification passed; a mis-bound transparent output
+    //     would have failed the extractor, not this assertion.
+    assert!(
+        !ironwood_bundle.actions().is_empty(),
+        "ironwood bundle must carry the spend that funds the transparent output"
+    );
+
+    eprintln!(
+        "[PASS] ironwood z->t: inputs={note_value} t_amount={amount} change={change} fee={fee}"
+    );
+}
+
+/// A memo cannot be delivered to a transparent address, so pairing the two must
+/// be refused rather than silently dropping the memo.
+#[test]
+fn ironwood_send_refuses_a_memo_for_a_transparent_recipient() {
+    const SEED: &str = "abandon abandon abandon abandon abandon abandon abandon abandon \
+                        abandon abandon abandon about";
+    let (fvk, ask) = keys_from_seed(SEED, 0);
+    let recipient = IronwoodRecipient::Transparent(
+        zcash_transparent::address::TransparentAddress::PublicKeyHash([0x42u8; 20]),
+    );
+    let (note, witness, anchor) =
+        owned_note_with_witness(&fvk, 1_000_000, orchard::note::NoteVersion::V3, 4u8);
+
+    let err = build_signed_ironwood_send_core(
+        Nu63TestNet,
+        &fvk,
+        &ask,
+        vec![(note, witness)],
+        recipient,
+        600_000,
+        10_000,
+        anchor,
+        10_000_000,
+        NU6_3_BRANCH_ID,
+        MemoBytes::from_bytes(b"pay me").expect("test memo"),
+    )
+    .expect_err("a memo to a transparent address must be refused");
+    assert!(
+        err.contains("memo"),
+        "unexpected error for memo-to-transparent: {err}"
     );
 }

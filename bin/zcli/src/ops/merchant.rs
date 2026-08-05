@@ -394,7 +394,7 @@ pub async fn process_withdrawals(
         let seed_bytes = *seed.as_bytes();
         let anchor_height = tip;
         // consensus branch id from the LIVE chain (auto-tracks network upgrades)
-        let branch_id = client.resolve_branch_id().await;
+        let branch_id = client.resolve_branch_id().await?;
         let addr = wr.address.clone();
         let amount = wr.amount_zat;
 
@@ -429,7 +429,7 @@ pub async fn process_withdrawals(
                     continue;
                 }
             };
-            let memo = [0u8; 512];
+            let memo = crate::tx::ZIP302_NO_MEMO;
             let z_outputs = vec![(recipient_addr, amount, memo)];
             tokio::task::spawn_blocking(move || {
                 let seed = WalletSeed::from_bytes(seed_bytes);
@@ -556,7 +556,7 @@ async fn forward_single_note(
     let seed_bytes = *seed.as_bytes();
     let anchor_height = tip;
     // consensus branch id from the LIVE chain (auto-tracks network upgrades)
-    let branch_id = client.resolve_branch_id().await;
+    let branch_id = client.resolve_branch_id().await?;
     let fwd = forward_addr.to_string();
 
     let tx_bytes = if is_transparent {
@@ -579,7 +579,7 @@ async fn forward_single_note(
         .map_err(|e| Error::Other(format!("spawn_blocking: {}", e)))??
     } else {
         let recipient_addr = tx::parse_orchard_address(&fwd, mainnet)?;
-        let memo = [0u8; 512];
+        let memo = crate::tx::ZIP302_NO_MEMO;
         let z_outputs = vec![(recipient_addr, send_amount, memo)];
         tokio::task::spawn_blocking(move || {
             let seed = WalletSeed::from_bytes(seed_bytes);

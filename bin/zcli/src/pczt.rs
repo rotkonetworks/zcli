@@ -626,7 +626,12 @@ pub fn build_pczt_and_qr(
         let change_addr = fvk.address_at(0u64, Scope::Internal);
         let ovk = Some(fvk.to_ovk(Scope::Internal));
         builder
-            .add_output(ovk, change_addr, NoteValue::from_raw(change), [0u8; 512])
+            .add_output(
+                ovk,
+                change_addr,
+                NoteValue::from_raw(change),
+                crate::tx::ZIP302_NO_MEMO,
+            )
             .map_err(|e| Error::Transaction(format!("add_output (change): {:?}", e)))?;
     }
 

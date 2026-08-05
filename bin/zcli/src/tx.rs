@@ -157,6 +157,43 @@ fn compute_orchard_digest<A: orchard::bundle::Authorization>(
     Ok(blake2b_256_personal(b"ZTxIdOrchardHash", &orchard_data))
 }
 
+// -- memo encoding (ZIP-302) --
+
+/// The ZIP-302 "no memo" memo: first byte `0xF6`, remaining 511 bytes zero.
+///
+/// This is what `MemoBytes::empty()` encodes and what every other Zcash wallet
+/// puts in an output the user left without a memo. It is NOT the same as 512
+/// zero bytes: `0x00…` decodes as a zero-length *text* memo, a distinguishable
+/// minority encoding, so a wallet emitting it fingerprints itself to the
+/// recipient (and to anyone holding the OVK) on every no-memo output.
+pub const ZIP302_NO_MEMO: [u8; 512] = {
+    let mut m = [0u8; 512];
+    m[0] = 0xF6;
+    m
+};
+
+/// Encode an optional user memo into ZIP-302 512-byte form.
+///
+/// `None` or an empty string yields [`ZIP302_NO_MEMO`], not zeros. A memo that
+/// does not fit is a hard ERROR rather than a silent truncation: truncating
+/// UTF-8 at 512 bytes can split a codepoint, so the recipient would see a
+/// corrupt memo with no indication anything was dropped.
+pub fn encode_memo(memo: Option<&str>) -> Result<[u8; 512], Error> {
+    let Some(text) = memo.filter(|t| !t.is_empty()) else {
+        return Ok(ZIP302_NO_MEMO);
+    };
+    let bytes = text.as_bytes();
+    if bytes.len() > 512 {
+        return Err(Error::Transaction(format!(
+            "memo is {} bytes; the ZIP-302 limit is 512",
+            bytes.len()
+        )));
+    }
+    let mut out = [0u8; 512];
+    out[..bytes.len()].copy_from_slice(bytes);
+    Ok(out)
+}
+
 // -- transparent UTXO for shielding --
 
 #[derive(Debug, Clone)]
@@ -201,6 +238,41 @@ fn guard_orchard_shielding_allowed(
              into the ironwood pool instead (zafu-wasm \
              build_shielding_transaction_ironwood); zcli's own ironwood shielding \
              path is not implemented yet.",
+            activation, anchor_height, branch_id
+        )));
+    }
+    Ok(())
+}
+
+/// FAIL CLOSED: orchard SPENDS are disabled from NU6.3.
+///
+/// The sibling of [`guard_orchard_shielding_allowed`] for the z→z / z→t builder.
+/// Orchard→orchard is consensus-disabled by the one-way turnstile, and
+/// [`build_orchard_spend_tx`] hardcodes the pre-NU6.2 bundle protocol and
+/// proving key, so at/after activation it burns ~2 minutes of Halo 2 proving and
+/// is then rejected by the node. Checked by BOTH the target height and the live
+/// consensus branch id, so neither a stale height nor a node that has already
+/// upgraded can open the door on its own.
+fn guard_orchard_spend_allowed(
+    anchor_height: u32,
+    branch_id: u32,
+    mainnet: bool,
+) -> Result<(), Error> {
+    let activation = if mainnet {
+        NU6_3_ACTIVATION_HEIGHT_MAINNET
+    } else {
+        NU6_3_ACTIVATION_HEIGHT_TESTNET
+    };
+    if anchor_height >= activation || branch_id == NU6_3_BRANCH_ID {
+        return Err(Error::Transaction(format!(
+            "orchard spends are disabled at NU6.3 (activation height {}, chain \
+             height {}, branch id {:#010x}): this builder pins the pre-NU6.2 \
+             orchard bundle protocol, so the transaction would prove for minutes \
+             and then be rejected by the network. Spend from the ironwood pool \
+             instead (zafu-wasm build_signed_ironwood_send / \
+             build_ironwood_send_pczt); orchard funds must first cross the \
+             one-way turnstile. zcli's own ironwood spend path is not \
+             implemented yet.",
             activation, anchor_height, branch_id
         )));
     }
@@ -265,7 +337,7 @@ pub fn build_shielding_tx(
             None,
             *recipient_addr,
             NoteValue::from_raw(shielded_value),
-            [0u8; 512],
+            ZIP302_NO_MEMO,
         )
         .map_err(|e| Error::Transaction(format!("add_output: {:?}", e)))?;
 
@@ -478,6 +550,15 @@ pub fn build_orchard_spend_tx(
     branch_id: u32,
     mainnet: bool,
 ) -> Result<Vec<u8>, Error> {
+    // FAIL CLOSED: never build an orchard SPEND the network rejects post-NU6.3.
+    // Same height+branch-id gate as `build_shielding_tx` - this builder pins
+    // `BundleProtocol::OrchardPreNu6_2` and the pre-NU6.2 proving key while
+    // binding the live branch id, so at the mainnet tip it proves for ~2 minutes
+    // and is then rejected. `zclid`'s merchant payout/sweep loops retry that
+    // forever without ever marking the notes spent, so the gate must be here in
+    // the builder rather than in each caller.
+    guard_orchard_spend_allowed(anchor_height, branch_id, mainnet)?;
+
     let coin_type = if mainnet { 133 } else { 1 };
     let sk = SpendingKey::from_zip32_seed(seed.as_bytes(), coin_type, zip32::AccountId::ZERO)
         .map_err(|_| Error::Transaction("failed to derive spending key".into()))?;
@@ -533,7 +614,7 @@ pub fn build_orchard_spend_tx(
         let change_addr = fvk.address_at(0u64, Scope::Internal);
         let ovk = Some(fvk.to_ovk(Scope::Internal));
         builder
-            .add_output(ovk, change_addr, NoteValue::from_raw(change), [0u8; 512])
+            .add_output(ovk, change_addr, NoteValue::from_raw(change), ZIP302_NO_MEMO)
             .map_err(|e| Error::Transaction(format!("add_output (change): {:?}", e)))?;
     }
 
@@ -777,5 +858,54 @@ mod shielding_gate_tests {
         assert!(guard_orchard_shielding_allowed(1_000_000, NU6_3_BRANCH_ID, true).is_err());
         // testnet activates NU6.3 at height 1 in the pinned fork
         assert!(guard_orchard_shielding_allowed(3_000_000, NU6_2, false).is_err());
+    }
+
+    /// Orchard SPENDS (z→z, z→t: `zcli send`, `zcli merchant`, `zclid`'s payout
+    /// and sweep loops) must be gated exactly like shielding. Before this gate
+    /// `build_orchard_spend_tx` proved at the mainnet tip and broadcast a tx
+    /// zebra rejects, and zclid retried it forever.
+    #[test]
+    fn orchard_spends_are_gated_at_nu6_3() {
+        const NU6_2: u32 = 0x5437_f330;
+        assert!(
+            guard_orchard_spend_allowed(NU6_3_ACTIVATION_HEIGHT_MAINNET - 1, NU6_2, true).is_ok()
+        );
+        assert!(
+            guard_orchard_spend_allowed(NU6_3_ACTIVATION_HEIGHT_MAINNET, NU6_2, true).is_err()
+        );
+        assert!(guard_orchard_spend_allowed(
+            NU6_3_ACTIVATION_HEIGHT_MAINNET + 10_000,
+            NU6_2,
+            true
+        )
+        .is_err());
+        // stale/wrong height but the node already reports NU6.3: refused
+        assert!(guard_orchard_spend_allowed(1_000_000, NU6_3_BRANCH_ID, true).is_err());
+        // testnet activates NU6.3 at height 1 in the pinned fork
+        assert!(guard_orchard_spend_allowed(3_000_000, NU6_2, false).is_err());
+        assert!(guard_orchard_spend_allowed(1, NU6_2, false).is_err());
+    }
+
+    /// The builder itself must refuse, not just the guard - callers
+    /// (ops/send.rs, ops/merchant.rs, zclid/service.rs) do not gate.
+    #[test]
+    fn build_orchard_spend_tx_refuses_post_activation() {
+        let seed = WalletSeed::from_bytes([7u8; 64]);
+        let err = build_orchard_spend_tx(
+            &seed,
+            &[],
+            &[],
+            &[],
+            10_000,
+            Anchor::empty_tree(),
+            NU6_3_ACTIVATION_HEIGHT_MAINNET,
+            NU6_3_BRANCH_ID,
+            true,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("orchard spends are disabled"),
+            "unexpected error: {err}"
+        );
     }
 }
