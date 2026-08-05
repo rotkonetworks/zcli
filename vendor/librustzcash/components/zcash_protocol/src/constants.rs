@@ -44,7 +44,7 @@ pub const V6_TX_VERSION: u32 = 6;
 /// This value is gated by `zcash_unstable = "nu6.3"` or `zcash_unstable = "nu7"`
 /// and is a placeholder until the network upgrade version group ID is chosen.
 #[cfg(any(zcash_unstable = "nu6.3", zcash_unstable = "nu7"))]
-pub const V6_VERSION_GROUP_ID: u32 = 0xFFFFFFFF;
+pub const V6_VERSION_GROUP_ID: u32 = 0xD884B698;
 
 /// This version is used exclusively for in-development transaction
 /// serialization, and will never be active under the consensus rules.
