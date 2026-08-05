@@ -911,9 +911,18 @@ mod shielding_gate_tests {
             true,
         )
         .unwrap_err();
+        // Assert on BEHAVIOUR (it refuses, and names the real reason) rather
+        // than on prose. The previous assertion pinned the exact sentence
+        // "orchard spends are disabled", which was both brittle and untrue —
+        // orchard spends are valid at NU6.3; the turnstile does it on mainnet.
+        let msg = err.to_string();
         assert!(
-            err.to_string().contains("orchard spends are disabled"),
-            "unexpected error: {err}"
+            msg.contains("pre-NU6.2 orchard bundle protocol"),
+            "error should name the real cause (the pinned bundle protocol), got: {err}"
+        );
+        assert!(
+            !msg.contains("orchard spends are disabled"),
+            "error repeats the untrue claim that orchard spends are disabled: {err}"
         );
     }
 }
