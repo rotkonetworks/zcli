@@ -90,7 +90,19 @@ pub async fn shield(
         eprintln!("building transaction (halo 2 proving, this takes a moment)...");
     }
 
-    let tx_bytes = tx::build_shielding_tx(seed, &tx_utxos, &recipient, fee, tip, branch_id, mainnet)?;
+    // Route by pool. At NU6.3 the orchard builder is fail-closed (an orchard
+    // output created now is unspendable without a turnstile migration), so
+    // shielding must target ironwood. Ironwood reuses orchard addresses, so
+    // the same recipient works for both.
+    #[cfg(zcash_unstable = "nu6.3")]
+    let tx_bytes = if branch_id == 0x37a5_165b {
+        tx::build_ironwood_shielding_tx(seed, &tx_utxos, &recipient, fee, tip, branch_id, mainnet)?
+    } else {
+        tx::build_shielding_tx(seed, &tx_utxos, &recipient, fee, tip, branch_id, mainnet)?
+    };
+    #[cfg(not(zcash_unstable = "nu6.3"))]
+    let tx_bytes =
+        tx::build_shielding_tx(seed, &tx_utxos, &recipient, fee, tip, branch_id, mainnet)?;
 
     // broadcast
     let result = client.send_transaction(tx_bytes).await?;

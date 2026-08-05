@@ -288,6 +288,103 @@ fn guard_pre_nu6_2_orchard_builder_allowed(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Shield transparent UTXOs into the IRONWOOD pool (t->z, NU6.3).
+///
+/// The orchard builder below is fail-closed post-activation because an orchard
+/// output created now is unspendable and would need a turnstile migration plus
+/// a second fee to recover. This is the path that is actually correct at NU6.3,
+/// and it calls the same core the extension uses rather than duplicating it.
+///
+/// Recipient is the wallet's own orchard address — ironwood reuses orchard
+/// addresses and note encryption, it only has its own commitment tree.
+#[cfg(zcash_unstable = "nu6.3")]
+#[allow(clippy::too_many_arguments)]
+pub fn build_ironwood_shielding_tx(
+    seed: &WalletSeed,
+    utxos: &[TransparentUtxo],
+    recipient_addr: &orchard::Address,
+    fee: u64,
+    target_height: u32,
+    branch_id: u32,
+    mainnet: bool,
+) -> Result<Vec<u8>, Error> {
+    use zcash_protocol::consensus::{MainNetwork, TestNetwork};
+    use zcash_protocol::memo::MemoBytes;
+
+    // FAIL CLOSED before proving: a V6 ironwood tx is only a valid shape once
+    // NU6.3 is live, and proving first would waste minutes to learn that.
+    if branch_id != NU6_3_BRANCH_ID {
+        return Err(Error::Transaction(format!(
+            "ironwood shielding requires the NU6.3 consensus branch id \
+             {:#010x}, but the node reports {:#010x}",
+            NU6_3_BRANCH_ID, branch_id
+        )));
+    }
+
+    let privkey = crate::address::derive_transparent_key(seed)?;
+    let sk = secp256k1::SecretKey::from_slice(&privkey)
+        .map_err(|e| Error::Transaction(format!("invalid transparent key: {e}")))?;
+
+    // our own p2pkh key hash, used to rebuild each UTXO's script locally
+    let secp = secp256k1::Secp256k1::signing_only();
+    let pubkey = secp256k1::PublicKey::from_secret_key(&secp, &sk);
+    let pubkey_hash: [u8; 20] = {
+        use ripemd::Digest as _;
+        let sha = sha2::Sha256::digest(pubkey.serialize());
+        ripemd::Ripemd160::digest(sha).into()
+    };
+
+    let mut inputs = Vec::with_capacity(utxos.len());
+    for u in utxos {
+        let txid_bytes = hex::decode(&u.txid)
+            .map_err(|e| Error::Transaction(format!("bad utxo txid: {e}")))?;
+        let txid: [u8; 32] = txid_bytes
+            .try_into()
+            .map_err(|_| Error::Transaction("utxo txid must be 32 bytes".into()))?;
+        // Derive the scriptPubKey from OUR OWN key rather than trusting the
+        // bytes the server returned for this UTXO. The signature commits to
+        // this script, so accepting a server-supplied one would let a hostile
+        // endpoint steer what we sign over. Same reason the builder re-derives
+        // rather than echoing.
+        let addr = zcash_transparent::address::TransparentAddress::PublicKeyHash(pubkey_hash);
+        let outpoint = zcash_transparent::bundle::OutPoint::new(txid, u.vout);
+        #[allow(deprecated)]
+        let coin = zcash_transparent::bundle::TxOut {
+            value: zcash_protocol::value::Zatoshis::from_u64(u.value)
+                .map_err(|_| Error::Transaction("utxo value out of range".into()))?,
+            script_pubkey: addr.script().into(),
+        };
+        inputs.push((outpoint, coin));
+    }
+
+    // `mainnet` picks the consensus params TYPE, so the call is duplicated
+    // rather than parameterised; only one arm ever runs.
+    let res = if mainnet {
+        zafu_wasm::build_shielding_transaction_ironwood_core(
+            MainNetwork,
+            &sk,
+            &inputs,
+            *recipient_addr,
+            fee,
+            target_height,
+            branch_id,
+            MemoBytes::empty(),
+        )
+    } else {
+        zafu_wasm::build_shielding_transaction_ironwood_core(
+            TestNetwork,
+            &sk,
+            &inputs,
+            *recipient_addr,
+            fee,
+            target_height,
+            branch_id,
+            MemoBytes::empty(),
+        )
+    };
+    res.map_err(Error::Transaction)
+}
+
 pub fn build_shielding_tx(
     seed: &WalletSeed,
     utxos: &[TransparentUtxo],
