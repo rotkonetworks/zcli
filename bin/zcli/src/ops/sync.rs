@@ -100,17 +100,6 @@ async fn sync_inner(
     } else {
         ORCHARD_ACTIVATION_TESTNET
     };
-    // Ironwood activation must be network-aware for the same reason orchard is:
-    // seeding the tree position is gated on `start > activation`, so a hardcoded
-    // mainnet height (3.4M) is never exceeded on testnet/regtest and the
-    // ironwood position stays 0 while the scan starts mid-chain — every
-    // subsequent note gets an offset position and its witness fails to verify
-    // against the anchor. Caught by a real regtest broadcast (AnchorMismatch).
-    let ironwood_activation = if mainnet {
-        zync_core::IRONWOOD_ACTIVATION_HEIGHT
-    } else {
-        zync_core::IRONWOOD_ACTIVATION_HEIGHT_TESTNET
-    };
 
     let ivk_ext = fvk.to_ivk(Scope::External).prepare();
     let ivk_int = fvk.to_ivk(Scope::Internal).prepare();
@@ -233,16 +222,38 @@ async fn sync_inner(
     // ironwood tree size at start-1 (empty frontier hex → 0).
     let mut ironwood_position = {
         let stored = wallet.ironwood_position()?;
-        if stored == 0 && start > ironwood_activation {
-            match client.get_ironwood_tree_state(start - 1).await {
+        if stored == 0 {
+            // Ask the chain rather than gating on an activation height. The
+            // previous `start > IRONWOOD_ACTIVATION_HEIGHT` gate was wrong on
+            // every non-mainnet chain — regtest activates near height 0, so a
+            // 3.4M (or even testnet 4.1M) threshold is never crossed, the
+            // position stayed 0 while the scan began mid-chain, and every note
+            // got an offset position whose witness failed against the anchor
+            // (AnchorMismatch at broadcast). The tree state answers the real
+            // question directly: an empty/absent ironwood tree yields 0, which
+            // is exactly the right seed pre-activation, so no constant is
+            // needed and the bug class disappears.
+            match client.get_ironwood_tree_state(start.saturating_sub(1)).await {
                 Ok((tree_hex, _)) if !tree_hex.is_empty() => {
                     let tree_bytes = hex::decode(&tree_hex)
                         .map_err(|e| Error::Other(format!("invalid ironwood tree hex: {}", e)))?;
                     let pos = crate::witness::frontier_tree_size(&tree_bytes)?;
+                    if !json && pos > 0 {
+                        eprintln!("initial ironwood position from tree state: {}", pos);
+                    }
                     wallet.set_ironwood_position(pos)?;
                     pos
                 }
-                _ => 0,
+                // Empty tree (pre-activation) → 0 is correct. A failed query is
+                // also 0, but warn: post-activation that would produce offset
+                // positions, which surface as a failed build rather than silently.
+                Ok(_) => 0,
+                Err(e) => {
+                    if !json {
+                        eprintln!("warning: ironwood tree state unavailable ({e}); seeding position 0");
+                    }
+                    0
+                }
             }
         } else {
             stored
