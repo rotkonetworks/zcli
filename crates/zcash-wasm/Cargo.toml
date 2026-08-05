@@ -75,6 +75,14 @@ blake2 = "0.10"
 chacha20poly1305 = "0.10"
 
 # secp256k1 / transparent address support
+# NOTE: secp256k1 is a DIRECT dependency (not just dev) because the ironwood
+# shielding builder feeds `secp256k1::PublicKey` to
+# `Builder::add_transparent_p2pkh_input` and `secp256k1::SecretKey` to
+# `pczt::roles::signer::Signer::sign_transparent`. It must stay pinned to the
+# exact version zcash_transparent/pczt use (0.29) or those types would be from a
+# different crate instance and would not type-check. Test targets also see this
+# dep, so the existing integration tests keep compiling.
+secp256k1 = { version = "0.29", default-features = false, features = ["alloc"] }
 k256 = { version = "0.13", features = ["ecdsa-core", "ecdsa", "sha256"] }
 hmac = "0.12"
 sha2 = "0.10"
@@ -112,11 +120,8 @@ wasm-bindgen-rayon = { version = "1.2", optional = true }
 wasm-bindgen-test = "0.3"
 criterion = "0.5"
 rand = "0.8"
-# Used by integration tests (tests/) to build small synthetic PCZTs for
-# redactor/round-trip property assertions. We deliberately re-use the same
-# zcash_transparent the lib pulls (no alias) — Cargo refuses two names for
-# the same crate, and pczt's signer/transparent code expects this exact rev.
-secp256k1 = { version = "0.29", default-features = false, features = ["alloc"] }
+# secp256k1 moved to [dependencies] (the ironwood shielding builder needs it at
+# lib level); test targets inherit it, so tests/ still `use secp256k1::…`.
 
 [[bench]]
 name = "scanning"

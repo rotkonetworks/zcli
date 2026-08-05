@@ -1565,6 +1565,82 @@ mod tests {
         assert!(!validate_seed_phrase("invalid seed phrase"));
     }
 
+    /// The shielding pool gate uses plain constants (it must also exist in
+    /// artifacts built without the nu6.3 cfg). Assert they stay in sync with
+    /// the pinned librustzcash fork's real activation heights and branch id.
+    #[cfg(zcash_unstable = "nu6.3")]
+    #[test]
+    fn nu6_3_activation_matches_fork() {
+        use zcash_protocol::consensus::{
+            BranchId, MainNetwork, NetworkUpgrade, Parameters, TestNetwork,
+        };
+        assert_eq!(
+            MainNetwork.activation_height(NetworkUpgrade::Nu6_3).map(u32::from),
+            Some(NU6_3_ACTIVATION_HEIGHT_MAINNET)
+        );
+        assert_eq!(
+            TestNetwork.activation_height(NetworkUpgrade::Nu6_3).map(u32::from),
+            Some(NU6_3_ACTIVATION_HEIGHT_TESTNET)
+        );
+        assert_eq!(u32::from(BranchId::Nu6_3), NU6_3_BRANCH_ID);
+    }
+
+    /// Orchard shielding must be unreachable at/after NU6.3 - by height AND by
+    /// consensus branch id - and reachable before it.
+    #[test]
+    fn orchard_shielding_is_gated_at_nu6_3() {
+        // mainnet, one block before activation: allowed (with a pre-NU6.3 id).
+        assert!(guard_orchard_shielding_allowed(
+            NU6_3_ACTIVATION_HEIGHT_MAINNET - 1,
+            true,
+            Some("5437f330")
+        )
+        .is_ok());
+        // exactly at activation: refused.
+        assert!(guard_orchard_shielding_allowed(
+            NU6_3_ACTIVATION_HEIGHT_MAINNET,
+            true,
+            Some("5437f330")
+        )
+        .is_err());
+        // after activation: refused.
+        assert!(
+            guard_orchard_shielding_allowed(NU6_3_ACTIVATION_HEIGHT_MAINNET + 10_000, true, None)
+                .is_err()
+        );
+        // pre-activation height but the chain reports the NU6.3 branch id (a
+        // stale/wrong height must not open the door): refused.
+        assert!(guard_orchard_shielding_allowed(1_000_000, true, Some("37a5165b")).is_err());
+        // testnet activates NU6.3 at height 1 in the pinned fork, so orchard
+        // shielding is refused there for any realistic height.
+        assert!(guard_orchard_shielding_allowed(1, false, None).is_err());
+        assert!(guard_orchard_shielding_allowed(3_000_000, false, None).is_err());
+    }
+
+    #[test]
+    fn shielding_pool_resolves_from_height() {
+        assert_eq!(
+            shielding_pool_for_height(NU6_3_ACTIVATION_HEIGHT_MAINNET - 1, true),
+            "orchard"
+        );
+        assert_eq!(
+            shielding_pool_for_height(NU6_3_ACTIVATION_HEIGHT_MAINNET, true),
+            "ironwood"
+        );
+        assert_eq!(shielding_pool_for_height(3_500_000, true), "ironwood");
+        assert_eq!(shielding_pool_for_height(3_000_000, false), "ironwood");
+    }
+
+    #[test]
+    fn zip317_shielding_fee_sums_across_bundles() {
+        // n transparent inputs + one padded 2-action ironwood bundle.
+        assert_eq!(zip317_shielding_fee(1), 15_000);
+        assert_eq!(zip317_shielding_fee(2), 20_000);
+        assert_eq!(zip317_shielding_fee(5), 35_000);
+        // never below the ZIP-317 grace floor
+        assert_eq!(zip317_shielding_fee(0), 10_000);
+    }
+
     #[test]
     fn test_parse_branch_id() {
         // NU6.2 / NU6.3, lowercase (the on-wire form from GetLightdInfo)
@@ -6135,7 +6211,99 @@ pub(crate) fn blake2b_256_personal(personalization: &[u8; 16], data: &[u8]) -> [
     out
 }
 
+// ============================================================================
+// Shielding (transparent -> shielded) pool selection and the post-NU6.3 gate
+// ============================================================================
+
+/// Real NU6.3 / Ironwood consensus branch id (from the live zebra). Mirrors
+/// `BranchId::Nu6_3` in the pinned fork.
+pub const NU6_3_BRANCH_ID: u32 = 0x37a5_165b;
+
+/// NU6.3 / Ironwood activation heights, mirroring the pinned librustzcash fork
+/// (`components/zcash_protocol/src/consensus.rs`): mainnet 3_428_143 (live
+/// zebra), testnet 1 (the fork activates NU6.3 from genesis on test/regtest so
+/// it can be exercised). Duplicated as plain constants so the gate below also
+/// exists in artifacts built WITHOUT the `zcash_unstable="nu6.3"` cfg, where
+/// `NetworkUpgrade::Nu6_3` does not exist. `nu6_3_activation_matches_fork`
+/// (below, cfg-gated) asserts they stay in sync.
+pub const NU6_3_ACTIVATION_HEIGHT_MAINNET: u32 = 3_428_143;
+/// See [`NU6_3_ACTIVATION_HEIGHT_MAINNET`].
+pub const NU6_3_ACTIVATION_HEIGHT_TESTNET: u32 = 1;
+
+/// NU6.3 activation height for the selected network.
+pub fn nu6_3_activation_height(mainnet: bool) -> u32 {
+    if mainnet {
+        NU6_3_ACTIVATION_HEIGHT_MAINNET
+    } else {
+        NU6_3_ACTIVATION_HEIGHT_TESTNET
+    }
+}
+
+/// Which shielded pool a transparent→shielded transaction must target at
+/// `target_height`: `"ironwood"` at/after NU6.3 activation, `"orchard"` before.
+///
+/// Callers that do not pick a pool explicitly MUST resolve it through this
+/// function (or through [`build_shielding_transaction_auto`], which calls it)
+/// rather than defaulting to orchard: from NU6.3 onwards an orchard output is
+/// a stranded note (orchard sends are consensus-disabled, so the funds can only
+/// be moved again by a turnstile migration that costs a second fee).
+#[wasm_bindgen]
+pub fn shielding_pool_for_height(target_height: u32, mainnet: bool) -> String {
+    if target_height >= nu6_3_activation_height(mainnet) {
+        "ironwood".to_string()
+    } else {
+        "orchard".to_string()
+    }
+}
+
+/// FAIL-CLOSED gate for the legacy ORCHARD shielding builders.
+///
+/// Shielding into orchard at/after NU6.3 produces funds the user cannot spend:
+/// orchard→orchard sends are consensus-disabled by the one-way turnstile, so
+/// those notes are stranded until a turnstile migration (a second fee, a second
+/// wait) moves them to ironwood. Offering that path silently costs the user
+/// money, so it is refused outright — by height AND by consensus branch id, so
+/// neither omission nor a stale/defaulted height can reach it.
+///
+/// Returns `String` errors (not `JsError`) so native unit tests can call it -
+/// `JsError::new` panics off-wasm.
+fn guard_orchard_shielding_allowed(
+    anchor_height: u32,
+    mainnet: bool,
+    branch_id_hex: Option<&str>,
+) -> Result<(), String> {
+    let activation = nu6_3_activation_height(mainnet);
+    if anchor_height >= activation {
+        return Err(format!(
+            "orchard shielding is disabled at NU6.3 (activation height {}, target \
+             height {}): an orchard output created now is unspendable and would \
+             need a turnstile migration - use build_shielding_transaction_ironwood \
+             (or build_shielding_transaction_auto, which picks the pool from the \
+             chain height) to shield into the ironwood pool instead",
+            activation, anchor_height
+        ));
+    }
+    // Independent of the height the caller supplied: if the live consensus
+    // branch id is already NU6.3, the chain has activated and orchard outputs
+    // are disabled no matter what height was passed in.
+    if parse_branch_id(branch_id_hex.unwrap_or("")) == Some(NU6_3_BRANCH_ID) {
+        return Err("orchard shielding is disabled at NU6.3: the supplied consensus branch \
+             id is 0x37a5165b (Ironwood is active), so an orchard output would be \
+             unspendable and would need a turnstile migration - use \
+             build_shielding_transaction_ironwood (or \
+             build_shielding_transaction_auto) to shield into the ironwood pool"
+            .to_string());
+    }
+    Ok(())
+}
+
 /// Build a shielding transaction (transparent → orchard) with real Halo 2 proofs.
+///
+/// PRE-NU6.3 ONLY. [`guard_orchard_shielding_allowed`] refuses to build at or
+/// after the NU6.3 activation height (or when the supplied consensus branch id
+/// is NU6.3), because orchard outputs are consensus-disabled from that point
+/// and the resulting notes would be stranded. Use
+/// [`build_shielding_transaction_ironwood`] there.
 ///
 /// Spends transparent P2PKH UTXOs and creates an orchard output to the sender's
 /// own shielded address. Uses `orchard::builder::Builder` for proper action
@@ -6173,6 +6341,10 @@ pub fn build_shielding_transaction(
     use orchard::value::NoteValue;
     use rand::rngs::OsRng;
     use zcash_protocol::value::ZatBalance;
+
+    // FAIL CLOSED: never build an orchard shielding tx at/after NU6.3.
+    guard_orchard_shielding_allowed(anchor_height, mainnet, branch_id_hex.as_deref())
+        .map_err(|e| JsError::new(&e))?;
 
     // --- parse recipient orchard address ---
     let orchard_addr = parse_orchard_address(recipient, mainnet)
@@ -6444,6 +6616,535 @@ pub fn build_shielding_transaction(
     Ok(hex_encode(&tx_bytes))
 }
 
+// ============================================================================
+// IRONWOOD shielding builder (transparent -> ironwood, NU6.3 / V6)
+//
+// The post-NU6.3 replacement for `build_shielding_transaction`: orchard outputs
+// are consensus-disabled from the Ironwood activation, so this is the ONLY way
+// to shield transparent funds into a spendable shielded note on mainnet today.
+//
+// Shape: transparent P2PKH inputs only (no shielded spends) + exactly one
+// ironwood output carrying `total_in - fee`. No transparent change output (the
+// legacy orchard builder has none either - the caller picks UTXOs such that the
+// remainder is acceptable to shield).
+// ============================================================================
+
+/// ZIP-317 marginal fee, in zatoshi per logical action.
+pub const ZIP317_MARGINAL_FEE: u64 = 5_000;
+/// ZIP-317 grace actions (the fee never drops below `MARGINAL_FEE *
+/// GRACE_ACTIONS`).
+pub const ZIP317_GRACE_ACTIONS: u64 = 2;
+/// Every non-empty shielded bundle is padded to at least this many actions by
+/// the builder, and ZIP-317 counts the PADDED actions.
+pub const SHIELDED_BUNDLE_MIN_ACTIONS: u64 = 2;
+
+/// ZIP-317 conventional fee for a transparent→ironwood shielding transaction
+/// with `n_transparent_inputs` P2PKH inputs.
+///
+/// logical_actions = ceil(tx_in_total_size / 150)          (transparent side)
+///                 + max(sapling spends, sapling outputs)  (0 here)
+///                 + orchard actions + ironwood actions    (padded, see below)
+///
+/// A P2PKH `tx_in` serializes to 148 bytes (32 txid + 4 index + 1 script len +
+/// 107 script_sig + 4 sequence), so `ceil(148n/150) == n` for every n ≥ 0.
+/// The transparent OUTPUT side contributes nothing (there are none), and the
+/// shielding tx has NO orchard bundle - only the ironwood one, which is padded
+/// to 2 actions.
+///
+/// Logical actions SUM ACROSS BUNDLES. Under-fee'ing here is what zebra rejects
+/// with "Unpaid actions is higher than the limit"; the builder therefore also
+/// RE-CHECKS the fee against the actual padded action counts of the built PCZT
+/// (see `build_shielding_transaction_ironwood_core`) rather than trusting this
+/// estimate alone.
+pub fn zip317_shielding_fee(n_transparent_inputs: usize) -> u64 {
+    let logical = n_transparent_inputs as u64 + SHIELDED_BUNDLE_MIN_ACTIONS;
+    ZIP317_MARGINAL_FEE * logical.max(ZIP317_GRACE_ACTIONS)
+}
+
+/// ZIP-317 conventional fee for an ironwood shielding transaction with `n`
+/// transparent P2PKH inputs (JS-visible; see [`zip317_shielding_fee`]).
+#[wasm_bindgen]
+pub fn zip317_shielding_fee_zat(n_transparent_inputs: u32) -> u64 {
+    zip317_shielding_fee(n_transparent_inputs as usize)
+}
+
+/// Testable core of the ironwood shielding builder, generic over consensus
+/// params so native tests can drive it with an NU6.3-active network.
+///
+/// Every input must be a P2PKH output locked to `sk`'s pubkey (all inputs are
+/// signed with that one key, which is what the wallet's shielding flow does).
+/// Returns raw broadcast-ready V6 transaction bytes.
+///
+/// Pipeline: `Builder` (V6) → `Creator` → `IoFinalizer` → `Prover` (ironwood,
+/// post-NU6.3 circuit) → `Signer::sign_transparent` (once per input) →
+/// `SpendFinalizer` (assembles the script_sigs) → `TransactionExtractor`
+/// (creates the ironwood binding signature and re-verifies proof + every
+/// signature). The last two steps are reached through
+/// `extract_signed_tx_from_pczt_bytes`, mirroring the other hot paths.
+///
+/// FAIL CLOSED on the branch id, identical to `build_ironwood_send_pczt_proven`:
+/// the tx must bind NU6.3 (0x37a5165b), `expected_branch_id` must equal it, and
+/// the 0xffff_ffff placeholder is refused outright.
+#[cfg(zcash_unstable = "nu6.3")]
+#[allow(clippy::too_many_arguments)]
+pub fn build_shielding_transaction_ironwood_core<P>(
+    params: P,
+    sk: &secp256k1::SecretKey,
+    inputs: &[(
+        zcash_transparent::bundle::OutPoint,
+        zcash_transparent::bundle::TxOut,
+    )],
+    recipient: orchard::Address,
+    fee: u64,
+    target_height: u32,
+    expected_branch_id: u32,
+    memo: zcash_protocol::memo::MemoBytes,
+) -> Result<Vec<u8>, String>
+where
+    P: zcash_protocol::consensus::Parameters,
+{
+    use orchard::circuit::OrchardCircuitVersion;
+    use rand::rngs::OsRng;
+    use zcash_primitives::transaction::builder::{BuildConfig, Builder};
+    use zcash_primitives::transaction::fees::fixed::FeeRule as FixedFeeRule;
+    use zcash_primitives::transaction::TxVersion;
+    use zcash_protocol::consensus::{BlockHeight, BranchId};
+    use zcash_protocol::value::Zatoshis;
+    use zcash_transparent::address::TransparentAddress;
+
+    type FeError = <FixedFeeRule as zcash_primitives::transaction::fees::FeeRule>::Error;
+
+    // --- FAIL-CLOSED branch-id guard (money path) ---------------------------
+    // Same structure as `build_ironwood_send_pczt_proven`: refuse the NU6.3
+    // placeholder, require the real NU6.3 branch id, and require it to match
+    // what the wallet read from GetLightdInfo. A shielding tx that binds the
+    // wrong branch is rejected by the network AFTER the user has already
+    // published their UTXOs, so this never silently proceeds.
+    const NU6_3_PLACEHOLDER_BRANCH_ID: u32 = 0xffff_ffff;
+    if expected_branch_id == NU6_3_PLACEHOLDER_BRANCH_ID {
+        return Err(format!(
+            "refusing to build ironwood shielding: expected_branch_id is the NU6.3 \
+             placeholder {:#010x}; the wallet must pass the real consensus branch \
+             id read from GetLightdInfo",
+            NU6_3_PLACEHOLDER_BRANCH_ID
+        ));
+    }
+    let bound_branch_id: u32 =
+        BranchId::for_height(&params, BlockHeight::from(target_height)).into();
+    if bound_branch_id == NU6_3_PLACEHOLDER_BRANCH_ID {
+        return Err(format!(
+            "refusing to build ironwood shielding: the network params would bind \
+             the NU6.3 placeholder branch id {:#010x} at height {} - the \
+             librustzcash fork has not been patched with the real NU6.3 branch id",
+            NU6_3_PLACEHOLDER_BRANCH_ID, target_height
+        ));
+    }
+    if bound_branch_id != NU6_3_BRANCH_ID {
+        return Err(format!(
+            "refusing to build ironwood shielding: branch id that would bind at \
+             height {} is {:#010x} but ironwood outputs require the NU6.3 branch \
+             id {:#010x} (NU6.3 not active at this height)",
+            target_height, bound_branch_id, NU6_3_BRANCH_ID
+        ));
+    }
+    if bound_branch_id != expected_branch_id {
+        return Err(format!(
+            "refusing to build ironwood shielding: branch id that would bind at \
+             height {} is {:#010x} but the wallet expected {:#010x} (branch-id \
+             mismatch)",
+            target_height, bound_branch_id, expected_branch_id
+        ));
+    }
+
+    if inputs.is_empty() {
+        return Err("ironwood shielding requires at least one transparent input".into());
+    }
+
+    // --- transparent key / script consistency -------------------------------
+    let secp = secp256k1::Secp256k1::signing_only();
+    let pubkey = sk.public_key(&secp);
+    let expected_script: zcash_transparent::address::Script =
+        TransparentAddress::from_pubkey(&pubkey).script().into();
+    for (i, (_, coin)) in inputs.iter().enumerate() {
+        if coin.script_pubkey() != &expected_script {
+            return Err(format!(
+                "input {} is not a P2PKH output locked to the supplied signing key",
+                i
+            ));
+        }
+    }
+
+    // --- value / ZIP-317 fee ------------------------------------------------
+    let mut total_in: u64 = 0;
+    for (_, coin) in inputs {
+        total_in = total_in
+            .checked_add(coin.value().into_u64())
+            .ok_or_else(|| "transparent input total overflows u64".to_string())?;
+    }
+    let required_fee = zip317_shielding_fee(inputs.len());
+    if fee < required_fee {
+        return Err(format!(
+            "fee {} zat is below the ZIP-317 conventional fee {} zat for {} \
+             transparent input(s) + a padded 2-action ironwood bundle; the network \
+             would reject the tx with \"Unpaid actions is higher than the limit\"",
+            fee,
+            required_fee,
+            inputs.len()
+        ));
+    }
+    if total_in <= fee {
+        return Err("insufficient funds: transparent inputs do not cover the fee".into());
+    }
+    let shielded_value = total_in - fee;
+
+    // --- build ---------------------------------------------------------------
+    // orchard_anchor: None. Determined empirically (see the native test
+    // `shielding_ironwood_v6.rs`): a shielding tx has NO orchard spends and NO
+    // orchard outputs, so the fork's BuildConfig never needs an orchard bundle
+    // builder and passing None produces a V6 tx with an EMPTY orchard bundle.
+    // This matches `build_ironwood_send_pczt_proven` (also orchard-free) and
+    // differs from the turnstile migration, which passes Some(anchor) precisely
+    // because it SPENDS orchard notes.
+    //
+    // ironwood_anchor: Some(Anchor::empty_tree()). The pinned fork only creates
+    // the ironwood bundle builder when this is Some, and the bundle here is
+    // output-only, so the anchor only ever anchors the fabricated dummy spends
+    // (which the circuit exempts from the merkle-path check). Empty tree is the
+    // established output-only convention in this codebase and in the zigner
+    // valar spike producer.
+    let mut builder = Builder::new(
+        params,
+        BlockHeight::from(target_height),
+        BuildConfig::Standard {
+            sapling_anchor: None,
+            orchard_anchor: None,
+            ironwood_anchor: Some(orchard::Anchor::empty_tree()),
+        },
+    );
+    builder
+        .propose_version::<FeError>(TxVersion::V6)
+        .map_err(|e| format!("propose_version(V6): {:?}", e))?;
+    for (outpoint, coin) in inputs {
+        builder
+            .add_transparent_p2pkh_input(pubkey, outpoint.clone(), coin.clone())
+            .map_err(|e| format!("add_transparent_p2pkh_input: {:?}", e))?;
+    }
+    let shielded_zat =
+        Zatoshis::from_u64(shielded_value).map_err(|_| "invalid shielded amount".to_string())?;
+    // No ovk: shielding is a transparent→shielded move, and the sender's own
+    // outgoing-view recovery of it adds nothing (the source is public anyway),
+    // while an ovk-encrypted output ciphertext is one more thing to leak.
+    builder
+        .add_ironwood_output::<FeError>(None, recipient, shielded_zat, memo)
+        .map_err(|e| format!("add_ironwood_output: {:?}", e))?;
+
+    let fee_zat = Zatoshis::from_u64(fee).map_err(|_| "invalid fee amount".to_string())?;
+    let fee_rule = FixedFeeRule::non_standard(fee_zat);
+    let parts = builder
+        .build_for_pczt(OsRng, &fee_rule)
+        .map_err(|e| format!("build_for_pczt: {:?}", e))?
+        .pczt_parts;
+
+    let pczt = pczt::roles::creator::Creator::build_from_parts(parts)
+        .ok_or_else(|| "Creator::build_from_parts: incompatible tx version".to_string())?;
+
+    // IoFinalizer binds the shared sighash and spend-auth signs every dummy
+    // ironwood spend (the whole output-only bundle), so no shielded signing is
+    // left for us - only the transparent inputs.
+    let pczt = pczt::roles::io_finalizer::IoFinalizer::new(pczt)
+        .finalize_io()
+        .map_err(|e| format!("finalize_io: {:?}", e))?;
+
+    // --- re-check the fee against the ACTUAL padded action counts -----------
+    // ZIP-317 logical actions sum across bundles and count the padding the
+    // builder added, so verify against what was really built rather than
+    // trusting the pre-build estimate. Done after IoFinalizer (padding is
+    // final) and before the expensive proof.
+    {
+        let orchard_actions = pczt.orchard().actions().len() as u64;
+        let ironwood_actions = pczt.ironwood().actions().len() as u64;
+        let tin = pczt.transparent().inputs().len() as u64;
+        let logical = tin + orchard_actions + ironwood_actions;
+        let actual_required = ZIP317_MARGINAL_FEE * logical.max(ZIP317_GRACE_ACTIONS);
+        if fee < actual_required {
+            return Err(format!(
+                "fee {} zat is below the ZIP-317 conventional fee {} zat for the tx \
+                 as actually built ({} transparent input(s) + {} orchard + {} \
+                 ironwood action(s) = {} logical actions)",
+                fee, actual_required, tin, orchard_actions, ironwood_actions, logical
+            ));
+        }
+    }
+
+    // Only the ironwood bundle exists, so prove just that one, on the
+    // post-NU6.3 circuit.
+    let pczt = with_proving_key_for(OrchardCircuitVersion::PostNu6_3, |pk| {
+        pczt::roles::prover::Prover::new(pczt)
+            .create_ironwood_proof(pk)
+            .map(|p| p.finish())
+    })
+    .map_err(|e| format!("create ironwood proof: {:?}", e))?;
+
+    // --- sign every transparent input ---------------------------------------
+    // All inputs are locked to the same key (checked above), so index order is
+    // irrelevant to correctness: we sign all of them.
+    let n_inputs = pczt.transparent().inputs().len();
+    let mut signer =
+        pczt::roles::signer::Signer::new(pczt).map_err(|e| format!("signer init: {:?}", e))?;
+    for i in 0..n_inputs {
+        signer
+            .sign_transparent(i, sk)
+            .map_err(|e| format!("sign_transparent[{}]: {:?}", i, e))?;
+    }
+    let pczt = signer.finish();
+
+    // SpendFinalizer combines the partial transparent signatures into
+    // script_sigs; without it the extractor has no spend authorization.
+    let pczt = pczt::roles::spend_finalizer::SpendFinalizer::new(pczt)
+        .finalize_spends()
+        .map_err(|e| format!("finalize_spends: {:?}", e))?;
+
+    // Extract the broadcast-ready V6 tx (creates the ironwood binding signature
+    // and verifies the proof + every signature against the sighash).
+    extract_signed_tx_from_pczt_bytes(&pczt.serialize())
+}
+
+/// Build a signed transparent→IRONWOOD shielding transaction (NU6.3 / V6).
+///
+/// The post-NU6.3 replacement for [`build_shielding_transaction`]: it spends the
+/// selected transparent P2PKH UTXOs and creates ONE ironwood output for
+/// `total_selected - fee` to `recipient`. Returns hex-encoded raw transaction
+/// bytes, the same shape the legacy orchard builder returns, so the caller
+/// broadcasts it unchanged.
+///
+/// # Arguments
+/// * `utxos_json` - JSON array of `{txid, vout, value, script}` (same shape as
+///   the orchard builder; `txid` is display/big-endian hex, `script` is the
+///   P2PKH scriptPubKey hex)
+/// * `privkey_hex` - hex-encoded 32-byte secp256k1 private key owning every UTXO
+/// * `recipient` - unified address whose orchard-format receiver is the ironwood
+///   recipient
+/// * `amount` - UTXO-selection target (selection stops once `amount + fee` is
+///   covered); the ironwood output always carries ALL selected value minus fee
+/// * `fee` - fee in zatoshi; MUST be at least the ZIP-317 conventional fee
+///   ([`zip317_shielding_fee`]) or the build is refused
+/// * `target_height` - build height (must be at/after NU6.3 activation)
+/// * `expected_branch_id` - branch id the wallet read from GetLightdInfo; must
+///   be 0x37a5165b
+/// * `mainnet` - true for mainnet, false for testnet
+/// * `memo_hex` - optional memo (hex, ≤512 bytes); empty memo when omitted
+#[cfg(zcash_unstable = "nu6.3")]
+#[wasm_bindgen]
+#[allow(clippy::too_many_arguments)]
+pub fn build_shielding_transaction_ironwood(
+    utxos_json: &str,
+    privkey_hex: &str,
+    recipient: &str,
+    amount: u64,
+    fee: u64,
+    target_height: u32,
+    expected_branch_id: u32,
+    mainnet: bool,
+    memo_hex: Option<String>,
+) -> Result<String, JsError> {
+    use zcash_protocol::consensus::{BlockHeight, MainNetwork, TestNetwork};
+    use zcash_protocol::memo::MemoBytes;
+    use zcash_protocol::value::Zatoshis;
+    use zcash_transparent::bundle::{OutPoint, TxOut};
+
+    // --- recipient (orchard-format receiver = ironwood recipient) ---
+    let recipient_addr = parse_orchard_address(recipient, mainnet)
+        .map_err(|e| JsError::new(&format!("invalid recipient: {}", e)))?;
+
+    // --- transparent signing key ---
+    let privkey_bytes =
+        hex_decode(privkey_hex).ok_or_else(|| JsError::new("invalid privkey hex"))?;
+    if privkey_bytes.len() != 32 {
+        return Err(JsError::new("privkey must be 32 bytes"));
+    }
+    let sk = secp256k1::SecretKey::from_slice(&privkey_bytes)
+        .map_err(|e| JsError::new(&format!("invalid signing key: {}", e)))?;
+    let secp = secp256k1::Secp256k1::signing_only();
+    let pubkey = sk.public_key(&secp);
+    // The coin's scriptPubKey is DERIVED from the key we will sign with, never
+    // taken from the (untrusted) JSON; the JSON script is only cross-checked so
+    // a non-P2PKH / foreign UTXO fails loudly instead of at signing time.
+    let our_script = make_p2pkh_script(&hash160(&pubkey.serialize()));
+    let coin_script: zcash_transparent::address::Script =
+        zcash_transparent::address::TransparentAddress::from_pubkey(&pubkey)
+            .script()
+            .into();
+
+    // --- parse and select UTXOs (largest first, same policy as the orchard
+    // builder so the two paths select identically) ---
+    let mut utxos: Vec<TransparentUtxo> = serde_json::from_str(utxos_json)
+        .map_err(|e| JsError::new(&format!("invalid utxos json: {}", e)))?;
+    utxos.sort_by_key(|u| std::cmp::Reverse(u.value));
+
+    let target = amount
+        .checked_add(fee)
+        .ok_or_else(|| JsError::new("amount + fee overflow"))?;
+
+    let mut selected: Vec<TransparentUtxo> = Vec::new();
+    let mut total_in: u64 = 0;
+    for utxo in &utxos {
+        selected.push(utxo.clone());
+        total_in += utxo.value;
+        if total_in >= target {
+            break;
+        }
+    }
+    if total_in < target {
+        return Err(JsError::new(&format!(
+            "insufficient funds: have {} zat, need {} zat",
+            total_in, target
+        )));
+    }
+
+    let mut inputs: Vec<(OutPoint, TxOut)> = Vec::with_capacity(selected.len());
+    for utxo in &selected {
+        let txid_be = hex_decode(&utxo.txid).ok_or_else(|| JsError::new("invalid utxo txid hex"))?;
+        if txid_be.len() != 32 {
+            return Err(JsError::new("txid must be 32 bytes"));
+        }
+        // OutPoint stores the txid in internal (little-endian) byte order,
+        // which is the reverse of the displayed hex.
+        let mut txid_le = [0u8; 32];
+        txid_le.copy_from_slice(&txid_be);
+        txid_le.reverse();
+
+        let script_bytes =
+            hex_decode(&utxo.script).ok_or_else(|| JsError::new("invalid utxo script hex"))?;
+        if script_bytes != our_script {
+            return Err(JsError::new(&format!(
+                "utxo {}:{} is not a P2PKH output locked to the supplied key",
+                utxo.txid, utxo.vout
+            )));
+        }
+        let value =
+            Zatoshis::from_u64(utxo.value).map_err(|_| JsError::new("utxo value out of range"))?;
+        inputs.push((
+            OutPoint::new(txid_le, utxo.vout),
+            TxOut::new(value, coin_script.clone()),
+        ));
+    }
+
+    let memo_arr = decode_memo_hex(memo_hex.as_deref())?;
+    let memo =
+        MemoBytes::from_bytes(&memo_arr).map_err(|e| JsError::new(&format!("memo: {:?}", e)))?;
+
+    let tx_bytes = if mainnet {
+        build_shielding_transaction_ironwood_core(
+            Nu63Activated {
+                inner: MainNetwork,
+                nu6_3_from: BlockHeight::from(target_height),
+            },
+            &sk,
+            &inputs,
+            recipient_addr,
+            fee,
+            target_height,
+            expected_branch_id,
+            memo,
+        )
+    } else {
+        build_shielding_transaction_ironwood_core(
+            Nu63Activated {
+                inner: TestNetwork,
+                nu6_3_from: BlockHeight::from(target_height),
+            },
+            &sk,
+            &inputs,
+            recipient_addr,
+            fee,
+            target_height,
+            expected_branch_id,
+            memo,
+        )
+    }
+    .map_err(|e| JsError::new(&e))?;
+
+    Ok(hex_encode(&tx_bytes))
+}
+
+/// Stub keeping the JS API surface stable when the artifact is built without
+/// the NU6.3 cfg: the export exists but always errors.
+#[cfg(not(zcash_unstable = "nu6.3"))]
+#[wasm_bindgen]
+#[allow(clippy::too_many_arguments)]
+pub fn build_shielding_transaction_ironwood(
+    _utxos_json: &str,
+    _privkey_hex: &str,
+    _recipient: &str,
+    _amount: u64,
+    _fee: u64,
+    _target_height: u32,
+    _expected_branch_id: u32,
+    _mainnet: bool,
+    _memo_hex: Option<String>,
+) -> Result<String, JsError> {
+    Err(JsError::new(
+        "this artifact was built without NU6.3 / ironwood support (missing zcash_unstable cfg)",
+    ))
+}
+
+/// Build a shielding transaction into whichever pool is CORRECT at
+/// `target_height`, so a caller never has to (and never can) pick the stranded
+/// one by omission.
+///
+/// At/after NU6.3 activation this is [`build_shielding_transaction_ironwood`]
+/// (and `branch_id_hex` must be the live NU6.3 branch id - there is no
+/// fallback); before it, the legacy orchard builder. Returns hex-encoded raw
+/// transaction bytes either way.
+#[wasm_bindgen]
+#[allow(clippy::too_many_arguments)]
+pub fn build_shielding_transaction_auto(
+    utxos_json: &str,
+    privkey_hex: &str,
+    recipient: &str,
+    amount: u64,
+    fee: u64,
+    target_height: u32,
+    mainnet: bool,
+    // Live consensus branch id from GetLightdInfo.consensusBranchId.
+    branch_id_hex: Option<String>,
+    memo_hex: Option<String>,
+) -> Result<String, JsError> {
+    if target_height >= nu6_3_activation_height(mainnet) {
+        // Ironwood regime: the branch id is load-bearing, so require it rather
+        // than falling back to a compiled-in default.
+        let branch_id = parse_branch_id(branch_id_hex.as_deref().unwrap_or("")).ok_or_else(|| {
+            JsError::new(
+                "ironwood shielding requires the live consensus branch id \
+                 (GetLightdInfo.consensusBranchId); none was supplied",
+            )
+        })?;
+        build_shielding_transaction_ironwood(
+            utxos_json,
+            privkey_hex,
+            recipient,
+            amount,
+            fee,
+            target_height,
+            branch_id,
+            mainnet,
+            memo_hex,
+        )
+    } else {
+        let _ = memo_hex; // the legacy orchard builder takes no memo
+        build_shielding_transaction(
+            utxos_json,
+            privkey_hex,
+            recipient,
+            amount,
+            fee,
+            target_height,
+            mainnet,
+            branch_id_hex,
+        )
+    }
+}
+
 /// Derive compressed public key from UFVK transparent component for a given address index.
 ///
 /// Uses BIP44 external path: `m/44'/133'/account'/0/<address_index>`
@@ -6482,6 +7183,8 @@ pub fn transparent_pubkey_from_ufvk(ufvk_str: &str, address_index: u32) -> Resul
 /// Same as `build_shielding_transaction` but does NOT sign the transparent inputs.
 /// Instead, returns the per-input sighashes so an external signer (e.g. Zigner) can sign them.
 ///
+/// PRE-NU6.3 ONLY - same fail-closed gate as `build_shielding_transaction`.
+///
 /// Returns JSON: `{ sighashes: [hex], unsigned_tx_hex: hex, summary: string }`
 #[wasm_bindgen]
 pub fn build_unsigned_shielding_transaction(
@@ -6501,6 +7204,10 @@ pub fn build_unsigned_shielding_transaction(
     use orchard::value::NoteValue;
     use rand::rngs::OsRng;
     use zcash_protocol::value::ZatBalance;
+
+    // FAIL CLOSED: never build an orchard shielding tx at/after NU6.3.
+    guard_orchard_shielding_allowed(anchor_height, mainnet, branch_id_hex.as_deref())
+        .map_err(|e| JsError::new(&e))?;
 
     // --- parse recipient orchard address ---
     let orchard_addr = parse_orchard_address(recipient, mainnet)

@@ -169,6 +169,44 @@ pub struct TransparentUtxo {
 
 // -- shielding transaction (t→z) --
 
+/// Real NU6.3 / Ironwood consensus branch id, and the activation heights of the
+/// pinned librustzcash fork (mainnet 3_428_143; test/regtest activates at 1).
+const NU6_3_BRANCH_ID: u32 = 0x37a5_165b;
+const NU6_3_ACTIVATION_HEIGHT_MAINNET: u32 = 3_428_143;
+const NU6_3_ACTIVATION_HEIGHT_TESTNET: u32 = 1;
+
+/// FAIL CLOSED: orchard shielding is disabled from NU6.3.
+///
+/// Orchard→orchard sends are consensus-disabled by the one-way turnstile, so an
+/// orchard output created at/after activation is a stranded note: recovering it
+/// costs a turnstile migration and a second fee. Refusing is strictly better for
+/// the user than silently building it. Checked by BOTH the target height and the
+/// live consensus branch id, so neither a stale height nor a missing one can
+/// reach the orchard builder.
+fn guard_orchard_shielding_allowed(
+    anchor_height: u32,
+    branch_id: u32,
+    mainnet: bool,
+) -> Result<(), Error> {
+    let activation = if mainnet {
+        NU6_3_ACTIVATION_HEIGHT_MAINNET
+    } else {
+        NU6_3_ACTIVATION_HEIGHT_TESTNET
+    };
+    if anchor_height >= activation || branch_id == NU6_3_BRANCH_ID {
+        return Err(Error::Transaction(format!(
+            "orchard shielding is disabled at NU6.3 (activation height {}, chain \
+             height {}, branch id {:#010x}): an orchard output created now would be \
+             unspendable and would need a turnstile migration to recover. Shield \
+             into the ironwood pool instead (zafu-wasm \
+             build_shielding_transaction_ironwood); zcli's own ironwood shielding \
+             path is not implemented yet.",
+            activation, anchor_height, branch_id
+        )));
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn build_shielding_tx(
     seed: &WalletSeed,
@@ -177,8 +215,11 @@ pub fn build_shielding_tx(
     fee: u64,
     anchor_height: u32,
     branch_id: u32,
-    _mainnet: bool,
+    mainnet: bool,
 ) -> Result<Vec<u8>, Error> {
+    // FAIL CLOSED: never build an orchard shielding tx at/after NU6.3.
+    guard_orchard_shielding_allowed(anchor_height, branch_id, mainnet)?;
+
     // derive transparent signing key at m/44'/133'/0'/0/0
     let privkey = crate::address::derive_transparent_key(seed)?;
     let signing_key = SigningKey::from_slice(&privkey)
@@ -704,4 +745,37 @@ pub fn self_shielding_address(seed: &WalletSeed, mainnet: bool) -> Result<orchar
         .map_err(|_| Error::Address("failed to derive spending key".into()))?;
     let fvk = FullViewingKey::from(&sk);
     Ok(fvk.address_at(0u64, Scope::External))
+}
+
+#[cfg(test)]
+mod shielding_gate_tests {
+    use super::*;
+
+    /// Orchard shielding must be unreachable at/after NU6.3, by height AND by
+    /// the live consensus branch id.
+    #[test]
+    fn orchard_shielding_is_gated_at_nu6_3() {
+        const NU6_2: u32 = 0x5437_f330;
+        // one block before activation, pre-NU6.3 branch: still allowed
+        assert!(guard_orchard_shielding_allowed(
+            NU6_3_ACTIVATION_HEIGHT_MAINNET - 1,
+            NU6_2,
+            true
+        )
+        .is_ok());
+        // at and after activation: refused
+        assert!(
+            guard_orchard_shielding_allowed(NU6_3_ACTIVATION_HEIGHT_MAINNET, NU6_2, true).is_err()
+        );
+        assert!(guard_orchard_shielding_allowed(
+            NU6_3_ACTIVATION_HEIGHT_MAINNET + 10_000,
+            NU6_2,
+            true
+        )
+        .is_err());
+        // stale height but the chain reports NU6.3: refused
+        assert!(guard_orchard_shielding_allowed(1_000_000, NU6_3_BRANCH_ID, true).is_err());
+        // testnet activates NU6.3 at height 1 in the pinned fork
+        assert!(guard_orchard_shielding_allowed(3_000_000, NU6_2, false).is_err());
+    }
 }
