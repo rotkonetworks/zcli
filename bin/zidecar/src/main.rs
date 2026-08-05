@@ -131,6 +131,10 @@ async fn main() -> Result<()> {
 
     // Build the base server stack with Tower hygiene that applies to every
     // surface (lwd + any opt-in extras): tracing, timeout, concurrency limit.
+    // Populated when the zidecar-rpc surface opens NOMT; the shutdown drain
+    // below flushes + fsyncs it so a restart can't leave a torn bbn store.
+    let mut drain_storage: Option<(Arc<storage::Storage>, String)> = None;
+
     let mut builder = Server::builder()
         .accept_http1(true)
         // must run before tonic-web decodes frames: rewrites empty-body
@@ -171,6 +175,8 @@ async fn main() -> Result<()> {
         let storage = storage::Storage::open(&args.db_path)?;
         info!("opened database at {}", args.db_path);
         let storage_arc = Arc::new(storage);
+        // Hand the drain path a handle so SIGTERM can flush NOMT before exit.
+        drain_storage = Some((storage_arc.clone(), args.db_path.clone()));
 
         info!("initialized ligerito prover configs");
         info!("  tip proof: 2^{} config", zync_core::TIP_TRACE_LOG_SIZE);
@@ -271,9 +277,52 @@ async fn main() -> Result<()> {
     info!("lightwalletd CompactTxStreamer compatibility: enabled");
 
     let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
-    router.serve_with_incoming(incoming).await?;
+
+    // Graceful shutdown. Without this, `systemctl restart` (SIGTERM) killed the
+    // process mid-commit and NOMT v1.0.3's un-fsynced post-meta page writes were
+    // lost, leaving a torn bbn store that fails to reopen ("failed to
+    // reconstruct btree from bbn store file") — which cost us the whole
+    // nullifier/commitment index three times. Storage::flush + fsync_nomt_files
+    // existed for exactly this and had no caller.
+    router
+        .serve_with_incoming_shutdown(incoming, shutdown_signal())
+        .await?;
+
+    if let Some((storage, db_path)) = drain_storage {
+        info!("draining NOMT before exit...");
+        if let Err(e) = storage.flush() {
+            warn!("NOMT flush failed on shutdown: {}", e);
+        }
+        if let Err(e) = storage::Storage::fsync_nomt_files(&db_path) {
+            warn!("NOMT fsync failed on shutdown: {}", e);
+        }
+        info!("NOMT drained");
+    }
 
     Ok(())
+}
+
+/// Resolve on SIGTERM (systemd stop/restart) or SIGINT (Ctrl-C).
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut term = match signal(SignalKind::terminate()) {
+            Ok(s) => s,
+            Err(e) => {
+                warn!("cannot install SIGTERM handler: {}", e);
+                return std::future::pending().await;
+            }
+        };
+        tokio::select! {
+            _ = term.recv() => info!("SIGTERM received, shutting down"),
+            _ = tokio::signal::ctrl_c() => info!("SIGINT received, shutting down"),
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
 }
 
 // generated proto modules

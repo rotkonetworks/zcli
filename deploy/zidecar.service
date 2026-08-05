@@ -14,6 +14,11 @@ ExecStart=/usr/local/bin/zidecar \
     --mempool-cache-ttl 3
 Restart=on-failure
 RestartSec=5
+# NOMT drain on stop: zidecar flushes + fsyncs the merkle store after the
+# gRPC server winds down. Killing it mid-drain leaves a torn bbn store that
+# cannot be reopened, costing a full nullifier/commitment resync.
+KillSignal=SIGTERM
+TimeoutStopSec=120
 
 # filesystem
 NoNewPrivileges=true
