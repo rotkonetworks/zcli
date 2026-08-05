@@ -107,3 +107,50 @@ fn zip317_transparent_input_actions_are_size_derived() {
     assert_eq!(logical(75), 74, "75 inputs occupy 74 logical actions, not 75");
     assert_eq!(logical(76), 75);
 }
+
+/// A turnstile migration must classify as a SEND, never as an incoming payment.
+///
+/// The migration pays the wallet's OWN address, so if the scanner failed to
+/// mark that output as change, history would render a 10 ZEC migration as
+/// "received +10.00 ZEC" — inventing an incoming payment out of the user's own
+/// funds. A review flagged this as unresolved because `is_change` is decided
+/// inside the wasm scanner; this pins the two facts that decide it.
+///
+/// 1. the destination uses INTERNAL scope (lib.rs, build_turnstile_*: the
+///    recipient is `fvk.address_at(0, Scope::Internal)`)
+/// 2. the scanner tries EXTERNAL first and only sets `is_change = true` on the
+///    internal match
+///
+/// Together those mean a migration output is always change. If either changes,
+/// this test fails before the UI starts inventing income.
+#[cfg(zcash_unstable = "nu6.3")]
+#[test]
+fn turnstile_self_output_is_internal_scope_hence_change() {
+    use orchard::keys::{FullViewingKey, Scope, SpendingKey};
+
+    let sk = SpendingKey::from_bytes([7u8; 32]).unwrap();
+    let fvk = FullViewingKey::from(&sk);
+
+    let internal = fvk.address_at(0u32, Scope::Internal);
+    let external = fvk.address_at(0u32, Scope::External);
+
+    // The two scopes must be distinguishable, otherwise "is this change?"
+    // cannot be answered by which ivk decrypted it.
+    assert_ne!(
+        internal.to_raw_address_bytes(),
+        external.to_raw_address_bytes(),
+        "internal and external scope produced the same address; change \
+         detection relies on these differing"
+    );
+
+    // And the internal address must NOT be decryptable as an external receive,
+    // which is what would make a migration look like incoming money.
+    let ivk_external = fvk.to_ivk(Scope::External);
+    let ivk_internal = fvk.to_ivk(Scope::Internal);
+    assert_ne!(
+        ivk_external.to_bytes(),
+        ivk_internal.to_bytes(),
+        "external and internal ivks match; every change note would be \
+         reported as an incoming payment"
+    );
+}
