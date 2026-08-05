@@ -156,7 +156,73 @@ pub struct SendResult {
 
 impl SendResult {
     pub fn is_success(&self) -> bool {
-        self.error_code == 0
+        self.error_code == 0 || rejection_means_already_accepted(&self.error_message)
+    }
+}
+
+/// A rejection that means "we already have this transaction" is a SUCCESS.
+///
+/// Resubmitting is normal: a broadcast whose response was lost, a retry after a
+/// timeout, or a transaction that propagated back from a peer all produce a
+/// rejection on the second submit. Reporting that as a failure is actively
+/// harmful — it tells the user their payment did not go out when it did, and
+/// the obvious response to that is to send again.
+///
+/// Observed live against zebra during NU6.3 testing: a shielding transaction
+/// that zebra had accepted and was actively gossiping came back as
+/// "transaction dropped because it is already queued for download", and we
+/// surfaced it as a hard broadcast failure.
+///
+/// List follows vizor-wallet's `send_rejection_is_already_accepted`, plus
+/// zebra's queue wording which the others do not cover.
+pub fn rejection_means_already_accepted(message: &str) -> bool {
+    let m = message.to_ascii_lowercase();
+    m.contains("transaction was committed to the best chain")
+        || m.contains("already in mempool")
+        || m.contains("already have transaction")
+        || m.contains("transaction already in block chain")
+        || m.contains("transaction is already in state")
+        || m.contains("transaction already exists")
+        || m.contains("txn-already-known")
+        || m.contains("txn-already-in-mempool")
+        || m.contains("already known")
+        // zebra: the tx is in its download/verify queue, i.e. accepted
+        || m.contains("already queued for download")
+}
+
+#[cfg(test)]
+mod already_accepted_tests {
+    use super::rejection_means_already_accepted;
+
+    #[test]
+    fn zebra_queue_wording_counts_as_accepted() {
+        assert!(rejection_means_already_accepted(
+            "transaction dropped because it is already queued for download"
+        ));
+    }
+
+    #[test]
+    fn common_node_wordings_count_as_accepted() {
+        for m in [
+            "transaction was committed to the best chain",
+            "already in mempool",
+            "txn-already-known",
+            "Transaction Already Exists",
+        ] {
+            assert!(rejection_means_already_accepted(m), "{m}");
+        }
+    }
+
+    #[test]
+    fn real_failures_are_not_swallowed() {
+        for m in [
+            "bad-tx-consensus-branch-id-mismatch",
+            "insufficient fee",
+            "Unpaid actions is higher than the limit",
+            "expected TX_V6_VERSION_GROUP_ID",
+        ] {
+            assert!(!rejection_means_already_accepted(m), "{m}");
+        }
     }
 }
 
