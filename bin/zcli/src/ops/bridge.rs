@@ -100,19 +100,15 @@ pub async fn bridge_spend(
     let spends: Vec<(orchard::Note, orchard::tree::MerklePath)> =
         orchard_notes.into_iter().zip(paths).collect();
 
-    let mut memo_bytes = [0u8; 512];
-    if let Some(text) = memo {
-        let bytes = text.as_bytes();
-        let len = bytes.len().min(512);
-        memo_bytes[..len].copy_from_slice(&bytes[..len]);
-    }
+    // ZIP-302 memo: no memo is the canonical 0xF6 marker, not 512 zero bytes.
+    let memo_bytes = crate::tx::encode_memo(memo)?;
 
     eprintln!("building PCZT (halo 2 proving)...");
 
     let fvk_bytes = fvk.to_bytes();
     let anchor_height = tip;
     // consensus branch id from the LIVE chain (auto-tracks network upgrades)
-    let branch_id = client.resolve_branch_id().await;
+    let branch_id = client.resolve_branch_id().await?;
 
     let pczt_state = tokio::task::spawn_blocking(move || {
         let (_, state) = pczt::build_pczt_and_qr(

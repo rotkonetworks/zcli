@@ -136,7 +136,7 @@ async fn send_to_transparent(
     let seed_bytes = *seed.as_bytes();
     let anchor_height = tip;
     // consensus branch id from the LIVE chain (auto-tracks network upgrades)
-    let branch_id = client.resolve_branch_id().await;
+    let branch_id = client.resolve_branch_id().await?;
     let tx_bytes = tokio::task::spawn_blocking(move || {
         let seed = crate::key::WalletSeed::from_bytes(seed_bytes);
         tx::build_orchard_spend_tx(
@@ -282,13 +282,9 @@ async fn send_to_shielded(
     let spends: Vec<(orchard::Note, orchard::tree::MerklePath)> =
         orchard_notes.into_iter().zip(paths).collect();
 
-    // build memo (512 bytes, text padded with zeros)
-    let mut memo_bytes = [0u8; 512];
-    if let Some(text) = memo {
-        let bytes = text.as_bytes();
-        let len = bytes.len().min(512);
-        memo_bytes[..len].copy_from_slice(&bytes[..len]);
-    }
+    // ZIP-302 memo: no memo is the canonical 0xF6 marker, NOT 512 zero bytes
+    // (which decodes as an empty TEXT memo and fingerprints the wallet).
+    let memo_bytes = tx::encode_memo(memo)?;
 
     let z_outputs = vec![(recipient_addr, amount, memo_bytes)];
 
@@ -299,7 +295,7 @@ async fn send_to_shielded(
     let seed_bytes = *seed.as_bytes();
     let anchor_height = tip;
     // consensus branch id from the LIVE chain (auto-tracks network upgrades)
-    let branch_id = client.resolve_branch_id().await;
+    let branch_id = client.resolve_branch_id().await?;
     let tx_bytes = tokio::task::spawn_blocking(move || {
         let seed = crate::key::WalletSeed::from_bytes(seed_bytes);
         tx::build_orchard_spend_tx(

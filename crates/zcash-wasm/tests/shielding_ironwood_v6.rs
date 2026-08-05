@@ -70,7 +70,9 @@ fn recipient() -> orchard::Address {
 /// ZIP-317: 5_000 zat per logical action, summed across bundles, with each
 /// non-empty shielded bundle padded to 2 actions. A shielding tx has n
 /// transparent inputs, no transparent outputs, no orchard bundle and one padded
-/// (2-action) ironwood bundle => 5_000 * (n + 2).
+/// (2-action) ironwood bundle => 5_000 * (ceil(148n/150) + 2).
+///
+/// `ceil(148n/150)` equals n only up to n = 74; it is NOT the input count.
 #[test]
 fn zip317_shielding_fee_matches_the_padded_action_count() {
     assert_eq!(zip317_shielding_fee(1), 15_000);
@@ -80,6 +82,9 @@ fn zip317_shielding_fee_matches_the_padded_action_count() {
     assert_eq!(zip317_shielding_fee(2), 20_000);
     assert_eq!(zip317_shielding_fee(3), 25_000);
     assert_eq!(zip317_shielding_fee(10), 60_000);
+    // The transparent byte total crosses a 150-byte boundary at n = 75:
+    // 148*75 == 11_100 == 74*150, so 74 transparent actions, not 75.
+    assert_eq!(zip317_shielding_fee(75), 380_000);
 }
 
 #[test]

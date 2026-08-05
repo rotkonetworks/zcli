@@ -35,15 +35,16 @@ extern "C" {
     #[wasm_bindgen(js_namespace = console)]
     fn log(s: &str);
     #[wasm_bindgen(js_namespace = console, js_name = warn)]
+    #[allow(dead_code)]
     fn console_warn(s: &str);
 }
 
-/// Compiled-in consensus branch id (NU6.2, mainnet). Used ONLY as a fallback
-/// when the caller does not supply a live branch id (e.g. passes `None`/empty).
-/// The real value must come from the chain via `GetLightdInfo.consensusBranchId`.
-/// After NU6.3 activates (mainnet height 3428143, ~2026-07-28) this fallback is
-/// WRONG for new transactions — callers MUST pass the live branch id.
-pub const FALLBACK_BRANCH_ID: u32 = 0x5437F330;
+/// NU6.2 consensus branch id. Kept as a NAMED CONSTANT for tests and for
+/// recognising historical transactions ONLY — it is deliberately *not* a
+/// fallback for transaction construction. Defaulting to it silently produced
+/// txs whose ZIP-244 sighash bound the wrong branch after NU6.3 activated; see
+/// [`resolve_branch_id`], which fails closed instead.
+pub const NU6_2_BRANCH_ID: u32 = 0x5437F330;
 
 /// Parse the consensus branch id as returned by lightwalletd/zidecar
 /// `GetLightdInfo.consensusBranchId` — a lowercase (per spec) hex string such as
@@ -62,29 +63,52 @@ fn parse_branch_id(s: &str) -> Option<u32> {
     u32::from_str_radix(t, 16).ok()
 }
 
-/// Resolve the consensus branch id to use for a transaction, given the optional
-/// hex string a `#[wasm_bindgen]` builder received from JS.
+/// Resolve the consensus branch id to bind into a transaction, given the
+/// optional hex string a `#[wasm_bindgen]` builder received from JS.
 ///
 /// The value is expected to be `LightdInfo.consensusBranchId` (a hex string like
 /// `"5437f330"`), passed through verbatim so the browser never has to convert it.
-/// If the caller passes `None`, an empty/whitespace string, or an unparseable
-/// value, we emit a `console.warn` and fall back to [`FALLBACK_BRANCH_ID`]
-/// (NU6.2) so behaviour is unchanged pre-NU6.3 — but that fallback is INCORRECT
-/// once NU6.3 activates and the resulting tx will be rejected with an
-/// "incorrect consensus branch id" error. Always pass the live value.
-fn resolve_branch_id(branch_id_hex: Option<&str>) -> u32 {
-    match branch_id_hex.and_then(parse_branch_id) {
-        Some(id) => id,
-        None => {
-            console_warn(&format!(
-                "[zafu-wasm] no/invalid consensus branch id supplied (got {:?}); \
-                 falling back to compiled-in 0x{:08X} (NU6.2). This is WRONG after \
-                 NU6.3 activation — pass LightdInfo.consensusBranchId.",
-                branch_id_hex, FALLBACK_BRANCH_ID
-            ));
-            FALLBACK_BRANCH_ID
-        }
+///
+/// FAIL-CLOSED: there is no fallback. Silently defaulting to the compiled-in
+/// NU6.2 value produced a transaction whose ZIP-244 sighash binds the WRONG
+/// branch id once NU6.3 activated — the wallet paid for a Halo 2 proof, the
+/// node rejected the broadcast with "incorrect consensus branch id", and the
+/// only trace was a `console.warn` nobody reads. A wallet that cannot learn the
+/// live branch id must refuse to build, not guess. Callers on a *non*
+/// transaction-constructing path (nothing binds the value) should not use this.
+fn resolve_branch_id(branch_id_hex: Option<&str>) -> Result<u32, String> {
+    branch_id_hex.and_then(parse_branch_id).ok_or_else(|| {
+        format!(
+            "no usable consensus branch id (got {:?}): refusing to build a \
+             transaction that would bind a guessed branch id. Pass \
+             LightdInfo.consensusBranchId from the endpoint verbatim (e.g. \
+             \"37a5165b\" for NU6.3); an empty string means the GetLightdInfo \
+             call failed and the send must be retried, not defaulted.",
+            branch_id_hex
+        )
+    })
+}
+
+/// FAIL-CLOSED gate for the legacy ORCHARD *spend* builders (the z→z / z→t
+/// paths that build a V5 orchard bundle with `BundleProtocol::OrchardPreNu6_2`).
+///
+/// Orchard→orchard spends are consensus-disabled by the NU6.3 one-way
+/// turnstile. Building one at/after activation burns two minutes of Halo 2
+/// proving and is then rejected by the node, so refuse before proving. Checked
+/// on the live branch id, which is the only NU6.3 signal these builders receive
+/// (they take no target height).
+fn guard_orchard_spend_allowed(branch_id: u32) -> Result<(), String> {
+    if branch_id == NU6_3_BRANCH_ID {
+        return Err(format!(
+            "orchard spends are disabled at NU6.3 (live consensus branch id \
+             {:#010x}): an orchard bundle built now is rejected by the network. \
+             Spend from the ironwood pool instead (build_signed_ironwood_send / \
+             build_ironwood_send_pczt); orchard funds must first cross the \
+             one-way turnstile (build_signed_turnstile_migration).",
+            branch_id
+        ));
     }
+    Ok(())
 }
 
 /// Native fallback: wasm-bindgen imports panic when called off-wasm, and the
@@ -95,6 +119,7 @@ fn log(s: &str) {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+#[allow(dead_code)]
 fn console_warn(s: &str) {
     eprintln!("{}", s);
 }
@@ -724,31 +749,45 @@ fn hex_decode(s: &str) -> Option<Vec<u8>> {
         .collect()
 }
 
+/// The ZIP-302 "no memo" memo: first byte `0xF6`, remaining 511 bytes zero.
+///
+/// This is what `MemoBytes::empty()` encodes, and what every other Zcash wallet
+/// (zcashd, zecwallet, Zashi, ywallet) puts in an output the user left without
+/// a memo. It is NOT the same as 512 zero bytes: `0x00…` decodes as a
+/// zero-length *text* memo, which is a distinguishable minority encoding. A
+/// recipient (or anyone with the OVK, or a future memo-bundle observer) can
+/// therefore tell "made by zafu" from "made by anything else" on every single
+/// no-memo output. Emitting the canonical marker removes that fingerprint.
+pub const ZIP302_NO_MEMO: [u8; 512] = {
+    let mut m = [0u8; 512];
+    m[0] = 0xF6;
+    m
+};
+
 /// Decode an optional hex-encoded memo into a 512-byte array.
 ///
 /// Zcash memos are exactly 512 bytes (ZIP-302). If `hex` is None or empty,
-/// returns all zeros (the canonical "no memo" value). If provided, the hex
-/// string is decoded and right-padded with zeros to fill 512 bytes.
+/// returns [`ZIP302_NO_MEMO`] — the canonical `0xF6` no-memo encoding, which is
+/// what the rest of the ecosystem emits — NOT 512 zero bytes. If provided, the
+/// hex string is decoded and right-padded with zeros to fill 512 bytes.
 ///
 /// This is the only place memo bytes enter the transaction builder.
 /// The caller is responsible for the memo content — this function is
 /// encoding-agnostic (works for UTF-8 text, zafu structured memos, or
 /// any other 512-byte payload).
 fn decode_memo_hex(hex: Option<&str>) -> Result<[u8; 512], JsError> {
+    let Some(h) = hex.filter(|h| !h.is_empty()) else {
+        return Ok(ZIP302_NO_MEMO);
+    };
     let mut memo = [0u8; 512];
-    if let Some(h) = hex {
-        if !h.is_empty() {
-            let bytes =
-                hex_decode(h).ok_or_else(|| JsError::new("memo_hex: invalid hex encoding"))?;
-            if bytes.len() > 512 {
-                return Err(JsError::new(&format!(
-                    "memo_hex: {} bytes exceeds 512-byte limit",
-                    bytes.len()
-                )));
-            }
-            memo[..bytes.len()].copy_from_slice(&bytes);
-        }
+    let bytes = hex_decode(h).ok_or_else(|| JsError::new("memo_hex: invalid hex encoding"))?;
+    if bytes.len() > 512 {
+        return Err(JsError::new(&format!(
+            "memo_hex: {} bytes exceeds 512-byte limit",
+            bytes.len()
+        )));
     }
+    memo[..bytes.len()].copy_from_slice(&bytes);
     Ok(memo)
 }
 
@@ -1641,6 +1680,31 @@ mod tests {
         assert_eq!(zip317_shielding_fee(0), 10_000);
     }
 
+    /// The transparent side is ceil(148n/150), which stops equalling `n` at
+    /// n = 75 (148*75 == 11_100 == 74*150 exactly). Treating it as `n` overpaid
+    /// one marginal fee per ~75 inputs and fingerprinted the wallet.
+    #[test]
+    fn zip317_transparent_actions_is_ceil_148n_over_150() {
+        assert_eq!(zip317_transparent_actions(0), 0);
+        // below the crossover the naive count happens to be right
+        for n in 1..=74usize {
+            assert_eq!(zip317_transparent_actions(n), n as u64, "n = {}", n);
+        }
+        // exact multiple of 150 bytes: 74 actions, not 75
+        assert_eq!(zip317_transparent_actions(75), 74);
+        assert_eq!(zip317_transparent_actions(76), 75);
+        assert_eq!(zip317_transparent_actions(150), 148);
+        // ... and the fee follows: 76 logical actions, not 77
+        assert_eq!(zip317_shielding_fee(75), 380_000);
+        assert_eq!(zip317_shielding_fee(74), 380_000);
+        // strictly monotonic non-decreasing, never above the naive estimate
+        for n in 0..300usize {
+            let a = zip317_transparent_actions(n);
+            assert!(a <= n as u64, "n = {}", n);
+            assert!(a >= zip317_transparent_actions(n.saturating_sub(1)));
+        }
+    }
+
     #[test]
     fn test_parse_branch_id() {
         // NU6.2 / NU6.3, lowercase (the on-wire form from GetLightdInfo)
@@ -1661,19 +1725,35 @@ mod tests {
         assert_eq!(parse_branch_id("137a5165b"), None);
     }
 
-    // NOTE: resolve_branch_id's fallback path calls console.warn (a JS import
-    // that only links under wasm32), so native `cargo test` can only exercise
-    // the success path here. The fallback→FALLBACK_BRANCH_ID behaviour is
-    // covered by test_parse_branch_id returning None on bad input.
     #[test]
     fn test_resolve_branch_id_valid() {
         assert_eq!(
-            resolve_branch_id(Some("37a5165b")),
+            resolve_branch_id(Some("37a5165b")).unwrap(),
             0x37A5165B,
             "NU6.3 hex string must resolve to the NU6.3 branch id"
         );
-        assert_eq!(resolve_branch_id(Some("0x5437f330")), 0x5437F330);
-        assert_eq!(FALLBACK_BRANCH_ID, 0x5437F330);
+        assert_eq!(resolve_branch_id(Some("0x5437f330")).unwrap(), 0x5437F330);
+    }
+
+    /// FAIL-CLOSED: a missing/empty/garbage branch id must be an ERROR, never a
+    /// silent fallback to the compiled-in NU6.2 value. `fetchBranchIdHex` in the
+    /// extension returns `""` whenever the GetLightdInfo RPC fails, so the
+    /// empty-string case is the one that actually reaches production.
+    #[test]
+    fn test_resolve_branch_id_fails_closed() {
+        assert!(resolve_branch_id(None).is_err());
+        assert!(resolve_branch_id(Some("")).is_err());
+        assert!(resolve_branch_id(Some("   ")).is_err());
+        assert!(resolve_branch_id(Some("not-hex")).is_err());
+        // out of u32 range: must not silently truncate into a valid-looking id
+        assert!(resolve_branch_id(Some("137a5165b")).is_err());
+    }
+
+    /// Orchard spends are consensus-disabled once the live branch id is NU6.3.
+    #[test]
+    fn test_guard_orchard_spend_allowed() {
+        assert!(guard_orchard_spend_allowed(0x5437_F330).is_ok());
+        assert!(guard_orchard_spend_allowed(NU6_3_BRANCH_ID).is_err());
     }
 
     #[test]
@@ -1930,8 +2010,8 @@ pub fn build_unsigned_transaction(
     mainnet: bool,
     memo_hex: Option<String>,
     // Live consensus branch id from GetLightdInfo.consensusBranchId, e.g.
-    // "5437f330" (NU6.2) or "37a5165b" (NU6.3). Pass verbatim; None/empty falls
-    // back to the compiled-in NU6.2 value (wrong post-NU6.3).
+    // "5437f330" (NU6.2) or "37a5165b" (NU6.3). Pass verbatim. REQUIRED: a
+    // missing/unparseable value is a hard error, never a silent default.
     branch_id_hex: Option<String>,
 ) -> Result<JsValue, JsError> {
     use group::ff::PrimeField;
@@ -1943,6 +2023,14 @@ pub fn build_unsigned_transaction(
     use zcash_keys::keys::UnifiedFullViewingKey;
     use zcash_protocol::consensus::{MainNetwork, TestNetwork};
     use zcash_protocol::value::ZatBalance;
+
+    // FAIL-CLOSED, BEFORE any proving: the ZIP-244 sighash below binds this
+    // branch id, so resolve it (no fallback) and refuse outright once NU6.3 has
+    // disabled orchard spends. Doing it here rather than at the sighash keeps
+    // the user from paying ~2 minutes of Halo 2 proving for a tx the network
+    // will reject.
+    let branch_id: u32 = resolve_branch_id(branch_id_hex.as_deref()).map_err(|e| JsError::new(&e))?;
+    guard_orchard_spend_allowed(branch_id).map_err(|e| JsError::new(&e))?;
 
     // --- derive FVK from UFVK ---
     let ufvk = if mainnet {
@@ -2214,7 +2302,8 @@ pub fn build_unsigned_transaction(
                 Some(ovk_internal.clone()),
                 change_addr,
                 NoteValue::from_raw(change),
-                [0u8; 512],
+                // canonical ZIP-302 no-memo, not 512 zero bytes (see ZIP302_NO_MEMO)
+                ZIP302_NO_MEMO,
             )
             .map_err(|e| JsError::new(&format!("add_output (change): {:?}", e)))?;
     }
@@ -2235,8 +2324,7 @@ pub fn build_unsigned_transaction(
         .map_err(|e| JsError::new(&format!("extract_effects: {}", e)))?
         .ok_or_else(|| JsError::new("extract_effects produced no bundle"))?;
 
-    // --- compute ZIP-244 sighash ---
-    let branch_id: u32 = resolve_branch_id(branch_id_hex.as_deref());
+    // --- compute ZIP-244 sighash (branch id resolved+gated at entry) ---
     let expiry_height: u32 = 0;
 
     let header_data = {
@@ -4159,6 +4247,56 @@ fn prepare_ironwood_spends(
     Ok(prepared)
 }
 
+/// Where the value of an ironwood send goes.
+///
+/// The ironwood pool shares the orchard address encoding, so a unified/orchard
+/// recipient is an `orchard::Address`. A transparent recipient (`t1…`/`t3…` on
+/// mainnet, `tm…`/`t2…` on testnet) becomes a real transparent output in the
+/// same V6 transaction: the ironwood bundle supplies the value, the transparent
+/// bundle spends it out. That z→t path is how funds leave the wallet for an
+/// exchange, so it is not optional.
+#[cfg(zcash_unstable = "nu6.3")]
+#[derive(Clone, Copy, Debug)]
+pub enum IronwoodRecipient {
+    /// Unified/orchard address — value stays shielded in the ironwood pool.
+    Shielded(orchard::Address),
+    /// Transparent address — value leaves the shielded pool.
+    Transparent(zcash_transparent::address::TransparentAddress),
+}
+
+/// Parse a send recipient into an [`IronwoodRecipient`].
+///
+/// Transparent addresses are recognised by their base58 version bytes (via
+/// `decode_transparent_address`), NOT by a `t1`/`tm` string prefix: prefix
+/// sniffing misses `t3…`/`t2…` P2SH addresses, which is exactly what many
+/// exchange deposit addresses are. Anything that is not a valid transparent
+/// address is parsed as a unified/orchard address.
+///
+/// Errors never contain the address (they are logged and surfaced to JS).
+#[cfg(zcash_unstable = "nu6.3")]
+fn parse_ironwood_recipient(recipient: &str, mainnet: bool) -> Result<IronwoodRecipient, String> {
+    use zcash_keys::encoding::decode_transparent_address;
+    use zcash_protocol::consensus::{NetworkConstants, NetworkType};
+
+    let net = if mainnet {
+        NetworkType::Main
+    } else {
+        NetworkType::Test
+    };
+    let (pubkey_prefix, script_prefix) = (
+        net.b58_pubkey_address_prefix(),
+        net.b58_script_address_prefix(),
+    );
+
+    if let Ok(Some(t)) = decode_transparent_address(&pubkey_prefix, &script_prefix, recipient) {
+        return Ok(IronwoodRecipient::Transparent(t));
+    }
+
+    parse_orchard_address(recipient, mainnet)
+        .map(IronwoodRecipient::Shielded)
+        .map_err(|e| format!("invalid recipient: {}", e))
+}
+
 /// Build AND prove the general ironwood send PCZT, returning the *unredacted*
 /// proven `pczt::Pczt`. Mirrors `build_turnstile_migration_pczt_proven` but:
 ///  - `orchard_anchor: None` (there are NO orchard spends), and
@@ -4167,6 +4305,21 @@ fn prepare_ironwood_spends(
 ///  - the wallet outputs `amount` to `recipient` plus `change` back to its own
 ///    internal (change) address. Only the IRONWOOD bundle is proven (there is
 ///    no orchard bundle to prove).
+///
+/// `recipient` may be SHIELDED or TRANSPARENT:
+///  - [`IronwoodRecipient::Shielded`] adds an `add_ironwood_output` carrying the
+///    memo, exactly as before.
+///  - [`IronwoodRecipient::Transparent`] adds a real `add_transparent_output` to
+///    the same V6 transaction (z→t). The ironwood bundle then holds only the
+///    spends plus the change output, and the transparent bundle is
+///    outputs-only - no transparent inputs, so nothing here needs a transparent
+///    signature. Without this the wallet could not withdraw to an exchange at
+///    all once NU6.3 disabled the orchard spend path.
+///
+/// A memo is meaningless on a transparent output (there is nowhere to put it),
+/// so pairing one with a transparent recipient is an ERROR rather than a
+/// silently dropped memo - the user must not believe a payment reference was
+/// delivered when it was not.
 ///
 /// The FAIL-CLOSED branch-id guard is copied from the migration core AND
 /// hardened: the tx must bind the NU6.3 consensus branch id `0x37a5165b`, the
@@ -4179,7 +4332,7 @@ pub fn build_ironwood_send_pczt_proven<P>(
     params: P,
     fvk: &orchard::keys::FullViewingKey,
     prepared: Vec<(orchard::Note, orchard::tree::MerklePath)>,
-    recipient: orchard::Address,
+    recipient: IronwoodRecipient,
     amount: u64,
     fee: u64,
     ironwood_anchor: orchard::tree::Anchor,
@@ -4288,9 +4441,28 @@ where
             .map_err(|e| format!("add_ironwood_spend: {:?}", e))?;
     }
     let amount_zat = Zatoshis::from_u64(amount).map_err(|_| "invalid amount".to_string())?;
-    builder
-        .add_ironwood_output::<FeError>(external_ovk, recipient, amount_zat, memo)
-        .map_err(|e| format!("add_ironwood_output: {:?}", e))?;
+    match recipient {
+        IronwoodRecipient::Shielded(addr) => {
+            builder
+                .add_ironwood_output::<FeError>(external_ovk, addr, amount_zat, memo)
+                .map_err(|e| format!("add_ironwood_output: {:?}", e))?;
+        }
+        IronwoodRecipient::Transparent(taddr) => {
+            // A transparent output carries no memo field. Refuse rather than
+            // drop one silently - see the doc comment.
+            if memo != MemoBytes::empty() {
+                return Err(
+                    "a memo cannot be delivered to a transparent address: transparent \
+                     outputs have no memo field. Send the memo to a shielded (unified) \
+                     address, or send to the transparent address without one."
+                        .to_string(),
+                );
+            }
+            builder
+                .add_transparent_output(&taddr, amount_zat)
+                .map_err(|e| format!("add_transparent_output: {:?}", e))?;
+        }
+    }
     if change_value > 0 {
         let change_zat =
             Zatoshis::from_u64(change_value).map_err(|_| "invalid change amount".to_string())?;
@@ -4353,7 +4525,7 @@ pub fn build_signed_ironwood_send_core<P>(
     fvk: &orchard::keys::FullViewingKey,
     ask: &orchard::keys::SpendAuthorizingKey,
     prepared: Vec<(orchard::Note, orchard::tree::MerklePath)>,
-    recipient: orchard::Address,
+    recipient: IronwoodRecipient,
     amount: u64,
     fee: u64,
     ironwood_anchor: orchard::tree::Anchor,
@@ -4496,10 +4668,11 @@ pub fn build_ironwood_send_pczt(
             .clone()
     };
 
-    // Recipient: parse the unified address's orchard-format receiver (the
-    // ironwood pool shares the orchard address encoding). Error is address-free.
-    let recipient_addr = parse_orchard_address(recipient, mainnet)
-        .map_err(|e| JsError::new(&format!("invalid recipient: {}", e)))?;
+    // Recipient: a unified/orchard address (value stays in the ironwood pool)
+    // OR a transparent address (z->t withdrawal, e.g. to an exchange), decided
+    // by the address encoding. Error is address-free.
+    let recipient_addr = parse_ironwood_recipient(recipient, mainnet)
+        .map_err(|e| JsError::new(&e))?;
 
     let notes: Vec<SpendableNote> = serde_json::from_str(ironwood_notes_json)
         .map_err(|e| JsError::new(&format!("invalid ironwood_notes_json: {}", e)))?;
@@ -4665,10 +4838,11 @@ pub fn build_signed_ironwood_send(
     let fvk = orchard::keys::FullViewingKey::from(&sk);
     let ask = SpendAuthorizingKey::from(&sk);
 
-    // Recipient: parse the unified address's orchard-format receiver (the
-    // ironwood pool shares the orchard address encoding). Error is address-free.
-    let recipient_addr = parse_orchard_address(recipient, mainnet)
-        .map_err(|e| JsError::new(&format!("invalid recipient: {}", e)))?;
+    // Recipient: a unified/orchard address (value stays in the ironwood pool)
+    // OR a transparent address (z->t withdrawal, e.g. to an exchange), decided
+    // by the address encoding. Error is address-free.
+    let recipient_addr = parse_ironwood_recipient(recipient, mainnet)
+        .map_err(|e| JsError::new(&e))?;
 
     let notes: Vec<SpendableNote> = serde_json::from_str(ironwood_notes_json)
         .map_err(|e| JsError::new(&format!("invalid ironwood_notes_json: {}", e)))?;
@@ -5583,8 +5757,8 @@ pub fn build_signed_spend_transaction(
     mainnet: bool,
     memo_hex: Option<String>,
     // Live consensus branch id from GetLightdInfo.consensusBranchId, e.g.
-    // "5437f330" (NU6.2) or "37a5165b" (NU6.3). Pass verbatim; None/empty falls
-    // back to the compiled-in NU6.2 value (wrong post-NU6.3).
+    // "5437f330" (NU6.2) or "37a5165b" (NU6.3). Pass verbatim. REQUIRED: a
+    // missing/unparseable value is a hard error, never a silent default.
     branch_id_hex: Option<String>,
 ) -> Result<String, JsError> {
     use orchard::builder::{Builder, BundleType};
@@ -5594,6 +5768,10 @@ pub fn build_signed_spend_transaction(
     use orchard::value::NoteValue;
     use rand::rngs::OsRng;
     use zcash_protocol::value::ZatBalance;
+
+    // FAIL-CLOSED, BEFORE any proving: see build_unsigned_transaction.
+    let branch_id: u32 = resolve_branch_id(branch_id_hex.as_deref()).map_err(|e| JsError::new(&e))?;
+    guard_orchard_spend_allowed(branch_id).map_err(|e| JsError::new(&e))?;
 
     // --- derive keys from mnemonic ---
     let mnemonic = bip39::Mnemonic::parse(seed_phrase)
@@ -5853,7 +6031,8 @@ pub fn build_signed_spend_transaction(
                 Some(ovk_internal.clone()),
                 change_addr,
                 NoteValue::from_raw(change),
-                [0u8; 512],
+                // canonical ZIP-302 no-memo, not 512 zero bytes (see ZIP302_NO_MEMO)
+                ZIP302_NO_MEMO,
             )
             .map_err(|e| JsError::new(&format!("add_output (change): {:?}", e)))?;
     }
@@ -5869,8 +6048,7 @@ pub fn build_signed_spend_transaction(
     let proven_bundle = with_proving_key(|pk| unauthorized_bundle.create_proof(pk, &mut rng))
         .map_err(|e| JsError::new(&format!("create_proof: {:?}", e)))?;
 
-    // --- compute ZIP-244 sighash ---
-    let branch_id: u32 = resolve_branch_id(branch_id_hex.as_deref());
+    // --- compute ZIP-244 sighash (branch id resolved+gated at entry) ---
     let expiry_height: u32 = 0; // no expiry for orchard-only
 
     let header_data = {
@@ -6345,6 +6523,10 @@ pub fn build_shielding_transaction(
     // FAIL CLOSED: never build an orchard shielding tx at/after NU6.3.
     guard_orchard_shielding_allowed(anchor_height, mainnet, branch_id_hex.as_deref())
         .map_err(|e| JsError::new(&e))?;
+    // FAIL-CLOSED, BEFORE proving: the ZIP-244 sighash below binds this branch
+    // id; a missing/unparseable value is refused rather than defaulted.
+    let branch_id: u32 =
+        resolve_branch_id(branch_id_hex.as_deref()).map_err(|e| JsError::new(&e))?;
 
     // --- parse recipient orchard address ---
     let orchard_addr = parse_orchard_address(recipient, mainnet)
@@ -6411,7 +6593,8 @@ pub fn build_shielding_transaction(
             None,
             orchard_addr,
             NoteValue::from_raw(shielded_value),
-            [0u8; 512],
+            // canonical ZIP-302 no-memo, not 512 zero bytes (see ZIP302_NO_MEMO)
+            ZIP302_NO_MEMO,
         )
         .map_err(|e| JsError::new(&format!("add_output: {:?}", e)))?;
 
@@ -6427,7 +6610,6 @@ pub fn build_shielding_transaction(
 
     // --- compute transparent digests for ZIP-244 sighash ---
     let n_inputs = selected.len();
-    let branch_id: u32 = resolve_branch_id(branch_id_hex.as_deref());
     let expiry_height = anchor_height.saturating_add(100);
 
     let mut prevout_data = Vec::new();
@@ -6638,6 +6820,25 @@ pub const ZIP317_GRACE_ACTIONS: u64 = 2;
 /// the builder, and ZIP-317 counts the PADDED actions.
 pub const SHIELDED_BUNDLE_MIN_ACTIONS: u64 = 2;
 
+/// Serialized size of one P2PKH `tx_in`: 32 (txid) + 4 (index) + 1 (script len)
+/// + 107 (script_sig: 1 + 72 sig + 1 + 33 compressed pubkey) + 4 (sequence).
+pub const P2PKH_TX_IN_SIZE: u64 = 148;
+/// ZIP-317 divides the transparent byte total by this to get logical actions.
+pub const ZIP317_TX_BYTES_PER_ACTION: u64 = 150;
+
+/// ZIP-317 transparent-side logical actions for `n` P2PKH inputs:
+/// `ceil(tx_in_total_size / 150)`.
+///
+/// NOT `n`. `ceil(148n/150) == n` only while `2n < 150`; at `n == 75` the byte
+/// total is exactly `11_100 == 74 * 150`, so the true action count is 74 and
+/// every count from 75 up is strictly below `n`. Using `n` overpays by a
+/// marginal fee every ~75 inputs, which is safe from the network's point of
+/// view (nodes only reject UNDER-payment) but is a wallet fingerprint: a
+/// consolidation with 75+ UTXOs pays a fee no ZIP-317-correct wallet would.
+pub fn zip317_transparent_actions(n_transparent_inputs: usize) -> u64 {
+    (n_transparent_inputs as u64 * P2PKH_TX_IN_SIZE).div_ceil(ZIP317_TX_BYTES_PER_ACTION)
+}
+
 /// ZIP-317 conventional fee for a transparent→ironwood shielding transaction
 /// with `n_transparent_inputs` P2PKH inputs.
 ///
@@ -6645,8 +6846,8 @@ pub const SHIELDED_BUNDLE_MIN_ACTIONS: u64 = 2;
 ///                 + max(sapling spends, sapling outputs)  (0 here)
 ///                 + orchard actions + ironwood actions    (padded, see below)
 ///
-/// A P2PKH `tx_in` serializes to 148 bytes (32 txid + 4 index + 1 script len +
-/// 107 script_sig + 4 sequence), so `ceil(148n/150) == n` for every n ≥ 0.
+/// The transparent side is [`zip317_transparent_actions`] — `ceil(148n/150)`,
+/// which equals `n` only up to n = 74 and is strictly smaller from n = 75 on.
 /// The transparent OUTPUT side contributes nothing (there are none), and the
 /// shielding tx has NO orchard bundle - only the ironwood one, which is padded
 /// to 2 actions.
@@ -6655,9 +6856,10 @@ pub const SHIELDED_BUNDLE_MIN_ACTIONS: u64 = 2;
 /// with "Unpaid actions is higher than the limit"; the builder therefore also
 /// RE-CHECKS the fee against the actual padded action counts of the built PCZT
 /// (see `build_shielding_transaction_ironwood_core`) rather than trusting this
-/// estimate alone.
+/// estimate alone. The two must agree exactly, or a large consolidation would
+/// pass the estimate and then be refused by the re-check.
 pub fn zip317_shielding_fee(n_transparent_inputs: usize) -> u64 {
-    let logical = n_transparent_inputs as u64 + SHIELDED_BUNDLE_MIN_ACTIONS;
+    let logical = zip317_transparent_actions(n_transparent_inputs) + SHIELDED_BUNDLE_MIN_ACTIONS;
     ZIP317_MARGINAL_FEE * logical.max(ZIP317_GRACE_ACTIONS)
 }
 
@@ -6863,7 +7065,10 @@ where
     {
         let orchard_actions = pczt.orchard().actions().len() as u64;
         let ironwood_actions = pczt.ironwood().actions().len() as u64;
-        let tin = pczt.transparent().inputs().len() as u64;
+        // Transparent side is ceil(tx_in_total_size / 150), NOT the input count
+        // - identical to `zip317_shielding_fee`, so the estimate and this
+        // re-check can never disagree (they diverge from n = 75 inputs up).
+        let tin = zip317_transparent_actions(pczt.transparent().inputs().len());
         let logical = tin + orchard_actions + ironwood_actions;
         let actual_required = ZIP317_MARGINAL_FEE * logical.max(ZIP317_GRACE_ACTIONS);
         if fee < actual_required {
@@ -7208,6 +7413,10 @@ pub fn build_unsigned_shielding_transaction(
     // FAIL CLOSED: never build an orchard shielding tx at/after NU6.3.
     guard_orchard_shielding_allowed(anchor_height, mainnet, branch_id_hex.as_deref())
         .map_err(|e| JsError::new(&e))?;
+    // FAIL-CLOSED, BEFORE proving: the ZIP-244 sighash below binds this branch
+    // id; a missing/unparseable value is refused rather than defaulted.
+    let branch_id: u32 =
+        resolve_branch_id(branch_id_hex.as_deref()).map_err(|e| JsError::new(&e))?;
 
     // --- parse recipient orchard address ---
     let orchard_addr = parse_orchard_address(recipient, mainnet)
@@ -7258,7 +7467,8 @@ pub fn build_unsigned_shielding_transaction(
             None,
             orchard_addr,
             NoteValue::from_raw(shielded_value),
-            [0u8; 512],
+            // canonical ZIP-302 no-memo, not 512 zero bytes (see ZIP302_NO_MEMO)
+            ZIP302_NO_MEMO,
         )
         .map_err(|e| JsError::new(&format!("add_output: {:?}", e)))?;
 
@@ -7273,7 +7483,6 @@ pub fn build_unsigned_shielding_transaction(
 
     // --- compute transparent digests for ZIP-244 sighash ---
     let n_inputs = selected.len();
-    let branch_id: u32 = resolve_branch_id(branch_id_hex.as_deref());
     let expiry_height = anchor_height.saturating_add(100);
 
     let mut prevout_data = Vec::new();

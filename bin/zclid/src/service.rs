@@ -162,7 +162,10 @@ async fn prepare_spend(
         .await
         .map_err(|e| Status::internal(format!("get_tip: {}", e)))?;
     // consensus branch id from the LIVE chain (auto-tracks network upgrades)
-    let branch_id = client.resolve_branch_id().await;
+    let branch_id = client
+        .resolve_branch_id()
+        .await
+        .map_err(|e| Status::unavailable(format!("consensus branch id: {}", e)))?;
 
     let (anchor, paths) = zecli::witness::build_witnesses(
         &client,
@@ -190,13 +193,9 @@ async fn prepare_spend(
         None
     };
 
-    // build memo
-    let mut memo_bytes = [0u8; 512];
-    if !intent.memo.is_empty() {
-        let bytes = intent.memo.as_bytes();
-        let len = bytes.len().min(512);
-        memo_bytes[..len].copy_from_slice(&bytes[..len]);
-    }
+    // ZIP-302 memo: no memo is the canonical 0xF6 marker, not 512 zero bytes.
+    let memo_bytes = zecli::tx::encode_memo(Some(intent.memo.as_str()))
+        .map_err(|e| Status::invalid_argument(format!("memo: {}", e)))?;
 
     // build z/t output lists
     let z_outputs: Vec<(orchard::Address, u64, [u8; 512])> = if let Some(addr) = recipient_addr {

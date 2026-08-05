@@ -67,11 +67,12 @@ pub mod lightwalletd_proto {
     tonic::include_proto!("cash.z.wallet.sdk.rpc");
 }
 
-/// Compiled-in consensus branch id (NU6.2, mainnet). Used ONLY as a fallback
-/// when the live branch id can't be fetched/parsed from the node. The real
-/// value comes from `GetLightdInfo.consensus_branch_id`; see
-/// `ZidecarClient::resolve_branch_id`.
-pub const FALLBACK_BRANCH_ID: u32 = 0x5437F330;
+/// NU6.2 consensus branch id. A NAMED CONSTANT for tests and for recognising
+/// historical transactions — deliberately NOT a fallback for tx construction.
+/// The value bound into a transaction always comes from the live node via
+/// `GetLightdInfo.consensus_branch_id`; see `ZidecarClient::resolve_branch_id`,
+/// which fails closed rather than guessing.
+pub const NU6_2_BRANCH_ID: u32 = 0x5437F330;
 
 /// Parse the consensus branch id as returned by lightwalletd/zidecar
 /// `GetLightdInfo` — a lowercase (per spec) hex string such as `"5437f330"`
@@ -405,38 +406,31 @@ impl ZidecarClient {
         .await
     }
 
-    /// Resolve the consensus branch id to use for building/signing from the
+    /// Resolve the consensus branch id to bind into a transaction, read from the
     /// LIVE chain (GetLightdInfo.consensus_branch_id, a hex string like
-    /// "5437f330"). Falls back to the compiled-in NU6.2 default if the fetch or
-    /// parse fails, so a transient RPC hiccup can't stall tx building — but that
-    /// path is unsafe across a network upgrade, hence the loud warning.
+    /// "5437f330" for NU6.2 or "37a5165b" for NU6.3).
     ///
-    /// Correctness note: today the node reports "5437f330" (NU6.2) so this
-    /// yields 0x5437F330; once NU6.3 activates it will report "37a5165b" and
-    /// building switches automatically — no rebuild required.
-    pub async fn resolve_branch_id(&self) -> u32 {
-        match self.get_lightd_info().await {
-            Ok(info) => match parse_branch_id(&info.consensus_branch_id) {
-                Some(id) => id,
-                None => {
-                    eprintln!(
-                        "WARN: could not parse consensus_branch_id {:?} from node; \
-                         falling back to hardcoded NU6.2 {:#010x} — tx may be rejected \
-                         after a network upgrade",
-                        info.consensus_branch_id, FALLBACK_BRANCH_ID
-                    );
-                    FALLBACK_BRANCH_ID
-                }
-            },
-            Err(e) => {
-                eprintln!(
-                    "WARN: GetLightdInfo failed ({e}); falling back to hardcoded NU6.2 \
-                     {FALLBACK_BRANCH_ID:#010x} for branch id — tx may be rejected after \
-                     a network upgrade"
-                );
-                FALLBACK_BRANCH_ID
-            }
-        }
+    /// FAIL-CLOSED: there is no fallback. This value goes straight into the
+    /// ZIP-244 sighash and the v5 header, so guessing it means minting a
+    /// transaction the network cannot accept — the wallet pays for a Halo 2
+    /// proof and the broadcast is rejected with "incorrect consensus branch id",
+    /// while automated callers (zclid's payout/sweep loops) retry the same dead
+    /// build forever. An RPC hiccup must surface as a retryable error here, not
+    /// as a silently wrong transaction.
+    pub async fn resolve_branch_id(&self) -> Result<u32, Error> {
+        let info = self.get_lightd_info().await.map_err(|e| {
+            Error::Transaction(format!(
+                "cannot read the consensus branch id from the node ({e}); refusing \
+                 to build a transaction that would bind a guessed branch id"
+            ))
+        })?;
+        parse_branch_id(&info.consensus_branch_id).ok_or_else(|| {
+            Error::Transaction(format!(
+                "node reported an unparseable consensus_branch_id {:?}; refusing to \
+                 build a transaction that would bind a guessed branch id",
+                info.consensus_branch_id
+            ))
+        })
     }
 
     pub async fn get_address_utxos(&self, addresses: Vec<String>) -> Result<Vec<Utxo>, Error> {
@@ -788,13 +782,13 @@ impl LightwalletdClient {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_branch_id, FALLBACK_BRANCH_ID};
+    use super::{parse_branch_id, NU6_2_BRANCH_ID};
 
     #[test]
     fn parses_nu62_branch_id() {
         // what the node reports today; must equal the compiled-in NU6.2 value
         assert_eq!(parse_branch_id("5437f330"), Some(0x5437F330));
-        assert_eq!(parse_branch_id("5437f330"), Some(FALLBACK_BRANCH_ID));
+        assert_eq!(parse_branch_id("5437f330"), Some(NU6_2_BRANCH_ID));
     }
 
     #[test]
