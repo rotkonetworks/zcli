@@ -318,6 +318,66 @@ impl Storage {
             .map_err(|e| ZidecarError::Storage(format!("nomt read: {}", e)))
     }
 
+    /// Insert a whole *range* of blocks' nullifiers and commitments in ONE
+    /// NOMT session.
+    ///
+    /// The per-block helpers above open a session and commit for every block,
+    /// and the state sync called both — two full merkle recomputes plus two
+    /// fsyncs per block, ~6.9M commits to walk the chain. NOMT amortises
+    /// enormously across a session: one session holding 100 blocks of ops
+    /// costs far less than 100 sessions, because interior pages shared by
+    /// sibling keys are recomputed once instead of once per block.
+    ///
+    /// Values stay per-block (height LE bytes) exactly as the single-block
+    /// path wrote them, so roots and proofs are byte-identical to what a
+    /// block-at-a-time sync would have produced — this is purely a batching
+    /// change, not a format change.
+    pub fn batch_insert_block_state(
+        &self,
+        blocks: &[(u32, Vec<[u8; 32]>, Vec<[u8; 32]>)],
+    ) -> Result<Option<Root>> {
+        let total: usize = blocks.iter().map(|(_, n, c)| n.len() + c.len()).sum();
+        if total == 0 {
+            return Ok(None);
+        }
+
+        let session = self.nomt.begin_session(SessionParams::default());
+        let mut ops = Vec::with_capacity(total);
+
+        for (height, nullifiers, cmxs) in blocks {
+            let height_bytes = height.to_le_bytes().to_vec();
+            for nullifier in nullifiers {
+                let key = key_for_nullifier(nullifier);
+                session.warm_up(key);
+                ops.push((key, KeyReadWrite::Write(Some(height_bytes.clone()))));
+            }
+            for cmx in cmxs {
+                let key = key_for_note(cmx);
+                session.warm_up(key);
+                ops.push((key, KeyReadWrite::Write(Some(height_bytes.clone()))));
+            }
+        }
+
+        // NOMT requires sorted, deduplicated keys. A nullifier or cmx can
+        // legitimately repeat within a range only if the chain repeated it,
+        // which it does not — but dedup defensively rather than hand NOMT an
+        // input it rejects mid-batch. Last write wins, matching the
+        // block-at-a-time order.
+        ops.sort_by_key(|(k, _)| *k);
+        ops.dedup_by_key(|(k, _)| *k);
+
+        let finished = session
+            .finish(ops)
+            .map_err(|e| ZidecarError::Storage(format!("nomt finish: {:?}", e)))?;
+
+        let root = finished.root();
+        finished
+            .commit(&self.nomt)
+            .map_err(|e| ZidecarError::Storage(format!("nomt commit: {}", e)))?;
+
+        Ok(Some(root))
+    }
+
     /// batch insert (nullifiers + notes) - more efficient
     pub fn batch_insert(
         &self,

@@ -13,6 +13,35 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{error, info, warn};
 
+/// Blocks per NOMT commit during state sync.
+///
+/// The sync previously committed twice per block (nullifiers, then
+/// commitments), so re-indexing the chain meant ~6.9M merkle recomputes and
+/// fsyncs. NOMT amortises heavily within a session, so batching is the single
+/// biggest win available here. 250 bounds crash-replay to roughly a minute.
+const STATE_SYNC_CHUNK: u32 = 250;
+
+/// Concurrent block fetches in flight. Each block needs two sequential zebrad
+/// round-trips, so a serial walk left the node almost idle; zebrad handles
+/// well over a hundred connections, and this stays far below that.
+const STATE_SYNC_CONCURRENCY: usize = 64;
+
+/// Depth of the fetch→commit queue. Deep enough that a commit never stalls the
+/// fetchers, bounded so a fast producer cannot grow the heap without limit.
+const STATE_SYNC_QUEUE: usize = 256;
+
+/// Block state as extracted from one block: nullifiers, cmxs, action triples.
+type BlockState = (
+    Vec<ExtractedNullifier>,
+    Vec<[u8; 32]>,
+    Vec<([u8; 32], [u8; 32], [u8; 32])>,
+);
+
+/// Blocks per outer backfill batch, used only while far behind the tip. The
+/// outer loop previously fixed this at 100, which capped every batching win
+/// below it; near the tip it drops back to 100 so new blocks appear promptly.
+const STATE_SYNC_BACKFILL_BATCH: u32 = 2_000;
+
 /// maximum epochs to cover with tip proof before regenerating epoch proof
 /// tip proof uses 2^20 config (1M elements max)
 /// 1M / 32 fields = ~32K headers = ~31 epochs
@@ -696,8 +725,8 @@ impl EpochManager {
         Vec<[u8; 32]>,
         Vec<([u8; 32], [u8; 32], [u8; 32])>,
     )> {
-        let hash = self.zebrad.get_block_hash(height).await?;
-        let block = self.zebrad.get_block_verbose(&hash).await?;
+        // one RPC, by height — getblockhash first was a wasted round-trip
+        let block = self.zebrad.get_block_verbose_at(height).await?;
 
         let mut nullifiers = Vec::new();
         let mut cmxs = Vec::new();
@@ -775,44 +804,98 @@ impl EpochManager {
     /// Sync nullifiers, orchard commitments, and per-block actions_root from a
     /// range of blocks into nomt + sled.
     pub async fn sync_nullifiers(&self, from_height: u32, to_height: u32) -> Result<u32> {
+        use futures::stream::{self, StreamExt};
+
         let mut total_nullifiers = 0u32;
         let mut total_cmxs = 0u32;
 
-        for height in from_height..=to_height {
-            let (nullifiers, cmxs, action_triples) = self.extract_block_state(height).await?;
+        // Fetch and commit run as producer/consumer rather than in lockstep.
+        // Previously each chunk was fetched, then committed while the network
+        // sat idle, then fetched again — the two never overlapped, so the run
+        // cost fetch+commit per chunk instead of max(fetch, commit). NOMT is
+        // nowhere near its IOPS ceiling here; zebrad's verbose-block JSON is
+        // the expensive side, so the committer should never be what stops it.
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<(u32, BlockState)>(STATE_SYNC_QUEUE);
 
-            if !nullifiers.is_empty() {
-                let nf_bytes: Vec<[u8; 32]> = nullifiers.iter().map(|n| n.nullifier).collect();
-                self.storage.batch_insert_nullifiers(&nf_bytes, height)?;
+        let fetcher = async {
+            let mut stream = stream::iter(from_height..=to_height)
+                .map(|height| async move {
+                    self.extract_block_state(height)
+                        .await
+                        .map(|state| (height, state))
+                })
+                .buffered(STATE_SYNC_CONCURRENCY);
+
+            while let Some(item) = stream.next().await {
+                if tx.send(item?).await.is_err() {
+                    break; // consumer gave up; its error is the real one
+                }
+            }
+            Ok::<(), crate::error::ZidecarError>(())
+        };
+
+        let committer = async {
+            let mut pending: Vec<(u32, Vec<[u8; 32]>, Vec<[u8; 32]>)> = Vec::new();
+            let mut action_roots: Vec<(u32, [u8; 32])> = Vec::new();
+            let mut highest = from_height.saturating_sub(1);
+
+            // buffered() yields in order, so the queue is ordered too and a
+            // flush always covers a contiguous prefix — which is what lets the
+            // sync marker advance safely.
+            while let Some((height, (nullifiers, cmxs, action_triples))) = rx.recv().await {
                 total_nullifiers += nullifiers.len() as u32;
-            }
-
-            if !cmxs.is_empty() {
-                self.storage.batch_insert_commitments(&cmxs, height)?;
                 total_cmxs += cmxs.len() as u32;
+                action_roots.push((
+                    height,
+                    zync_core::actions::compute_actions_root(&action_triples),
+                ));
+                pending.push((
+                    height,
+                    nullifiers.iter().map(|n| n.nullifier).collect(),
+                    cmxs,
+                ));
+                highest = height;
+
+                if pending.len() >= STATE_SYNC_CHUNK as usize {
+                    self.flush_state(&pending, &action_roots, highest)?;
+                    pending.clear();
+                    action_roots.clear();
+                    info!(
+                        "state sync progress: height {}/{} ({} nullifiers, {} commitments so far)",
+                        highest, to_height, total_nullifiers, total_cmxs
+                    );
+                }
             }
 
-            // Always store actions_root (even for blocks with no orchard actions —
-            // compute_actions_root over an empty slice gives a well-defined root,
-            // and writing it makes the actions_commitment deterministic over the
-            // full height range instead of relying on lazy population by
-            // GetCompactBlocks.
-            let actions_root = zync_core::actions::compute_actions_root(&action_triples);
-            self.storage.store_actions_root(height, actions_root)?;
-
-            // Update sync progress (covers nullifiers, commitments, and actions_root)
-            self.storage.set_nullifier_sync_height(height)?;
-
-            // Log progress every 1000 blocks
-            if height % 1000 == 0 {
-                info!(
-                    "state sync progress: height {}/{} ({} nullifiers, {} commitments so far)",
-                    height, to_height, total_nullifiers, total_cmxs
-                );
+            if !pending.is_empty() {
+                self.flush_state(&pending, &action_roots, highest)?;
             }
-        }
+            Ok::<(), crate::error::ZidecarError>(())
+        };
+
+        let (fetched, committed) = tokio::join!(fetcher, committer);
+        fetched?;
+        committed?;
 
         Ok(total_nullifiers)
+    }
+
+    /// Commit one batch of block state, then advance the progress marker.
+    ///
+    /// Order matters: the marker moves only after NOMT has committed, so a
+    /// crash replays the batch rather than skipping it.
+    fn flush_state(
+        &self,
+        blocks: &[(u32, Vec<[u8; 32]>, Vec<[u8; 32]>)],
+        action_roots: &[(u32, [u8; 32])],
+        highest: u32,
+    ) -> Result<()> {
+        self.storage.batch_insert_block_state(blocks)?;
+        for (height, root) in action_roots {
+            self.storage.store_actions_root(*height, *root)?;
+        }
+        self.storage.set_nullifier_sync_height(highest)?;
+        Ok(())
     }
 
     /// Background task: sync nullifiers incrementally.
@@ -859,9 +942,20 @@ impl EpochManager {
                 }
             };
 
-            // Sync in batches of 100 blocks
+            // Batch size: large while backfilling, small once caught up.
+            //
+            // A fixed 100 capped sync_nullifiers below its own chunk size, so
+            // the NOMT batching and the 24-way block prefetch never got to
+            // stretch out. When far behind, throughput is all that matters;
+            // near the tip, a small batch keeps new blocks visible promptly.
             if last_synced < current_height {
-                let batch_end = (last_synced + 100).min(current_height);
+                let behind = current_height - last_synced;
+                let batch = if behind > 10_000 {
+                    STATE_SYNC_BACKFILL_BATCH
+                } else {
+                    100
+                };
+                let batch_end = (last_synced + batch).min(current_height);
 
                 match self.sync_nullifiers(last_synced + 1, batch_end).await {
                     Ok(count) => {

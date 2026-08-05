@@ -208,6 +208,18 @@ impl ZebradClient {
         serde_json::from_value(result).map_err(|e| ZidecarError::ZebradRpc(e.to_string()))
     }
 
+    /// Verbose block by *height* (getblock <height> 2).
+    ///
+    /// zebra's getblock accepts a hash_or_height, so the state sync does not
+    /// need the getblockhash round-trip it used to make first. On a full
+    /// re-index that halves the RPC count outright.
+    pub async fn get_block_verbose_at(&self, height: u32) -> Result<BlockVerbose> {
+        let result = self
+            .call("getblock", vec![json!(height.to_string()), json!(2)])
+            .await?;
+        serde_json::from_value(result).map_err(|e| ZidecarError::ZebradRpc(e.to_string()))
+    }
+
     /// Raw block hex (getblock <hash> 0); used to extract canonical header bytes.
     pub async fn get_block_raw(&self, hash: &str) -> Result<String> {
         let result = self.call("getblock", vec![json!(hash), json!(0)]).await?;
