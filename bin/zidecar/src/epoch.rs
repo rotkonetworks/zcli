@@ -31,6 +31,16 @@ const STATE_SYNC_CHUNK: u32 = 250;
 /// overload.
 const STATE_SYNC_CONCURRENCY: usize = 32;
 
+/// Fan-out for the full-chain backfill specifically.
+///
+/// The backfill is a background chore with no deadline: ironwood — the pool
+/// wallets actually query — has its own cursor and is already at the tip, so
+/// what remains is legacy pre-activation history. At 32-way it drove zebrad to
+/// ~540% CPU and load 66, and live client requests (GetTip, GetCompactBlocks)
+/// began failing behind it. Serving wallets beats finishing a backfill sooner,
+/// so it runs deliberately under-subscribed and simply takes longer.
+const BACKFILL_CONCURRENCY: usize = 6;
+
 /// Depth of the fetch→commit queue. Deep enough that a commit never stalls the
 /// fetchers, bounded so a fast producer cannot grow the heap without limit.
 const STATE_SYNC_QUEUE: usize = 256;
@@ -852,7 +862,10 @@ impl EpochManager {
                         .await
                         .map(|state| (height, state))
                 })
-                .buffered(STATE_SYNC_CONCURRENCY);
+                .buffered(match cursor {
+                    SyncCursor::Main => BACKFILL_CONCURRENCY,
+                    SyncCursor::Ironwood => STATE_SYNC_CONCURRENCY,
+                });
 
             while let Some(item) = stream.next().await {
                 if tx.send(item?).await.is_err() {
