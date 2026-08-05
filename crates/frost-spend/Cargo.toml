@@ -25,7 +25,10 @@ orchard = { git = "https://github.com/conradoplg/orchard.git", rev = "f0c88b78a1
 pasta_curves = "0.5"
 
 # OSST: nested FROST + reshare (public extract from zeratul)
-osst = { git = "https://github.com/rotkonetworks/frostito", rev = "ae5b415e", default-features = false, features = ["pallas"] }
+# "std" is required for osst::redpallas (rand_core::OsRng); without it the
+# package only compiles when another workspace member happens to enable the
+# feature, so `cargo build -p frost-spend` failed in isolation.
+osst = { git = "https://github.com/rotkonetworks/frostito", rev = "14e38da", default-features = false, features = ["pallas", "std"] }
 
 # hashing
 sha2 = "0.10"

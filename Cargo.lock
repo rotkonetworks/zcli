@@ -4154,7 +4154,7 @@ dependencies = [
 [[package]]
 name = "osst"
 version = "0.1.1"
-source = "git+https://github.com/rotkonetworks/frostito?rev=ae5b415e#ae5b415e5cb7fc08a588f34b4edcd84fa67ccc8e"
+source = "git+https://github.com/rotkonetworks/frostito?rev=14e38da#14e38dae7065dd441a3746c859b6e681f2927cc5"
 dependencies = [
  "blake2b_simd",
  "pasta_curves",
