@@ -113,9 +113,27 @@ impl ZidecarService {
             proofs.push(resp);
         }
 
+        // Both NOMT indexes are filled by the same state-sync walk, so they
+        // share one horizon. See the nullifier handler below for why absence
+        // above it proves nothing.
+        let synced_height = self
+            .storage
+            .get_nullifier_sync_height()
+            .ok()
+            .flatten()
+            .unwrap_or(0);
+        let ironwood_synced_height = self
+            .storage
+            .get_ironwood_sync_height()
+            .ok()
+            .flatten()
+            .unwrap_or(0);
+
         Ok(Response::new(GetCommitmentProofsResponse {
             proofs,
             tree_root,
+            synced_height,
+            ironwood_synced_height,
         }))
     }
 
@@ -143,9 +161,29 @@ impl ZidecarService {
             proofs.push(resp);
         }
 
+        // The NOMT nullifier set is existence-keyed and pool-agnostic — sapling,
+        // orchard and ironwood nullifiers all live in it (see epoch.rs
+        // extract_block_state). What bounds it is not the pool but how far the
+        // indexer has walked: above this height "absent" means "not indexed
+        // yet", not "unspent". Report it so the client can tell the two apart.
+        let synced_height = self
+            .storage
+            .get_nullifier_sync_height()
+            .ok()
+            .flatten()
+            .unwrap_or(0);
+        let ironwood_synced_height = self
+            .storage
+            .get_ironwood_sync_height()
+            .ok()
+            .flatten()
+            .unwrap_or(0);
+
         Ok(Response::new(GetNullifierProofsResponse {
             proofs,
             nullifier_root,
+            synced_height,
+            ironwood_synced_height,
         }))
     }
 }

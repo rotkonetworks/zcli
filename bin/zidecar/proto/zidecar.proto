@@ -433,6 +433,16 @@ message GetCommitmentProofsRequest {
 message GetCommitmentProofsResponse {
     repeated CommitmentProof proofs = 1;
     bytes tree_root = 2;            // 32 bytes - the root all proofs are against
+
+    // How far the commitment index has been built. Same caveat as the
+    // nullifier side: this index is existence-keyed, so a cmx from a block
+    // above synced_height is absent rather than absent-because-nonexistent.
+    // Callers must not read "no proof" as "not on chain" above this height.
+    uint32 synced_height = 3;
+
+    // As above: ironwood commitments are covered from activation onward
+    // independently of the backfill's position.
+    uint32 ironwood_synced_height = 4;
 }
 
 // Request nullifier proofs for a batch of nullifiers
@@ -445,6 +455,19 @@ message GetNullifierProofsRequest {
 message GetNullifierProofsResponse {
     repeated NullifierProof proofs = 1;
     bytes nullifier_root = 2;       // 32 bytes - the root all proofs are against
+
+    // How far the nullifier set has actually been indexed. The NOMT set is
+    // existence-keyed, so a nullifier revealed ABOVE this height is simply
+    // absent — indistinguishable from unspent. Clients must treat
+    // `is_spent = false` as meaningful only at or below synced_height, and
+    // fall back to scanning above it. Without this the answer is silently
+    // wrong in the dangerous direction while the tree is rebuilding.
+    uint32 synced_height = 3;
+
+    // Ironwood indexes on its own cursor from NU6.3 activation, so it is
+    // servable long before the full-chain backfill reaches that height.
+    // For an ironwood nullifier, this is the horizon that applies.
+    uint32 ironwood_synced_height = 4;
 }
 
 // ===== EPOCH BOUNDARY MESSAGES =====

@@ -230,7 +230,16 @@ async fn main() -> Result<()> {
         let epoch_manager_nf = epoch_manager.clone();
         let rx = shutdown_rx.clone();
         tokio::spawn(async move { epoch_manager_nf.run_background_nullifier_sync(rx).await });
-        info!("  epoch proof generator + state tracker + tip prover + nullifier sync: running");
+        // Ironwood indexes on its own cursor, concurrently with the full-chain
+        // backfill: it spans only ~9k blocks from NU6.3 activation, so it is
+        // servable in minutes instead of waiting out the backfill.
+        let epoch_manager_iw = epoch_manager.clone();
+        let rx = shutdown_rx.clone();
+        tokio::spawn(async move { epoch_manager_iw.run_background_ironwood_sync(rx).await });
+        info!(
+            "  epoch proof generator + state tracker + tip prover + nullifier sync \
+             + ironwood sync: running"
+        );
 
         let mempool_cache_ttl = std::time::Duration::from_secs(args.mempool_cache_ttl);
         if args.mempool_cache_ttl > 0 {

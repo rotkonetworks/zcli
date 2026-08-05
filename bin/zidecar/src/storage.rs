@@ -15,6 +15,14 @@ pub struct Storage {
     nomt: Nomt<Blake3Hasher>,
     /// sled for simple key-value (proof cache)
     sled: sled::Db,
+    /// Serializes NOMT sessions.
+    ///
+    /// The orchard backfill and the ironwood sync run as independent tasks
+    /// over disjoint height ranges but share one existence-keyed tree, and a
+    /// NOMT session must not overlap another. Writes are batched per few
+    /// hundred blocks, so contention here is negligible next to the RPC time
+    /// each task spends fetching.
+    commit_lock: std::sync::Mutex<()>,
 }
 
 impl Storage {
@@ -52,7 +60,11 @@ impl Storage {
             .map_err(|e| ZidecarError::Storage(format!("sled: {}", e)))?;
 
         run_schema_migrations(&sled)?;
-        Ok(Self { nomt, sled })
+        Ok(Self {
+            nomt,
+            sled,
+            commit_lock: std::sync::Mutex::new(()),
+        })
     }
 
     /// get current merkle root
@@ -164,6 +176,29 @@ impl Storage {
                 let height = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
                 Ok(Some(height))
             }
+            Ok(_) => Ok(None),
+            Err(e) => Err(ZidecarError::Storage(format!("sled: {}", e))),
+        }
+    }
+
+    /// Ironwood sync progress, tracked separately from the main backfill.
+    ///
+    /// Ironwood only exists from NU6.3 activation, so making it wait for a
+    /// full-chain backfill to crawl past 1.6M blocks of pre-activation history
+    /// delays it by ~20 hours to index ~9k relevant blocks. It gets its own
+    /// cursor and runs immediately, from activation to the tip.
+    pub fn set_ironwood_sync_height(&self, height: u32) -> Result<()> {
+        self.sled
+            .insert(b"ironwood_sync_height", &height.to_le_bytes())
+            .map_err(|e| ZidecarError::Storage(format!("sled: {}", e)))?;
+        Ok(())
+    }
+
+    pub fn get_ironwood_sync_height(&self) -> Result<Option<u32>> {
+        match self.sled.get(b"ironwood_sync_height") {
+            Ok(Some(bytes)) if bytes.len() == 4 => Ok(Some(u32::from_le_bytes([
+                bytes[0], bytes[1], bytes[2], bytes[3],
+            ]))),
             Ok(_) => Ok(None),
             Err(e) => Err(ZidecarError::Storage(format!("sled: {}", e))),
         }
@@ -340,6 +375,11 @@ impl Storage {
         if total == 0 {
             return Ok(None);
         }
+
+        let _guard = self
+            .commit_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
 
         let session = self.nomt.begin_session(SessionParams::default());
         let mut ops = Vec::with_capacity(total);

@@ -35,6 +35,20 @@ const STATE_SYNC_CONCURRENCY: usize = 32;
 /// fetchers, bounded so a fast producer cannot grow the heap without limit.
 const STATE_SYNC_QUEUE: usize = 256;
 
+/// Which progress marker a state-sync run advances.
+///
+/// The two sync tasks cover disjoint ranges of the same index, so they must
+/// not share a marker: if the ironwood task (running at ~3.43M) advanced the
+/// main cursor, the server would claim coverage over the entire un-indexed gap
+/// beneath it, and every absence proof in that gap would read as authoritative.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SyncCursor {
+    /// Full-chain backfill: sapling + orchard + ironwood as it walks.
+    Main,
+    /// Ironwood-only fast path, from NU6.3 activation to the tip.
+    Ironwood,
+}
+
 /// Block state as extracted from one block: nullifiers, cmxs, action triples.
 type BlockState = (
     Vec<ExtractedNullifier>,
@@ -808,7 +822,12 @@ impl EpochManager {
 
     /// Sync nullifiers, orchard commitments, and per-block actions_root from a
     /// range of blocks into nomt + sled.
-    pub async fn sync_nullifiers(&self, from_height: u32, to_height: u32) -> Result<u32> {
+    pub async fn sync_nullifiers(
+        &self,
+        from_height: u32,
+        to_height: u32,
+        cursor: SyncCursor,
+    ) -> Result<u32> {
         use futures::stream::{self, StreamExt};
 
         let mut total_nullifiers = 0u32;
@@ -866,7 +885,7 @@ impl EpochManager {
                 highest = height;
 
                 if pending.len() >= STATE_SYNC_CHUNK as usize {
-                    self.flush_state(&pending, &action_roots, highest)?;
+                    self.flush_state(&pending, &action_roots, highest, cursor)?;
                     pending.clear();
                     action_roots.clear();
                     info!(
@@ -877,7 +896,7 @@ impl EpochManager {
             }
 
             if !pending.is_empty() {
-                self.flush_state(&pending, &action_roots, highest)?;
+                self.flush_state(&pending, &action_roots, highest, cursor)?;
             }
             Ok::<(), crate::error::ZidecarError>(())
         };
@@ -898,13 +917,104 @@ impl EpochManager {
         blocks: &[(u32, Vec<[u8; 32]>, Vec<[u8; 32]>)],
         action_roots: &[(u32, [u8; 32])],
         highest: u32,
+        cursor: SyncCursor,
     ) -> Result<()> {
         self.storage.batch_insert_block_state(blocks)?;
         for (height, root) in action_roots {
             self.storage.store_actions_root(*height, *root)?;
         }
-        self.storage.set_nullifier_sync_height(highest)?;
+        match cursor {
+            SyncCursor::Main => self.storage.set_nullifier_sync_height(highest)?,
+            SyncCursor::Ironwood => self.storage.set_ironwood_sync_height(highest)?,
+        }
         Ok(())
+    }
+
+    /// Background task: index the ironwood pool, from activation to the tip.
+    ///
+    /// Runs alongside the main backfill rather than behind it. Ironwood exists
+    /// only from NU6.3 activation, so the ~9k blocks it actually spans index in
+    /// minutes — but as one cursor over the whole chain it inherited the
+    /// backfill's position and would not have reached activation for ~20 hours.
+    /// Since ironwood is what wallets query now, that is exactly backwards.
+    ///
+    /// Both tasks write the same existence-keyed NOMT set over disjoint height
+    /// ranges; Storage's commit lock keeps their sessions from overlapping.
+    pub async fn run_background_ironwood_sync(
+        self: Arc<Self>,
+        mut shutdown: tokio::sync::watch::Receiver<bool>,
+    ) {
+        let activation = crate::constants::IRONWOOD_ACTIVATION_HEIGHT;
+
+        let mut last_synced = self
+            .storage
+            .get_ironwood_sync_height()
+            .unwrap_or(None)
+            .unwrap_or(activation.saturating_sub(1))
+            .max(activation.saturating_sub(1));
+
+        info!(
+            "starting ironwood sync from height {} (activation {})",
+            last_synced + 1,
+            activation
+        );
+
+        loop {
+            if *shutdown.borrow() {
+                info!("ironwood sync: shutdown received, last_synced={}", last_synced);
+                return;
+            }
+
+            let current_height = match self.get_current_height().await {
+                Ok(h) => h,
+                Err(e) => {
+                    warn!("ironwood sync: failed to get current height: {}", e);
+                    tokio::select! {
+                        _ = tokio::time::sleep(tokio::time::Duration::from_secs(10)) => {}
+                        _ = shutdown.changed() => return,
+                    }
+                    continue;
+                }
+            };
+
+            if last_synced < current_height {
+                let behind = current_height - last_synced;
+                let batch = if behind > 1_000 {
+                    STATE_SYNC_BACKFILL_BATCH
+                } else {
+                    100
+                };
+                let batch_end = (last_synced + batch).min(current_height);
+
+                match self
+                    .sync_nullifiers(last_synced + 1, batch_end, SyncCursor::Ironwood)
+                    .await
+                {
+                    Ok(_) => {
+                        last_synced = batch_end;
+                        info!(
+                            "ironwood sync: height {}/{} ({} behind)",
+                            batch_end,
+                            current_height,
+                            current_height.saturating_sub(batch_end)
+                        );
+                    }
+                    Err(e) => {
+                        error!("ironwood sync failed at height {}: {}", last_synced + 1, e);
+                        tokio::select! {
+                            _ = tokio::time::sleep(tokio::time::Duration::from_secs(10)) => {}
+                            _ = shutdown.changed() => return,
+                        }
+                        continue;
+                    }
+                }
+            }
+
+            tokio::select! {
+                _ = tokio::time::sleep(tokio::time::Duration::from_secs(5)) => {}
+                _ = shutdown.changed() => return,
+            }
+        }
     }
 
     /// Background task: sync nullifiers incrementally.
@@ -966,7 +1076,10 @@ impl EpochManager {
                 };
                 let batch_end = (last_synced + batch).min(current_height);
 
-                match self.sync_nullifiers(last_synced + 1, batch_end).await {
+                match self
+                    .sync_nullifiers(last_synced + 1, batch_end, SyncCursor::Main)
+                    .await
+                {
                     Ok(count) => {
                         if count > 0 {
                             info!(
