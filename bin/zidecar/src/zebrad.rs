@@ -176,6 +176,13 @@ impl ZebradClient {
             .map_err(unbox_error)
     }
 
+    /// Node build info (getinfo). Used to surface the backing zebrad
+    /// version through GetLightdInfo so operators can query it remotely.
+    pub async fn get_node_info(&self) -> Result<NodeInfo> {
+        let result = self.call("getinfo", vec![]).await?;
+        serde_json::from_value(result).map_err(|e| ZidecarError::ZebradRpc(e.to_string()))
+    }
+
     pub async fn get_blockchain_info(&self) -> Result<BlockchainInfo> {
         let result = self.call("getblockchaininfo", vec![]).await?;
         serde_json::from_value(result).map_err(|e| ZidecarError::ZebradRpc(e.to_string()))
@@ -319,6 +326,15 @@ struct RpcResponse {
 struct RpcError {
     code: i32,
     message: String,
+}
+
+/// subset of zebrad's getinfo response
+#[derive(Debug, Deserialize)]
+pub struct NodeInfo {
+    #[serde(default)]
+    pub build: String,
+    #[serde(default)]
+    pub subversion: String,
 }
 
 #[derive(Debug, Deserialize)]

@@ -567,6 +567,9 @@ impl CompactTxStreamer for LwdService {
 
     async fn get_lightd_info(&self, _: Request<Empty>) -> Result<Response<LightdInfo>, Status> {
         let info = self.zebrad.get_blockchain_info().await?;
+        // backing node version — best-effort so a getinfo hiccup never
+        // breaks the info endpoint wallets and probes depend on
+        let node = self.zebrad.get_node_info().await.ok();
 
         let sapling_height: u64 = if self.testnet { 280000 } else { 419200 };
 
@@ -587,8 +590,8 @@ impl CompactTxStreamer for LwdService {
             build_date: String::new(),
             build_user: "zidecar".to_string(),
             estimated_height: info.blocks as u64,
-            zcashd_build: String::new(),
-            zcashd_subversion: String::new(),
+            zcashd_build: node.as_ref().map(|n| n.build.clone()).unwrap_or_default(),
+            zcashd_subversion: node.map(|n| n.subversion).unwrap_or_default(),
         }))
     }
 
