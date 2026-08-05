@@ -100,6 +100,17 @@ async fn sync_inner(
     } else {
         ORCHARD_ACTIVATION_TESTNET
     };
+    // Ironwood activation must be network-aware for the same reason orchard is:
+    // seeding the tree position is gated on `start > activation`, so a hardcoded
+    // mainnet height (3.4M) is never exceeded on testnet/regtest and the
+    // ironwood position stays 0 while the scan starts mid-chain — every
+    // subsequent note gets an offset position and its witness fails to verify
+    // against the anchor. Caught by a real regtest broadcast (AnchorMismatch).
+    let ironwood_activation = if mainnet {
+        zync_core::IRONWOOD_ACTIVATION_HEIGHT
+    } else {
+        zync_core::IRONWOOD_ACTIVATION_HEIGHT_TESTNET
+    };
 
     let ivk_ext = fvk.to_ivk(Scope::External).prepare();
     let ivk_int = fvk.to_ivk(Scope::Internal).prepare();
@@ -222,7 +233,7 @@ async fn sync_inner(
     // ironwood tree size at start-1 (empty frontier hex → 0).
     let mut ironwood_position = {
         let stored = wallet.ironwood_position()?;
-        if stored == 0 && start > zync_core::IRONWOOD_ACTIVATION_HEIGHT {
+        if stored == 0 && start > ironwood_activation {
             match client.get_ironwood_tree_state(start - 1).await {
                 Ok((tree_hex, _)) if !tree_hex.is_empty() => {
                     let tree_bytes = hex::decode(&tree_hex)
