@@ -253,7 +253,7 @@ fn guard_orchard_shielding_allowed(
 /// is then rejected by the node. Checked by BOTH the target height and the live
 /// consensus branch id, so neither a stale height nor a node that has already
 /// upgraded can open the door on its own.
-fn guard_orchard_spend_allowed(
+fn guard_pre_nu6_2_orchard_builder_allowed(
     anchor_height: u32,
     branch_id: u32,
     mainnet: bool,
@@ -265,13 +265,21 @@ fn guard_orchard_spend_allowed(
     };
     if anchor_height >= activation || branch_id == NU6_3_BRANCH_ID {
         return Err(Error::Transaction(format!(
-            "orchard spends are disabled at NU6.3 (activation height {}, chain \
-             height {}, branch id {:#010x}): this builder pins the pre-NU6.2 \
-             orchard bundle protocol, so the transaction would prove for minutes \
-             and then be rejected by the network. Spend from the ironwood pool \
-             instead (zafu-wasm build_signed_ironwood_send / \
-             build_ironwood_send_pczt); orchard funds must first cross the \
-             one-way turnstile. zcli's own ironwood spend path is not \
+            "this builder cannot produce a valid transaction at NU6.3 \
+             (activation height {}, chain height {}, branch id {:#010x}): it \
+             pins the pre-NU6.2 orchard bundle protocol, so the transaction \
+             would prove for minutes and then be rejected.\n\
+             \n\
+             To be precise about what NU6.3 disables: orchard SPENDS are still \
+             valid - the turnstile migration spends orchard notes and is mined \
+             on mainnet. What is disabled is creating new orchard OUTPUTS; the \
+             turnstile is one-way, so value may leave the orchard pool but not \
+             enter it. orchard->transparent is therefore a legal shape that \
+             this builder simply does not implement.\n\
+             \n\
+             Options: migrate to ironwood via the turnstile and spend from \
+             there (zafu-wasm build_signed_ironwood_send / \
+             build_ironwood_send_pczt). zcli's own ironwood spend path is not \
              implemented yet.",
             activation, anchor_height, branch_id
         )));
@@ -557,7 +565,7 @@ pub fn build_orchard_spend_tx(
     // and is then rejected. `zclid`'s merchant payout/sweep loops retry that
     // forever without ever marking the notes spent, so the gate must be here in
     // the builder rather than in each caller.
-    guard_orchard_spend_allowed(anchor_height, branch_id, mainnet)?;
+    guard_pre_nu6_2_orchard_builder_allowed(anchor_height, branch_id, mainnet)?;
 
     let coin_type = if mainnet { 133 } else { 1 };
     let sk = SpendingKey::from_zip32_seed(seed.as_bytes(), coin_type, zip32::AccountId::ZERO)
@@ -868,22 +876,22 @@ mod shielding_gate_tests {
     fn orchard_spends_are_gated_at_nu6_3() {
         const NU6_2: u32 = 0x5437_f330;
         assert!(
-            guard_orchard_spend_allowed(NU6_3_ACTIVATION_HEIGHT_MAINNET - 1, NU6_2, true).is_ok()
+            guard_pre_nu6_2_orchard_builder_allowed(NU6_3_ACTIVATION_HEIGHT_MAINNET - 1, NU6_2, true).is_ok()
         );
         assert!(
-            guard_orchard_spend_allowed(NU6_3_ACTIVATION_HEIGHT_MAINNET, NU6_2, true).is_err()
+            guard_pre_nu6_2_orchard_builder_allowed(NU6_3_ACTIVATION_HEIGHT_MAINNET, NU6_2, true).is_err()
         );
-        assert!(guard_orchard_spend_allowed(
+        assert!(guard_pre_nu6_2_orchard_builder_allowed(
             NU6_3_ACTIVATION_HEIGHT_MAINNET + 10_000,
             NU6_2,
             true
         )
         .is_err());
         // stale/wrong height but the node already reports NU6.3: refused
-        assert!(guard_orchard_spend_allowed(1_000_000, NU6_3_BRANCH_ID, true).is_err());
+        assert!(guard_pre_nu6_2_orchard_builder_allowed(1_000_000, NU6_3_BRANCH_ID, true).is_err());
         // testnet activates NU6.3 at height 1 in the pinned fork
-        assert!(guard_orchard_spend_allowed(3_000_000, NU6_2, false).is_err());
-        assert!(guard_orchard_spend_allowed(1, NU6_2, false).is_err());
+        assert!(guard_pre_nu6_2_orchard_builder_allowed(3_000_000, NU6_2, false).is_err());
+        assert!(guard_pre_nu6_2_orchard_builder_allowed(1, NU6_2, false).is_err());
     }
 
     /// The builder itself must refuse, not just the guard - callers

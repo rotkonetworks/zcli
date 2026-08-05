@@ -184,11 +184,44 @@ pub async fn build_witnesses(
     sync_height: u32,
 ) -> Result<(Anchor, Vec<MerklePath>), Error> {
     // resolve frontier: cached > fetch at sync_height (single RPC, no position leak)
-    let (frontier_hex, frontier_height) = if let Some((hex, h)) = cached_frontier {
+    // A cached frontier is only usable if EVERY note we need a witness for sits
+    // at or after it. The replay below walks FORWARD from the frontier, so a
+    // note whose position is already inside it can never be reached — the loop
+    // runs to the anchor and then reports "position not found".
+    //
+    // That is not a corrupt wallet, it is an ordering bug: sync advances the
+    // cached frontier past notes received earlier, and from then on the wallet
+    // cannot spend any of them. Detect it and fall back to a tree state from
+    // before the earliest note instead of failing the spend.
+    let earliest_note_height = notes.iter().map(|n| n.block_height).min();
+    let cached_covers_notes = |hex: &str| -> bool {
+        match hex::decode(hex).ok().and_then(|b| deserialize_tree(&b).ok()) {
+            Some(tree) => notes.iter().all(|n| n.position >= tree.size() as u64),
+            // undecodable frontier: treat as unusable rather than trusting it
+            None => false,
+        }
+    };
+
+    let usable_cache = cached_frontier.filter(|(hex, _)| cached_covers_notes(hex));
+
+    let (frontier_hex, frontier_height) = if let Some((hex, h)) = usable_cache {
         if !json {
             eprintln!("using cached tree frontier at height {}", h);
         }
         (hex, h)
+    } else if let Some(h) = earliest_note_height.filter(|h| *h > 1) {
+        // one RPC at a height strictly before the earliest note, so the
+        // frontier is guaranteed to sit at or below every note position
+        let fetch_at = h - 1;
+        if !json {
+            eprintln!(
+                "cached frontier is newer than the notes being spent; \
+                 fetching tree state at height {} instead",
+                fetch_at
+            );
+        }
+        let (hex, _) = client.get_tree_state(fetch_at).await?;
+        (hex, fetch_at)
     } else if sync_height > 0 && sync_height <= anchor_height {
         if !json {
             eprintln!(
