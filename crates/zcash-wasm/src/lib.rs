@@ -460,23 +460,61 @@ impl<V: DomainVersion> ShieldedOutput<NoteEncryptionDomain<V>, COMPACT_NOTE_SIZE
 /// batch format does not preserve. So both domains must be tried. The extra
 /// cost is one AEAD open on a 52-byte ciphertext, negligible next to the
 /// Diffie-Hellman that already happened.
-fn try_compact_decrypt_any_version(
+/// Which note-version domain(s) to trial-decrypt an action against.
+///
+/// Trial decryption is the dominant cost of a scan, so this is a hot-path
+/// decision, not a stylistic one. Upstream orchard enforces the plaintext lead
+/// byte per domain (`OrchardDomain` = V2/0x02, `IronwoodDomain` = V3/0x03), so
+/// an action must be tried against the right one — but trying BOTH when the
+/// pool is already known doubles the work for every action that does not
+/// belong to us, which is nearly all of them.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum DomainChoice {
+    /// The pool is known because the action came out of a specific bundle
+    /// (zidecar returns orchard and ironwood actions in separate lists, and
+    /// the scan entry points are already per-pool). Use only that domain.
+    Orchard,
+    Ironwood,
+    /// The pool is genuinely unknown for this action — try both. Correct, but
+    /// twice the work; do not use it where the caller knows the bundle.
+    Either,
+}
+
+fn try_compact_decrypt_in(
     compact_action: &orchard::note_encryption::CompactAction,
     ivk: &PreparedIncomingViewingKey,
     output: &CompactShieldedOutput,
+    choice: DomainChoice,
 ) -> Option<(orchard::Note, orchard::Address)> {
-    try_compact_note_decryption(
-        &OrchardDomain::for_compact_action(compact_action),
-        ivk,
-        output,
-    )
-    .or_else(|| {
+    let orchard = || {
+        try_compact_note_decryption(
+            &OrchardDomain::for_compact_action(compact_action),
+            ivk,
+            output,
+        )
+    };
+    let ironwood = || {
         try_compact_note_decryption(
             &IronwoodDomain::for_compact_action(compact_action),
             ivk,
             output,
         )
-    })
+    };
+    match choice {
+        DomainChoice::Orchard => orchard(),
+        DomainChoice::Ironwood => ironwood(),
+        DomainChoice::Either => orchard().or_else(ironwood),
+    }
+}
+
+/// Try both domains. Use only where the pool is genuinely unknown; prefer
+/// [`try_compact_decrypt_in`] with a known pool on any scan hot path.
+fn try_compact_decrypt_any_version(
+    compact_action: &orchard::note_encryption::CompactAction,
+    ivk: &PreparedIncomingViewingKey,
+    output: &CompactShieldedOutput,
+) -> Option<(orchard::Note, orchard::Address)> {
+    try_compact_decrypt_in(compact_action, ivk, output, DomainChoice::Either)
 }
 
 /// Binary compact action for efficient transfer (148 bytes each)
@@ -564,6 +602,7 @@ fn try_decrypt_compact_action(
     ivk_external: &PreparedIncomingViewingKey,
     ivk_internal: &PreparedIncomingViewingKey,
     action: &CompactActionBinary,
+    choice: DomainChoice,
 ) -> Option<DecryptedParts> {
     let nullifier = orchard::note::Nullifier::from_bytes(&action.nullifier);
     if nullifier.is_none().into() {
@@ -608,12 +647,12 @@ fn try_decrypt_compact_action(
     // so a V3 note never falls through to the internal scope and gets
     // misclassified as change.
     if let Some((note, addr)) =
-        try_compact_decrypt_any_version(&compact_action, ivk_external, &output)
+        try_compact_decrypt_in(&compact_action, ivk_external, &output, choice)
     {
         return Some(build(note, addr, false));
     }
     if let Some((note, addr)) =
-        try_compact_decrypt_any_version(&compact_action, ivk_internal, &output)
+        try_compact_decrypt_in(&compact_action, ivk_internal, &output, choice)
     {
         return Some(build(note, addr, true));
     }
@@ -632,8 +671,20 @@ fn scan_compact_actions_with_keys(
 ) -> Result<JsValue, JsError> {
     let actions = parse_compact_actions(actions_bytes)?;
 
+    // The caller already knows the pool: zidecar returns orchard and ironwood
+    // actions in SEPARATE lists and the scan exports are per-pool. Decrypting
+    // against only that pool's domain halves the trial-decryption work for
+    // every action that is not ours - which, over a multi-hundred-thousand
+    // block sync, is essentially all of them.
+    let choice = match pool {
+        "ironwood" => DomainChoice::Ironwood,
+        "orchard" => DomainChoice::Orchard,
+        // Unrecognized label: stay correct rather than fast.
+        _ => DomainChoice::Either,
+    };
+
     let to_found = |(idx, action): (usize, &CompactActionBinary)| {
-        try_decrypt_compact_action(fvk, ivk_external, ivk_internal, action).map(|d| FoundNote {
+        try_decrypt_compact_action(fvk, ivk_external, ivk_internal, action, choice).map(|d| FoundNote {
             index: idx as u32,
             value: d.value,
             nullifier: hex_encode(&d.nullifier),
@@ -1675,6 +1726,14 @@ mod tests {
         version: orchard::note::NoteVersion,
         scope: Scope,
     ) -> Option<DecryptedParts> {
+        scan_roundtrip_with_choice(version, scope, DomainChoice::Either)
+    }
+
+    fn scan_roundtrip_with_choice(
+        version: orchard::note::NoteVersion,
+        scope: Scope,
+        choice: DomainChoice,
+    ) -> Option<DecryptedParts> {
         use orchard::note::{Nullifier, RandomSeed, Rho};
         use orchard::value::NoteValue;
         use rand::{rngs::OsRng, RngCore};
@@ -1749,7 +1808,7 @@ mod tests {
             ciphertext,
         };
 
-        try_decrypt_compact_action(&fvk, &ivk_external, &ivk_internal, &action)
+        try_decrypt_compact_action(&fvk, &ivk_external, &ivk_internal, &action, choice)
     }
 
     /// An ironwood (V3) note must decrypt on the production scan path. This is
@@ -1762,6 +1821,60 @@ mod tests {
         assert_eq!(d.value, 624_985_000);
         assert_eq!(d.note_version, 3, "note_version must come from the note");
         assert!(!d.is_change, "external scope must not be flagged as change");
+    }
+
+    /// The pool-aware fast path must genuinely NARROW the search, not merely
+    /// relabel it.
+    ///
+    /// `scan_compact_actions_with_keys` picks a single domain from the pool it
+    /// is already given, because zidecar returns orchard and ironwood actions
+    /// in separate lists and the scan exports are per-pool. That halves trial
+    /// decryption on the hot path — but only if the choice is actually honoured.
+    /// If a refactor ever quietly widened it back to trying both, the scan
+    /// would still be CORRECT and every other test here would still pass, so
+    /// the regression would show up only as a wallet that syncs at half speed.
+    ///
+    /// So this asserts the negative: the wrong domain must FAIL to decrypt.
+    #[test]
+    fn pool_aware_choice_actually_narrows_the_domain() {
+        use orchard::note::NoteVersion;
+
+        // Right domain: decrypts.
+        assert!(
+            scan_roundtrip_with_choice(NoteVersion::V3, Scope::External, DomainChoice::Ironwood)
+                .is_some(),
+            "a V3 note must decrypt under the ironwood domain"
+        );
+        assert!(
+            scan_roundtrip_with_choice(NoteVersion::V2, Scope::External, DomainChoice::Orchard)
+                .is_some(),
+            "a V2 note must decrypt under the orchard domain"
+        );
+
+        // Wrong domain: must NOT decrypt. This is what proves the narrowing is
+        // real — upstream enforces the plaintext lead byte per domain, so a
+        // `None` here is the enforcement working, not a broken fixture.
+        assert!(
+            scan_roundtrip_with_choice(NoteVersion::V3, Scope::External, DomainChoice::Orchard)
+                .is_none(),
+            "a V3 note must NOT decrypt under the orchard domain; if it does, \
+             the choice is being ignored and the scan is doing double work"
+        );
+        assert!(
+            scan_roundtrip_with_choice(NoteVersion::V2, Scope::External, DomainChoice::Ironwood)
+                .is_none(),
+            "a V2 note must NOT decrypt under the ironwood domain"
+        );
+
+        // And Either still finds both, so callers without pool knowledge are
+        // unaffected by the fast path existing.
+        assert!(
+            scan_roundtrip_with_choice(NoteVersion::V2, Scope::External, DomainChoice::Either)
+                .is_some()
+                && scan_roundtrip_with_choice(NoteVersion::V3, Scope::External, DomainChoice::Either)
+                    .is_some(),
+            "Either must still accept both pools"
+        );
     }
 
     /// The orchard (V2) path must keep working — trying both domains must not
@@ -6301,6 +6414,7 @@ fn test_user_seed_with_real_action() {
         &keys.prepared_ivk_external,
         &keys.prepared_ivk_internal,
         &action,
+        DomainChoice::Either,
     );
     println!(
         "Decryption result: {:?}",
