@@ -15,9 +15,9 @@
 //! OUTPUTS ironwood; this spends a REAL ironwood note against a REAL ironwood
 //! tree anchor. Exercises the money-path `build_signed_ironwood_send_core`.
 //!
-//! Only meaningful when built the way the forks require:
-//!   RUSTFLAGS='--cfg zcash_unstable="nu6.3"' cargo test --release --test signed_ironwood_send_v6
-//! Without the cfg this file compiles to nothing. Run with --release: it builds
+//! Run with:
+//!   cargo test --release --test signed_ironwood_send_v6
+//! Run with --release: it builds
 //! the post-NU6.3 Halo 2 proving key and proves the ironwood bundle.
 
 

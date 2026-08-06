@@ -9,9 +9,9 @@
 //! Sibling of `turnstile_v6.rs` (the cold/redacted flow). Exercises the
 //! money-path signing function `build_signed_turnstile_migration_core`.
 //!
-//! Only meaningful when built the way the forks require:
-//!   RUSTFLAGS='--cfg zcash_unstable="nu6.3"' cargo test --release --test signed_turnstile_v6
-//! Without the cfg this file compiles to nothing. Run with --release: it
+//! Run with:
+//!   cargo test --release --test signed_turnstile_v6
+//! Run with --release: it
 //! builds the post-NU6.3 Halo 2 proving key and proves two bundles.
 
 

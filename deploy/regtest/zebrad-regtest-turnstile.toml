@@ -1,0 +1,57 @@
+# zebrad Regtest config with a DEFERRED NU6.3 (Ironwood) activation.
+#
+# Sibling of `zebrad-regtest.toml`, which activates everything at height 1. That
+# chain cannot host a turnstile test at all: post-NU6.3, orchard OUTPUTS are
+# consensus-disabled, so there is no way to create the legacy orchard note a
+# migration has to spend. (Orchard SPENDS stay enabled - that is precisely the
+# one-way turnstile.)
+#
+# So this chain runs NU5..NU6.1 from block 1, activates NU6.2 at 150 and holds
+# NU6.3 back until 200. That leaves a window (heights 1..149, consensus branch
+# id 0x4dec4df0) in which a t->orchard shielding transaction is legal, and a
+# post-200 regime (branch id 0x37a5165b) in which the orchard->ironwood
+# migration is legal. 100 blocks of coinbase maturity fit comfortably inside the
+# first window.
+#
+# NU6.2 is deliberately NOT at height 1. The Orchard Action circuit changed at
+# NU6.2 (zebra routes bundles to one verifying key per era:
+# InsecurePreNu6_2 / FixedPostNu6_2 / PostNu6_3), and this repo's legacy orchard
+# shielding builder emits `BundleVersion::orchard_insecure_v1()`. Shielding into
+# orchard therefore has to happen in an NU5..NU6.1 block or zebra rejects the
+# proof. NU6.2 still gets its own stretch of chain (150..199) so the migration
+# is not spending a note from the immediately preceding upgrade.
+#
+# Ports differ from `zebrad-regtest.toml` (28232/28233) so both harnesses can be
+# up at the same time without colliding.
+#
+# Run:
+#   zebrad --config deploy/regtest/zebrad-regtest-turnstile.toml start
+
+[network]
+network = "Regtest"
+listen_addr = "127.0.0.1:28243"
+
+# NU6.3 deliberately LATE. Everything below it is live from block 1 so the
+# pre-activation window is a normal NU6.2 chain.
+[network.testnet_parameters.activation_heights]
+NU5 = 1
+NU6 = 1
+"NU6.1" = 1
+"NU6.2" = 150
+"NU6.3" = 200
+
+[state]
+ephemeral = true
+
+[rpc]
+listen_addr = "127.0.0.1:28242"
+# Loopback-only throwaway chain: skip the auth cookie so the harness can speak
+# plain JSON-RPC. Never do this on a node holding real funds.
+enable_cookie_auth = false
+
+[mining]
+# No miner_address: the harness mines with `generatetoaddress`, which supplies
+# the address per call, so the chain pays the key the test actually owns.
+
+[tracing]
+filter = "info"

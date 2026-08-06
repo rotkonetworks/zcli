@@ -52,11 +52,8 @@ bip39 = { version = "2.0", features = ["rand"] }
 # (orchard 0.12 / zcash_keys 0.12 / zcash_protocol 0.7 / zcash_address 0.7) to
 # the SAME valar NU6.3 fork revs that crates/zcash-wasm (zafu) already builds
 # against. See that crate's Cargo.toml for the frozen interface contract.
-#   orchard 0.15.5:          crates.io (released, NU6.3/Ironwood upstream)
-#   librustzcash crates:     crates.io (released; zcash_primitives 0.30 etc.)
-#                            [patch]ed at the workspace root to the branch-id-fixed vendored copy
-#                            under vendor/librustzcash.
-# Build native with: RUSTFLAGS='--cfg zcash_unstable="nu6.3"'
+#   orchard 0.15.5 / librustzcash crates: crates.io releases (no forks, no
+#   [patch]). NU6.3 / Ironwood is ungated upstream, so no zcash_unstable cfg.
 orchard = { version = "0.15.5", default-features = false, features = ["circuit"] }
 zcash_keys = { version = "0.16", default-features = false, features = ["orchard"] }
 zcash_protocol = { version = "0.10", default-features = false }
@@ -145,9 +142,8 @@ urlencoding = { version = "2", optional = true }
 # Gated behind the `cli` feature so a wasm build of `zecli` itself does not
 # pull the whole proving stack in.
 #
-# NOTE: everything ironwood in that crate is `#[cfg(zcash_unstable = "nu6.3")]`.
-# Build with RUSTFLAGS='--cfg zcash_unstable="nu6.3"' or `zcli tx migrate`
-# compiles to a "not built with NU6.3 support" stub.
+# Ironwood support in that crate is unconditional now that NU6.3 is ungated
+# upstream; no cfg or RUSTFLAGS is required for `zcli tx migrate`.
 zafu-wasm = { version = "0.2.0", path = "../../crates/zcash-wasm", default-features = false, optional = true }
 
 [build-dependencies]
@@ -156,9 +152,3 @@ tonic-build = "0.11"
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }
 tempfile = "3"
-
-# NU6.3 cfg is a first-class cfg for this crate's orchard/librustzcash fork.
-# Registering it here silences the `unexpected_cfgs` lint (mirrors zcash-wasm
-# and poker-escrow). Build with RUSTFLAGS='--cfg zcash_unstable="nu6.3"'.
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(zcash_unstable, values("nu6.3"))'] }

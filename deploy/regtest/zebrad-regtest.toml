@@ -1,0 +1,42 @@
+# zebrad Regtest config with NU6.3 (Ironwood) live from block 1.
+#
+# This is the validator the ironwood money paths are tested against. Regtest
+# disables PoW, which is what makes the `generate` / `generatetoaddress` RPCs
+# available, and it takes its consensus branch id for NU6.3 from
+# zebra-chain/src/parameters/network_upgrade.rs (0x37a5165b) - the SAME id as
+# mainnet, so the builders' fail-closed branch-id guard needs no special case.
+#
+# Ports are deliberately NOT the testnet defaults (18232/18233): a lightwalletd
+# or another test node may already own those.
+#
+# Run:
+#   zebrad --config deploy/regtest/zebrad-regtest.toml start
+
+[network]
+network = "Regtest"
+listen_addr = "127.0.0.1:28233"
+
+# Everything up to and including Ironwood is live from the first block, so
+# every transaction in this chain binds the NU6.3 consensus branch id.
+[network.testnet_parameters.activation_heights]
+NU5 = 1
+NU6 = 1
+"NU6.1" = 1
+"NU6.2" = 1
+"NU6.3" = 1
+
+[state]
+ephemeral = true
+
+[rpc]
+listen_addr = "127.0.0.1:28232"
+# Loopback-only throwaway chain: skip the auth cookie so the harness can speak
+# plain JSON-RPC. Never do this on a node holding real funds.
+enable_cookie_auth = false
+
+[mining]
+# No miner_address: the harness mines with `generatetoaddress`, which supplies
+# the address per call, so the chain pays the key the test actually owns.
+
+[tracing]
+filter = "info"

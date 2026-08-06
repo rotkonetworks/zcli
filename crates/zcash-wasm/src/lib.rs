@@ -17,7 +17,9 @@ use wasm_bindgen::prelude::*;
 
 // Real Orchard key derivation and note decryption
 use orchard::keys::{IncomingViewingKey, PreparedIncomingViewingKey, Scope, SpendingKey};
-use orchard::note_encryption::OrchardDomain;
+use orchard::note_encryption::{
+    DomainVersion, IronwoodDomain, NoteEncryptionDomain, OrchardDomain,
+};
 use zcash_note_encryption::{
     try_compact_note_decryption, EphemeralKeyBytes, ShieldedOutput, COMPACT_NOTE_SIZE,
 };
@@ -393,9 +395,6 @@ impl WalletKeys {
             ciphertext,
         );
 
-        // Create domain for this action
-        let domain = OrchardDomain::for_compact_action(&compact_action);
-
         // Create our shielded output wrapper
         let output = CompactShieldedOutput {
             epk: epk_bytes,
@@ -405,14 +404,14 @@ impl WalletKeys {
 
         // Try compact note decryption with EXTERNAL scope IVK first
         if let Some(result) =
-            try_compact_note_decryption(&domain, &self.prepared_ivk_external, &output)
+            try_compact_decrypt_any_version(&compact_action, &self.prepared_ivk_external, &output)
         {
             return Some(result.0.value().inner());
         }
 
         // If external failed, try INTERNAL scope IVK (for change/shielding outputs)
         if let Some(result) =
-            try_compact_note_decryption(&domain, &self.prepared_ivk_internal, &output)
+            try_compact_decrypt_any_version(&compact_action, &self.prepared_ivk_internal, &output)
         {
             return Some(result.0.value().inner());
         }
@@ -428,7 +427,12 @@ struct CompactShieldedOutput {
     ciphertext: [u8; 52],
 }
 
-impl ShieldedOutput<OrchardDomain, COMPACT_NOTE_SIZE> for CompactShieldedOutput {
+// Generic over the note-plaintext version so the same wrapper can be trial
+// decrypted against `OrchardDomain` (V2) and `IronwoodDomain` (V3). See
+// `try_compact_decrypt_any_version` for why both must be tried.
+impl<V: DomainVersion> ShieldedOutput<NoteEncryptionDomain<V>, COMPACT_NOTE_SIZE>
+    for CompactShieldedOutput
+{
     fn ephemeral_key(&self) -> EphemeralKeyBytes {
         EphemeralKeyBytes(self.epk)
     }
@@ -440,6 +444,39 @@ impl ShieldedOutput<OrchardDomain, COMPACT_NOTE_SIZE> for CompactShieldedOutput 
     fn enc_ciphertext(&self) -> &[u8; COMPACT_NOTE_SIZE] {
         &self.ciphertext
     }
+}
+
+/// Trial-decrypt a compact output against BOTH note-plaintext versions.
+///
+/// Upstream orchard splits the note-encryption domain by note version and
+/// *enforces* it: `OrchardDomain` accepts only V2 plaintexts (lead byte
+/// 0x02) and `IronwoodDomain` only V3 (0x03); a mismatched lead byte makes
+/// `try_*_note_decryption` return `None`. (The fork this crate used to build
+/// against had a single permissive domain, which is why one domain used to
+/// be enough.)
+///
+/// A compact action arriving off the wire carries no pool label of its own —
+/// the pool is a property of which bundle it came from, which the binary
+/// batch format does not preserve. So both domains must be tried. The extra
+/// cost is one AEAD open on a 52-byte ciphertext, negligible next to the
+/// Diffie-Hellman that already happened.
+fn try_compact_decrypt_any_version(
+    compact_action: &orchard::note_encryption::CompactAction,
+    ivk: &PreparedIncomingViewingKey,
+    output: &CompactShieldedOutput,
+) -> Option<(orchard::Note, orchard::Address)> {
+    try_compact_note_decryption(
+        &OrchardDomain::for_compact_action(compact_action),
+        ivk,
+        output,
+    )
+    .or_else(|| {
+        try_compact_note_decryption(
+            &IronwoodDomain::for_compact_action(compact_action),
+            ivk,
+            output,
+        )
+    })
 }
 
 /// Binary compact action for efficient transfer (148 bytes each)
@@ -512,9 +549,15 @@ struct DecryptedParts {
 
 /// Trial-decrypt one compact action with both scope IVKs.
 ///
-/// The same `OrchardDomain` decrypts both orchard (V2) and ironwood (V3)
-/// note plaintexts — the plaintext lead byte selects the version, and the
-/// nullifier derivation follows the note's own version. The pool label is
+/// Each scope is tried against BOTH note-version domains — `OrchardDomain`
+/// (V2) and `IronwoodDomain` (V3) — because upstream orchard enforces the
+/// plaintext lead byte per domain and a wire compact action does not say
+/// which pool it came from. See `try_compact_decrypt_any_version`.
+///
+/// `note_version` is read back off whichever note actually decrypted, and
+/// the nullifier is derived from that same note (`Note::nullifier` binds
+/// rho/psi/cmx, all of which already reflect the note's version), so both
+/// stay consistent with the domain that succeeded. The pool label is
 /// applied by the caller.
 fn try_decrypt_compact_action(
     fvk: &orchard::keys::FullViewingKey,
@@ -541,7 +584,6 @@ fn try_decrypt_compact_action(
         action.ciphertext,
     );
 
-    let domain = OrchardDomain::for_compact_action(&compact_action);
     let output = CompactShieldedOutput {
         epk: action.epk,
         cmx: action.cmx,
@@ -562,10 +604,17 @@ fn try_decrypt_compact_action(
     };
 
     // External scope first (incoming payments), then internal (change).
-    if let Some((note, addr)) = try_compact_note_decryption(&domain, ivk_external, &output) {
+    // Each scope is tried against both note-version domains before moving on,
+    // so a V3 note never falls through to the internal scope and gets
+    // misclassified as change.
+    if let Some((note, addr)) =
+        try_compact_decrypt_any_version(&compact_action, ivk_external, &output)
+    {
         return Some(build(note, addr, false));
     }
-    if let Some((note, addr)) = try_compact_note_decryption(&domain, ivk_internal, &output) {
+    if let Some((note, addr)) =
+        try_compact_decrypt_any_version(&compact_action, ivk_internal, &output)
+    {
         return Some(build(note, addr, true));
     }
     None
@@ -1300,7 +1349,9 @@ struct FullShieldedOutput {
 /// NOTE_PLAINTEXT_SIZE for Orchard (580 bytes enc_ciphertext)
 const ORCHARD_NOTE_PLAINTEXT_SIZE: usize = 580;
 
-impl zcash_note_encryption::ShieldedOutput<OrchardDomain, ORCHARD_NOTE_PLAINTEXT_SIZE>
+// Generic over the note-plaintext version — see `CompactShieldedOutput`.
+impl<V: DomainVersion>
+    zcash_note_encryption::ShieldedOutput<NoteEncryptionDomain<V>, ORCHARD_NOTE_PLAINTEXT_SIZE>
     for FullShieldedOutput
 {
     fn ephemeral_key(&self) -> EphemeralKeyBytes {
@@ -1314,6 +1365,27 @@ impl zcash_note_encryption::ShieldedOutput<OrchardDomain, ORCHARD_NOTE_PLAINTEXT
     fn enc_ciphertext(&self) -> &[u8; ORCHARD_NOTE_PLAINTEXT_SIZE] {
         &self.enc_ciphertext
     }
+}
+
+/// Full-ciphertext counterpart of [`try_compact_decrypt_any_version`]: trial
+/// decrypt (note, address, memo) against both the V2 and V3 domains.
+fn try_full_decrypt_any_version(
+    compact_action: &orchard::note_encryption::CompactAction,
+    ivk: &PreparedIncomingViewingKey,
+    output: &FullShieldedOutput,
+) -> Option<(orchard::Note, orchard::Address, [u8; 512])> {
+    zcash_note_encryption::try_note_decryption(
+        &OrchardDomain::for_compact_action(compact_action),
+        ivk,
+        output,
+    )
+    .or_else(|| {
+        zcash_note_encryption::try_note_decryption(
+            &IronwoodDomain::for_compact_action(compact_action),
+            ivk,
+            output,
+        )
+    })
 }
 
 /// Parse full Orchard actions from raw transaction bytes
@@ -1371,8 +1443,6 @@ impl WalletKeys {
     /// and returns any notes that belong to this wallet, including memos.
     #[wasm_bindgen]
     pub fn decrypt_transaction_memos(&self, tx_bytes: &[u8]) -> Result<JsValue, JsError> {
-        use zcash_note_encryption::try_note_decryption;
-
         let actions = parse_orchard_actions_from_tx(tx_bytes)
             .map_err(|e| JsError::new(&format!("Failed to parse transaction: {}", e)))?;
 
@@ -1400,8 +1470,6 @@ impl WalletKeys {
                 action.enc_ciphertext[..52].try_into().unwrap(),
             );
 
-            let domain = OrchardDomain::for_compact_action(&compact_action);
-
             // Create full shielded output
             let output = FullShieldedOutput {
                 epk: action.epk,
@@ -1411,7 +1479,7 @@ impl WalletKeys {
 
             // Try external scope first (incoming)
             if let Some((note, _addr, memo)) =
-                try_note_decryption(&domain, &self.prepared_ivk_external, &output)
+                try_full_decrypt_any_version(&compact_action, &self.prepared_ivk_external, &output)
             {
                 let note_nf = note.nullifier(&self.fvk);
                 let (memo_str, is_text) = parse_memo_bytes(&memo);
@@ -1431,7 +1499,7 @@ impl WalletKeys {
 
             // Try internal scope (change / outgoing)
             if let Some((note, _addr, memo)) =
-                try_note_decryption(&domain, &self.prepared_ivk_internal, &output)
+                try_full_decrypt_any_version(&compact_action, &self.prepared_ivk_internal, &output)
             {
                 let note_nf = note.nullifier(&self.fvk);
                 let (memo_str, is_text) = parse_memo_bytes(&memo);
@@ -1459,8 +1527,6 @@ impl WatchOnlyWallet {
     /// Decrypt full notes with memos from a raw transaction (watch-only version)
     #[wasm_bindgen]
     pub fn decrypt_transaction_memos(&self, tx_bytes: &[u8]) -> Result<JsValue, JsError> {
-        use zcash_note_encryption::try_note_decryption;
-
         let actions = parse_orchard_actions_from_tx(tx_bytes)
             .map_err(|e| JsError::new(&format!("Failed to parse transaction: {}", e)))?;
 
@@ -1487,8 +1553,6 @@ impl WatchOnlyWallet {
                 action.enc_ciphertext[..52].try_into().unwrap(),
             );
 
-            let domain = OrchardDomain::for_compact_action(&compact_action);
-
             let output = FullShieldedOutput {
                 epk: action.epk,
                 cmx: action.cmx,
@@ -1497,7 +1561,7 @@ impl WatchOnlyWallet {
 
             // Try external scope (incoming)
             if let Some((note, _addr, memo)) =
-                try_note_decryption(&domain, &self.prepared_ivk_external, &output)
+                try_full_decrypt_any_version(&compact_action, &self.prepared_ivk_external, &output)
             {
                 let note_nf = note.nullifier(&self.fvk);
                 let (memo_str, is_text) = parse_memo_bytes(&memo);
@@ -1517,7 +1581,7 @@ impl WatchOnlyWallet {
 
             // Try internal scope (outgoing)
             if let Some((note, _addr, memo)) =
-                try_note_decryption(&domain, &self.prepared_ivk_internal, &output)
+                try_full_decrypt_any_version(&compact_action, &self.prepared_ivk_internal, &output)
             {
                 let note_nf = note.nullifier(&self.fvk);
                 let (memo_str, is_text) = parse_memo_bytes(&memo);
@@ -1597,26 +1661,156 @@ fn parse_memo_bytes(memo: &[u8; 512]) -> (String, bool) {
 mod tests {
     use super::*;
 
+    /// Round-trip a note of `version` through the *production* compact-scan
+    /// path (`try_decrypt_compact_action`) and return what the scanner saw.
+    ///
+    /// Regression harness for the note-version domain split. Upstream orchard
+    /// gives `OrchardDomain` and `IronwoodDomain` different, *enforced* note
+    /// plaintext lead bytes (0x02 / 0x03); the fork this crate used to build
+    /// against had a single permissive domain. A scanner that constructs only
+    /// `OrchardDomain` therefore fails every ironwood note silently — no
+    /// error, just an empty wallet. The whole test suite passed while that was
+    /// live, because nothing exercised a V3 note without a node.
+    fn scan_roundtrip_for_version(
+        version: orchard::note::NoteVersion,
+        scope: Scope,
+    ) -> Option<DecryptedParts> {
+        use orchard::note::{Nullifier, RandomSeed, Rho};
+        use orchard::value::NoteValue;
+        use rand::{rngs::OsRng, RngCore};
+        use zcash_note_encryption::Domain;
+
+        let mut rng = OsRng;
+        let sk = SpendingKey::from_zip32_seed(&[7u8; 32], 133, zip32::AccountId::ZERO).unwrap();
+        let fvk = orchard::keys::FullViewingKey::from(&sk);
+        let ivk_external = fvk.to_ivk(Scope::External).prepare();
+        let ivk_internal = fvk.to_ivk(Scope::Internal).prepare();
+
+        let recipient = fvk.address_at(0u32, scope);
+        // rho of a new note is the revealed nullifier of the note being spent,
+        // which is exactly what the wire compact action carries.
+        let (nf_old, rho): (Nullifier, Rho) = loop {
+            let mut b = [0u8; 32];
+            rng.fill_bytes(&mut b);
+            b[31] &= 0x3f; // keep it inside the pallas base field
+            let (Some(nf), Some(rho)) = (
+                Option::<Nullifier>::from(Nullifier::from_bytes(&b)),
+                Option::<Rho>::from(Rho::from_bytes(&b)),
+            ) else {
+                continue;
+            };
+            break (nf, rho);
+        };
+        let note = loop {
+            let mut seed = [0u8; 32];
+            rng.fill_bytes(&mut seed);
+            let Some(rseed) = Option::<RandomSeed>::from(RandomSeed::from_bytes(seed, &rho)) else {
+                continue;
+            };
+            if let Some(n) = Option::<orchard::Note>::from(orchard::Note::from_parts(
+                recipient,
+                NoteValue::from_raw(624_985_000),
+                rho,
+                rseed,
+                version,
+            )) {
+                break n;
+            }
+        };
+        let cmx = orchard::note::ExtractedNoteCommitment::from(note.commitment());
+
+        // Encrypt with the domain that matches the note version, exactly as a
+        // real bundle builder would.
+        let (epk_bytes, enc) = match version {
+            orchard::note::NoteVersion::V2 => {
+                let e =
+                    orchard::note_encryption::OrchardNoteEncryption::new(None, note, [0u8; 512]);
+                (
+                    OrchardDomain::epk_bytes(e.epk()).0,
+                    e.encrypt_note_plaintext(),
+                )
+            }
+            orchard::note::NoteVersion::V3 => {
+                let e =
+                    orchard::note_encryption::IronwoodNoteEncryption::new(None, note, [0u8; 512]);
+                (
+                    IronwoodDomain::epk_bytes(e.epk()).0,
+                    e.encrypt_note_plaintext(),
+                )
+            }
+        };
+
+        let mut ciphertext = [0u8; 52];
+        ciphertext.copy_from_slice(&enc[..52]);
+        let action = CompactActionBinary {
+            nullifier: nf_old.to_bytes(),
+            cmx: cmx.to_bytes(),
+            epk: epk_bytes,
+            ciphertext,
+        };
+
+        try_decrypt_compact_action(&fvk, &ivk_external, &ivk_internal, &action)
+    }
+
+    /// An ironwood (V3) note must decrypt on the production scan path. This is
+    /// the case that regressed on the move to upstream orchard 0.15.5: zafu
+    /// went blind to the entire live pool.
+    #[test]
+    fn scanner_decrypts_ironwood_v3_note() {
+        let d = scan_roundtrip_for_version(orchard::note::NoteVersion::V3, Scope::External)
+            .expect("ironwood (V3) note must decrypt via try_decrypt_compact_action");
+        assert_eq!(d.value, 624_985_000);
+        assert_eq!(d.note_version, 3, "note_version must come from the note");
+        assert!(!d.is_change, "external scope must not be flagged as change");
+    }
+
+    /// The orchard (V2) path must keep working — trying both domains must not
+    /// regress the pool that already worked.
+    #[test]
+    fn scanner_decrypts_orchard_v2_note() {
+        let d = scan_roundtrip_for_version(orchard::note::NoteVersion::V2, Scope::External)
+            .expect("orchard (V2) note must decrypt via try_decrypt_compact_action");
+        assert_eq!(d.value, 624_985_000);
+        assert_eq!(d.note_version, 2);
+        assert!(!d.is_change);
+    }
+
+    /// Scope semantics must survive the two-domain trial: a V3 note sent to
+    /// the *internal* address is change, and must be flagged as such rather
+    /// than surfacing as incoming income. (Same invariant the mainnet
+    /// turnstile fixture pins at the transaction level.)
+    #[test]
+    fn scanner_flags_internal_scope_ironwood_note_as_change() {
+        let d = scan_roundtrip_for_version(orchard::note::NoteVersion::V3, Scope::Internal)
+            .expect("internal-scope ironwood note must decrypt");
+        assert_eq!(d.note_version, 3);
+        assert!(d.is_change, "internal scope must be flagged as change");
+    }
+
     #[test]
     fn test_seed_validation() {
         assert!(validate_seed_phrase("abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art"));
         assert!(!validate_seed_phrase("invalid seed phrase"));
     }
 
-    /// The shielding pool gate uses plain constants (it must also exist in
-    /// artifacts built without the nu6.3 cfg). Assert they stay in sync with
-    /// the pinned librustzcash fork's real activation heights and branch id.
+    /// The shielding pool gate uses plain constants so it is a compile-time
+    /// value on the wasm hot path. Assert they stay in sync with upstream
+    /// `zcash_protocol`'s real activation heights and branch id.
     #[test]
-    fn nu6_3_activation_matches_fork() {
+    fn nu6_3_activation_matches_upstream() {
         use zcash_protocol::consensus::{
             BranchId, MainNetwork, NetworkUpgrade, Parameters, TestNetwork,
         };
         assert_eq!(
-            MainNetwork.activation_height(NetworkUpgrade::Nu6_3).map(u32::from),
+            MainNetwork
+                .activation_height(NetworkUpgrade::Nu6_3)
+                .map(u32::from),
             Some(NU6_3_ACTIVATION_HEIGHT_MAINNET)
         );
         assert_eq!(
-            TestNetwork.activation_height(NetworkUpgrade::Nu6_3).map(u32::from),
+            TestNetwork
+                .activation_height(NetworkUpgrade::Nu6_3)
+                .map(u32::from),
             Some(NU6_3_ACTIVATION_HEIGHT_TESTNET)
         );
         assert_eq!(u32::from(BranchId::Nu6_3), NU6_3_BRANCH_ID);
@@ -1641,17 +1835,31 @@ mod tests {
         )
         .is_err());
         // after activation: refused.
-        assert!(
-            guard_orchard_shielding_allowed(NU6_3_ACTIVATION_HEIGHT_MAINNET + 10_000, true, None)
-                .is_err()
-        );
+        assert!(guard_orchard_shielding_allowed(
+            NU6_3_ACTIVATION_HEIGHT_MAINNET + 10_000,
+            true,
+            None
+        )
+        .is_err());
         // pre-activation height but the chain reports the NU6.3 branch id (a
         // stale/wrong height must not open the door): refused.
         assert!(guard_orchard_shielding_allowed(1_000_000, true, Some("37a5165b")).is_err());
-        // testnet activates NU6.3 at height 1 in the pinned fork, so orchard
-        // shielding is refused there for any realistic height.
-        assert!(guard_orchard_shielding_allowed(1, false, None).is_err());
-        assert!(guard_orchard_shielding_allowed(3_000_000, false, None).is_err());
+        // testnet: same boundary, at the real upstream activation height
+        // (4_134_000). Before it orchard shielding is still allowed; at and
+        // after it, refused.
+        assert!(
+            guard_orchard_shielding_allowed(NU6_3_ACTIVATION_HEIGHT_TESTNET - 1, false, None)
+                .is_ok()
+        );
+        assert!(
+            guard_orchard_shielding_allowed(NU6_3_ACTIVATION_HEIGHT_TESTNET, false, None).is_err()
+        );
+        assert!(guard_orchard_shielding_allowed(
+            NU6_3_ACTIVATION_HEIGHT_TESTNET + 10_000,
+            false,
+            None
+        )
+        .is_err());
     }
 
     #[test]
@@ -1665,7 +1873,14 @@ mod tests {
             "ironwood"
         );
         assert_eq!(shielding_pool_for_height(3_500_000, true), "ironwood");
-        assert_eq!(shielding_pool_for_height(3_000_000, false), "ironwood");
+        assert_eq!(
+            shielding_pool_for_height(NU6_3_ACTIVATION_HEIGHT_TESTNET - 1, false),
+            "orchard"
+        );
+        assert_eq!(
+            shielding_pool_for_height(NU6_3_ACTIVATION_HEIGHT_TESTNET, false),
+            "ironwood"
+        );
     }
 
     #[test]
@@ -2028,7 +2243,8 @@ pub fn build_unsigned_transaction(
     // disabled orchard spends. Doing it here rather than at the sighash keeps
     // the user from paying ~2 minutes of Halo 2 proving for a tx the network
     // will reject.
-    let branch_id: u32 = resolve_branch_id(branch_id_hex.as_deref()).map_err(|e| JsError::new(&e))?;
+    let branch_id: u32 =
+        resolve_branch_id(branch_id_hex.as_deref()).map_err(|e| JsError::new(&e))?;
     guard_orchard_spend_allowed(branch_id).map_err(|e| JsError::new(&e))?;
 
     // --- derive FVK from UFVK ---
@@ -3773,7 +3989,10 @@ where
         let low = pczt::roles::low_level_signer::Signer::new(pczt);
         let low = low
             .sign_orchard_with(
-                |_pczt, bundle, _tx_modifiable| -> Result<(), pczt::roles::low_level_signer::OrchardParseError> {
+                |_pczt,
+                 bundle,
+                 _tx_modifiable|
+                 -> Result<(), pczt::roles::low_level_signer::OrchardParseError> {
                     for action in bundle.actions_mut().iter_mut() {
                         match action.spend().verify_nullifier(Some(fvk)) {
                             Ok(())
@@ -4517,7 +4736,10 @@ where
         let low = pczt::roles::low_level_signer::Signer::new(pczt);
         let low = low
             .sign_ironwood_with(
-                |_pczt, bundle, _tx_modifiable| -> Result<(), pczt::roles::low_level_signer::OrchardParseError> {
+                |_pczt,
+                 bundle,
+                 _tx_modifiable|
+                 -> Result<(), pczt::roles::low_level_signer::OrchardParseError> {
                     for action in bundle.actions_mut().iter_mut() {
                         match action.spend().verify_nullifier(Some(fvk)) {
                             Ok(())
@@ -4622,8 +4844,8 @@ pub fn build_ironwood_send_pczt(
     // Recipient: a unified/orchard address (value stays in the ironwood pool)
     // OR a transparent address (z->t withdrawal, e.g. to an exchange), decided
     // by the address encoding. Error is address-free.
-    let recipient_addr = parse_ironwood_recipient(recipient, mainnet)
-        .map_err(|e| JsError::new(&e))?;
+    let recipient_addr =
+        parse_ironwood_recipient(recipient, mainnet).map_err(|e| JsError::new(&e))?;
 
     let notes: Vec<SpendableNote> = serde_json::from_str(ironwood_notes_json)
         .map_err(|e| JsError::new(&format!("invalid ironwood_notes_json: {}", e)))?;
@@ -4772,8 +4994,8 @@ pub fn build_signed_ironwood_send(
     // Recipient: a unified/orchard address (value stays in the ironwood pool)
     // OR a transparent address (z->t withdrawal, e.g. to an exchange), decided
     // by the address encoding. Error is address-free.
-    let recipient_addr = parse_ironwood_recipient(recipient, mainnet)
-        .map_err(|e| JsError::new(&e))?;
+    let recipient_addr =
+        parse_ironwood_recipient(recipient, mainnet).map_err(|e| JsError::new(&e))?;
 
     let notes: Vec<SpendableNote> = serde_json::from_str(ironwood_notes_json)
         .map_err(|e| JsError::new(&format!("invalid ironwood_notes_json: {}", e)))?;
@@ -5678,7 +5900,8 @@ pub fn build_signed_spend_transaction(
     use zcash_protocol::value::ZatBalance;
 
     // FAIL-CLOSED, BEFORE any proving: see build_unsigned_transaction.
-    let branch_id: u32 = resolve_branch_id(branch_id_hex.as_deref()).map_err(|e| JsError::new(&e))?;
+    let branch_id: u32 =
+        resolve_branch_id(branch_id_hex.as_deref()).map_err(|e| JsError::new(&e))?;
     guard_orchard_spend_allowed(branch_id).map_err(|e| JsError::new(&e))?;
 
     // --- derive keys from mnemonic ---
@@ -6101,13 +6324,13 @@ fn test_user_seed_with_real_action() {
         EphemeralKeyBytes(action.epk),
         action.ciphertext,
     );
-    let domain = OrchardDomain::for_compact_action(&compact_action);
     let output = CompactShieldedOutput {
         epk: action.epk,
         cmx: action.cmx,
         ciphertext: action.ciphertext,
     };
-    let internal_result = try_compact_note_decryption(&domain, &prepared_internal, &output);
+    let internal_result =
+        try_compact_decrypt_any_version(&compact_action, &prepared_internal, &output);
     println!(
         "Decryption result (Internal scope): {:?}",
         internal_result.map(|(n, _)| n.value().inner())
@@ -6303,19 +6526,23 @@ pub(crate) fn blake2b_256_personal(personalization: &[u8; 16], data: &[u8]) -> [
 // ============================================================================
 
 /// Real NU6.3 / Ironwood consensus branch id (from the live zebra). Mirrors
-/// `BranchId::Nu6_3` in the pinned fork.
+/// `BranchId::Nu6_3` in upstream `zcash_protocol`.
 pub const NU6_3_BRANCH_ID: u32 = 0x37a5_165b;
 
-/// NU6.3 / Ironwood activation heights, mirroring the pinned librustzcash fork
-/// (`components/zcash_protocol/src/consensus.rs`): mainnet 3_428_143 (live
-/// zebra), testnet 1 (the fork activates NU6.3 from genesis on test/regtest so
-/// it can be exercised). Duplicated as plain constants so the gate below also
-/// exists in artifacts built WITHOUT the `zcash_unstable="nu6.3"` cfg, where
-/// `NetworkUpgrade::Nu6_3` does not exist. `nu6_3_activation_matches_fork`
-/// (below, cfg-gated) asserts they stay in sync.
+/// NU6.3 / Ironwood activation heights, mirroring upstream `zcash_protocol`
+/// (`src/consensus.rs`): mainnet 3_428_143, testnet 4_134_000.
+///
+/// NOTE: the previously-pinned librustzcash fork activated NU6.3 on
+/// test/regtest at height 1 so it could be exercised from genesis; upstream
+/// uses the real testnet activation height. Only the testnet gate moves —
+/// mainnet is unchanged.
+///
+/// Kept as plain constants (rather than reading `NetworkUpgrade::Nu6_3`) so
+/// the gate is a compile-time value on the wasm hot path;
+/// `nu6_3_activation_matches_upstream` asserts they stay in sync.
 pub const NU6_3_ACTIVATION_HEIGHT_MAINNET: u32 = 3_428_143;
 /// See [`NU6_3_ACTIVATION_HEIGHT_MAINNET`].
-pub const NU6_3_ACTIVATION_HEIGHT_TESTNET: u32 = 1;
+pub const NU6_3_ACTIVATION_HEIGHT_TESTNET: u32 = 4_134_000;
 
 /// NU6.3 activation height for the selected network.
 pub fn nu6_3_activation_height(mainnet: bool) -> u32 {
@@ -6374,12 +6601,14 @@ fn guard_orchard_shielding_allowed(
     // branch id is already NU6.3, the chain has activated and orchard outputs
     // are disabled no matter what height was passed in.
     if parse_branch_id(branch_id_hex.unwrap_or("")) == Some(NU6_3_BRANCH_ID) {
-        return Err("orchard shielding is disabled at NU6.3: the supplied consensus branch \
+        return Err(
+            "orchard shielding is disabled at NU6.3: the supplied consensus branch \
              id is 0x37a5165b (Ironwood is active), so an orchard output would be \
              unspendable and would need a turnstile migration - use \
              build_shielding_transaction_ironwood (or \
              build_shielding_transaction_auto) to shield into the ironwood pool"
-            .to_string());
+                .to_string(),
+        );
     }
     Ok(())
 }
@@ -7120,7 +7349,8 @@ pub fn build_shielding_transaction_ironwood(
 
     let mut inputs: Vec<(OutPoint, TxOut)> = Vec::with_capacity(selected.len());
     for utxo in &selected {
-        let txid_be = hex_decode(&utxo.txid).ok_or_else(|| JsError::new("invalid utxo txid hex"))?;
+        let txid_be =
+            hex_decode(&utxo.txid).ok_or_else(|| JsError::new("invalid utxo txid hex"))?;
         if txid_be.len() != 32 {
             return Err(JsError::new("txid must be 32 bytes"));
         }
@@ -7210,12 +7440,13 @@ pub fn build_shielding_transaction_auto(
     if target_height >= nu6_3_activation_height(mainnet) {
         // Ironwood regime: the branch id is load-bearing, so require it rather
         // than falling back to a compiled-in default.
-        let branch_id = parse_branch_id(branch_id_hex.as_deref().unwrap_or("")).ok_or_else(|| {
-            JsError::new(
-                "ironwood shielding requires the live consensus branch id \
+        let branch_id =
+            parse_branch_id(branch_id_hex.as_deref().unwrap_or("")).ok_or_else(|| {
+                JsError::new(
+                    "ironwood shielding requires the live consensus branch id \
                  (GetLightdInfo.consensusBranchId); none was supplied",
-            )
-        })?;
+                )
+            })?;
         build_shielding_transaction_ironwood(
             utxos_json,
             privkey_hex,

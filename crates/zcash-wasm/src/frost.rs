@@ -324,6 +324,83 @@ pub fn frost_spend_aggregate(
 
 // ── Multisig verifier: parse outputs from unsigned tx using spender's UFVK ──
 
+/// Recover the visible outputs of one orchard-shaped bundle with the OVKs,
+/// appending one JSON entry per action.
+///
+/// Generic over the note-plaintext version because upstream orchard splits the
+/// note-encryption domain by note version and enforces the plaintext lead
+/// byte: `OrchardVersion` (V2, 0x02) for the orchard bundle, `IronwoodVersion`
+/// (V3, 0x03) for the ironwood bundle. Unlike a bare compact action off the
+/// wire, here the pool IS unambiguous — it is the bundle the action lives in —
+/// so each bundle is decrypted with exactly its own domain rather than both.
+///
+/// `totals` is (total_send, total_change, decrypted_count).
+fn recover_bundle_outputs<V, A>(
+    bundle: &orchard::Bundle<A, zcash_protocol::value::ZatBalance>,
+    pool: &str,
+    ovk_external: &orchard::keys::OutgoingViewingKey,
+    ovk_internal: &orchard::keys::OutgoingViewingKey,
+    actions_json: &mut Vec<serde_json::Value>,
+    totals: &mut (u64, u64, u32),
+) where
+    V: orchard::note_encryption::DomainVersion,
+    A: orchard::bundle::Authorization,
+{
+    use zcash_note_encryption::try_output_recovery_with_ovk;
+
+    for (idx, action) in bundle.actions().iter().enumerate() {
+        let domain = orchard::note_encryption::NoteEncryptionDomain::<V>::for_action(action);
+        let cv = action.cv_net();
+        let out_ct = action.encrypted_note().out_ciphertext;
+
+        // external: real recipient of a spend
+        if let Some((note, addr, _memo)) =
+            try_output_recovery_with_ovk(&domain, ovk_external, action, cv, &out_ct)
+        {
+            let amount = note.value().inner();
+            totals.0 = totals.0.saturating_add(amount);
+            totals.2 += 1;
+            actions_json.push(serde_json::json!({
+                "index": idx as u32,
+                "pool": pool,
+                "amount_zat": amount,
+                "recipient_raw_hex": hex::encode(addr.to_raw_address_bytes()),
+                "is_change": false,
+                "decrypted": true,
+            }));
+            continue;
+        }
+
+        // internal: change back to our own multisig
+        if let Some((note, addr, _memo)) =
+            try_output_recovery_with_ovk(&domain, ovk_internal, action, cv, &out_ct)
+        {
+            let amount = note.value().inner();
+            totals.1 = totals.1.saturating_add(amount);
+            totals.2 += 1;
+            actions_json.push(serde_json::json!({
+                "index": idx as u32,
+                "pool": pool,
+                "amount_zat": amount,
+                "recipient_raw_hex": hex::encode(addr.to_raw_address_bytes()),
+                "is_change": true,
+                "decrypted": true,
+            }));
+            continue;
+        }
+
+        // could not decrypt — dummy action, zero-value by construction
+        actions_json.push(serde_json::json!({
+            "index": idx as u32,
+            "pool": pool,
+            "amount_zat": 0u64,
+            "recipient_raw_hex": serde_json::Value::Null,
+            "is_change": false,
+            "decrypted": false,
+        }));
+    }
+}
+
 /// Parse the unsigned v5 transaction and recover what each Orchard action
 /// is sending, using the FROST wallet's UFVK to OVK-decrypt outputs.
 ///
@@ -344,6 +421,7 @@ pub fn frost_spend_aggregate(
 /// {
 ///   "actions": [
 ///     { "index": u32,
+///       "pool": "orchard" | "ironwood",
 ///       "amount_zat": u64,
 ///       "recipient_raw_hex": "<43-byte hex>" | null,
 ///       "is_change": bool,
@@ -362,11 +440,9 @@ pub fn frost_parse_tx_outputs(
     orchard_fvk_uview: &str,
 ) -> Result<String, JsError> {
     use orchard::keys::Scope;
-    use orchard::note_encryption::OrchardDomain;
     use std::io::Cursor;
     use zcash_keys::keys::UnifiedFullViewingKey;
-    use zcash_note_encryption::try_output_recovery_with_ovk;
-    use zcash_primitives::transaction::Transaction;
+    use zcash_primitives::transaction::{Transaction, TxVersion};
     // zcash_primitives 0.26 (librustzcash 5333c01b) moved consensus types
     // into zcash_protocol; BranchId is re-exported there.
     use zcash_protocol::consensus::{BranchId, MainNetwork, TestNetwork};
@@ -444,75 +520,37 @@ pub fn frost_parse_tx_outputs(
     let ovk_external = fvk.to_ovk(Scope::External);
     let ovk_internal = fvk.to_ovk(Scope::Internal);
 
-    let bundle = match tx.orchard_bundle() {
-        Some(b) => b,
-        None => {
-            return Ok(serde_json::json!({
-                "actions": [],
-                "summary": {
-                    "total_send_zat": 0u64,
-                    "total_change_zat": 0u64,
-                    "decrypted_count": 0u32,
-                    "action_count": 0u32,
-                },
-            })
-            .to_string());
-        }
-    };
+    // Both orchard (V2) and ironwood (V3) bundles are inspected. The pool is
+    // known here — it is which bundle the action sits in — so each is decrypted
+    // with its own enforced note-version domain.
+    let orchard_bundle = tx.orchard_bundle();
+    let ironwood_bundle = tx.ironwood_bundle();
 
-    let actions: Vec<_> = bundle.actions().iter().collect();
-    let mut actions_json = Vec::with_capacity(actions.len());
-    let mut total_send: u64 = 0;
-    let mut total_change: u64 = 0;
-    let mut decrypted_count: u32 = 0;
+    let mut actions_json: Vec<serde_json::Value> = Vec::new();
+    let mut totals: (u64, u64, u32) = (0, 0, 0);
+    let mut action_count: u32 = 0;
 
-    for (idx, action) in actions.iter().enumerate() {
-        let domain = OrchardDomain::for_action(*action);
-        let cv = action.cv_net();
-        let out_ct = action.encrypted_note().out_ciphertext;
-
-        // external: real recipient of a spend
-        if let Some((note, addr, _memo)) =
-            try_output_recovery_with_ovk(&domain, &ovk_external, *action, cv, &out_ct)
-        {
-            let amount = note.value().inner();
-            total_send = total_send.saturating_add(amount);
-            decrypted_count += 1;
-            actions_json.push(serde_json::json!({
-                "index": idx as u32,
-                "amount_zat": amount,
-                "recipient_raw_hex": hex::encode(addr.to_raw_address_bytes()),
-                "is_change": false,
-                "decrypted": true,
-            }));
-            continue;
-        }
-
-        // internal: change back to our own multisig
-        if let Some((note, addr, _memo)) =
-            try_output_recovery_with_ovk(&domain, &ovk_internal, *action, cv, &out_ct)
-        {
-            let amount = note.value().inner();
-            total_change = total_change.saturating_add(amount);
-            decrypted_count += 1;
-            actions_json.push(serde_json::json!({
-                "index": idx as u32,
-                "amount_zat": amount,
-                "recipient_raw_hex": hex::encode(addr.to_raw_address_bytes()),
-                "is_change": true,
-                "decrypted": true,
-            }));
-            continue;
-        }
-
-        // could not decrypt — dummy action, zero-value by construction
-        actions_json.push(serde_json::json!({
-            "index": idx as u32,
-            "amount_zat": 0u64,
-            "recipient_raw_hex": serde_json::Value::Null,
-            "is_change": false,
-            "decrypted": false,
-        }));
+    if let Some(b) = orchard_bundle {
+        action_count += b.actions().len() as u32;
+        recover_bundle_outputs::<orchard::note_encryption::OrchardVersion, _>(
+            b,
+            "orchard",
+            &ovk_external,
+            &ovk_internal,
+            &mut actions_json,
+            &mut totals,
+        );
+    }
+    if let Some(b) = ironwood_bundle {
+        action_count += b.actions().len() as u32;
+        recover_bundle_outputs::<orchard::note_encryption::IronwoodVersion, _>(
+            b,
+            "ironwood",
+            &ovk_external,
+            &ovk_internal,
+            &mut actions_json,
+            &mut totals,
+        );
     }
 
     // ── ZIP-244 sighash check ──
@@ -522,55 +560,77 @@ pub fn frost_parse_tx_outputs(
     // recomputed sighash will not match the host's claimed one — that's
     // the only way to detect a decoy that's internally consistent.
     //
-    // We only support pure-orchard v5 txs here. If transparent or sapling
-    // bundles are present, return None and the TS verdict layer treats it
-    // as "unverified — sighash check unavailable for this shape".
-    let pure_orchard = tx
-        .transparent_bundle()
-        .is_none_or(|t| t.vin.is_empty() && t.vout.is_empty())
-        && tx.sapling_bundle().is_none();
+    // We only support pure-orchard V5 txs here. Anything else returns None and
+    // the TS verdict layer treats it as "unverified — sighash check
+    // unavailable for this shape".
+    //
+    // The TX VERSION check is what makes the hardcoded V5 header below sound,
+    // and it is not implied by the bundle checks. `Transaction::read` dispatches
+    // on the version header, NOT on the `BranchId` we hand it, so a V6
+    // transaction parses here perfectly well; a V6 tx that happens to carry an
+    // orchard bundle and no ironwood bundle would otherwise satisfy every
+    // bundle-shaped condition and be handed a V5 header digest (version
+    // `5 | (1<<31)` and V5_VERSION_GROUP_ID `0x26A7270A`) that does not describe
+    // it. Pinning `TxVersion::V5` closes that.
+    //
+    // The ironwood exclusion is load-bearing for the same reason on the body
+    // side: `compute_orchard_digest_legacy` covers the orchard bundle only, so a
+    // tx carrying an ironwood bundle would get a confidently-wrong digest. It is
+    // now redundant with the version check (ironwood bundles only exist in V6)
+    // but is kept as a belt-and-braces statement of what the digest covers.
+    //
+    // This fails safe either way: a wrong digest yields a mismatch verdict or a
+    // signature the network rejects, never a false "verified" — that would need
+    // the wrong digest to collide with the right one.
+    let pure_orchard = tx.version() == TxVersion::V5
+        && tx
+            .transparent_bundle()
+            .is_none_or(|t| t.vin.is_empty() && t.vout.is_empty())
+        && tx.sapling_bundle().is_none()
+        && ironwood_bundle.is_none();
 
-    let computed_sighash_hex: Option<String> =
-        if let (Some(branch_id), true) = (original_branch_id, pure_orchard) {
-            // T.1 header_digest
-            let mut header_data = Vec::with_capacity(20);
-            header_data.extend_from_slice(&(5u32 | (1u32 << 31)).to_le_bytes());
-            header_data.extend_from_slice(&0x26A7270Au32.to_le_bytes());
-            header_data.extend_from_slice(&branch_id.to_le_bytes());
-            header_data.extend_from_slice(&tx.lock_time().to_le_bytes());
-            let expiry: u32 = u32::from(tx.expiry_height());
-            header_data.extend_from_slice(&expiry.to_le_bytes());
-            let header_digest = crate::blake2b_256_personal(b"ZTxIdHeadersHash", &header_data);
+    let computed_sighash_hex: Option<String> = if let (Some(branch_id), Some(bundle), true) =
+        (original_branch_id, orchard_bundle, pure_orchard)
+    {
+        // T.1 header_digest
+        let mut header_data = Vec::with_capacity(20);
+        header_data.extend_from_slice(&(5u32 | (1u32 << 31)).to_le_bytes());
+        header_data.extend_from_slice(&0x26A7270Au32.to_le_bytes());
+        header_data.extend_from_slice(&branch_id.to_le_bytes());
+        header_data.extend_from_slice(&tx.lock_time().to_le_bytes());
+        let expiry: u32 = u32::from(tx.expiry_height());
+        header_data.extend_from_slice(&expiry.to_le_bytes());
+        let header_digest = crate::blake2b_256_personal(b"ZTxIdHeadersHash", &header_data);
 
-            // T.2 transparent_digest (empty — we asserted pure-orchard above)
-            let transparent_digest = crate::blake2b_256_personal(b"ZTxIdTranspaHash", &[]);
-            // T.3 sapling_digest (empty)
-            let sapling_digest = crate::blake2b_256_personal(b"ZTxIdSaplingHash", &[]);
-            // T.4 orchard_digest
-            let orchard_digest = compute_orchard_digest_legacy(bundle);
+        // T.2 transparent_digest (empty — we asserted pure-orchard above)
+        let transparent_digest = crate::blake2b_256_personal(b"ZTxIdTranspaHash", &[]);
+        // T.3 sapling_digest (empty)
+        let sapling_digest = crate::blake2b_256_personal(b"ZTxIdSaplingHash", &[]);
+        // T.4 orchard_digest
+        let orchard_digest = compute_orchard_digest_legacy(bundle);
 
-            let mut personal = [0u8; 16];
-            personal[..12].copy_from_slice(b"ZcashTxHash_");
-            personal[12..16].copy_from_slice(&branch_id.to_le_bytes());
+        let mut personal = [0u8; 16];
+        personal[..12].copy_from_slice(b"ZcashTxHash_");
+        personal[12..16].copy_from_slice(&branch_id.to_le_bytes());
 
-            let mut input = Vec::with_capacity(128);
-            input.extend_from_slice(&header_digest);
-            input.extend_from_slice(&transparent_digest);
-            input.extend_from_slice(&sapling_digest);
-            input.extend_from_slice(&orchard_digest);
+        let mut input = Vec::with_capacity(128);
+        input.extend_from_slice(&header_digest);
+        input.extend_from_slice(&transparent_digest);
+        input.extend_from_slice(&sapling_digest);
+        input.extend_from_slice(&orchard_digest);
 
-            Some(hex::encode(crate::blake2b_256_personal(&personal, &input)))
-        } else {
-            None
-        };
+        Some(hex::encode(crate::blake2b_256_personal(&personal, &input)))
+    } else {
+        None
+    };
 
     Ok(serde_json::json!({
         "actions": actions_json,
         "summary": {
-            "total_send_zat": total_send,
-            "total_change_zat": total_change,
-            "decrypted_count": decrypted_count,
-            "action_count": actions.len() as u32,
+            "total_send_zat": totals.0,
+            "total_change_zat": totals.1,
+            "decrypted_count": totals.2,
+            "action_count": action_count,
         },
         "computed_sighash_hex": computed_sighash_hex,
     })
@@ -636,9 +696,7 @@ pub fn frost_inspect_pczt_outputs(
     orchard_fvk_uview: &str,
 ) -> Result<String, JsError> {
     use orchard::keys::Scope;
-    use orchard::note_encryption::OrchardDomain;
     use zcash_keys::keys::UnifiedFullViewingKey;
-    use zcash_note_encryption::try_output_recovery_with_ovk;
     use zcash_primitives::transaction::sighash::SignableInput;
     use zcash_primitives::transaction::sighash_v5::v5_signature_hash;
     use zcash_primitives::transaction::txid::TxIdDigester;
@@ -674,82 +732,47 @@ pub fn frost_inspect_pczt_outputs(
     let ovk_external = fvk.to_ovk(Scope::External);
     let ovk_internal = fvk.to_ovk(Scope::Internal);
 
-    let bundle = match tx_data.orchard_bundle() {
-        Some(b) => b,
-        None => {
-            return Ok(serde_json::json!({
-                "actions": [],
-                "summary": {
-                    "total_send_zat": 0u64,
-                    "total_change_zat": 0u64,
-                    "decrypted_count": 0u32,
-                    "action_count": 0u32,
-                },
-                "computed_sighash_hex": computed_sighash_hex,
-            })
-            .to_string());
-        }
-    };
+    // Inspect both pools. A turnstile / post-NU6.3 PCZT carries its outputs in
+    // the ironwood bundle, whose V3 note plaintexts `OrchardDomain` refuses by
+    // design; leaving it out would show a joiner an empty output list for a
+    // transaction that in fact moves funds.
+    let orchard_bundle = tx_data.orchard_bundle();
+    let ironwood_bundle = tx_data.ironwood_bundle();
 
-    let actions: Vec<_> = bundle.actions().iter().collect();
-    let mut actions_json = Vec::with_capacity(actions.len());
-    let mut total_send: u64 = 0;
-    let mut total_change: u64 = 0;
-    let mut decrypted_count: u32 = 0;
+    let mut actions_json: Vec<serde_json::Value> = Vec::new();
+    let mut totals: (u64, u64, u32) = (0, 0, 0);
+    let mut action_count: u32 = 0;
 
-    for (idx, action) in actions.iter().enumerate() {
-        let domain = OrchardDomain::for_action(*action);
-        let cv = action.cv_net();
-        let out_ct = action.encrypted_note().out_ciphertext;
-
-        if let Some((note, addr, _memo)) =
-            try_output_recovery_with_ovk(&domain, &ovk_external, *action, cv, &out_ct)
-        {
-            let amount = note.value().inner();
-            total_send = total_send.saturating_add(amount);
-            decrypted_count += 1;
-            actions_json.push(serde_json::json!({
-                "index": idx as u32,
-                "amount_zat": amount,
-                "recipient_raw_hex": hex::encode(addr.to_raw_address_bytes()),
-                "is_change": false,
-                "decrypted": true,
-            }));
-            continue;
-        }
-
-        if let Some((note, addr, _memo)) =
-            try_output_recovery_with_ovk(&domain, &ovk_internal, *action, cv, &out_ct)
-        {
-            let amount = note.value().inner();
-            total_change = total_change.saturating_add(amount);
-            decrypted_count += 1;
-            actions_json.push(serde_json::json!({
-                "index": idx as u32,
-                "amount_zat": amount,
-                "recipient_raw_hex": hex::encode(addr.to_raw_address_bytes()),
-                "is_change": true,
-                "decrypted": true,
-            }));
-            continue;
-        }
-
-        actions_json.push(serde_json::json!({
-            "index": idx as u32,
-            "amount_zat": 0u64,
-            "recipient_raw_hex": serde_json::Value::Null,
-            "is_change": false,
-            "decrypted": false,
-        }));
+    if let Some(b) = orchard_bundle {
+        action_count += b.actions().len() as u32;
+        recover_bundle_outputs::<orchard::note_encryption::OrchardVersion, _>(
+            b,
+            "orchard",
+            &ovk_external,
+            &ovk_internal,
+            &mut actions_json,
+            &mut totals,
+        );
+    }
+    if let Some(b) = ironwood_bundle {
+        action_count += b.actions().len() as u32;
+        recover_bundle_outputs::<orchard::note_encryption::IronwoodVersion, _>(
+            b,
+            "ironwood",
+            &ovk_external,
+            &ovk_internal,
+            &mut actions_json,
+            &mut totals,
+        );
     }
 
     Ok(serde_json::json!({
         "actions": actions_json,
         "summary": {
-            "total_send_zat": total_send,
-            "total_change_zat": total_change,
-            "decrypted_count": decrypted_count,
-            "action_count": actions.len() as u32,
+            "total_send_zat": totals.0,
+            "total_change_zat": totals.1,
+            "decrypted_count": totals.2,
+            "action_count": action_count,
         },
         "computed_sighash_hex": computed_sighash_hex,
     })

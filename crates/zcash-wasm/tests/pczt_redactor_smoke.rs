@@ -8,7 +8,7 @@
 //!     "did the author wire the role into the pipeline" check.
 //!   - The contract we care about is: the Redactor role from the librustzcash
 //!     pczt crate runs after `Prover::create_orchard_proof` /
-//!     `IoFinalizer::finalize_io` and before `pczt.serialize().expect("pczt serialize")`. That's a
+//!     `IoFinalizer::finalize_io` and before `pczt.serialize()`. That's a
 //!     code-shape assertion, not a behavioural one.
 //!   - Once the redactor is wired, behavioural correctness is delegated to
 //!     librustzcash's own redactor tests — we don't re-test their crate.

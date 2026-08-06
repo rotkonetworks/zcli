@@ -19,12 +19,6 @@ members = [
     "bin/license-server",
 ]
 
-# The vendored librustzcash fork is its own workspace (see the [patch] below);
-# keep it out of ours so its crates inherit workspace.package from the
-# vendored root, not from us.
-exclude = [
-]
-
 [workspace.package]
 authors = ["rotko networks"]
 edition = "2021"
@@ -55,23 +49,10 @@ wide = { version = "0.7", default-features = false }
 [patch.crates-io]
 maybe-rayon = { path = "crates/maybe-rayon" }
 
-# NU6.3 / Ironwood real params fix (FIX-A, money path).
-#
-# branch id as the placeholder 0xffff_ffff and activation_height(Nu6_3) => None.
-# The turnstile sighash MUST bind the real branch id 0x37a5165b (activation
-# height 3_428_143 on mainnet) or every produced tx is invalid on-chain.
-#
-# Rather than depend on an out-of-band fork being reachable, we vendor the exact
-# pinned checkout under vendor/librustzcash with the three-line consensus patch
-# applied (see vendor/librustzcash/components/zcash_protocol/src/consensus.rs)
-# and [patch] the git source to it. This is fully reproducible offline and the
-# patched source is committed. All nine crates the lock pulls from that source
-# are overridden so Cargo does not mix patched and unpatched copies.
-# vendored librustzcash fork removed 2026-08-06: NU6.3/Ironwood is upstream
-# as of the released crates (zcash_primitives 0.30 / zcash_protocol 0.10.4 /
-# orchard 0.15.5), including the real branch id 0x37a5165b that the fork
-# stubbed as 0xffff_ffff. No patch, no vendor, no fork.
-
+# vendored librustzcash fork removed: NU6.3 / Ironwood is upstream as of the
+# released crates (zcash_primitives 0.30 / zcash_protocol 0.10 / orchard
+# 0.15.5), including the real branch id 0x37a5165b that the fork stubbed as
+# 0xffff_ffff. No patch, no vendor, no fork.
 
 # Optional local dev: uncomment to develop against a sibling zeratul checkout.
 # Do NOT commit this uncommented — it breaks CI, which only clones zcli.

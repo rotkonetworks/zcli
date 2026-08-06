@@ -206,11 +206,15 @@ pub struct TransparentUtxo {
 
 // -- shielding transaction (t→z) --
 
-/// Real NU6.3 / Ironwood consensus branch id, and the activation heights of the
-/// pinned librustzcash fork (mainnet 3_428_143; test/regtest activates at 1).
+/// Real NU6.3 / Ironwood consensus branch id and activation heights, mirroring
+/// upstream `zcash_protocol::consensus` (mainnet 3_428_143, testnet 4_134_000).
+///
+/// NOTE: the previously-pinned librustzcash fork activated NU6.3 on
+/// test/regtest at height 1; upstream uses the real testnet activation. Only
+/// the testnet gate below moves as a result — mainnet is unchanged.
 const NU6_3_BRANCH_ID: u32 = 0x37a5_165b;
 const NU6_3_ACTIVATION_HEIGHT_MAINNET: u32 = 3_428_143;
-const NU6_3_ACTIVATION_HEIGHT_TESTNET: u32 = 1;
+const NU6_3_ACTIVATION_HEIGHT_TESTNET: u32 = 4_134_000;
 
 /// FAIL CLOSED: orchard shielding is disabled from NU6.3.
 ///
@@ -961,8 +965,14 @@ mod shielding_gate_tests {
         .is_err());
         // stale height but the chain reports NU6.3: refused
         assert!(guard_orchard_shielding_allowed(1_000_000, NU6_3_BRANCH_ID, true).is_err());
-        // testnet activates NU6.3 at height 1 in the pinned fork
-        assert!(guard_orchard_shielding_allowed(3_000_000, NU6_2, false).is_err());
+        // testnet: same boundary at the real upstream activation height.
+        assert!(
+            guard_orchard_shielding_allowed(NU6_3_ACTIVATION_HEIGHT_TESTNET - 1, NU6_2, false)
+                .is_ok()
+        );
+        assert!(
+            guard_orchard_shielding_allowed(NU6_3_ACTIVATION_HEIGHT_TESTNET, NU6_2, false).is_err()
+        );
     }
 
     /// Orchard SPENDS (z→z, z→t: `zcli send`, `zcli merchant`, `zclid`'s payout
@@ -986,9 +996,19 @@ mod shielding_gate_tests {
         .is_err());
         // stale/wrong height but the node already reports NU6.3: refused
         assert!(guard_pre_nu6_2_orchard_builder_allowed(1_000_000, NU6_3_BRANCH_ID, true).is_err());
-        // testnet activates NU6.3 at height 1 in the pinned fork
-        assert!(guard_pre_nu6_2_orchard_builder_allowed(3_000_000, NU6_2, false).is_err());
-        assert!(guard_pre_nu6_2_orchard_builder_allowed(1, NU6_2, false).is_err());
+        // testnet: same boundary at the real upstream activation height.
+        assert!(guard_pre_nu6_2_orchard_builder_allowed(
+            NU6_3_ACTIVATION_HEIGHT_TESTNET - 1,
+            NU6_2,
+            false
+        )
+        .is_ok());
+        assert!(guard_pre_nu6_2_orchard_builder_allowed(
+            NU6_3_ACTIVATION_HEIGHT_TESTNET,
+            NU6_2,
+            false
+        )
+        .is_err());
     }
 
     /// The builder itself must refuse, not just the guard - callers

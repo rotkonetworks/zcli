@@ -1,6 +1,8 @@
 use indicatif::{ProgressBar, ProgressStyle};
 use orchard::keys::{FullViewingKey, PreparedIncomingViewingKey, Scope, SpendingKey};
-use orchard::note_encryption::OrchardDomain;
+use orchard::note_encryption::{
+    DomainVersion, IronwoodDomain, NoteEncryptionDomain, OrchardDomain,
+};
 use zcash_note_encryption::{
     try_compact_note_decryption, EphemeralKeyBytes, ShieldedOutput, COMPACT_NOTE_SIZE,
 };
@@ -25,7 +27,13 @@ struct CompactShieldedOutput {
     ciphertext: [u8; 52],
 }
 
-impl ShieldedOutput<OrchardDomain, COMPACT_NOTE_SIZE> for CompactShieldedOutput {
+// Generic over the note-plaintext version: upstream orchard splits the
+// note-encryption domain by note version and enforces the plaintext lead byte,
+// so a single concrete domain can no longer decrypt both pools. See
+// `try_compact_decrypt_any_version`.
+impl<V: DomainVersion> ShieldedOutput<NoteEncryptionDomain<V>, COMPACT_NOTE_SIZE>
+    for CompactShieldedOutput
+{
     fn ephemeral_key(&self) -> EphemeralKeyBytes {
         EphemeralKeyBytes(self.epk)
     }
@@ -35,6 +43,22 @@ impl ShieldedOutput<OrchardDomain, COMPACT_NOTE_SIZE> for CompactShieldedOutput 
     fn enc_ciphertext(&self) -> &[u8; COMPACT_NOTE_SIZE] {
         &self.ciphertext
     }
+}
+
+/// Trial-decrypt a compact output against BOTH note-plaintext versions.
+///
+/// `OrchardDomain` accepts only V2 note plaintexts (lead byte 0x02) and
+/// `IronwoodDomain` only V3 (0x03); upstream orchard returns `None` on a
+/// mismatch. A compact action off the wire carries no pool label, so both
+/// domains must be tried or every ironwood note is invisible.
+fn try_compact_decrypt_any_version(
+    compact: &orchard::note_encryption::CompactAction,
+    ivk: &PreparedIncomingViewingKey,
+    output: &CompactShieldedOutput,
+) -> Option<(orchard::Note, orchard::Address)> {
+    try_compact_note_decryption(&OrchardDomain::for_compact_action(compact), ivk, output).or_else(
+        || try_compact_note_decryption(&IronwoodDomain::for_compact_action(compact), ivk, output),
+    )
 }
 
 /// sync using a FullViewingKey directly (for watch-only wallets)
@@ -233,7 +257,10 @@ async fn sync_inner(
             // question directly: an empty/absent ironwood tree yields 0, which
             // is exactly the right seed pre-activation, so no constant is
             // needed and the bug class disappears.
-            match client.get_ironwood_tree_state(start.saturating_sub(1)).await {
+            match client
+                .get_ironwood_tree_state(start.saturating_sub(1))
+                .await
+            {
                 Ok((tree_hex, _)) if !tree_hex.is_empty() => {
                     let tree_bytes = hex::decode(&tree_hex)
                         .map_err(|e| Error::Other(format!("invalid ironwood tree hex: {}", e)))?;
@@ -250,7 +277,9 @@ async fn sync_inner(
                 Ok(_) => 0,
                 Err(e) => {
                     if !json {
-                        eprintln!("warning: ironwood tree state unavailable ({e}); seeding position 0");
+                        eprintln!(
+                            "warning: ironwood tree state unavailable ({e}); seeding position 0"
+                        );
                     }
                     0
                 }
@@ -594,10 +623,8 @@ fn try_decrypt(
         EphemeralKeyBytes(output.epk),
         output.ciphertext,
     );
-    let domain = OrchardDomain::for_compact_action(&compact);
-
     // try external scope
-    if let Some((note, _)) = try_compact_note_decryption(&domain, ivk_ext, output) {
+    if let Some((note, _)) = try_compact_decrypt_any_version(&compact, ivk_ext, output) {
         // Verify the note commitment matches what the server sent.
         // A malicious server could craft ciphertexts that decrypt to fake notes
         // with arbitrary values. Recomputing cmx from the decrypted note fields
@@ -611,7 +638,7 @@ fn try_decrypt(
     }
 
     // try internal scope (change/shielding)
-    if let Some((note, _)) = try_compact_note_decryption(&domain, ivk_int, output) {
+    if let Some((note, _)) = try_compact_decrypt_any_version(&compact, ivk_int, output) {
         let recomputed = orchard::note::ExtractedNoteCommitment::from(note.commitment());
         if recomputed.to_bytes() != output.cmx {
             eprintln!("WARNING: cmx mismatch after decryption — server sent fake note, skipping");
@@ -892,7 +919,6 @@ async fn fetch_memo(
     epk: &[u8; 32],
     action_nf: &[u8; 32],
 ) -> Result<Option<String>, Error> {
-    use orchard::note_encryption::OrchardDomain;
     use zcash_note_encryption::{try_note_decryption, ENC_CIPHERTEXT_SIZE};
 
     let raw_tx = client.get_transaction(txid).await?;
@@ -920,14 +946,12 @@ async fn fetch_memo(
         EphemeralKeyBytes(*epk),
         compact_ct,
     );
-    let domain = OrchardDomain::for_compact_action(&compact);
-
     struct FullOutput {
         epk: [u8; 32],
         cmx: [u8; 32],
         enc_ciphertext: [u8; ENC_CIPHERTEXT_SIZE],
     }
-    impl ShieldedOutput<OrchardDomain, ENC_CIPHERTEXT_SIZE> for FullOutput {
+    impl<V: DomainVersion> ShieldedOutput<NoteEncryptionDomain<V>, ENC_CIPHERTEXT_SIZE> for FullOutput {
         fn ephemeral_key(&self) -> EphemeralKeyBytes {
             EphemeralKeyBytes(self.epk)
         }
@@ -944,7 +968,12 @@ async fn fetch_memo(
         cmx: *cmx,
         enc_ciphertext: enc,
     };
-    if let Some((_, _, memo)) = try_note_decryption(&domain, ivk, &output) {
+    // Both note-version domains, same reason as `try_compact_decrypt_any_version`.
+    let memo = try_note_decryption(&OrchardDomain::for_compact_action(&compact), ivk, &output)
+        .or_else(|| {
+            try_note_decryption(&IronwoodDomain::for_compact_action(&compact), ivk, &output)
+        });
+    if let Some((_, _, memo)) = memo {
         let end = memo
             .iter()
             .rposition(|&b| b != 0)

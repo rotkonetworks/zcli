@@ -6,9 +6,9 @@
 //! Mirrors the pinned librustzcash pczt/tests/end_to_end.rs ironwood tests
 //! and the zigner spike v6_ironwood.rs producer side.
 //!
-//! Only meaningful when built the way the forks require:
-//!   RUSTFLAGS='--cfg zcash_unstable="nu6.3"' cargo test --release --test turnstile_v6
-//! Without the cfg this file compiles to nothing. Run with --release: it
+//! Run with:
+//!   cargo test --release --test turnstile_v6
+//! Run with --release: it
 //! builds the post-NU6.3 Halo 2 proving key and proves two bundles.
 
 
@@ -280,7 +280,10 @@ fn turnstile_orchard_to_ironwood_builds_signs_extracts() {
     let low = pczt::roles::low_level_signer::Signer::new(pczt);
     let low = low
         .sign_orchard_with(
-            |_pczt, bundle, _tx_modifiable| -> Result<(), pczt::roles::low_level_signer::OrchardParseError> {
+            |_pczt,
+             bundle,
+             _tx_modifiable|
+             -> Result<(), pczt::roles::low_level_signer::OrchardParseError> {
                 for action in bundle.actions_mut().iter_mut() {
                     match action.spend().verify_nullifier(Some(&fvk)) {
                         Ok(())
@@ -307,8 +310,8 @@ fn turnstile_orchard_to_ironwood_builds_signs_extracts() {
     let signed = low.finish();
 
     // -- extractor: same code path zafu's hot wallet uses --
-    let tx_bytes =
-        extract_signed_tx_from_pczt_bytes(&signed.serialize().expect("pczt serialize")).expect("extract signed tx");
+    let signed_bytes = signed.serialize().expect("pczt serialize");
+    let tx_bytes = extract_signed_tx_from_pczt_bytes(&signed_bytes).expect("extract signed tx");
 
     let tx = Transaction::read(&tx_bytes[..], BranchId::Nu6_3).expect("tx parses");
     assert_eq!(tx.version(), TxVersion::V6);

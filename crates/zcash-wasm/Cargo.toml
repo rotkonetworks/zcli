@@ -22,15 +22,13 @@ ff = "0.13"
 group = "0.13"
 
 # Orchard protocol - real key derivation and note encryption.
-# NU6.3 / Ironwood stack (frozen interface contract, section 0):
-#   librustzcash crates:     crates.io (released; zcash_primitives 0.30 etc.)
-#     (zcash_primitives 0.28 / pczt 0.7 / zcash_keys 0.14 / zcash_protocol 0.9 /
-#      zcash_transparent 0.8) - lock pins rev 0c3ad735
-#   orchard 0.15.5:          crates.io (released, NU6.3/Ironwood upstream)
-#     - lock pins rev 204d8ce9
-# These are the SAME pins the zigner spike rust/pczt_signing_valar uses (its
-# Cargo.lock is the source of truth for revs). Build native AND wasm with:
-#   RUSTFLAGS='--cfg zcash_unstable="nu6.3"'
+# NU6.3 / Ironwood stack — upstream crates.io releases (no forks, no [patch]).
+#   orchard 0.15.5 carries the qleak dummy-ciphertext privacy fix
+#   (OutputInfo::randomized_ciphertext / fabricated_for_spend) that used to
+#   live only on the valar/zcash fork branches.
+#   zcash_protocol 0.10.x ships the real NU6.3 branch id (0x37a5165b,
+#   mainnet activation 3_428_143) and V6 version group id 0xD884B698 —
+#   NU6.3 is fully ungated upstream, so no zcash_unstable cfg is needed.
 orchard = { version = "0.15.5", default-features = false, features = ["circuit"] }
 zcash_keys = { version = "0.16", default-features = false, features = ["orchard", "transparent-inputs"] }
 zcash_address = { version = "0.13", default-features = false }
@@ -126,6 +124,3 @@ rand = "0.8"
 [[bench]]
 name = "scanning"
 harness = false
-
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(zcash_unstable, values("nu6.3"))'] }

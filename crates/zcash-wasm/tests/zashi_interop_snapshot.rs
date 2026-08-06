@@ -68,6 +68,7 @@ fn zashi_emitted_pczt_round_trips_through_our_redactor() {
 
     // (1) Format stability across our redactor.
     let redacted = zafu_wasm::redact_pczt_for_signer(pczt);
+    // `Pczt::serialize` consumes `self` upstream, so keep a copy for step (2).
     let _ = redacted.clone().serialize().expect("pczt serialize");
 
     // (2) Signer can still rebuild the PCZT after our redaction.

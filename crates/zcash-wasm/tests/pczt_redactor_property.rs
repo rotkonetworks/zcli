@@ -171,8 +171,8 @@ fn redaction_preserves_sighash() {
          this breaks the display↔sighash binding the migration relies on. \
          most likely cause: a clear_* call accidentally landed on a field \
          that participates in `pczt_to_tx_data`.",
-        hex::encode(&sighash_pre),
-        hex::encode(&sighash_post),
+        hex::encode(sighash_pre),
+        hex::encode(sighash_post),
     );
 }
 
