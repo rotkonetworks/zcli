@@ -265,6 +265,135 @@ pub fn deserialize_witness(
         .ok_or_else(|| "invalid witness parts".to_string())
 }
 
+// ── shared replay core ──
+
+/// Append-only replay of note commitments into ONE commitment tree, snapshotting
+/// an [`IncrementalWitness`] at each requested leaf position.
+///
+/// This is the single implementation of "walk a commitment tree forward and
+/// witness these positions". It is deliberately ignorant of which shielded pool
+/// it is replaying: the caller decides which tree to seed it with and which
+/// action list to feed it. Every consumer (the wasm worker, zcli's pool-aware
+/// `build_witnesses`, and the regtest end-to-end test) drives this same code, so
+/// a witness proven correct here is the witness those callers ship.
+///
+/// Leaves must be fed in consensus order, starting at the leaf immediately after
+/// the seed frontier.
+pub struct WitnessReplay {
+    tree: CommitmentTree<MerkleHashOrchard, 32>,
+    /// index of the NEXT leaf to be appended
+    position: u64,
+    wanted: HashMap<u64, usize>,
+    positions: Vec<u64>,
+    witnesses: Vec<Option<IncrementalWitness<MerkleHashOrchard, 32>>>,
+}
+
+impl WitnessReplay {
+    /// Start a replay from an already-parsed frontier.
+    pub fn new(tree: CommitmentTree<MerkleHashOrchard, 32>, positions: &[u64]) -> Self {
+        let mut wanted = HashMap::with_capacity(positions.len());
+        for (i, &p) in positions.iter().enumerate() {
+            wanted.insert(p, i);
+        }
+        Self {
+            position: tree.size() as u64,
+            tree,
+            wanted,
+            positions: positions.to_vec(),
+            witnesses: vec![None; positions.len()],
+        }
+    }
+
+    /// Start a replay from a serialized frontier (empty input = empty tree).
+    pub fn from_frontier_bytes(frontier: &[u8], positions: &[u64]) -> Result<Self, String> {
+        Ok(Self::new(deserialize_tree(frontier)?, positions))
+    }
+
+    /// Number of leaves already in the tree, i.e. the position the next appended
+    /// leaf will occupy.
+    pub fn next_position(&self) -> u64 {
+        self.position
+    }
+
+    pub fn tree(&self) -> &CommitmentTree<MerkleHashOrchard, 32> {
+        &self.tree
+    }
+
+    /// Current tree root — the anchor if the replay has reached the anchor height.
+    pub fn root(&self) -> MerkleHashOrchard {
+        self.tree.root()
+    }
+
+    pub fn anchor(&self) -> Anchor {
+        Anchor::from(self.tree.root())
+    }
+
+    /// Append one leaf, snapshotting/advancing witnesses as needed.
+    pub fn append(&mut self, hash: MerkleHashOrchard) -> Result<(), String> {
+        self.tree
+            .append(hash)
+            .map_err(|_| "merkle tree full".to_string())?;
+
+        // snapshot a witness at a position we care about
+        if let Some(&idx) = self.wanted.get(&self.position) {
+            self.witnesses[idx] = IncrementalWitness::from_tree(self.tree.clone());
+        }
+
+        // advance every witness snapshotted at an EARLIER position
+        for w in self.witnesses.iter_mut().flatten() {
+            if w.witnessed_position() < incrementalmerkletree::Position::from(self.position) {
+                w.append(hash)
+                    .map_err(|_| "witness tree full".to_string())?;
+            }
+        }
+
+        self.position += 1;
+        Ok(())
+    }
+
+    /// Append one leaf given raw cmx bytes. A cmx that is not a canonical
+    /// Pallas base field element is committed as the empty leaf, matching how
+    /// the tree is built by consensus from a compact block.
+    pub fn append_cmx_bytes(&mut self, cmx: &[u8; 32]) -> Result<(), String> {
+        let parsed = ExtractedNoteCommitment::from_bytes(cmx);
+        let hash = if bool::from(parsed.is_some()) {
+            MerkleHashOrchard::from_cmx(&parsed.unwrap())
+        } else {
+            MerkleHashOrchard::empty_leaf()
+        };
+        self.append(hash)
+    }
+
+    /// Borrow the witness snapshotted for the i-th requested position.
+    pub fn witness(&self, i: usize) -> Option<&IncrementalWitness<MerkleHashOrchard, 32>> {
+        self.witnesses.get(i).and_then(|w| w.as_ref())
+    }
+
+    /// Finish the replay, producing one merkle path per requested position in
+    /// the order the positions were given.
+    ///
+    /// Fails if any requested position was never reached — which is what a
+    /// frontier seeded PAST the note, or a replay of the wrong pool's action
+    /// list, looks like from here.
+    pub fn into_paths(self) -> Result<Vec<MerklePath>, String> {
+        let positions = self.positions;
+        let mut paths = Vec::with_capacity(positions.len());
+        for (i, w) in self.witnesses.into_iter().enumerate() {
+            let witness = w.ok_or_else(|| {
+                format!("note at position {} not found in tree replay", positions[i])
+            })?;
+            let imt_path = witness.path().ok_or_else(|| {
+                format!(
+                    "failed to compute merkle path for note at position {}",
+                    positions[i]
+                )
+            })?;
+            paths.push(MerklePath::from(imt_path));
+        }
+        Ok(paths)
+    }
+}
+
 /// A compact block action - just the cmx commitment.
 #[derive(serde::Deserialize)]
 pub struct CompactAction {
@@ -310,18 +439,7 @@ pub fn build_merkle_paths_inner(
     // deserialize checkpoint tree
     let tree_bytes =
         hex::decode(tree_state_hex).map_err(|e| format!("invalid tree state hex: {}", e))?;
-    let mut tree = deserialize_tree(&tree_bytes)?;
-
-    let mut position_counter = tree.size() as u64;
-
-    // build position -> index map
-    let mut position_map: HashMap<u64, usize> = HashMap::new();
-    for (i, &pos) in note_positions.iter().enumerate() {
-        position_map.insert(pos, i);
-    }
-
-    let mut witnesses: Vec<Option<IncrementalWitness<MerkleHashOrchard, 32>>> =
-        vec![None; note_positions.len()];
+    let mut replay = WitnessReplay::from_frontier_bytes(&tree_bytes, note_positions)?;
 
     // replay blocks
     for block in compact_blocks {
@@ -329,61 +447,21 @@ pub fn build_merkle_paths_inner(
             let cmx_bytes = hex::decode(&action.cmx_hex)
                 .map_err(|e| format!("invalid cmx hex at height {}: {}", block.height, e))?;
 
-            let hash = if cmx_bytes.len() == 32 {
+            if cmx_bytes.len() == 32 {
                 let mut arr = [0u8; 32];
                 arr.copy_from_slice(&cmx_bytes);
-                let cmx = ExtractedNoteCommitment::from_bytes(&arr);
-                if bool::from(cmx.is_some()) {
-                    MerkleHashOrchard::from_cmx(&cmx.unwrap())
-                } else {
-                    MerkleHashOrchard::empty_leaf()
-                }
+                replay.append_cmx_bytes(&arr)?;
             } else {
-                MerkleHashOrchard::empty_leaf()
-            };
-
-            tree.append(hash)
-                .map_err(|_| "merkle tree full".to_string())?;
-
-            // snapshot witness at note positions
-            if let Some(&idx) = position_map.get(&position_counter) {
-                witnesses[idx] = IncrementalWitness::from_tree(tree.clone());
+                replay.append(MerkleHashOrchard::empty_leaf())?;
             }
-
-            // update existing witnesses with new leaf
-            for w in witnesses.iter_mut().flatten() {
-                if w.witnessed_position() < incrementalmerkletree::Position::from(position_counter)
-                {
-                    w.append(hash)
-                        .map_err(|_| "witness tree full".to_string())?;
-                }
-            }
-
-            position_counter += 1;
         }
     }
 
     // extract anchor and paths
-    let anchor_root = tree.root();
-    let anchor = Anchor::from(anchor_root);
+    let anchor = replay.anchor();
 
     let mut paths = Vec::with_capacity(note_positions.len());
-    for (i, w) in witnesses.into_iter().enumerate() {
-        let witness = w.ok_or_else(|| {
-            format!(
-                "note at position {} not found in tree replay",
-                note_positions[i],
-            )
-        })?;
-
-        let imt_path = witness.path().ok_or_else(|| {
-            format!(
-                "failed to compute merkle path for note at position {}",
-                note_positions[i],
-            )
-        })?;
-
-        let merkle_path = MerklePath::from(imt_path);
+    for merkle_path in replay.into_paths()? {
         let auth_path = merkle_path.auth_path();
         let position = u64::from(merkle_path.position());
 

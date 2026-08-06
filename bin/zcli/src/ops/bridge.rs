@@ -85,12 +85,13 @@ pub async fn bridge_spend(
     let (tip, _) = client.get_tip().await?;
 
     eprintln!("building merkle witnesses...");
-    let (cached_frontier, sync_height) = witness::load_frontier_from_wallet();
+    let (cached_frontier, sync_height) =
+        witness::load_frontier_from_wallet(crate::wallet::Pool::Orchard);
     let (anchor, paths) = witness::build_witnesses(
         &client,
         &selected,
         tip,
-        mainnet,
+        crate::wallet::Pool::Orchard,
         false,
         cached_frontier,
         sync_height,

@@ -2241,10 +2241,30 @@ async fn cmd_export_notes(
     zt_redundancy: u8,
 ) -> Result<(), Error> {
     let wallet_obj = wallet::Wallet::open(&wallet::Wallet::default_path())?;
-    let (balance, notes) = wallet_obj.shielded_balance()?;
+    let (_all_balance, all_notes) = wallet_obj.shielded_balance()?;
+
+    // The export carries ONE anchor, and orchard/ironwood commitments live in
+    // separate trees with separate roots — a mixed export would attach ironwood
+    // paths to an orchard anchor. Export the orchard set and say so.
+    let ironwood_count = all_notes
+        .iter()
+        .filter(|n| n.pool == wallet::Pool::Ironwood)
+        .count();
+    let notes: Vec<_> = all_notes
+        .into_iter()
+        .filter(|n| n.pool == wallet::Pool::Orchard)
+        .collect();
+    let balance: u64 = notes.iter().map(|n| n.value).sum();
+    if ironwood_count > 0 && !cli.json {
+        eprintln!(
+            "skipping {} ironwood note(s): the export format carries a single \
+             anchor and ironwood commitments live in a different tree",
+            ironwood_count
+        );
+    }
 
     if notes.is_empty() {
-        return Err(Error::Other("no unspent notes to export".into()));
+        return Err(Error::Other("no unspent orchard notes to export".into()));
     }
 
     if !cli.json {
@@ -2263,12 +2283,12 @@ async fn cmd_export_notes(
         eprintln!("building merkle witnesses (anchor height {})...", tip);
     }
 
-    let (cached_frontier, sync_height) = witness::load_frontier_from_wallet();
+    let (cached_frontier, sync_height) = witness::load_frontier_from_wallet(wallet::Pool::Orchard);
     let (anchor, paths) = witness::build_witnesses(
         &client_obj,
         &notes,
         tip,
-        mainnet,
+        wallet::Pool::Orchard,
         cli.json,
         cached_frontier,
         sync_height,

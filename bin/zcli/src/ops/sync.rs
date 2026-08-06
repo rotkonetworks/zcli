@@ -533,14 +533,32 @@ async fn sync_inner(
     wallet.set_ironwood_position(ironwood_position)?;
     wallet.set_actions_commitment(&running_actions_commitment)?;
 
-    // cache tree frontier at sync height for fast witness building (no binary search)
+    // cache tree frontier at sync height for fast witness building (no binary search).
+    // BOTH pools: the two trees are separate, and a witness for an ironwood note
+    // replayed from the orchard frontier would produce a wrong anchor.
     match client.get_tree_state(tip).await {
         Ok((tree_hex, _)) => {
-            if let Err(e) = wallet.set_tree_frontier(&tree_hex, tip) {
-                eprintln!("warning: failed to cache tree frontier: {}", e);
+            if let Err(e) = wallet.set_tree_frontier(crate::wallet::Pool::Orchard, &tree_hex, tip) {
+                eprintln!("warning: failed to cache orchard tree frontier: {}", e);
             }
         }
         Err(e) => eprintln!("warning: failed to fetch tree state for caching: {}", e),
+    }
+    match client.get_ironwood_tree_state(tip).await {
+        // An empty ironwood frontier means the pool is not active yet (or the
+        // server predates it). Caching "" would look like a size-0 tree at this
+        // height and mis-place every later position, so store nothing.
+        Ok((tree_hex, _)) if !tree_hex.is_empty() => {
+            if let Err(e) = wallet.set_tree_frontier(crate::wallet::Pool::Ironwood, &tree_hex, tip)
+            {
+                eprintln!("warning: failed to cache ironwood tree frontier: {}", e);
+            }
+        }
+        Ok(_) => {}
+        Err(e) => eprintln!(
+            "warning: failed to fetch ironwood tree state for caching: {}",
+            e
+        ),
     }
 
     // verify nullifier proofs (NOMT) for unspent notes

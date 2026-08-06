@@ -365,12 +365,13 @@ pub async fn process_withdrawals(
             }
         };
 
-        let (cached_frontier, sync_height) = witness::load_frontier_from_wallet();
+        let (cached_frontier, sync_height) =
+            witness::load_frontier_from_wallet(crate::wallet::Pool::Orchard);
         let (anchor, paths) = match witness::build_witnesses(
             &client,
             &selected,
             tip,
-            mainnet,
+            crate::wallet::Pool::Orchard,
             json,
             cached_frontier,
             sync_height,
@@ -536,12 +537,13 @@ async fn forward_single_note(
         );
     }
 
-    let (cached_frontier, sync_height) = witness::load_frontier_from_wallet();
+    let (cached_frontier, sync_height) =
+        witness::load_frontier_from_wallet(crate::wallet::Pool::Orchard);
     let (anchor, paths) = witness::build_witnesses(
         &client,
         std::slice::from_ref(note),
         tip,
-        mainnet,
+        crate::wallet::Pool::Orchard,
         json,
         cached_frontier,
         sync_height,

@@ -126,7 +126,10 @@ async fn prepare_spend(
             )));
         }
 
-        let frontier = wallet.tree_frontier().ok().flatten();
+        let frontier = wallet
+            .tree_frontier(zecli::wallet::Pool::Orchard)
+            .ok()
+            .flatten();
         let sh = wallet.sync_height().unwrap_or(0);
         let sel = select_notes(&notes, needed, pending_nfs)?;
         (sel, frontier, sh)
@@ -171,7 +174,7 @@ async fn prepare_spend(
         &client,
         &selected,
         tip,
-        mainnet,
+        zecli::wallet::Pool::Orchard,
         true, // json=true suppresses stderr output
         cached_frontier,
         sync_height,

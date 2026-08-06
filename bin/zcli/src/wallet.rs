@@ -12,8 +12,12 @@ const SYNC_HEIGHT_KEY: &[u8] = b"sync_height";
 const BIRTH_HEIGHT_KEY: &[u8] = b"birth_height";
 const ORCHARD_POSITION_KEY: &[u8] = b"orchard_position";
 const IRONWOOD_POSITION_KEY: &[u8] = b"ironwood_position";
+// orchard keeps the historical (unprefixed) key names so existing wallets keep
+// their cached frontier across this change; ironwood gets its own pair.
 const TREE_FRONTIER_KEY: &[u8] = b"tree_frontier";
 const TREE_FRONTIER_HEIGHT_KEY: &[u8] = b"tree_frontier_height";
+const IRONWOOD_TREE_FRONTIER_KEY: &[u8] = b"ironwood_tree_frontier";
+const IRONWOOD_TREE_FRONTIER_HEIGHT_KEY: &[u8] = b"ironwood_tree_frontier_height";
 const NEXT_REQUEST_ID_KEY: &[u8] = b"next_request_id";
 const FORWARD_ADDRESS_KEY: &[u8] = b"forward_address";
 const NOTES_TREE: &str = "notes";
@@ -46,6 +50,26 @@ pub enum Pool {
     #[default]
     Orchard,
     Ironwood,
+}
+
+impl Pool {
+    pub fn name(self) -> &'static str {
+        match self {
+            Pool::Orchard => "orchard",
+            Pool::Ironwood => "ironwood",
+        }
+    }
+}
+
+/// (frontier key, frontier height key) for a pool's cached tree frontier
+fn frontier_keys(pool: Pool) -> (&'static [u8], &'static [u8]) {
+    match pool {
+        Pool::Orchard => (TREE_FRONTIER_KEY, TREE_FRONTIER_HEIGHT_KEY),
+        Pool::Ironwood => (
+            IRONWOOD_TREE_FRONTIER_KEY,
+            IRONWOOD_TREE_FRONTIER_HEIGHT_KEY,
+        ),
+    }
 }
 
 /// a received note stored in the wallet
@@ -365,15 +389,21 @@ impl Wallet {
         Ok(())
     }
 
-    /// cached orchard tree frontier (hex-encoded) for fast witness building
-    pub fn tree_frontier(&self) -> Result<Option<(String, u32)>, Error> {
+    /// cached commitment-tree frontier (hex-encoded) for fast witness building.
+    ///
+    /// Keyed by POOL: orchard and ironwood are separate trees with separate leaf
+    /// numbering, and the two frontiers are byte-compatible, so handing the
+    /// wrong one to the witness builder would be undetectable there. The pool is
+    /// a required argument for exactly that reason.
+    pub fn tree_frontier(&self, pool: Pool) -> Result<Option<(String, u32)>, Error> {
+        let (frontier_key, height_key) = frontier_keys(pool);
         let frontier = self
             .db
-            .get(TREE_FRONTIER_KEY)
+            .get(frontier_key)
             .map_err(|e| Error::Wallet(format!("read tree frontier: {}", e)))?;
         let height = self
             .db
-            .get(TREE_FRONTIER_HEIGHT_KEY)
+            .get(height_key)
             .map_err(|e| Error::Wallet(format!("read tree frontier height: {}", e)))?;
         match (frontier, height) {
             (Some(f), Some(h)) if h.len() == 4 => {
@@ -386,12 +416,13 @@ impl Wallet {
         }
     }
 
-    pub fn set_tree_frontier(&self, hex: &str, height: u32) -> Result<(), Error> {
+    pub fn set_tree_frontier(&self, pool: Pool, hex: &str, height: u32) -> Result<(), Error> {
+        let (frontier_key, height_key) = frontier_keys(pool);
         self.db
-            .insert(TREE_FRONTIER_KEY, hex.as_bytes())
+            .insert(frontier_key, hex.as_bytes())
             .map_err(|e| Error::Wallet(format!("write tree frontier: {}", e)))?;
         self.db
-            .insert(TREE_FRONTIER_HEIGHT_KEY, &height.to_le_bytes())
+            .insert(height_key, &height.to_le_bytes())
             .map_err(|e| Error::Wallet(format!("write tree frontier height: {}", e)))?;
         self.db
             .flush()

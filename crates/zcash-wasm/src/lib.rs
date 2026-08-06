@@ -9,7 +9,13 @@
 //! ```
 
 mod frost;
-mod witness;
+/// Commitment-tree replay and witness serialization.
+///
+/// Public because it is the SINGLE implementation of "walk a commitment tree
+/// forward and witness these positions", shared by the wasm worker, zcli's
+/// pool-aware witness builder, and the regtest end-to-end tests. Duplicating it
+/// per pool is how you end up with a witness against the wrong tree.
+pub mod witness;
 
 use blake2::{Blake2b512, Digest};
 use serde::{Deserialize, Serialize};

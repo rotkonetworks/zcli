@@ -40,7 +40,8 @@ mod common;
 
 use common::{
     encode_p2pkh, ironwood_pool_zat, ironwood_tree_size, mine, node_conventional_fee,
-    p2pkh_script_hex, rpc, rpc_ok, tip_height, transparent_key, two_leaf_merkle_path, wallet_keys,
+    orchard_tree_size, p2pkh_script_hex, pool_cmxs_through, replayed_merkle_path, rpc, rpc_ok,
+    tip_height, transparent_key, two_leaf_merkle_path, wallet_keys, ShieldedPool,
     COINBASE_MATURITY, MARGINAL_FEE,
 };
 
@@ -132,39 +133,7 @@ fn regtest_shields_into_ironwood_then_withdraws_to_transparent() {
     );
 
     // ---- 2. pick a mature coinbase UTXO ------------------------------------
-    let coinbase = &block1["tx"][0];
-    let txid_hex = coinbase["txid"]
-        .as_str()
-        .expect("coinbase txid")
-        .to_string();
-    let vout0 = &coinbase["vout"][0];
-    let value_zat = vout0["valueZat"]
-        .as_u64()
-        .or_else(|| vout0["value"].as_f64().map(|z| (z * 1e8).round() as u64))
-        .expect("coinbase output value");
-    let node_script_hex = vout0["scriptPubKey"]["hex"]
-        .as_str()
-        .expect("scriptPubKey hex")
-        .to_string();
-
-    // The script we will sign against must be byte-identical to the one the
-    // node recorded, or the signature binds the wrong scriptCode.
-    assert_eq!(
-        p2pkh_script_hex(&t_pk),
-        node_script_hex,
-        "the node's coinbase scriptPubKey is not the P2PKH script for our key"
-    );
-    let our_script: zcash_transparent::address::Script =
-        TransparentAddress::from_pubkey(&t_pk).script().into();
-
-    let mut txid_le = hex::decode(&txid_hex).expect("hex txid");
-    txid_le.reverse(); // RPC prints txids big-endian; OutPoint wants internal order
-    let outpoint = OutPoint::new(txid_le.try_into().expect("32-byte txid"), 0);
-    let utxo = TxOut::new(
-        Zatoshis::from_u64(value_zat).expect("valid coinbase value"),
-        our_script,
-    );
-    println!("spending coinbase {txid_hex}:0 worth {value_zat} zat");
+    let (outpoint, utxo, value_zat) = coinbase_utxo(&block1, &t_pk);
 
     // ---- 3. t→z: shield the coinbase into the ironwood pool -----------------
     let (fvk, ask) = wallet_keys(
@@ -289,9 +258,98 @@ fn regtest_shields_into_ironwood_then_withdraws_to_transparent() {
     );
     println!("decrypted our ironwood note: {note_value} zat at tree position {position}");
 
-    // ---- 5. z→t: spend that note back out to a transparent address ---------
-    let path = two_leaf_merkle_path(&cmxs, position);
-    let anchor = path.root(cmxs[position as usize]);
+    // At this instant the ironwood tree holds exactly our 2 padded actions, so
+    // the naive two-leaf path is still correct — capture it, because the next
+    // step is going to make it WRONG, and a witness builder that ignores the
+    // rest of the chain would keep producing it.
+    let two_leaf = two_leaf_merkle_path(&cmxs, position);
+
+    // ---- 4b. grow the ironwood tree past the one-transaction case ----------
+    // A second shielding puts two more leaves in the tree. Our note keeps its
+    // position but its merkle path changes: from here on, only a builder that
+    // replays the ironwood commitment stream can spend it.
+    let block2 = rpc_ok("getblock", json!(["2", 2]));
+    let (outpoint2, utxo2, value2_zat) = coinbase_utxo(&block2, &t_pk);
+    let shield2_fee = zip317_shielding_fee(1);
+    let target_height = tip_height() + 1;
+    let shield2_bytes = build_shielding_transaction_ironwood_core(
+        RegtestNu63,
+        &t_sk,
+        &[(outpoint2, utxo2)],
+        fvk.address_at(1u32, Scope::External),
+        shield2_fee,
+        target_height,
+        NU6_3_BRANCH_ID,
+        MemoBytes::empty(),
+    )
+    .expect("second ironwood shielding build must succeed");
+    let shield2_txid = rpc("sendrawtransaction", json!([hex::encode(&shield2_bytes)]))
+        .unwrap_or_else(|e| panic!("NODE REJECTED the second t→z ironwood shielding tx: {e}"));
+    println!(
+        "second t→z shielding accepted: {}",
+        shield2_txid.as_str().expect("txid string")
+    );
+    mine(1, &miner_addr);
+    let block = rpc_ok("getblock", json!([tip_height().to_string(), 2]));
+    assert_eq!(
+        ironwood_tree_size(&block),
+        4,
+        "the second shielding must have added its 2 padded actions to the ironwood tree"
+    );
+
+    // ---- 5. z→t: spend the FIRST note, witnessed by replaying the chain -----
+    // Read every ironwood commitment the validator committed to, in order, and
+    // replay it through the shared witness core (`zafu_wasm::witness`, the same
+    // code zcli's pool-aware `build_witnesses` runs). The anchor this produces
+    // is the one the node must accept.
+    let anchor_height = tip_height();
+    let iw_cmxs = pool_cmxs_through(anchor_height, ShieldedPool::Ironwood);
+    assert_eq!(
+        iw_cmxs.len() as u64,
+        ironwood_tree_size(&block),
+        "the ironwood commitments we replayed must match the node's tree size"
+    );
+    assert_eq!(
+        iw_cmxs[position as usize], cmxs[position as usize],
+        "our note's commitment must sit at the position we recorded"
+    );
+    let (anchor, path) = replayed_merkle_path(&iw_cmxs, position as u64);
+
+    // The tree has moved on: the one-transaction path is now wrong. If it were
+    // still equal, this test would be proving nothing that step 3 did not.
+    assert_ne!(
+        path.auth_path(),
+        two_leaf.auth_path(),
+        "the ironwood tree must have grown beyond the single-transaction case"
+    );
+    assert_eq!(
+        path.root(cmxs[position as usize]),
+        anchor,
+        "the replayed path must root to the replayed anchor"
+    );
+
+    // CROSS-TREE GUARD. The orchard tree on this chain is a different tree —
+    // here, an empty one. A witness built from it (which is exactly what an
+    // orchard-only builder does with an ironwood note) yields a different
+    // anchor, and the spend below would be rejected as an unknown anchor.
+    assert_eq!(
+        orchard_tree_size(&block),
+        0,
+        "no orchard actions are expected on this chain"
+    );
+    let orchard_cmxs = pool_cmxs_through(anchor_height, ShieldedPool::Orchard);
+    assert!(
+        orchard_cmxs.is_empty(),
+        "the orchard action stream must be empty on this chain"
+    );
+    let orchard_anchor = zafu_wasm::witness::WitnessReplay::from_frontier_bytes(&[], &[])
+        .expect("empty frontier")
+        .anchor();
+    assert_ne!(
+        orchard_anchor, anchor,
+        "the orchard anchor must differ from the ironwood anchor — a witness \
+         replayed from the wrong pool's tree cannot be valid here"
+    );
 
     let (_withdraw_sk, withdraw_pk) = transparent_key(9);
     let withdraw_to = TransparentAddress::from_pubkey(&withdraw_pk);
@@ -376,13 +434,14 @@ fn regtest_shields_into_ironwood_then_withdraws_to_transparent() {
     );
     assert_eq!(
         ironwood_tree_size(&block),
-        4,
-        "the withdrawal's 2 padded actions must also be committed to the ironwood tree"
+        6,
+        "the withdrawal's 2 padded actions must also be committed to the ironwood \
+         tree (2 shieldings + this spend)"
     );
     assert_eq!(
         ironwood_pool_zat(&block),
-        (note_value - amount - send_fee) as i64,
-        "the ironwood pool must be left holding exactly the change note"
+        (note_value - amount - send_fee + (value2_zat - shield2_fee)) as i64,
+        "the ironwood pool must hold our change note plus the second shielded note"
     );
     println!("z→t MINED at {send_height}, node-accepted fee {node_fee} zat");
 
@@ -393,4 +452,42 @@ fn regtest_shields_into_ironwood_then_withdraws_to_transparent() {
         "the node re-accepted an already-mined ironwood spend"
     );
     println!("double-spend correctly refused: {}", replay.unwrap_err());
+}
+
+/// The vout-0 coinbase UTXO of `block`, checked to be payable to `t_pk`.
+fn coinbase_utxo(block: &serde_json::Value, t_pk: &secp256k1::PublicKey) -> (OutPoint, TxOut, u64) {
+    let coinbase = &block["tx"][0];
+    let txid_hex = coinbase["txid"]
+        .as_str()
+        .expect("coinbase txid")
+        .to_string();
+    let vout0 = &coinbase["vout"][0];
+    let value_zat = vout0["valueZat"]
+        .as_u64()
+        .or_else(|| vout0["value"].as_f64().map(|z| (z * 1e8).round() as u64))
+        .expect("coinbase output value");
+    let node_script_hex = vout0["scriptPubKey"]["hex"]
+        .as_str()
+        .expect("scriptPubKey hex")
+        .to_string();
+
+    // The script we will sign against must be byte-identical to the one the
+    // node recorded, or the signature binds the wrong scriptCode.
+    assert_eq!(
+        p2pkh_script_hex(t_pk),
+        node_script_hex,
+        "the node's coinbase scriptPubKey is not the P2PKH script for our key"
+    );
+    let our_script: zcash_transparent::address::Script =
+        TransparentAddress::from_pubkey(t_pk).script().into();
+
+    let mut txid_le = hex::decode(&txid_hex).expect("hex txid");
+    txid_le.reverse(); // RPC prints txids big-endian; OutPoint wants internal order
+    let outpoint = OutPoint::new(txid_le.try_into().expect("32-byte txid"), 0);
+    let utxo = TxOut::new(
+        Zatoshis::from_u64(value_zat).expect("valid coinbase value"),
+        our_script,
+    );
+    println!("using coinbase {txid_hex}:0 worth {value_zat} zat");
+    (outpoint, utxo, value_zat)
 }

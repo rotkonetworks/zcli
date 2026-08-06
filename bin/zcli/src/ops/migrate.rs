@@ -111,7 +111,10 @@ pub async fn migrate(
     let (selected, cached_frontier, sync_height) = {
         let wallet = Wallet::open(&Wallet::default_path())?;
         let (_balance, notes) = wallet.shielded_balance()?;
-        let frontier = wallet.tree_frontier().ok().flatten();
+        let frontier = wallet
+            .tree_frontier(crate::wallet::Pool::Orchard)
+            .ok()
+            .flatten();
         let sh = wallet.sync_height().unwrap_or(0);
         (select_migration_notes(&notes, max_notes), frontier, sh)
     }; // drop the wallet handle before the (slow) build re-opens it
@@ -180,7 +183,7 @@ pub async fn migrate(
         &client,
         &selected,
         tip,
-        mainnet,
+        crate::wallet::Pool::Orchard,
         json,
         cached_frontier,
         sync_height,
@@ -381,7 +384,6 @@ fn build_signed_migration(
     };
     res.map_err(Error::Transaction)
 }
-
 
 #[cfg(test)]
 mod tests {

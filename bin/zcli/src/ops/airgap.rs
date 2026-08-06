@@ -228,12 +228,13 @@ async fn send_airgap_shielded_fvk(
     if !json {
         eprintln!("building merkle witnesses...");
     }
-    let (cached_frontier, sync_height) = witness::load_frontier_from_wallet();
+    let (cached_frontier, sync_height) =
+        witness::load_frontier_from_wallet(crate::wallet::Pool::Orchard);
     let (anchor, paths) = witness::build_witnesses(
         &client,
         &selected,
         tip,
-        mainnet,
+        crate::wallet::Pool::Orchard,
         json,
         cached_frontier,
         sync_height,
@@ -424,12 +425,13 @@ async fn send_airgap_to_transparent_fvk(
     if !json {
         eprintln!("building merkle witnesses...");
     }
-    let (cached_frontier, sync_height) = witness::load_frontier_from_wallet();
+    let (cached_frontier, sync_height) =
+        witness::load_frontier_from_wallet(crate::wallet::Pool::Orchard);
     let (anchor, paths) = witness::build_witnesses(
         &client,
         &selected,
         tip,
-        mainnet,
+        crate::wallet::Pool::Orchard,
         json,
         cached_frontier,
         sync_height,

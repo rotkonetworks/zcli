@@ -70,7 +70,10 @@ async fn send_to_transparent(
             });
         }
 
-        let frontier = wallet.tree_frontier().ok().flatten();
+        let frontier = wallet
+            .tree_frontier(crate::wallet::Pool::Orchard)
+            .ok()
+            .flatten();
         let sh = wallet.sync_height().unwrap_or(0);
 
         // select notes (largest first until we cover amount + fee)
@@ -115,7 +118,7 @@ async fn send_to_transparent(
         &client,
         &selected,
         tip,
-        mainnet,
+        crate::wallet::Pool::Orchard,
         json,
         cached_frontier.clone(),
         sync_height,
@@ -225,7 +228,10 @@ async fn send_to_shielded(
             });
         }
 
-        let frontier = wallet.tree_frontier().ok().flatten();
+        let frontier = wallet
+            .tree_frontier(crate::wallet::Pool::Orchard)
+            .ok()
+            .flatten();
         let sh = wallet.sync_height().unwrap_or(0);
         (select_notes(&notes, needed)?, frontier, sh)
     }; // drop wallet before later re-open
@@ -272,7 +278,7 @@ async fn send_to_shielded(
         &client,
         &selected,
         tip,
-        mainnet,
+        crate::wallet::Pool::Orchard,
         json,
         cached_frontier.clone(),
         sync_height,

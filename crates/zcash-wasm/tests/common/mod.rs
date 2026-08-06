@@ -316,3 +316,99 @@ pub fn two_leaf_merkle_path(
     }
     orchard::tree::MerklePath::from_parts(position, auth_path)
 }
+
+// ---------------------------------------------------------------------------
+// merkle path against the REAL chain, one pool at a time
+// ---------------------------------------------------------------------------
+
+/// Which shielded pool's commitments to read out of a transaction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ShieldedPool {
+    Orchard,
+    Ironwood,
+}
+
+impl ShieldedPool {
+    pub fn name(self) -> &'static str {
+        match self {
+            ShieldedPool::Orchard => "orchard",
+            ShieldedPool::Ironwood => "ironwood",
+        }
+    }
+}
+
+/// Raw bytes of a transaction as the NODE stored it.
+fn raw_tx(txid: &str, tx_obj: &Value) -> Vec<u8> {
+    let hex_str = match tx_obj["hex"].as_str() {
+        Some(h) => h.to_string(),
+        None => rpc_ok("getrawtransaction", json!([txid, 0]))
+            .as_str()
+            .unwrap_or_else(|| panic!("getrawtransaction {txid} returned no hex"))
+            .to_string(),
+    };
+    hex::decode(&hex_str).unwrap_or_else(|e| panic!("bad tx hex for {txid}: {e}"))
+}
+
+/// Every commitment `pool` accumulated on this chain, in consensus order, from
+/// block 1 through `to_height` inclusive.
+///
+/// Read back out of the node's own blocks and re-parsed from the raw
+/// transactions, so it reflects what the validator committed rather than what
+/// our builder thinks it built. This is the input a witness replay needs, and
+/// keeping the two pools in separate functions of `pool` is the whole point:
+/// feed the wrong list in and the resulting anchor is wrong.
+pub fn pool_cmxs_through(
+    to_height: u32,
+    pool: ShieldedPool,
+) -> Vec<orchard::note::ExtractedNoteCommitment> {
+    use zcash_primitives::transaction::Transaction;
+    use zcash_protocol::consensus::BranchId;
+
+    let mut cmxs = Vec::new();
+    for height in 1..=to_height {
+        let block = rpc_ok("getblock", json!([height.to_string(), 2]));
+        for tx_obj in block["tx"].as_array().expect("block tx array") {
+            let txid = tx_obj["txid"].as_str().expect("txid").to_string();
+            let bytes = raw_tx(&txid, tx_obj);
+            let tx = Transaction::read(&bytes[..], BranchId::Nu6_3)
+                .unwrap_or_else(|e| panic!("cannot parse tx {txid} at height {height}: {e}"));
+            match pool {
+                ShieldedPool::Ironwood => {
+                    if let Some(b) = tx.ironwood_bundle() {
+                        cmxs.extend(b.actions().iter().map(|a| *a.cmx()));
+                    }
+                }
+                ShieldedPool::Orchard => {
+                    if let Some(b) = tx.orchard_bundle() {
+                        cmxs.extend(b.actions().iter().map(|a| *a.cmx()));
+                    }
+                }
+            }
+        }
+    }
+    cmxs
+}
+
+/// Build the merkle path for the leaf at `position` by replaying `cmxs` into a
+/// commitment tree with the SAME code the wallet uses (`zafu_wasm::witness`),
+/// and return it together with the resulting anchor.
+///
+/// Unlike [`two_leaf_merkle_path`] this handles a tree of any size, which is
+/// what makes it usable once more than one transaction has touched the pool.
+pub fn replayed_merkle_path(
+    cmxs: &[orchard::note::ExtractedNoteCommitment],
+    position: u64,
+) -> (orchard::tree::Anchor, orchard::tree::MerklePath) {
+    let mut replay = zafu_wasm::witness::WitnessReplay::from_frontier_bytes(&[], &[position])
+        .expect("empty frontier");
+    for cmx in cmxs {
+        replay
+            .append_cmx_bytes(&cmx.to_bytes())
+            .expect("append commitment");
+    }
+    let anchor = replay.anchor();
+    let mut paths = replay
+        .into_paths()
+        .expect("witness for the requested position");
+    (anchor, paths.remove(0))
+}
