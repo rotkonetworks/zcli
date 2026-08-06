@@ -38,7 +38,7 @@ prost-types = "0.13"
 
 # orchard tree — needed to compute the canonical orchard tree root
 # from zebrad's frontier hex (the "anchor" we sign + bind in the proof).
-orchard = { version = "0.12", default-features = false }
+orchard = { version = "0.15.5", default-features = false }
 incrementalmerkletree = { version = "0.8", features = ["legacy-api"] }
 
 # http client for zebrad RPC

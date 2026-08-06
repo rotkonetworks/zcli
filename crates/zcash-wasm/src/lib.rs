@@ -180,13 +180,13 @@ fn with_proving_key<R>(f: impl FnOnce(&orchard::circuit::ProvingKey) -> R) -> R 
 /// `orchard_protocol_for_branch` in the fork's builder.rs — keep in sync.
 fn orchard_protocol_for_branch(
     branch: zcash_protocol::consensus::BranchId,
-) -> orchard::BundleProtocol {
+) -> orchard::bundle::BundleVersion {
     use zcash_protocol::consensus::BranchId;
     match branch {
         #[cfg(zcash_unstable = "nu6.3")]
-        BranchId::Nu6_3 => orchard::BundleProtocol::OrchardPostNu6_3,
-        BranchId::Nu6_2 => orchard::BundleProtocol::OrchardPreNu6_3,
-        _ => orchard::BundleProtocol::OrchardPreNu6_2,
+        BranchId::Nu6_3 => orchard::bundle::BundleVersion::orchard_v3(),
+        BranchId::Nu6_2 => orchard::bundle::BundleVersion::orchard_v2(),
+        _ => orchard::bundle::BundleVersion::orchard_insecure_v1(),
     }
 }
 
@@ -1938,7 +1938,7 @@ mod tests {
             bundle_required: true,
         };
         let mut builder = Builder::new(
-            orchard::BundleProtocol::OrchardPreNu6_2,
+            orchard::bundle::BundleVersion::orchard_insecure_v1(),
             bundle_type,
             Anchor::empty_tree(),
         );
@@ -2112,7 +2112,7 @@ pub fn build_unsigned_transaction(
         bundle_required: true,
     };
     let mut builder = Builder::new(
-        orchard::BundleProtocol::OrchardPreNu6_2,
+        orchard::bundle::BundleVersion::orchard_insecure_v1(),
         bundle_type,
         anchor,
     );
@@ -2456,7 +2456,7 @@ pub fn build_unsigned_transaction(
     tx_bytes.push(
         pczt_bundle
             .flags()
-            .to_byte(orchard::bundle::BundleFormat::PreNu6_3)
+            .to_byte(orchard::bundle::BundleVersion::orchard_v2())
             .ok_or_else(|| JsError::new("flags not representable in pre-NU6.3 format"))?,
     );
 
@@ -5847,7 +5847,7 @@ pub fn build_signed_spend_transaction(
         bundle_required: true,
     };
     let mut builder = Builder::new(
-        orchard::BundleProtocol::OrchardPreNu6_2,
+        orchard::bundle::BundleVersion::orchard_insecure_v1(),
         bundle_type,
         anchor,
     );
@@ -6583,7 +6583,7 @@ pub fn build_shielding_transaction(
         bundle_required: true,
     };
     let mut builder = Builder::new(
-        orchard::BundleProtocol::OrchardPreNu6_2,
+        orchard::bundle::BundleVersion::orchard_insecure_v1(),
         bundle_type,
         Anchor::empty_tree(),
     );
@@ -7457,7 +7457,7 @@ pub fn build_unsigned_shielding_transaction(
         bundle_required: true,
     };
     let mut builder = Builder::new(
-        orchard::BundleProtocol::OrchardPreNu6_2,
+        orchard::bundle::BundleVersion::orchard_insecure_v1(),
         bundle_type,
         Anchor::empty_tree(),
     );
@@ -7864,7 +7864,7 @@ pub(crate) fn compute_orchard_digest<A: orchard::bundle::Authorization>(
     orchard_data.push(
         bundle
             .flags()
-            .to_byte(orchard::bundle::BundleFormat::PreNu6_3)
+            .to_byte(orchard::bundle::BundleVersion::orchard_v2())
             .ok_or_else(|| JsError::new("flags not representable in pre-NU6.3 format"))?,
     );
     orchard_data.extend_from_slice(&bundle.value_balance().to_i64_le_bytes());
@@ -7903,7 +7903,7 @@ fn serialize_orchard_bundle(
     out.push(
         bundle
             .flags()
-            .to_byte(orchard::bundle::BundleFormat::PreNu6_3)
+            .to_byte(orchard::bundle::BundleVersion::orchard_v2())
             .ok_or_else(|| JsError::new("flags not representable in pre-NU6.3 format"))?,
     );
 

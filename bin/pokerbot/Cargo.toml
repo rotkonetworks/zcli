@@ -67,8 +67,8 @@ zcash_address = "0.12"
 # We only READ output.recipient()/value() — plain accessors on pczt's own structs —
 # so we do NOT pull the orchard crate in directly. `signer` gives us shielded_sighash
 # should the live host path ever need it; `orchard` feature enables the orchard bundle.
-pczt = { version = "0.7", default-features = false, features = ["orchard"] }
-zcash_protocol = { version = "0.9", default-features = false }
+pczt = { version = "0.9", default-features = false, features = ["orchard"] }
+zcash_protocol = { version = "0.10", default-features = false }
 # ff::PrimeField — sample a valid Pallas scalar for the fvk-seed sk (host mode).
 ff = "0.13"
 pasta_curves = "0.5"

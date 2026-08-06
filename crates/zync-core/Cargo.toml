@@ -48,7 +48,12 @@ nomt-core = { version = "1.0", features = ["blake3-hasher", "serde"] }
 bitvec = "1"
 
 # zcash (same orchard fork as frost-spend for type compatibility)
-orchard = { git = "https://github.com/conradoplg/orchard.git", rev = "f0c88b78a1d70d55ce6bb480566d132e57d5607b", features = ["unstable-frost"] }
+# default-features would pull orchard's `circuit`, and with it
+# halo2_gadgets 0.3.1 (GHSA soundness advisory). zync-core never builds or
+# verifies an orchard proof — it needs the FROST key types only — so the
+# circuit is dead weight AND a vulnerable dependency. Keep multicore for
+# the note-decryption parallelism we do use.
+orchard = { version = "0.15.5", default-features = false, features = ["unstable-frost", "multicore"] }
 zcash_note_encryption = "0.4"
 pasta_curves = "0.5"
 subtle = "2.5"

@@ -614,7 +614,7 @@ fn compute_orchard_digest_legacy<A: orchard::bundle::Authorization>(
     orchard_data.push(
         bundle
             .flags()
-            .to_byte(orchard::bundle::BundleFormat::PreNu6_3)
+            .to_byte(orchard::bundle::BundleVersion::orchard_v2())
             .expect("V5 legacy orchard bundle flags always fit the pre-NU6.3 format"),
     );
     orchard_data.extend_from_slice(&bundle.value_balance().to_i64_le_bytes());

@@ -17,7 +17,7 @@ tokio = { version = "1", features = ["full"] }
 # zidecar client + sync primitives
 zecli = { path = "../zcli", features = ["cli"] }
 zync-core = { path = "../../crates/zync-core", default-features = false }
-orchard = { version = "0.12", default-features = false, features = ["circuit"] }
+orchard = { version = "0.15.5", default-features = false, features = ["circuit"] }
 zcash_note_encryption = "0.4"
 
 # crypto

@@ -70,16 +70,10 @@ maybe-rayon = { path = "crates/maybe-rayon" }
 # and [patch] the git source to it. This is fully reproducible offline and the
 # patched source is committed. All nine crates the lock pulls from that source
 # are overridden so Cargo does not mix patched and unpatched copies.
-[patch."https://github.com/valargroup/librustzcash"]
-equihash = { path = "vendor/librustzcash/components/equihash" }
-f4jumble = { path = "vendor/librustzcash/components/f4jumble" }
-pczt = { path = "vendor/librustzcash/pczt" }
-zcash_address = { path = "vendor/librustzcash/components/zcash_address" }
-zcash_encoding = { path = "vendor/librustzcash/components/zcash_encoding" }
-zcash_keys = { path = "vendor/librustzcash/zcash_keys" }
-zcash_primitives = { path = "vendor/librustzcash/zcash_primitives" }
-zcash_protocol = { path = "vendor/librustzcash/components/zcash_protocol" }
-zcash_transparent = { path = "vendor/librustzcash/zcash_transparent" }
+# vendored librustzcash fork removed 2026-08-06: NU6.3/Ironwood is upstream
+# as of the released crates (zcash_primitives 0.30 / zcash_protocol 0.10.4 /
+# orchard 0.15.5), including the real branch id 0x37a5165b that the fork
+# stubbed as 0xffff_ffff. No patch, no vendor, no fork.
 
 
 # Optional local dev: uncomment to develop against a sibling zeratul checkout.

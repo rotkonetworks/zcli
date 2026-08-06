@@ -314,7 +314,7 @@ fn signed_ironwood_send_spends_real_v3_note_verifies() {
     {
         use orchard::circuit::VerifyingKey;
         let ironwood_vk =
-            VerifyingKey::build(orchard::BundleProtocol::IronwoodPostNu6_3.circuit_version());
+            VerifyingKey::build(orchard::bundle::BundleVersion::IronwoodPostNu6_3.circuit_version());
         let mut vi = orchard::bundle::BatchValidator::new(&ironwood_vk);
         assert!(
             vi.add_bundle(ironwood_bundle, sighash).is_ok(),

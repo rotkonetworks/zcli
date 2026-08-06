@@ -19,7 +19,10 @@ rand_core = "0.6"
 
 # conradoplg's fork — needed for from_sk_ak (FROST FVK derivation).
 # default-features = false drops `multicore`; we only use orchard::keys::*.
-orchard = { git = "https://github.com/conradoplg/orchard.git", rev = "f0c88b78a1d70d55ce6bb480566d132e57d5607b", default-features = false, features = ["unstable-frost"] }
+# Released crates.io orchard — NU6.3/Ironwood is upstream as of 0.15.0, so no
+# fork is needed. The FROST FVK shape upstream lacks a constructor for is
+# built from the public raw encoding in keys::frost_fvk (see the note there).
+orchard = { version = "0.15.5", default-features = false, features = ["unstable-frost"] }
 
 # Pallas curve
 pasta_curves = "0.5"

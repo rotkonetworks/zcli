@@ -554,7 +554,7 @@ fn compute_pczt_orchard_digest(bundle: &orchard::pczt::Bundle) -> Result<[u8; 32
     orchard_data.push(
         bundle
             .flags()
-            .to_byte(orchard::bundle::BundleFormat::PreNu6_3)
+            .to_byte(orchard::bundle::BundleVersion::orchard_v2())
             .ok_or_else(|| {
                 Error::Transaction("orchard flags not representable in pre-NU6.3 format".into())
             })?,
@@ -604,7 +604,7 @@ pub fn build_pczt_and_qr(
         bundle_required: true,
     };
     let mut builder = Builder::new(
-        orchard::BundleProtocol::OrchardPreNu6_2,
+        orchard::bundle::BundleVersion::orchard_insecure_v1(),
         bundle_type,
         anchor,
     );

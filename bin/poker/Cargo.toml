@@ -26,8 +26,8 @@ blake2b_simd = "1.0"
 pasta_curves = { version = "0.5", default-features = false, features = ["alloc"] }
 
 # zcash address derivation
-orchard = { version = "0.12", default-features = false }
-zcash_address = "0.7"
+orchard = { version = "0.15.5", default-features = false }
+zcash_address = "0.13"
 zip32 = { version = "0.2", default-features = false }
 
 # cli

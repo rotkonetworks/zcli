@@ -36,7 +36,38 @@ pub fn derive_fvk(
         }
     };
 
-    Some(FullViewingKey::from_sk_ak(&sk, ak))
+    frost_fvk(&sk, &ak)
+}
+
+/// Build the Orchard FVK for a FROST-controlled address using ONLY orchard's
+/// public API.
+///
+/// `ak` is the FROST group verifying key; `nk`/`rivk` are derived from `sk`.
+/// Upstream has no constructor for this shape: the obvious
+/// `FullViewingKey::from_sk_ak(sk, ak)` lives only in a fork, and the upstream
+/// PR for it (zcash/orchard#475) has been open since 2025-12 under the name
+/// `from_sk_ak_incompatible_with_quantum_recoverability_and_will_be_removed`,
+/// blocked on <https://zips.z.cash/draft-ecc-quantum-recoverability>.
+///
+/// So we go through the spec-defined raw encoding instead
+/// (Zcash Protocol Spec §5.6.4.4 — `ak ‖ nk ‖ rivk`, 96 bytes): take the FVK
+/// that `sk` implies and splice the group `ak` over its first 32 bytes. The
+/// result is field-for-field identical to `from_sk_ak(sk, ak)` while needing
+/// no fork, no vendored crate, and no patched dependency.
+///
+/// It is also STRICTER than the fork: `from_bytes` runs orchard's validity
+/// check (rejecting an FVK whose ivk is 0 or ⊥), which direct struct
+/// construction silently skips.
+///
+/// CAVEAT (documented, not fixable here): an FVK of this shape is not derivable
+/// from a single spending key, so FROST-controlled addresses are NOT quantum-
+/// recoverable under the draft ZIP above. That is a property of the
+/// construction, not of how we reach it. When upstream lands a real derivation,
+/// this function is the single place to change.
+fn frost_fvk(sk: &SpendingKey, ak: &SpendValidatingKey) -> Option<FullViewingKey> {
+    let mut bytes = FullViewingKey::from(sk).to_bytes();
+    bytes[..32].copy_from_slice(&ak.to_bytes());
+    FullViewingKey::from_bytes(&bytes)
 }
 
 /// derive an Orchard FullViewingKey from a caller-supplied SpendingKey and
@@ -59,7 +90,7 @@ pub fn derive_fvk_from_sk(
     let ak_bytes = pubkey_package.verifying_key().serialize().ok()?;
     let ak = SpendValidatingKey::from_bytes(&ak_bytes)?;
     let sk: SpendingKey = Option::from(SpendingKey::from_bytes(sk_bytes))?;
-    Some(FullViewingKey::from_sk_ak(&sk, ak))
+    frost_fvk(&sk, &ak)
 }
 
 /// extract the SpendValidatingKey (ak) from a FROST key package.

@@ -41,6 +41,26 @@ const STATE_SYNC_CONCURRENCY: usize = 32;
 /// so it runs deliberately under-subscribed and simply takes longer.
 const BACKFILL_CONCURRENCY: usize = 6;
 
+/// Runtime brake on the backfill, checked every batch.
+///
+/// The backfill is a background chore with no deadline — ironwood, which is
+/// what wallets actually query, has its own cursor and is already at the tip.
+/// But it competes with zebrad for disk, and when it wins, live GetTip calls
+/// time out and users cannot send. Being able to stop it WITHOUT a rebuild and
+/// redeploy matters, because the moment you need it is the moment someone is
+/// staring at a stalled transaction.
+///
+///   ZIDECAR_BACKFILL=off     halt entirely
+///   ZIDECAR_BACKFILL=slow    2-way fan-out and a pause between batches
+///   unset / anything else    normal
+fn backfill_mode() -> &'static str {
+    match std::env::var("ZIDECAR_BACKFILL").ok().as_deref() {
+        Some("off") => "off",
+        Some("slow") => "slow",
+        _ => "normal",
+    }
+}
+
 /// Depth of the fetch→commit queue. Deep enough that a commit never stalls the
 /// fetchers, bounded so a fast producer cannot grow the heap without limit.
 const STATE_SYNC_QUEUE: usize = 256;
@@ -863,7 +883,13 @@ impl EpochManager {
                         .map(|state| (height, state))
                 })
                 .buffered(match cursor {
-                    SyncCursor::Main => BACKFILL_CONCURRENCY,
+                    SyncCursor::Main => {
+                        if backfill_mode() == "slow" {
+                            2
+                        } else {
+                            BACKFILL_CONCURRENCY
+                        }
+                    }
                     SyncCursor::Ironwood => STATE_SYNC_CONCURRENCY,
                 });
 
@@ -1080,6 +1106,26 @@ impl EpochManager {
             // the NOMT batching and the 24-way block prefetch never got to
             // stretch out. When far behind, throughput is all that matters;
             // near the tip, a small batch keeps new blocks visible promptly.
+            // Serving wallets beats finishing a backfill. Checked per batch so a
+            // stalled user can be unblocked by setting the env var and
+            // restarting, without waiting on a build.
+            match backfill_mode() {
+                "off" => {
+                    tokio::select! {
+                        _ = tokio::time::sleep(tokio::time::Duration::from_secs(30)) => {}
+                        _ = shutdown.changed() => return,
+                    }
+                    continue;
+                }
+                "slow" => {
+                    tokio::select! {
+                        _ = tokio::time::sleep(tokio::time::Duration::from_secs(3)) => {}
+                        _ = shutdown.changed() => return,
+                    }
+                }
+                _ => {}
+            }
+
             if last_synced < current_height {
                 let behind = current_height - last_synced;
                 let batch = if behind > 10_000 {
