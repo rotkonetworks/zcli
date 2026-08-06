@@ -4222,7 +4222,7 @@ dependencies = [
  "serde_with",
  "zcash_note_encryption",
  "zcash_primitives",
- "zcash_protocol 0.10.4",
+ "zcash_protocol",
  "zcash_script",
  "zcash_transparent",
 ]
@@ -4416,7 +4416,8 @@ dependencies = [
  "tonic-build 0.11.0",
  "tracing",
  "tracing-subscriber",
- "zcash_address 0.13.0",
+ "zcash_address",
+ "zcash_protocol",
  "zip32",
 ]
 
@@ -4456,8 +4457,8 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "x25519-dalek",
- "zcash_address 0.12.0",
- "zcash_protocol 0.10.4",
+ "zcash_address",
+ "zcash_protocol",
 ]
 
 [[package]]
@@ -8020,28 +8021,14 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-rayon",
  "wasm-bindgen-test",
- "zcash_address 0.13.0",
+ "zcash_address",
  "zcash_keys",
  "zcash_note_encryption",
  "zcash_primitives",
- "zcash_protocol 0.10.4",
+ "zcash_protocol",
  "zcash_transparent",
  "zip32",
  "zoda-vss",
-]
-
-[[package]]
-name = "zcash_address"
-version = "0.12.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "58342d0aaa8e2fa98849636f52800ac4bf020574c944c974742fc933db58cac2"
-dependencies = [
- "bech32",
- "bs58",
- "corez",
- "f4jumble",
- "zcash_encoding",
- "zcash_protocol 0.9.0",
 ]
 
 [[package]]
@@ -8055,7 +8042,7 @@ dependencies = [
  "corez",
  "f4jumble",
  "zcash_encoding",
- "zcash_protocol 0.10.4",
+ "zcash_protocol",
 ]
 
 [[package]]
@@ -8089,9 +8076,9 @@ dependencies = [
  "secrecy",
  "subtle",
  "tracing",
- "zcash_address 0.13.0",
+ "zcash_address",
  "zcash_encoding",
- "zcash_protocol 0.10.4",
+ "zcash_protocol",
  "zcash_transparent",
  "zip32",
 ]
@@ -8134,22 +8121,9 @@ dependencies = [
  "sha2 0.10.9",
  "zcash_encoding",
  "zcash_note_encryption",
- "zcash_protocol 0.10.4",
+ "zcash_protocol",
  "zcash_script",
  "zcash_transparent",
-]
-
-[[package]]
-name = "zcash_protocol"
-version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5bec496a0bd62dae98c4b26f51c5dab112d0c5350bbc2ccfdfd05bb3454f714d"
-dependencies = [
- "corez",
- "document-features",
- "hex",
- "memuse",
- "zcash_encoding",
 ]
 
 [[package]]
@@ -8207,9 +8181,9 @@ dependencies = [
  "secp256k1",
  "sha2 0.10.9",
  "subtle",
- "zcash_address 0.13.0",
+ "zcash_address",
  "zcash_encoding",
- "zcash_protocol 0.10.4",
+ "zcash_protocol",
  "zcash_script",
  "zcash_spec",
  "zip32",
@@ -8290,10 +8264,10 @@ dependencies = [
  "ur",
  "urlencoding",
  "zafu-wasm",
- "zcash_address 0.13.0",
+ "zcash_address",
  "zcash_keys",
  "zcash_note_encryption",
- "zcash_protocol 0.10.4",
+ "zcash_protocol",
  "zcash_transparent",
  "zeroize",
  "zip32",

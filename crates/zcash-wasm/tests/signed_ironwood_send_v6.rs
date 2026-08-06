@@ -20,7 +20,6 @@
 //! Without the cfg this file compiles to nothing. Run with --release: it builds
 //! the post-NU6.3 Halo 2 proving key and proves the ironwood bundle.
 
-#![cfg(zcash_unstable = "nu6.3")]
 
 use zafu_wasm::{
     build_signed_ironwood_send_core, extract_signed_tx_from_pczt_bytes, IronwoodRecipient,
@@ -314,7 +313,7 @@ fn signed_ironwood_send_spends_real_v3_note_verifies() {
     {
         use orchard::circuit::VerifyingKey;
         let ironwood_vk =
-            VerifyingKey::build(orchard::bundle::BundleVersion::IronwoodPostNu6_3.circuit_version());
+            VerifyingKey::build(orchard::bundle::BundleVersion::ironwood_v3().circuit_version());
         let mut vi = orchard::bundle::BatchValidator::new(&ironwood_vk);
         assert!(
             vi.add_bundle(ironwood_bundle, sighash).is_ok(),

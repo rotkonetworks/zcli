@@ -24,7 +24,7 @@ use zcash_transparent::{address::TransparentAddress, bundle as transparent};
 
 // Signer::new is feature-gated; we have it on (see Cargo features list).
 use zcash_primitives::transaction::{
-    builder::{BuildConfig, Builder},
+    builder::{BuildConfig, Builder, BundlePadding},
     fees::zip317,
 };
 use zcash_protocol::{consensus::MainNetwork, memo::MemoBytes, value::Zatoshis};
@@ -60,8 +60,9 @@ fn build_test_pczt() -> Pczt {
         BuildConfig::Standard {
             sapling_anchor: None,
             orchard_anchor: Some(orchard::Anchor::empty_tree()),
-            #[cfg(zcash_unstable = "nu6.3")]
             ironwood_anchor: None,
+            orchard_padding: BundlePadding::DEFAULT,
+            ironwood_padding: BundlePadding::DEFAULT,
         },
     );
     builder
@@ -99,11 +100,11 @@ fn build_test_pczt() -> Pczt {
 fn redacted_pczt_round_trips_through_parse() {
     let pczt = build_test_pczt();
     let redacted = zafu_wasm::redact_pczt_for_signer(pczt);
-    let bytes = redacted.serialize();
+    let bytes = redacted.serialize().expect("pczt serialize");
     let reparsed = Pczt::parse(&bytes).expect("redacted PCZT must parse");
     assert_eq!(
         bytes,
-        reparsed.serialize(),
+        reparsed.serialize().expect("pczt serialize"),
         "PCZT bytes must be stable across one round-trip"
     );
 }
@@ -119,8 +120,11 @@ fn redacted_pczt_shrinks_relative_to_unredacted() {
     // in the right pipeline order) and the field-presence probe below, the
     // three together pin the contract.
     let pczt = build_test_pczt();
-    let unredacted_size = pczt.serialize().len();
-    let redacted_size = zafu_wasm::redact_pczt_for_signer(pczt).serialize().len();
+    let unredacted_size = pczt.clone().serialize().expect("pczt serialize").len();
+    let redacted_size = zafu_wasm::redact_pczt_for_signer(pczt)
+        .serialize()
+        .expect("pczt serialize")
+        .len();
     assert!(
         redacted_size < unredacted_size,
         "redaction must shrink the PCZT: unredacted={unredacted_size}, redacted={redacted_size}"
@@ -152,7 +156,7 @@ fn redaction_preserves_sighash() {
 
     // Redact, serialize, parse — exactly the trip the cold signer sees.
     let redacted = zafu_wasm::redact_pczt_for_signer(pczt);
-    let bytes = redacted.serialize();
+    let bytes = redacted.serialize().expect("pczt serialize");
     let reparsed = pczt::Pczt::parse(&bytes).expect("redacted PCZT must parse");
 
     // Sighash recomputed by the signer from the redacted bytes.
@@ -198,7 +202,7 @@ fn redacted_pczt_remains_signer_acceptable() {
         .finalize_io()
         .expect("finalize_io on test fixture");
     let redacted = zafu_wasm::redact_pczt_for_signer(pczt);
-    let bytes = redacted.serialize();
+    let bytes = redacted.serialize().expect("pczt serialize");
     let reparsed = Pczt::parse(&bytes).expect("redacted PCZT must parse");
 
     // The probe. If redaction stripped fvk/alpha/value/etc, this errors.

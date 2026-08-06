@@ -31,7 +31,7 @@ use pczt::{
 use rand_core::OsRng;
 use std::sync::OnceLock;
 use zcash_primitives::transaction::{
-    builder::{BuildConfig, Builder},
+    builder::{BuildConfig, Builder, BundlePadding},
     fees::zip317,
 };
 use zcash_protocol::{consensus::MainNetwork, memo::MemoBytes, value::Zatoshis};
@@ -82,8 +82,9 @@ fn extract_signed_tx_round_trip() {
         BuildConfig::Standard {
             sapling_anchor: None,
             orchard_anchor: Some(orchard::Anchor::empty_tree()),
-            #[cfg(zcash_unstable = "nu6.3")]
             ironwood_anchor: None,
+            orchard_padding: BundlePadding::DEFAULT,
+            ironwood_padding: BundlePadding::DEFAULT,
         },
     );
     builder
@@ -134,7 +135,7 @@ fn extract_signed_tx_round_trip() {
     // ordering the cold signer produces. We're testing that a redacted +
     // round-tripped PCZT extracts cleanly.
     let pczt = zafu_wasm::redact_pczt_for_signer(pczt);
-    let serialized = pczt.serialize();
+    let serialized = pczt.serialize().expect("pczt serialize");
     let _round_trip = Pczt::parse(&serialized).expect("redacted PCZT parses");
 
     // Now the actual function under test.

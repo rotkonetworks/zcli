@@ -287,7 +287,6 @@ fn guard_pre_nu6_2_orchard_builder_allowed(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 /// Shield transparent UTXOs into the IRONWOOD pool (t->z, NU6.3).
 ///
 /// The orchard builder below is fail-closed post-activation because an orchard
@@ -297,7 +296,6 @@ fn guard_pre_nu6_2_orchard_builder_allowed(
 ///
 /// Recipient is the wallet's own orchard address — ironwood reuses orchard
 /// addresses and note encryption, it only has its own commitment tree.
-#[cfg(zcash_unstable = "nu6.3")]
 #[allow(clippy::too_many_arguments)]
 pub fn build_ironwood_shielding_tx(
     seed: &WalletSeed,
@@ -423,19 +421,20 @@ pub fn build_shielding_tx(
     // build orchard bundle (output only, spends disabled)
     // NU6.3 fork: Transactional lost its `flags` field (now explicit
     // spends/outputs bools) and Builder::new gained a BundleProtocol.
-    // Flags::SPENDS_DISABLED == spends off, outputs on.
+    // orchard::bundle::Flags::SPENDS_DISABLED == spends off, outputs on.
     // TODO(ironwood correctness): OrchardPreNu6_2 keeps the historical V5
     // shielding circuit/format; post-activation this becomes a NU6.3 protocol.
     let bundle_type = BundleType::Transactional {
-        spends_enabled: false,
-        outputs_enabled: true,
         bundle_required: true,
+        pad_to_minimum: None,
     };
     let mut builder = Builder::new(
-        orchard::bundle::BundleVersion::orchard_insecure_v1(),
         bundle_type,
+        orchard::bundle::BundleVersion::orchard_insecure_v1(),
+        orchard::bundle::Flags::SPENDS_DISABLED,
         Anchor::empty_tree(),
-    );
+    )
+    .expect("flags are representable under this bundle version");
 
     builder
         .add_output(
@@ -685,19 +684,20 @@ pub fn build_orchard_spend_tx(
 
     // build orchard bundle
     // NU6.3 fork: explicit spends/outputs bools + BundleProtocol on Builder.
-    // Flags::ENABLED == spends on, outputs on.
+    // orchard::bundle::Flags::ENABLED == spends on, outputs on.
     // TODO(ironwood correctness): OrchardPreNu6_2 keeps the historical V5 spend
     // circuit/format; post-activation this becomes a NU6.3 protocol.
     let bundle_type = BundleType::Transactional {
-        spends_enabled: true,
-        outputs_enabled: true,
         bundle_required: true,
+        pad_to_minimum: None,
     };
     let mut builder = Builder::new(
-        orchard::bundle::BundleVersion::orchard_insecure_v1(),
         bundle_type,
+        orchard::bundle::BundleVersion::orchard_insecure_v1(),
+        orchard::bundle::Flags::ENABLED,
         anchor,
-    );
+    )
+    .expect("flags are representable under this bundle version");
 
     let n_spends = spends.len();
     for (note, path) in spends {

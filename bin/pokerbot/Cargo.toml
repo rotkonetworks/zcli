@@ -59,7 +59,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 frost-spend = { path = "../../crates/frost-spend" }
 # Orchard UA + UFVK encoding for the DKG-derived group key (mirrors the escrow's
 # orchard_ua.rs so both sides land on the byte-identical escrow UA / UFVK string).
-zcash_address = "0.12"
+zcash_address = "0.13"
 # PCZT decode for the C3 blind-signer safety check (verify_pczt_recipients): parse
 # the payout PCZT the escrow asks us to FROST-sign and read every Orchard output's
 # recipient (raw 43-byte receiver) + value in the clear. SAME version poker-escrow

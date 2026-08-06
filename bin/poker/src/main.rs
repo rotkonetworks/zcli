@@ -146,9 +146,9 @@ impl Escrow {
                 .expect("UA construction should succeed");
             #[allow(deprecated)]
             let network = if testnet {
-                zcash_address::Network::Test
+                zcash_protocol::consensus::NetworkType::Test
             } else {
-                zcash_address::Network::Main
+                zcash_protocol::consensus::NetworkType::Main
             };
             ua.encode(&network)
         };

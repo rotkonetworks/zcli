@@ -317,7 +317,6 @@ async fn broadcast(
 }
 
 /// Derive the spend keys and hand off to the shared zafu money-path builder.
-#[cfg(zcash_unstable = "nu6.3")]
 #[allow(clippy::too_many_arguments)]
 fn build_signed_migration(
     seed: &WalletSeed,
@@ -383,29 +382,6 @@ fn build_signed_migration(
     res.map_err(Error::Transaction)
 }
 
-/// Stub for builds without `--cfg zcash_unstable="nu6.3"`. Everything ironwood
-/// in the pinned librustzcash/orchard forks is behind that cfg, so the builder
-/// this command needs does not exist in such a build. Fail loudly rather than
-/// silently omitting the subcommand.
-#[cfg(not(zcash_unstable = "nu6.3"))]
-#[allow(clippy::too_many_arguments)]
-fn build_signed_migration(
-    _seed: &WalletSeed,
-    _prepared: Vec<(orchard::Note, orchard::tree::MerklePath)>,
-    _fee: u64,
-    _anchor: orchard::tree::Anchor,
-    _target_height: u32,
-    _branch_id: u32,
-    _memo: Option<&str>,
-    _mainnet: bool,
-) -> Result<Vec<u8>, Error> {
-    Err(Error::Transaction(
-        "this zcli was built without NU6.3 / ironwood support, so it cannot build \
-         a turnstile migration. Rebuild with:\n\
-         \n    RUSTFLAGS='--cfg zcash_unstable=\"nu6.3\"' cargo build --release\n"
-            .into(),
-    ))
-}
 
 #[cfg(test)]
 mod tests {

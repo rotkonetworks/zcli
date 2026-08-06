@@ -8,7 +8,6 @@ description = "FROST threshold spend authorization for Zcash Orchard"
 [features]
 default = []
 # enable when orchard upstream merges from_sk_ak
-# until then we use conradoplg's fork
 wasm = ["getrandom/js"]
 
 [dependencies]
@@ -17,7 +16,6 @@ reddsa = { git = "https://github.com/ZcashFoundation/reddsa.git", rev = "475a552
 ed25519-consensus = "2"
 rand_core = "0.6"
 
-# conradoplg's fork — needed for from_sk_ak (FROST FVK derivation).
 # default-features = false drops `multicore`; we only use orchard::keys::*.
 # Released crates.io orchard — NU6.3/Ironwood is upstream as of 0.15.0, so no
 # fork is needed. The FROST FVK shape upstream lacks a constructor for is

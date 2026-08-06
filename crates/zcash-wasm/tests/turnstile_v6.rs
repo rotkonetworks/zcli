@@ -11,7 +11,6 @@
 //! Without the cfg this file compiles to nothing. Run with --release: it
 //! builds the post-NU6.3 Halo 2 proving key and proves two bundles.
 
-#![cfg(zcash_unstable = "nu6.3")]
 
 use zafu_wasm::build_turnstile_migration_pczt_core;
 use zafu_wasm::extract_signed_tx_from_pczt_bytes;
@@ -281,7 +280,7 @@ fn turnstile_orchard_to_ironwood_builds_signs_extracts() {
     let low = pczt::roles::low_level_signer::Signer::new(pczt);
     let low = low
         .sign_orchard_with(
-            |_pczt, bundle, _tx_modifiable| -> Result<(), pczt::orchard::BundleParseError> {
+            |_pczt, bundle, _tx_modifiable| -> Result<(), pczt::roles::low_level_signer::OrchardParseError> {
                 for action in bundle.actions_mut().iter_mut() {
                     match action.spend().verify_nullifier(Some(&fvk)) {
                         Ok(())
@@ -309,7 +308,7 @@ fn turnstile_orchard_to_ironwood_builds_signs_extracts() {
 
     // -- extractor: same code path zafu's hot wallet uses --
     let tx_bytes =
-        extract_signed_tx_from_pczt_bytes(&signed.serialize()).expect("extract signed tx");
+        extract_signed_tx_from_pczt_bytes(&signed.serialize().expect("pczt serialize")).expect("extract signed tx");
 
     let tx = Transaction::read(&tx_bytes[..], BranchId::Nu6_3).expect("tx parses");
     assert_eq!(tx.version(), TxVersion::V6);

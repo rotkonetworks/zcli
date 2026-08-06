@@ -33,7 +33,6 @@
 /// above. If a vendored-fork bump breaks this test, DO NOT update the constant
 /// to match the new value — check what changed and why, because the chain will
 /// not have moved with you.
-#[cfg(zcash_unstable = "nu6.3")]
 #[test]
 fn empty_tree_anchor_matches_the_one_mainnet_accepted() {
     const MAINNET_ACCEPTED_ANCHOR: &str =
@@ -123,7 +122,6 @@ fn zip317_transparent_input_actions_are_size_derived() {
 ///
 /// Together those mean a migration output is always change. If either changes,
 /// this test fails before the UI starts inventing income.
-#[cfg(zcash_unstable = "nu6.3")]
 #[test]
 fn turnstile_self_output_is_internal_scope_hence_change() {
     use orchard::keys::{FullViewingKey, Scope, SpendingKey};

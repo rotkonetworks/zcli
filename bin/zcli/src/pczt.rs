@@ -594,20 +594,21 @@ pub fn build_pczt_and_qr(
 
     // NU6.3 fork: BundleType::Transactional replaced the `flags` field with
     // explicit spends_enabled/outputs_enabled; Builder::new gained a leading
-    // BundleProtocol. Flags::ENABLED == spends+outputs enabled.
+    // BundleProtocol. orchard::bundle::Flags::ENABLED == spends+outputs enabled.
     // TODO(ironwood correctness): OrchardPreNu6_2 keeps the historical (V5,
     // branch 0x4DEC4DF0) circuit + flag-byte format used by this PCZT path;
     // post-activation this must become OrchardPostNu6_3 / IronwoodPostNu6_3.
     let bundle_type = BundleType::Transactional {
-        spends_enabled: true,
-        outputs_enabled: true,
         bundle_required: true,
+        pad_to_minimum: None,
     };
     let mut builder = Builder::new(
-        orchard::bundle::BundleVersion::orchard_insecure_v1(),
         bundle_type,
+        orchard::bundle::BundleVersion::orchard_insecure_v1(),
+        orchard::bundle::Flags::ENABLED,
         anchor,
-    );
+    )
+    .expect("flags are representable under this bundle version");
 
     for (note, path) in spends {
         builder

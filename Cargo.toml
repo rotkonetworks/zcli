@@ -23,7 +23,6 @@ members = [
 # keep it out of ours so its crates inherit workspace.package from the
 # vendored root, not from us.
 exclude = [
-    "vendor/librustzcash",
 ]
 
 [workspace.package]
@@ -58,8 +57,6 @@ maybe-rayon = { path = "crates/maybe-rayon" }
 
 # NU6.3 / Ironwood real params fix (FIX-A, money path).
 #
-# The pinned valargroup/librustzcash rev 0c3ad735 (branch
-# adam/qleak-pr44-orchard-dummy-ciphertexts) hardcodes the NU6.3 consensus
 # branch id as the placeholder 0xffff_ffff and activation_height(Nu6_3) => None.
 # The turnstile sighash MUST bind the real branch id 0x37a5165b (activation
 # height 3_428_143 on mainnet) or every produced tx is invalid on-chain.

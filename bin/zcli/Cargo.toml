@@ -52,8 +52,8 @@ bip39 = { version = "2.0", features = ["rand"] }
 # (orchard 0.12 / zcash_keys 0.12 / zcash_protocol 0.7 / zcash_address 0.7) to
 # the SAME valar NU6.3 fork revs that crates/zcash-wasm (zafu) already builds
 # against. See that crate's Cargo.toml for the frozen interface contract.
-#   orchard 0.14:            zcash/orchard   @ adam/qleak-dummy-ciphertexts-on-pr505 (rev 204d8ce9)
-#   librustzcash crates 0.x: valargroup fork @ adam/qleak-pr44-orchard-dummy-ciphertexts (rev 0c3ad735),
+#   orchard 0.15.5:          crates.io (released, NU6.3/Ironwood upstream)
+#   librustzcash crates:     crates.io (released; zcash_primitives 0.30 etc.)
 #                            [patch]ed at the workspace root to the branch-id-fixed vendored copy
 #                            under vendor/librustzcash.
 # Build native with: RUSTFLAGS='--cfg zcash_unstable="nu6.3"'

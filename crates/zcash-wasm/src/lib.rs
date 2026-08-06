@@ -183,7 +183,6 @@ fn orchard_protocol_for_branch(
 ) -> orchard::bundle::BundleVersion {
     use zcash_protocol::consensus::BranchId;
     match branch {
-        #[cfg(zcash_unstable = "nu6.3")]
         BranchId::Nu6_3 => orchard::bundle::BundleVersion::orchard_v3(),
         BranchId::Nu6_2 => orchard::bundle::BundleVersion::orchard_v2(),
         _ => orchard::bundle::BundleVersion::orchard_insecure_v1(),
@@ -1607,7 +1606,6 @@ mod tests {
     /// The shielding pool gate uses plain constants (it must also exist in
     /// artifacts built without the nu6.3 cfg). Assert they stay in sync with
     /// the pinned librustzcash fork's real activation heights and branch id.
-    #[cfg(zcash_unstable = "nu6.3")]
     #[test]
     fn nu6_3_activation_matches_fork() {
         use zcash_protocol::consensus::{
@@ -1933,15 +1931,16 @@ mod tests {
 
         // build an output-only bundle
         let bundle_type = BundleType::Transactional {
-            spends_enabled: false,
-            outputs_enabled: true,
-            bundle_required: true,
-        };
+        bundle_required: true,
+        pad_to_minimum: None,
+    };
         let mut builder = Builder::new(
-            orchard::bundle::BundleVersion::orchard_insecure_v1(),
-            bundle_type,
-            Anchor::empty_tree(),
-        );
+        bundle_type,
+        orchard::bundle::BundleVersion::orchard_insecure_v1(),
+        orchard::bundle::Flags::SPENDS_DISABLED,
+        Anchor::empty_tree(),
+    )
+    .expect("flags are representable under this bundle version");
 
         builder
             .add_output(None, recipient, NoteValue::from_raw(50_000), [0u8; 512])
@@ -2107,15 +2106,16 @@ pub fn build_unsigned_transaction(
     // --- build orchard bundle using PCZT path ---
     // NU6.1-branch V5 tx: legacy orchard pool, pre-NU6.2 (historical) circuit.
     let bundle_type = BundleType::Transactional {
-        spends_enabled: true,
-        outputs_enabled: true,
         bundle_required: true,
+        pad_to_minimum: None,
     };
     let mut builder = Builder::new(
-        orchard::bundle::BundleVersion::orchard_insecure_v1(),
         bundle_type,
+        orchard::bundle::BundleVersion::orchard_insecure_v1(),
+        orchard::bundle::Flags::ENABLED,
         anchor,
-    );
+    )
+    .expect("flags are representable under this bundle version");
 
     // add spends (same note reconstruction as build_signed_spend_transaction)
     for (i, note_info) in notes.iter().enumerate() {
@@ -2731,7 +2731,6 @@ pub fn redact_pczt_for_signer(pczt: pczt::Pczt) -> pczt::Pczt {
     // The ironwood bundle (NU6.3 / V6) is orchard-shaped; apply the identical
     // redaction. In a turnstile migration every ironwood spend is a dummy
     // whose auth sig IoFinalizer already attached, so the same clears apply.
-    #[cfg(zcash_unstable = "nu6.3")]
     let redactor = redactor.redact_ironwood_with(|mut o| {
         o.redact_actions(|mut a| {
             a.clear_spend_witness();
@@ -2799,7 +2798,6 @@ pub fn redact_pczt_for_signer(pczt: pczt::Pczt) -> pczt::Pczt {
 /// ciphertexts remain, so the sighash the signer recomputes is unchanged; the
 /// signer's `verify` path does not require `output.recipient`/`value`/`rseed`
 /// (they map to `Ok` when absent, same as the spend-side clears).
-#[cfg(zcash_unstable = "nu6.3")]
 pub fn redact_turnstile_dummy_outputs(pczt: pczt::Pczt) -> pczt::Pczt {
     pczt::roles::redactor::Redactor::new(pczt)
         .redact_orchard_with(|mut o| {
@@ -3027,7 +3025,7 @@ pub fn build_unsigned_pczt(
     use rand::rngs::OsRng;
     use zcash_keys::encoding::AddressCodec;
     use zcash_keys::keys::UnifiedFullViewingKey;
-    use zcash_primitives::transaction::builder::{BuildConfig, Builder};
+    use zcash_primitives::transaction::builder::{BuildConfig, Builder, BundlePadding};
     use zcash_primitives::transaction::fees::fixed::FeeRule as FixedFeeRule;
     use zcash_protocol::consensus::{BlockHeight, MainNetwork, TestNetwork};
     use zcash_protocol::memo::MemoBytes;
@@ -3114,8 +3112,9 @@ pub fn build_unsigned_pczt(
     let build_config = BuildConfig::Standard {
         sapling_anchor: None,
         orchard_anchor: Some(orchard_anchor),
-        #[cfg(zcash_unstable = "nu6.3")]
         ironwood_anchor: None,
+        orchard_padding: BundlePadding::DEFAULT,
+        ironwood_padding: BundlePadding::DEFAULT,
     };
     let fee_amount = Zatoshis::from_u64(fee).map_err(|_| JsError::new("invalid fee amount"))?;
     let amount_zat = Zatoshis::from_u64(amount).map_err(|_| JsError::new("invalid send amount"))?;
@@ -3241,7 +3240,7 @@ pub fn build_unsigned_pczt(
     let pczt = redact_pczt_for_signer(pczt);
 
     let action_count = pczt.orchard().actions().len() as u32;
-    let pczt_bytes = pczt.serialize();
+    let pczt_bytes = pczt.serialize().map_err(|e| JsError::new(&format!("pczt serialize: {e:?}")))?;
 
     // ── canonical sighash for FROST signing ───────────────────────────────
     // Derive it from the serialized (redacted) PCZT — exactly the bytes the
@@ -3332,13 +3331,10 @@ pub fn extract_signed_tx_from_pczt_bytes(pczt_bytes: &[u8]) -> Result<Vec<u8>, S
     let branch = BranchId::try_from(*pczt.global().consensus_branch_id())
         .map_err(|e| format!("unknown consensus branch in pczt: {:?}", e))?;
 
-    #[cfg(zcash_unstable = "nu6.3")]
     let is_v6 = *pczt.global().tx_version() == zcash_protocol::constants::V6_TX_VERSION;
-    #[cfg(not(zcash_unstable = "nu6.3"))]
-    let is_v6 = false;
 
-    // Circuit selection mirrors the fork's own rules: V6 orchard bundles use
-    // the post-NU6.3 circuit; V5 bundles use the circuit for their branch.
+    // Circuit selection mirrors upstream's rules: V6 orchard bundles use the
+    // post-NU6.3 circuit; V5 bundles use the circuit for their branch.
     let orchard_cv = if is_v6 {
         OrchardCircuitVersion::PostNu6_3
     } else {
@@ -3349,8 +3345,6 @@ pub fn extract_signed_tx_from_pczt_bytes(pczt_bytes: &[u8]) -> Result<Vec<u8>, S
     let vk = verifying_key_for(orchard_cv);
 
     let extractor = pczt::roles::tx_extractor::TransactionExtractor::new(pczt).with_orchard(vk);
-    #[cfg(zcash_unstable = "nu6.3")]
-    let extractor = extractor.with_ironwood(verifying_key_for(OrchardCircuitVersion::PostNu6_3));
 
     let tx = extractor
         .extract()
@@ -3409,7 +3403,6 @@ pub struct PcztSummary {
 /// `summarize` extraction logic exactly - keep in sync.
 // only the nu6.3-gated turnstile producers call this; without the cfg it is
 // intentionally unused
-#[cfg_attr(not(zcash_unstable = "nu6.3"), allow(dead_code))]
 fn summarize_pczt(pczt: &pczt::Pczt, fee_zat: Option<u64>) -> PcztSummary {
     let mut outputs: Vec<(String, u64)> = Vec::new();
     for out in pczt.transparent().outputs() {
@@ -3426,7 +3419,6 @@ fn summarize_pczt(pczt: &pczt::Pczt, fee_zat: Option<u64>) -> PcztSummary {
         };
         outputs.push((label, out.value().unwrap_or(0)));
     }
-    #[cfg(zcash_unstable = "nu6.3")]
     let ironwood_actions = {
         for action in pczt.ironwood().actions() {
             let out = action.output();
@@ -3438,8 +3430,6 @@ fn summarize_pczt(pczt: &pczt::Pczt, fee_zat: Option<u64>) -> PcztSummary {
         }
         pczt.ironwood().actions().len() as u32
     };
-    #[cfg(not(zcash_unstable = "nu6.3"))]
-    let ironwood_actions = 0u32;
 
     PcztSummary {
         orchard_actions: pczt.orchard().actions().len() as u32,
@@ -3458,14 +3448,12 @@ fn summarize_pczt(pczt: &pczt::Pczt, fee_zat: Option<u64>) -> PcztSummary {
 /// active at an arbitrary `target_height`; the fail-closed guard in
 /// `build_turnstile_migration_pczt_core` still refuses unless the bound
 /// branch id equals the caller-supplied expected_branch_id.
-#[cfg(zcash_unstable = "nu6.3")]
 #[derive(Clone, Copy, Debug)]
 struct Nu63Activated<P> {
     inner: P,
     nu6_3_from: zcash_protocol::consensus::BlockHeight,
 }
 
-#[cfg(zcash_unstable = "nu6.3")]
 impl<P: zcash_protocol::consensus::Parameters> zcash_protocol::consensus::Parameters
     for Nu63Activated<P>
 {
@@ -3488,7 +3476,6 @@ impl<P: zcash_protocol::consensus::Parameters> zcash_protocol::consensus::Parame
 }
 
 /// Result of building a turnstile migration PCZT (testable core output).
-#[cfg(zcash_unstable = "nu6.3")]
 pub struct TurnstileBuild {
     /// Redacted-for-signer PCZT bytes (same redaction contract as
     /// `build_unsigned_pczt`).
@@ -3516,7 +3503,6 @@ pub struct TurnstileBuild {
 /// The FAIL-CLOSED branch-id guard lives here so neither flow can bind the
 /// 0xffff_ffff placeholder or a branch other than the one the wallet believes
 /// is active.
-#[cfg(zcash_unstable = "nu6.3")]
 #[allow(clippy::too_many_arguments)]
 pub fn build_turnstile_migration_pczt_proven<P>(
     params: P,
@@ -3533,7 +3519,7 @@ where
 {
     use orchard::circuit::OrchardCircuitVersion;
     use rand::rngs::OsRng;
-    use zcash_primitives::transaction::builder::{BuildConfig, Builder};
+    use zcash_primitives::transaction::builder::{BuildConfig, Builder, BundlePadding};
     use zcash_primitives::transaction::fees::fixed::FeeRule as FixedFeeRule;
     use zcash_primitives::transaction::TxVersion;
     use zcash_protocol::consensus::{BlockHeight, BranchId};
@@ -3610,7 +3596,9 @@ where
             sapling_anchor: None,
             orchard_anchor: Some(orchard_anchor),
             ironwood_anchor: Some(orchard::Anchor::empty_tree()),
-        },
+        orchard_padding: BundlePadding::DEFAULT,
+        ironwood_padding: BundlePadding::DEFAULT,
+    },
     );
     builder
         .propose_version::<FeError>(TxVersion::V6)
@@ -3646,7 +3634,11 @@ where
     let pczt = with_proving_key_for(OrchardCircuitVersion::PostNu6_3, |pk| {
         pczt::roles::prover::Prover::new(pczt)
             .create_orchard_proof(pk)
-            .and_then(|p| p.create_ironwood_proof(pk))
+            .map_err(|e| format!("create_orchard_proof: {e:?}"))
+            .and_then(|p| {
+                p.create_ironwood_proof(pk)
+                    .map_err(|e| format!("create_ironwood_proof: {e:?}"))
+            })
             .map(|p| p.finish())
     })
     .map_err(|e| format!("create proofs: {:?}", e))?;
@@ -3662,7 +3654,6 @@ where
 /// producer). Roles: Creator -> IoFinalizer -> Prover (orchard + ironwood
 /// proofs, both post-NU6.3 circuit) -> redact. The real orchard spends are
 /// left UNSIGNED for the external cold signer.
-#[cfg(zcash_unstable = "nu6.3")]
 #[allow(clippy::too_many_arguments)]
 pub fn build_turnstile_migration_pczt_core<P>(
     params: P,
@@ -3700,7 +3691,9 @@ where
     let summary = summarize_pczt(&pczt, Some(fee));
     let action_count = (pczt.orchard().actions().len() + pczt.ironwood().actions().len()) as u32;
     Ok(TurnstileBuild {
-        pczt_bytes: pczt.serialize(),
+        pczt_bytes: pczt
+            .serialize()
+            .map_err(|e| format!("pczt serialize: {e:?}"))?,
         summary,
         action_count,
     })
@@ -3734,7 +3727,6 @@ where
 ///    stored), which then also verifies both proofs and every spend-auth +
 ///    binding signature against the sighash. There is no transparent input, so
 ///    the SpendFinalizer role is a no-op and is not run.
-#[cfg(zcash_unstable = "nu6.3")]
 #[allow(clippy::too_many_arguments)]
 pub fn build_signed_turnstile_migration_core<P>(
     params: P,
@@ -3781,7 +3773,7 @@ where
         let low = pczt::roles::low_level_signer::Signer::new(pczt);
         let low = low
             .sign_orchard_with(
-                |_pczt, bundle, _tx_modifiable| -> Result<(), pczt::orchard::BundleParseError> {
+                |_pczt, bundle, _tx_modifiable| -> Result<(), pczt::roles::low_level_signer::OrchardParseError> {
                     for action in bundle.actions_mut().iter_mut() {
                         match action.spend().verify_nullifier(Some(fvk)) {
                             Ok(())
@@ -3823,7 +3815,9 @@ where
         // binding signatures and VERIFIES both proofs and every spend-auth +
         // binding signature against the sighash; a failure here means the signed
         // PCZT is not a valid transaction.
-        extract_signed_tx_from_pczt_bytes(&pczt.serialize())
+        extract_signed_tx_from_pczt_bytes(
+            &pczt.serialize().map_err(|e| format!("pczt serialize: {e:?}"))?,
+        )
     }
 }
 
@@ -3837,7 +3831,6 @@ where
 ///
 /// `account_index` is accepted for API parity with the worker call shape but
 /// is not used for derivation - the UFVK is already account-scoped.
-#[cfg(zcash_unstable = "nu6.3")]
 #[wasm_bindgen]
 #[allow(clippy::too_many_arguments)]
 pub fn build_turnstile_migration_pczt(
@@ -3933,27 +3926,6 @@ pub fn build_turnstile_migration_pczt(
     .map_err(|e| JsError::new(&format!("serialization failed: {}", e)))
 }
 
-/// Stub keeping the JS API surface stable when the artifact is built without
-/// the NU6.3 cfg: the export exists but always errors.
-#[cfg(not(zcash_unstable = "nu6.3"))]
-#[wasm_bindgen]
-#[allow(clippy::too_many_arguments)]
-pub fn build_turnstile_migration_pczt(
-    _ufvk_str: &str,
-    _orchard_notes_json: &str,
-    _fee: u64,
-    _orchard_anchor_hex: &str,
-    _orchard_merkle_paths_json: &str,
-    _account_index: u32,
-    _target_height: u32,
-    _expected_branch_id: u32,
-    _mainnet: bool,
-    _memo_hex: Option<String>,
-) -> Result<JsValue, JsError> {
-    Err(JsError::new(
-        "this artifact was built without NU6.3 / ironwood support (missing zcash_unstable cfg)",
-    ))
-}
 
 /// HOT-WALLET sibling of `build_turnstile_migration_pczt`: build the one-way
 /// turnstile migration (spend the supplied orchard notes into the wallet's OWN
@@ -3977,7 +3949,6 @@ pub fn build_turnstile_migration_pczt(
 /// The FAIL-CLOSED NU6.3 branch-id guard is inherited unchanged from the shared
 /// build core: the tx binds consensus branch id `expected_branch_id`, the
 /// caller MUST pass the real 0x37a5165b (never the 0xffff_ffff placeholder).
-#[cfg(zcash_unstable = "nu6.3")]
 #[wasm_bindgen]
 #[allow(clippy::too_many_arguments)]
 pub fn build_signed_turnstile_migration(
@@ -4063,27 +4034,6 @@ pub fn build_signed_turnstile_migration(
     Ok(hex_encode(&tx_bytes))
 }
 
-/// Stub keeping the JS API surface stable when the artifact is built without
-/// the NU6.3 cfg: the export exists but always errors.
-#[cfg(not(zcash_unstable = "nu6.3"))]
-#[wasm_bindgen]
-#[allow(clippy::too_many_arguments)]
-pub fn build_signed_turnstile_migration(
-    _seed_phrase: &str,
-    _orchard_notes_json: &str,
-    _fee: u64,
-    _orchard_anchor_hex: &str,
-    _orchard_merkle_paths_json: &str,
-    _account_index: u32,
-    _target_height: u32,
-    _expected_branch_id: u32,
-    _mainnet: bool,
-    _memo_hex: Option<String>,
-) -> Result<String, JsError> {
-    Err(JsError::new(
-        "this artifact was built without NU6.3 / ironwood support (missing zcash_unstable cfg)",
-    ))
-}
 
 // ============================================================================
 // General Ironwood SEND builder (spends REAL ironwood notes -> arbitrary
@@ -4105,7 +4055,6 @@ pub fn build_signed_turnstile_migration(
 /// to the V3 `qr_rcm` path, and the per-note `cmx` equality check catches any
 /// component the caller got wrong. Error messages are deliberately free of
 /// note values and recipient addresses.
-#[cfg(zcash_unstable = "nu6.3")]
 fn prepare_ironwood_spends(
     fvk: &orchard::keys::FullViewingKey,
     notes: &[SpendableNote],
@@ -4255,7 +4204,6 @@ fn prepare_ironwood_spends(
 /// same V6 transaction: the ironwood bundle supplies the value, the transparent
 /// bundle spends it out. That z→t path is how funds leave the wallet for an
 /// exchange, so it is not optional.
-#[cfg(zcash_unstable = "nu6.3")]
 #[derive(Clone, Copy, Debug)]
 pub enum IronwoodRecipient {
     /// Unified/orchard address — value stays shielded in the ironwood pool.
@@ -4273,7 +4221,6 @@ pub enum IronwoodRecipient {
 /// address is parsed as a unified/orchard address.
 ///
 /// Errors never contain the address (they are logged and surfaced to JS).
-#[cfg(zcash_unstable = "nu6.3")]
 fn parse_ironwood_recipient(recipient: &str, mainnet: bool) -> Result<IronwoodRecipient, String> {
     use zcash_keys::encoding::decode_transparent_address;
     use zcash_protocol::consensus::{NetworkConstants, NetworkType};
@@ -4326,7 +4273,6 @@ fn parse_ironwood_recipient(recipient: &str, mainnet: bool) -> Result<IronwoodRe
 /// caller-supplied `expected_branch_id` must equal it, and the placeholder
 /// `0xffff_ffff` is refused outright. No value or recipient appears in any
 /// error.
-#[cfg(zcash_unstable = "nu6.3")]
 #[allow(clippy::too_many_arguments)]
 pub fn build_ironwood_send_pczt_proven<P>(
     params: P,
@@ -4345,7 +4291,7 @@ where
 {
     use orchard::circuit::OrchardCircuitVersion;
     use rand::rngs::OsRng;
-    use zcash_primitives::transaction::builder::{BuildConfig, Builder};
+    use zcash_primitives::transaction::builder::{BuildConfig, Builder, BundlePadding};
     use zcash_primitives::transaction::fees::fixed::FeeRule as FixedFeeRule;
     use zcash_primitives::transaction::TxVersion;
     use zcash_protocol::consensus::{BlockHeight, BranchId};
@@ -4430,7 +4376,9 @@ where
             // REAL ironwood tree anchor (the migration used the empty-tree
             // anchor because it only output dummy ironwood spends).
             ironwood_anchor: Some(ironwood_anchor),
-        },
+        orchard_padding: BundlePadding::DEFAULT,
+        ironwood_padding: BundlePadding::DEFAULT,
+    },
     );
     builder
         .propose_version::<FeError>(TxVersion::V6)
@@ -4466,15 +4414,18 @@ where
     if change_value > 0 {
         let change_zat =
             Zatoshis::from_u64(change_value).map_err(|_| "invalid change amount".to_string())?;
+        // Released zcash_primitives has no change-specific helper; a change
+        // output IS an ironwood output to our own internal address bound to
+        // the INTERNAL ovk, which is exactly what this produces. The fvk the
+        // fork took was only used for its internal change bookkeeping.
         builder
-            .add_ironwood_change_output::<FeError>(
-                fvk.clone(),
+            .add_ironwood_output::<FeError>(
                 internal_ovk,
                 change_addr,
                 change_zat,
                 MemoBytes::empty(),
             )
-            .map_err(|e| format!("add_ironwood_change_output: {:?}", e))?;
+            .map_err(|e| format!("add_ironwood_output (change): {:?}", e))?;
     }
 
     let fee_zat = Zatoshis::from_u64(fee).map_err(|_| "invalid fee amount".to_string())?;
@@ -4518,7 +4469,6 @@ where
 /// the migration the ironwood bundle was output-only (all-dummy spends signed
 /// by IoFinalizer), whereas here the ironwood bundle carries the wallet's real
 /// spends.
-#[cfg(zcash_unstable = "nu6.3")]
 #[allow(clippy::too_many_arguments)]
 pub fn build_signed_ironwood_send_core<P>(
     params: P,
@@ -4567,7 +4517,7 @@ where
         let low = pczt::roles::low_level_signer::Signer::new(pczt);
         let low = low
             .sign_ironwood_with(
-                |_pczt, bundle, _tx_modifiable| -> Result<(), pczt::orchard::BundleParseError> {
+                |_pczt, bundle, _tx_modifiable| -> Result<(), pczt::roles::low_level_signer::OrchardParseError> {
                     for action in bundle.actions_mut().iter_mut() {
                         match action.spend().verify_nullifier(Some(fvk)) {
                             Ok(())
@@ -4604,7 +4554,9 @@ where
         // signature and VERIFIES the proof and every spend-auth + binding
         // signature against the sighash; a failure means the signed PCZT is not
         // a valid transaction.
-        extract_signed_tx_from_pczt_bytes(&pczt.serialize())
+        extract_signed_tx_from_pczt_bytes(
+            &pczt.serialize().map_err(|e| format!("pczt serialize: {e:?}"))?,
+        )
     }
 }
 
@@ -4631,7 +4583,6 @@ where
 /// `build_ironwood_send_pczt_proven` - the tx binds branch id 0x37a5165b, the
 /// caller MUST pass that real id as `expected_branch_id`, and the 0xffff_ffff
 /// placeholder is refused. No value or recipient appears in any error.
-#[cfg(zcash_unstable = "nu6.3")]
 #[wasm_bindgen]
 #[allow(clippy::too_many_arguments)]
 pub fn build_ironwood_send_pczt(
@@ -4750,36 +4701,17 @@ pub fn build_ironwood_send_pczt(
         action_count: u32,
     }
     serde_wasm_bindgen::to_value(&Out {
-        pczt_hex: hex_encode(&pczt.serialize()),
+        pczt_hex: hex_encode(
+            &pczt
+                .serialize()
+                .map_err(|e| JsError::new(&format!("pczt serialize: {e:?}")))?,
+        ),
         summary,
         action_count,
     })
     .map_err(|e| JsError::new(&format!("serialization failed: {}", e)))
 }
 
-/// Stub keeping the JS API surface stable when the artifact is built without
-/// the NU6.3 cfg: the export exists but always errors.
-#[cfg(not(zcash_unstable = "nu6.3"))]
-#[wasm_bindgen]
-#[allow(clippy::too_many_arguments)]
-pub fn build_ironwood_send_pczt(
-    _ufvk_str: &str,
-    _ironwood_notes_json: &str,
-    _recipient: &str,
-    _amount: u64,
-    _fee: u64,
-    _ironwood_anchor_hex: &str,
-    _ironwood_merkle_paths_json: &str,
-    _account_index: u32,
-    _target_height: u32,
-    _expected_branch_id: u32,
-    _mainnet: bool,
-    _memo_hex: Option<String>,
-) -> Result<JsValue, JsError> {
-    Err(JsError::new(
-        "this artifact was built without NU6.3 / ironwood support (missing zcash_unstable cfg)",
-    ))
-}
 
 /// HOT-WALLET general ironwood send: spend the wallet's REAL ironwood notes to
 /// an ARBITRARY `recipient` (plus change back to self) in a single V6
@@ -4804,7 +4736,6 @@ pub fn build_ironwood_send_pczt(
 /// - the tx binds branch id 0x37a5165b, the caller MUST pass that real id as
 /// `expected_branch_id`, and the 0xffff_ffff placeholder is refused. No value
 /// or recipient appears in any error.
-#[cfg(zcash_unstable = "nu6.3")]
 #[wasm_bindgen]
 #[allow(clippy::too_many_arguments)]
 pub fn build_signed_ironwood_send(
@@ -4902,29 +4833,6 @@ pub fn build_signed_ironwood_send(
     Ok(hex_encode(&tx_bytes))
 }
 
-/// Stub keeping the JS API surface stable when the artifact is built without
-/// the NU6.3 cfg: the export exists but always errors.
-#[cfg(not(zcash_unstable = "nu6.3"))]
-#[wasm_bindgen]
-#[allow(clippy::too_many_arguments)]
-pub fn build_signed_ironwood_send(
-    _seed_phrase: &str,
-    _ironwood_notes_json: &str,
-    _recipient: &str,
-    _amount: u64,
-    _fee: u64,
-    _ironwood_anchor_hex: &str,
-    _ironwood_merkle_paths_json: &str,
-    _account_index: u32,
-    _target_height: u32,
-    _expected_branch_id: u32,
-    _mainnet: bool,
-    _memo_hex: Option<String>,
-) -> Result<String, JsError> {
-    Err(JsError::new(
-        "this artifact was built without NU6.3 / ironwood support (missing zcash_unstable cfg)",
-    ))
-}
 
 /// Complete an orchard-only FROST multisig PCZT: inject the externally-aggregated
 /// SpendAuth signatures (one per real spend, in `spend_indices` order, matching
@@ -4969,7 +4877,7 @@ pub fn complete_orchard_pczt(
 
     let signed = signer.finish();
     let tx_bytes =
-        extract_signed_tx_from_pczt_bytes(&signed.serialize()).map_err(|e| JsError::new(&e))?;
+        extract_signed_tx_from_pczt_bytes(&signed.serialize().map_err(|e| JsError::new(&format!("pczt serialize: {e:?}")))?).map_err(|e| JsError::new(&e))?;
     Ok(hex_encode(&tx_bytes))
 }
 
@@ -5842,15 +5750,16 @@ pub fn build_signed_spend_transaction(
     // --- build orchard bundle ---
     // NU6.1-branch V5 tx: legacy orchard pool, pre-NU6.2 (historical) circuit.
     let bundle_type = BundleType::Transactional {
-        spends_enabled: true,
-        outputs_enabled: true,
         bundle_required: true,
+        pad_to_minimum: None,
     };
     let mut builder = Builder::new(
-        orchard::bundle::BundleVersion::orchard_insecure_v1(),
         bundle_type,
+        orchard::bundle::BundleVersion::orchard_insecure_v1(),
+        orchard::bundle::Flags::ENABLED,
         anchor,
-    );
+    )
+    .expect("flags are representable under this bundle version");
 
     // add spends
     for (i, note_info) in notes.iter().enumerate() {
@@ -6578,15 +6487,16 @@ pub fn build_shielding_transaction(
     // --- build orchard bundle with real Halo 2 proofs ---
     // NU6.1-branch V5 tx: legacy orchard pool, pre-NU6.2 (historical) circuit.
     let bundle_type = BundleType::Transactional {
-        spends_enabled: false, // outputs only
-        outputs_enabled: true,
         bundle_required: true,
+        pad_to_minimum: None,
     };
     let mut builder = Builder::new(
-        orchard::bundle::BundleVersion::orchard_insecure_v1(),
         bundle_type,
+        orchard::bundle::BundleVersion::orchard_insecure_v1(),
+        orchard::bundle::Flags::SPENDS_DISABLED,
         Anchor::empty_tree(),
-    );
+    )
+    .expect("flags are representable under this bundle version");
 
     builder
         .add_output(
@@ -6887,7 +6797,6 @@ pub fn zip317_shielding_fee_zat(n_transparent_inputs: u32) -> u64 {
 /// FAIL CLOSED on the branch id, identical to `build_ironwood_send_pczt_proven`:
 /// the tx must bind NU6.3 (0x37a5165b), `expected_branch_id` must equal it, and
 /// the 0xffff_ffff placeholder is refused outright.
-#[cfg(zcash_unstable = "nu6.3")]
 #[allow(clippy::too_many_arguments)]
 pub fn build_shielding_transaction_ironwood_core<P>(
     params: P,
@@ -6907,7 +6816,7 @@ where
 {
     use orchard::circuit::OrchardCircuitVersion;
     use rand::rngs::OsRng;
-    use zcash_primitives::transaction::builder::{BuildConfig, Builder};
+    use zcash_primitives::transaction::builder::{BuildConfig, Builder, BundlePadding};
     use zcash_primitives::transaction::fees::fixed::FeeRule as FixedFeeRule;
     use zcash_primitives::transaction::TxVersion;
     use zcash_protocol::consensus::{BlockHeight, BranchId};
@@ -7021,7 +6930,9 @@ where
             sapling_anchor: None,
             orchard_anchor: None,
             ironwood_anchor: Some(orchard::Anchor::empty_tree()),
-        },
+        orchard_padding: BundlePadding::DEFAULT,
+        ironwood_padding: BundlePadding::DEFAULT,
+    },
     );
     builder
         .propose_version::<FeError>(TxVersion::V6)
@@ -7111,7 +7022,9 @@ where
 
     // Extract the broadcast-ready V6 tx (creates the ironwood binding signature
     // and verifies the proof + every signature against the sighash).
-    extract_signed_tx_from_pczt_bytes(&pczt.serialize())
+    extract_signed_tx_from_pczt_bytes(
+            &pczt.serialize().map_err(|e| format!("pczt serialize: {e:?}"))?,
+        )
 }
 
 /// Build a signed transparent→IRONWOOD shielding transaction (NU6.3 / V6).
@@ -7138,7 +7051,6 @@ where
 ///   be 0x37a5165b
 /// * `mainnet` - true for mainnet, false for testnet
 /// * `memo_hex` - optional memo (hex, ≤512 bytes); empty memo when omitted
-#[cfg(zcash_unstable = "nu6.3")]
 #[wasm_bindgen]
 #[allow(clippy::too_many_arguments)]
 pub fn build_shielding_transaction_ironwood(
@@ -7272,26 +7184,6 @@ pub fn build_shielding_transaction_ironwood(
     Ok(hex_encode(&tx_bytes))
 }
 
-/// Stub keeping the JS API surface stable when the artifact is built without
-/// the NU6.3 cfg: the export exists but always errors.
-#[cfg(not(zcash_unstable = "nu6.3"))]
-#[wasm_bindgen]
-#[allow(clippy::too_many_arguments)]
-pub fn build_shielding_transaction_ironwood(
-    _utxos_json: &str,
-    _privkey_hex: &str,
-    _recipient: &str,
-    _amount: u64,
-    _fee: u64,
-    _target_height: u32,
-    _expected_branch_id: u32,
-    _mainnet: bool,
-    _memo_hex: Option<String>,
-) -> Result<String, JsError> {
-    Err(JsError::new(
-        "this artifact was built without NU6.3 / ironwood support (missing zcash_unstable cfg)",
-    ))
-}
 
 /// Build a shielding transaction into whichever pool is CORRECT at
 /// `target_height`, so a caller never has to (and never can) pick the stranded
@@ -7452,15 +7344,16 @@ pub fn build_unsigned_shielding_transaction(
     // --- build orchard bundle with real Halo 2 proofs ---
     // NU6.1-branch V5 tx: legacy orchard pool, pre-NU6.2 (historical) circuit.
     let bundle_type = BundleType::Transactional {
-        spends_enabled: false,
-        outputs_enabled: true,
         bundle_required: true,
+        pad_to_minimum: None,
     };
     let mut builder = Builder::new(
-        orchard::bundle::BundleVersion::orchard_insecure_v1(),
         bundle_type,
+        orchard::bundle::BundleVersion::orchard_insecure_v1(),
+        orchard::bundle::Flags::SPENDS_DISABLED,
         Anchor::empty_tree(),
-    );
+    )
+    .expect("flags are representable under this bundle version");
 
     builder
         .add_output(

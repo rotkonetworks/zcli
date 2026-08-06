@@ -23,10 +23,10 @@ group = "0.13"
 
 # Orchard protocol - real key derivation and note encryption.
 # NU6.3 / Ironwood stack (frozen interface contract, section 0):
-#   librustzcash crates: valargroup fork, branch adam/qleak-pr44-orchard-dummy-ciphertexts
+#   librustzcash crates:     crates.io (released; zcash_primitives 0.30 etc.)
 #     (zcash_primitives 0.28 / pczt 0.7 / zcash_keys 0.14 / zcash_protocol 0.9 /
 #      zcash_transparent 0.8) - lock pins rev 0c3ad735
-#   orchard 0.14: zcash/orchard branch adam/qleak-dummy-ciphertexts-on-pr505
+#   orchard 0.15.5:          crates.io (released, NU6.3/Ironwood upstream)
 #     - lock pins rev 204d8ce9
 # These are the SAME pins the zigner spike rust/pczt_signing_valar uses (its
 # Cargo.lock is the source of truth for revs). Build native AND wasm with:
@@ -53,7 +53,7 @@ zcash_note_encryption = "0.4"
 
 # transaction primitives
 # zcash_primitives 0.28 + sapling-crypto 0.7 + orchard 0.14 line up with the
-# valargroup librustzcash workspace on the NU6.3 branch — the same version
+# Released librustzcash workspace (NU6.3 is upstream as of these versions)
 # coords the zigner valar spike consumes. Required for `pczt` V6 interop.
 zcash_primitives = { version = "0.30", default-features = false, features = ["non-standard-fees", "transparent-inputs"] }
 zcash_transparent = { version = "0.10", package = "zcash_transparent", default-features = false, features = ["transparent-inputs"] }

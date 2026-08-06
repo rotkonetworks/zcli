@@ -14,7 +14,6 @@
 //! Without the cfg this file compiles to nothing. Run with --release: it
 //! builds the post-NU6.3 Halo 2 proving key and proves two bundles.
 
-#![cfg(zcash_unstable = "nu6.3")]
 
 use zafu_wasm::build_signed_turnstile_migration_core;
 
@@ -267,7 +266,7 @@ fn signed_turnstile_orchard_to_ironwood_verifies() {
         );
 
         let ironwood_vk =
-            VerifyingKey::build(orchard::bundle::BundleVersion::IronwoodPostNu6_3.circuit_version());
+            VerifyingKey::build(orchard::bundle::BundleVersion::ironwood_v3().circuit_version());
         let mut vi = orchard::bundle::BatchValidator::new(&ironwood_vk);
         assert!(
             vi.add_bundle(ironwood_bundle, sighash).is_ok(),
