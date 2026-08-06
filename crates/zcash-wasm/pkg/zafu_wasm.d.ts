@@ -585,6 +585,7 @@ export function frost_inspect_pczt_outputs(pczt_hex: string, orchard_fvk_uview: 
  * {
  *   "actions": [
  *     { "index": u32,
+ *       "pool": "orchard" | "ironwood",
  *       "amount_zat": u64,
  *       "recipient_raw_hex": "<43-byte hex>" | null,
  *       "is_change": bool,
