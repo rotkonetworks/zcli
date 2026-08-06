@@ -41,25 +41,15 @@ fn is_watch_mode() -> bool {
     WATCH_MODE.get().copied().unwrap_or(false)
 }
 
-/// which shielded pool a note lives in. Ironwood (NU6.3) reuses orchard
-/// addresses and note encryption, so notes decrypt identically — but they sit
-/// in a separate commitment tree and need a v6 transaction to spend.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Pool {
-    #[default]
-    Orchard,
-    Ironwood,
-}
-
-impl Pool {
-    pub fn name(self) -> &'static str {
-        match self {
-            Pool::Orchard => "orchard",
-            Pool::Ironwood => "ironwood",
-        }
-    }
-}
+/// Which shielded pool a note lives in.
+///
+/// Re-exported from `zafu_wasm`, which is where it now lives. It used to be
+/// defined here — but this crate depends on zafu-wasm, not the other way
+/// round, so the scanner down there could not see this type and dispatched on
+/// a `&str` instead. One definition, on the correct side of the dependency
+/// edge, is what lets the note-encryption domain be DERIVED from the pool
+/// rather than chosen alongside it.
+pub use zafu_wasm::Pool;
 
 /// (frontier key, frontier height key) for a pool's cached tree frontier
 fn frontier_keys(pool: Pool) -> (&'static [u8], &'static [u8]) {

@@ -274,7 +274,7 @@ impl WalletKeys {
             &self.prepared_ivk_external,
             &self.prepared_ivk_internal,
             actions_bytes,
-            "orchard",
+            Pool::Orchard,
         )
     }
 
@@ -292,7 +292,7 @@ impl WalletKeys {
             &self.prepared_ivk_external,
             &self.prepared_ivk_internal,
             actions_bytes,
-            "ironwood",
+            Pool::Ironwood,
         )
     }
 
@@ -316,7 +316,7 @@ impl WalletKeys {
                     rseed: None,
                     rho: None,
                     recipient: None,
-                    pool: FoundNote::default_pool(),
+                    pool: Pool::default(),
                     note_version: FoundNote::default_note_version(),
                 })
             })
@@ -336,7 +336,7 @@ impl WalletKeys {
                     rseed: None,
                     rho: None,
                     recipient: None,
-                    pool: FoundNote::default_pool(),
+                    pool: Pool::default(),
                     note_version: FoundNote::default_note_version(),
                 })
             })
@@ -466,6 +466,53 @@ impl<V: DomainVersion> ShieldedOutput<NoteEncryptionDomain<V>, COMPACT_NOTE_SIZE
 /// batch format does not preserve. So both domains must be tried. The extra
 /// cost is one AEAD open on a 52-byte ciphertext, negligible next to the
 /// Diffie-Hellman that already happened.
+/// Which shielded pool a note lives in.
+///
+/// This lives HERE, in the lowest crate, on purpose. It used to live in
+/// `zecli::wallet`, which depends on this crate — so the scanner below could
+/// not reach it and dispatched on a `&str` instead, with a silent
+/// `_ => try both domains` fallback. A typo in that string was a 2x slowdown
+/// nothing would report. A type cannot be typo'd.
+///
+/// Ironwood reuses orchard addresses and note encryption, so notes decrypt
+/// identically — but they sit in a separate commitment tree, need a v6
+/// transaction to spend, and use a different note-encryption domain.
+///
+/// The serde representation is deliberately unchanged from the definition it
+/// replaces (`rename_all = "lowercase"` → `"orchard"` / `"ironwood"`), so
+/// persisted wallet notes and the JS-facing scan results keep the exact same
+/// shape.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum Pool {
+    #[default]
+    Orchard,
+    Ironwood,
+}
+
+impl Pool {
+    pub fn name(self) -> &'static str {
+        match self {
+            Pool::Orchard => "orchard",
+            Pool::Ironwood => "ironwood",
+        }
+    }
+}
+
+impl From<Pool> for DomainChoice {
+    /// The domain follows from the pool. Deriving it here is the point: the
+    /// two can no longer disagree, and there is no third "unrecognized" state
+    /// to fall back from.
+    fn from(pool: Pool) -> Self {
+        match pool {
+            Pool::Orchard => DomainChoice::Orchard,
+            Pool::Ironwood => DomainChoice::Ironwood,
+        }
+    }
+}
+
 /// Which note-version domain(s) to trial-decrypt an action against.
 ///
 /// Trial decryption is the dominant cost of a scan, so this is a hot-path
@@ -673,7 +720,7 @@ fn scan_compact_actions_with_keys(
     ivk_external: &PreparedIncomingViewingKey,
     ivk_internal: &PreparedIncomingViewingKey,
     actions_bytes: &[u8],
-    pool: &str,
+    pool: Pool,
 ) -> Result<JsValue, JsError> {
     let actions = parse_compact_actions(actions_bytes)?;
 
@@ -682,12 +729,7 @@ fn scan_compact_actions_with_keys(
     // against only that pool's domain halves the trial-decryption work for
     // every action that is not ours - which, over a multi-hundred-thousand
     // block sync, is essentially all of them.
-    let choice = match pool {
-        "ironwood" => DomainChoice::Ironwood,
-        "orchard" => DomainChoice::Orchard,
-        // Unrecognized label: stay correct rather than fast.
-        _ => DomainChoice::Either,
-    };
+    let choice = DomainChoice::from(pool);
 
     let to_found = |(idx, action): (usize, &CompactActionBinary)| {
         try_decrypt_compact_action(fvk, ivk_external, ivk_internal, action, choice).map(|d| FoundNote {
@@ -699,7 +741,7 @@ fn scan_compact_actions_with_keys(
             rseed: Some(hex_encode(&d.rseed)),
             rho: Some(hex_encode(&d.rho)),
             recipient: Some(hex_encode(&d.recipient)),
-            pool: pool.to_string(),
+            pool,
             note_version: d.note_version,
         })
     };
@@ -748,8 +790,8 @@ pub struct FoundNote {
     /// Which shielded pool the action was scanned from: "orchard" | "ironwood".
     /// Set by the scan entry point (the pool is a property of which bundle in
     /// the tx the action lives in, not of the ciphertext itself).
-    #[serde(default = "FoundNote::default_pool")]
-    pub pool: String,
+    #[serde(default)]
+    pub pool: Pool,
     /// Note plaintext version from the decrypted lead byte
     /// (2 = orchard V2, 3 = ironwood V3 quantum-recoverable). Needed to
     /// reconstruct the exact note (and its commitment) at spend time.
@@ -758,9 +800,6 @@ pub struct FoundNote {
 }
 
 impl FoundNote {
-    fn default_pool() -> String {
-        "orchard".to_string()
-    }
     fn default_note_version() -> u8 {
         2
     }
@@ -1082,7 +1121,7 @@ impl WatchOnlyWallet {
             &self.prepared_ivk_external,
             &self.prepared_ivk_internal,
             actions_bytes,
-            "orchard",
+            Pool::Orchard,
         )
     }
 
@@ -1099,7 +1138,7 @@ impl WatchOnlyWallet {
             &self.prepared_ivk_external,
             &self.prepared_ivk_internal,
             actions_bytes,
-            "ironwood",
+            Pool::Ironwood,
         )
     }
 }
