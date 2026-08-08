@@ -11,7 +11,6 @@
 //! Run with --release: it
 //! builds the post-NU6.3 Halo 2 proving key and proves two bundles.
 
-
 use zafu_wasm::build_turnstile_migration_pczt_core;
 use zafu_wasm::extract_signed_tx_from_pczt_bytes;
 

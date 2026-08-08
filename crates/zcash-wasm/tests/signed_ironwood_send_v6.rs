@@ -20,7 +20,6 @@
 //! Run with --release: it builds
 //! the post-NU6.3 Halo 2 proving key and proves the ironwood bundle.
 
-
 use zafu_wasm::{
     build_signed_ironwood_send_core, extract_signed_tx_from_pczt_bytes, IronwoodRecipient,
 };

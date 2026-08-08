@@ -14,7 +14,6 @@
 //! Run with --release: it
 //! builds the post-NU6.3 Halo 2 proving key and proves two bundles.
 
-
 use zafu_wasm::build_signed_turnstile_migration_core;
 
 use zcash_primitives::transaction::sighash::{signature_hash, SignableInput};
