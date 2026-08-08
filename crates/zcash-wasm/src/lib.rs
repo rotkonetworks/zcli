@@ -5302,6 +5302,16 @@ pub fn redact_pczt_compact(pczt_hex: &str) -> Result<String, JsError> {
             a.clear_cv_net();
             // Clear output cmx
             a.clear_cmx();
+            // The 580-byte enc_ciphertext collapses to the memo trimmed to
+            // its last nonzero byte - ONE byte for the empty memo a turnstile
+            // migration uses. This is the single largest request-leg win
+            // (measured: 2.53x smaller request on a v6 migration, vs 1.08x
+            // without it). The signer re-encrypts it in `resolve_fields()`
+            // from the retained recipient/value/rseed plus the spend
+            // nullifier (rho), then runs every normal verification gate.
+            //
+            // MEMO_SIZE is crate-private upstream; it is 512 by spec.
+            a.replace_enc_ciphertext_with_memo_plaintext([0u8; 512]);
         });
         // Clear v6 bundle anchor
         o.clear_anchor();
@@ -5314,6 +5324,16 @@ pub fn redact_pczt_compact(pczt_hex: &str) -> Result<String, JsError> {
             a.clear_cv_net();
             // Clear output cmx
             a.clear_cmx();
+            // The 580-byte enc_ciphertext collapses to the memo trimmed to
+            // its last nonzero byte - ONE byte for the empty memo a turnstile
+            // migration uses. This is the single largest request-leg win
+            // (measured: 2.53x smaller request on a v6 migration, vs 1.08x
+            // without it). The signer re-encrypts it in `resolve_fields()`
+            // from the retained recipient/value/rseed plus the spend
+            // nullifier (rho), then runs every normal verification gate.
+            //
+            // MEMO_SIZE is crate-private upstream; it is 512 by spec.
+            a.replace_enc_ciphertext_with_memo_plaintext([0u8; 512]);
         });
         // Clear v6 bundle anchor
         o.clear_anchor();
