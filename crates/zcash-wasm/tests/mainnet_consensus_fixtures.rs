@@ -103,7 +103,11 @@ fn zip317_transparent_input_actions_are_size_derived() {
     assert_eq!(logical(2), 2);
     assert_eq!(logical(74), 74);
     // the boundary the original comment claimed could never be crossed
-    assert_eq!(logical(75), 74, "75 inputs occupy 74 logical actions, not 75");
+    assert_eq!(
+        logical(75),
+        74,
+        "75 inputs occupy 74 logical actions, not 75"
+    );
     assert_eq!(logical(76), 75);
 }
 

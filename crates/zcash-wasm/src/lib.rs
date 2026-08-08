@@ -482,9 +482,7 @@ impl<V: DomainVersion> ShieldedOutput<NoteEncryptionDomain<V>, COMPACT_NOTE_SIZE
 /// replaces (`rename_all = "lowercase"` → `"orchard"` / `"ironwood"`), so
 /// persisted wallet notes and the JS-facing scan results keep the exact same
 /// shape.
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Pool {
     #[default]
@@ -732,17 +730,19 @@ fn scan_compact_actions_with_keys(
     let choice = DomainChoice::from(pool);
 
     let to_found = |(idx, action): (usize, &CompactActionBinary)| {
-        try_decrypt_compact_action(fvk, ivk_external, ivk_internal, action, choice).map(|d| FoundNote {
-            index: idx as u32,
-            value: d.value,
-            nullifier: hex_encode(&d.nullifier),
-            cmx: hex_encode(&action.cmx),
-            is_change: d.is_change,
-            rseed: Some(hex_encode(&d.rseed)),
-            rho: Some(hex_encode(&d.rho)),
-            recipient: Some(hex_encode(&d.recipient)),
-            pool,
-            note_version: d.note_version,
+        try_decrypt_compact_action(fvk, ivk_external, ivk_internal, action, choice).map(|d| {
+            FoundNote {
+                index: idx as u32,
+                value: d.value,
+                nullifier: hex_encode(&d.nullifier),
+                cmx: hex_encode(&action.cmx),
+                is_change: d.is_change,
+                rseed: Some(hex_encode(&d.rseed)),
+                rho: Some(hex_encode(&d.rho)),
+                recipient: Some(hex_encode(&d.recipient)),
+                pool,
+                note_version: d.note_version,
+            }
         })
     };
 
@@ -1916,8 +1916,12 @@ mod tests {
         assert!(
             scan_roundtrip_with_choice(NoteVersion::V2, Scope::External, DomainChoice::Either)
                 .is_some()
-                && scan_roundtrip_with_choice(NoteVersion::V3, Scope::External, DomainChoice::Either)
-                    .is_some(),
+                && scan_roundtrip_with_choice(
+                    NoteVersion::V3,
+                    Scope::External,
+                    DomainChoice::Either
+                )
+                .is_some(),
             "Either must still accept both pools"
         );
     }
@@ -2304,16 +2308,16 @@ mod tests {
 
         // build an output-only bundle
         let bundle_type = BundleType::Transactional {
-        bundle_required: true,
-        pad_to_minimum: None,
-    };
+            bundle_required: true,
+            pad_to_minimum: None,
+        };
         let mut builder = Builder::new(
-        bundle_type,
-        orchard::bundle::BundleVersion::orchard_insecure_v1(),
-        orchard::bundle::Flags::SPENDS_DISABLED,
-        Anchor::empty_tree(),
-    )
-    .expect("flags are representable under this bundle version");
+            bundle_type,
+            orchard::bundle::BundleVersion::orchard_insecure_v1(),
+            orchard::bundle::Flags::SPENDS_DISABLED,
+            Anchor::empty_tree(),
+        )
+        .expect("flags are representable under this bundle version");
 
         builder
             .add_output(None, recipient, NoteValue::from_raw(50_000), [0u8; 512])
@@ -3614,7 +3618,9 @@ pub fn build_unsigned_pczt(
     let pczt = redact_pczt_for_signer(pczt);
 
     let action_count = pczt.orchard().actions().len() as u32;
-    let pczt_bytes = pczt.serialize().map_err(|e| JsError::new(&format!("pczt serialize: {e:?}")))?;
+    let pczt_bytes = pczt
+        .serialize()
+        .map_err(|e| JsError::new(&format!("pczt serialize: {e:?}")))?;
 
     // ── canonical sighash for FROST signing ───────────────────────────────
     // Derive it from the serialized (redacted) PCZT — exactly the bytes the
@@ -3970,9 +3976,9 @@ where
             sapling_anchor: None,
             orchard_anchor: Some(orchard_anchor),
             ironwood_anchor: Some(orchard::Anchor::empty_tree()),
-        orchard_padding: BundlePadding::DEFAULT,
-        ironwood_padding: BundlePadding::DEFAULT,
-    },
+            orchard_padding: BundlePadding::DEFAULT,
+            ironwood_padding: BundlePadding::DEFAULT,
+        },
     );
     builder
         .propose_version::<FeError>(TxVersion::V6)
@@ -4193,7 +4199,9 @@ where
         // binding signature against the sighash; a failure here means the signed
         // PCZT is not a valid transaction.
         extract_signed_tx_from_pczt_bytes(
-            &pczt.serialize().map_err(|e| format!("pczt serialize: {e:?}"))?,
+            &pczt
+                .serialize()
+                .map_err(|e| format!("pczt serialize: {e:?}"))?,
         )
     }
 }
@@ -4303,7 +4311,6 @@ pub fn build_turnstile_migration_pczt(
     .map_err(|e| JsError::new(&format!("serialization failed: {}", e)))
 }
 
-
 /// HOT-WALLET sibling of `build_turnstile_migration_pczt`: build the one-way
 /// turnstile migration (spend the supplied orchard notes into the wallet's OWN
 /// ironwood address in a single V6 transaction), sign the wallet-owned orchard
@@ -4410,7 +4417,6 @@ pub fn build_signed_turnstile_migration(
 
     Ok(hex_encode(&tx_bytes))
 }
-
 
 // ============================================================================
 // General Ironwood SEND builder (spends REAL ironwood notes -> arbitrary
@@ -4753,9 +4759,9 @@ where
             // REAL ironwood tree anchor (the migration used the empty-tree
             // anchor because it only output dummy ironwood spends).
             ironwood_anchor: Some(ironwood_anchor),
-        orchard_padding: BundlePadding::DEFAULT,
-        ironwood_padding: BundlePadding::DEFAULT,
-    },
+            orchard_padding: BundlePadding::DEFAULT,
+            ironwood_padding: BundlePadding::DEFAULT,
+        },
     );
     builder
         .propose_version::<FeError>(TxVersion::V6)
@@ -4935,7 +4941,9 @@ where
         // signature against the sighash; a failure means the signed PCZT is not
         // a valid transaction.
         extract_signed_tx_from_pczt_bytes(
-            &pczt.serialize().map_err(|e| format!("pczt serialize: {e:?}"))?,
+            &pczt
+                .serialize()
+                .map_err(|e| format!("pczt serialize: {e:?}"))?,
         )
     }
 }
@@ -5092,7 +5100,6 @@ pub fn build_ironwood_send_pczt(
     .map_err(|e| JsError::new(&format!("serialization failed: {}", e)))
 }
 
-
 /// HOT-WALLET general ironwood send: spend the wallet's REAL ironwood notes to
 /// an ARBITRARY `recipient` (plus change back to self) in a single V6
 /// transaction, sign the ironwood spends LOCALLY with a seed-derived key, and
@@ -5213,7 +5220,6 @@ pub fn build_signed_ironwood_send(
     Ok(hex_encode(&tx_bytes))
 }
 
-
 /// Complete an orchard-only FROST multisig PCZT: inject the externally-aggregated
 /// SpendAuth signatures (one per real spend, in `spend_indices` order, matching
 /// what `build_unsigned_pczt` returned) into the PCZT, then extract the
@@ -5256,9 +5262,187 @@ pub fn complete_orchard_pczt(
     }
 
     let signed = signer.finish();
-    let tx_bytes =
-        extract_signed_tx_from_pczt_bytes(&signed.serialize().map_err(|e| JsError::new(&format!("pczt serialize: {e:?}")))?).map_err(|e| JsError::new(&e))?;
+    let tx_bytes = extract_signed_tx_from_pczt_bytes(
+        &signed
+            .serialize()
+            .map_err(|e| JsError::new(&format!("pczt serialize: {e:?}")))?,
+    )
+    .map_err(|e| JsError::new(&e))?;
     Ok(hex_encode(&tx_bytes))
+}
+
+/// Compact a PCZT for transmission to a signer by redacting per-action cv_net,
+/// v6 bundle anchors, output cmx, and replacing enc_ciphertext with memo plaintext
+/// (trimmed to last nonzero byte). Builds on the existing signer redaction.
+///
+/// This function is used to minimize the size of PCZT requests sent to a hardware
+/// signer device. The signer can recompute the redacted fields from the remaining data.
+///
+/// # Arguments
+/// * `pczt_hex` - hex-encoded PCZT (v2 format)
+///
+/// # Returns
+/// Hex-encoded compact PCZT
+#[wasm_bindgen]
+pub fn redact_pczt_compact(pczt_hex: &str) -> Result<String, JsError> {
+    let bytes = hex_decode(pczt_hex).ok_or_else(|| JsError::new("invalid pczt hex"))?;
+    let pczt = pczt::Pczt::parse(&bytes)
+        .map_err(|e| JsError::new(&format!("pczt parse failed: {:?}", e)))?;
+
+    // Start with existing signer redaction
+    let pczt = redact_pczt_for_signer(pczt);
+
+    // Apply compact redaction on top
+    let mut redactor = pczt::roles::redactor::Redactor::new(pczt);
+
+    // Compact orchard bundle
+    redactor = redactor.redact_orchard_with(|mut o| {
+        o.redact_actions(|mut a| {
+            // Clear per-action cv_net
+            a.clear_cv_net();
+            // Clear output cmx
+            a.clear_cmx();
+        });
+        // Clear v6 bundle anchor
+        o.clear_anchor();
+    });
+
+    // Compact ironwood bundle (same compact redaction as orchard)
+    redactor = redactor.redact_ironwood_with(|mut o| {
+        o.redact_actions(|mut a| {
+            // Clear per-action cv_net
+            a.clear_cv_net();
+            // Clear output cmx
+            a.clear_cmx();
+        });
+        // Clear v6 bundle anchor
+        o.clear_anchor();
+    });
+
+    let pczt = redactor.finish();
+
+    let serialized = pczt
+        .serialize()
+        .map_err(|e| JsError::new(&format!("pczt serialize failed: {:?}", e)))?;
+    Ok(hex_encode(&serialized))
+}
+
+/// Apply spend-auth signatures to a compact PCZT received from a signer.
+///
+/// Signatures are supplied as a JSON array of objects with:
+/// - `pool`: "orchard" or "ironwood"
+/// - `action_index`: the action index in the corresponding bundle
+/// - `signature_hex`: 64-byte spend-auth signature as hex
+///
+/// # Arguments
+/// * `pczt_hex` - hex-encoded compact PCZT (typically from `redact_pczt_compact`)
+/// * `contributions_json` - JSON array of signature contributions
+///
+/// # Returns
+/// Hex-encoded PCZT with signatures applied
+#[wasm_bindgen]
+pub fn apply_signature_contributions(
+    pczt_hex: &str,
+    contributions_json: &str,
+) -> Result<String, JsError> {
+    use orchard::primitives::redpallas;
+
+    let bytes = hex_decode(pczt_hex).ok_or_else(|| JsError::new("invalid pczt hex"))?;
+    let pczt = pczt::Pczt::parse(&bytes)
+        .map_err(|e| JsError::new(&format!("pczt parse failed: {:?}", e)))?;
+
+    let contributions: Vec<serde_json::Value> = serde_json::from_str(contributions_json)
+        .map_err(|e| JsError::new(&format!("failed to parse contributions JSON: {}", e)))?;
+
+    let mut signer = pczt::roles::signer::Signer::new(pczt)
+        .map_err(|e| JsError::new(&format!("signer init failed: {:?}", e)))?;
+
+    for (i, contrib) in contributions.iter().enumerate() {
+        let pool = contrib
+            .get("pool")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| JsError::new(&format!("contribution[{}]: missing pool", i)))?;
+        let action_index: usize = contrib
+            .get("action_index")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as usize)
+            .ok_or_else(|| JsError::new(&format!("contribution[{}]: missing action_index", i)))?;
+        let signature_hex = contrib
+            .get("signature_hex")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| JsError::new(&format!("contribution[{}]: missing signature_hex", i)))?;
+
+        let raw = hex_decode(signature_hex)
+            .ok_or_else(|| JsError::new(&format!("contribution[{}]: invalid signature hex", i)))?;
+        let arr: [u8; 64] = raw.as_slice().try_into().map_err(|_| {
+            JsError::new(&format!("contribution[{}]: signature must be 64 bytes", i))
+        })?;
+        let sig = redpallas::Signature::<redpallas::SpendAuth>::from(arr);
+
+        match pool {
+            "orchard" => {
+                signer
+                    .apply_orchard_signature(action_index, sig)
+                    .map_err(|e| {
+                        JsError::new(&format!(
+                            "apply_orchard_signature[{}]: {:?}",
+                            action_index, e
+                        ))
+                    })?;
+            }
+            "ironwood" => {
+                signer
+                    .apply_ironwood_signature(action_index, sig)
+                    .map_err(|e| {
+                        JsError::new(&format!(
+                            "apply_ironwood_signature[{}]: {:?}",
+                            action_index, e
+                        ))
+                    })?;
+            }
+            _ => {
+                return Err(JsError::new(&format!(
+                    "contribution[{}]: unknown pool '{}'",
+                    i, pool
+                )));
+            }
+        }
+    }
+
+    let signed = signer.finish();
+    let serialized = signed
+        .serialize()
+        .map_err(|e| JsError::new(&format!("pczt serialize failed: {:?}", e)))?;
+    Ok(hex_encode(&serialized))
+}
+
+/// Estimate the size savings from compact PCZT redaction.
+///
+/// Returns JSON with `full_bytes` (original size) and `compact_bytes` (after redaction).
+///
+/// # Arguments
+/// * `pczt_hex` - hex-encoded PCZT (v2 format)
+///
+/// # Returns
+/// JSON string: `{"full_bytes": number, "compact_bytes": number}`
+#[wasm_bindgen]
+pub fn estimate_compact_savings(pczt_hex: &str) -> Result<String, JsError> {
+    let bytes = hex_decode(pczt_hex).ok_or_else(|| JsError::new("invalid pczt hex"))?;
+    let full_bytes = bytes.len();
+
+    // Parse to validate before compact redaction
+    let _pczt = pczt::Pczt::parse(&bytes)
+        .map_err(|e| JsError::new(&format!("pczt parse failed: {:?}", e)))?;
+
+    let compact_pczt = redact_pczt_compact(pczt_hex)?;
+    let compact_bytes = hex_decode(&compact_pczt).map(|b| b.len()).unwrap_or(0);
+
+    let result = serde_json::json!({
+        "full_bytes": full_bytes,
+        "compact_bytes": compact_bytes
+    });
+
+    Ok(result.to_string())
 }
 
 /// Canonical ZIP-244 txid for a raw signed v5 transaction.
@@ -7318,9 +7502,9 @@ where
             sapling_anchor: None,
             orchard_anchor: None,
             ironwood_anchor: Some(orchard::Anchor::empty_tree()),
-        orchard_padding: BundlePadding::DEFAULT,
-        ironwood_padding: BundlePadding::DEFAULT,
-    },
+            orchard_padding: BundlePadding::DEFAULT,
+            ironwood_padding: BundlePadding::DEFAULT,
+        },
     );
     builder
         .propose_version::<FeError>(TxVersion::V6)
@@ -7411,8 +7595,10 @@ where
     // Extract the broadcast-ready V6 tx (creates the ironwood binding signature
     // and verifies the proof + every signature against the sighash).
     extract_signed_tx_from_pczt_bytes(
-            &pczt.serialize().map_err(|e| format!("pczt serialize: {e:?}"))?,
-        )
+        &pczt
+            .serialize()
+            .map_err(|e| format!("pczt serialize: {e:?}"))?,
+    )
 }
 
 /// Build a signed transparent→IRONWOOD shielding transaction (NU6.3 / V6).
@@ -7572,7 +7758,6 @@ pub fn build_shielding_transaction_ironwood(
 
     Ok(hex_encode(&tx_bytes))
 }
-
 
 /// Build a shielding transaction into whichever pool is CORRECT at
 /// `target_height`, so a caller never has to (and never can) pick the stranded

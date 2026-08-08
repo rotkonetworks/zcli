@@ -13,7 +13,6 @@
 //! Run with --release: it builds
 //! the post-NU6.3 Halo 2 proving key and proves the ironwood bundle.
 
-
 use zafu_wasm::{build_shielding_transaction_ironwood_core, zip317_shielding_fee, NU6_3_BRANCH_ID};
 
 use orchard::keys::Scope;
