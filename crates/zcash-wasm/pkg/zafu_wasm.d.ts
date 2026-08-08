@@ -132,6 +132,23 @@ export class WatchOnlyWallet {
 export function address_from_ufvk(ufvk_str: string, diversifier_index: number): string;
 
 /**
+ * Apply spend-auth signatures to a compact PCZT received from a signer.
+ *
+ * Signatures are supplied as a JSON array of objects with:
+ * - `pool`: "orchard" or "ironwood"
+ * - `action_index`: the action index in the corresponding bundle
+ * - `signature_hex`: 64-byte spend-auth signature as hex
+ *
+ * # Arguments
+ * * `pczt_hex` - hex-encoded compact PCZT (typically from `redact_pczt_compact`)
+ * * `contributions_json` - JSON array of signature contributions
+ *
+ * # Returns
+ * Hex-encoded PCZT with signatures applied
+ */
+export function apply_signature_contributions(pczt_hex: string, contributions_json: string): string;
+
+/**
  * COLD (zigner / watch-only) sibling of `build_signed_ironwood_send`: build the
  * general ironwood send PCZT - spend the wallet's REAL ironwood notes to an
  * ARBITRARY `recipient` (plus change back to self) in a single V6 transaction -
@@ -466,6 +483,19 @@ export function derive_transparent_privkey(seed_phrase: string, account: number,
 export function encode_notes_bundle(notes_json: string, merkle_result_json: string, anchor_height: number, mainnet: boolean, attestation_hex?: string | null): Uint8Array;
 
 /**
+ * Estimate the size savings from compact PCZT redaction.
+ *
+ * Returns JSON with `full_bytes` (original size) and `compact_bytes` (after redaction).
+ *
+ * # Arguments
+ * * `pczt_hex` - hex-encoded PCZT (v2 format)
+ *
+ * # Returns
+ * JSON string: `{"full_bytes": number, "compact_bytes": number}`
+ */
+export function estimate_compact_savings(pczt_hex: string): string;
+
+/**
  * Extract a broadcast-ready v5 transaction from a signed PCZT returned by zigner.
  *
  * Replaces the legacy `parse_signature_response` + `complete_transaction` pair.
@@ -661,6 +691,22 @@ export function num_threads(): number;
 export function parse_signature_response(qr_hex: string): any;
 
 /**
+ * Compact a PCZT for transmission to a signer by redacting per-action cv_net,
+ * v6 bundle anchors, output cmx, and replacing enc_ciphertext with memo plaintext
+ * (trimmed to last nonzero byte). Builds on the existing signer redaction.
+ *
+ * This function is used to minimize the size of PCZT requests sent to a hardware
+ * signer device. The signer can recompute the redacted fields from the remaining data.
+ *
+ * # Arguments
+ * * `pczt_hex` - hex-encoded PCZT (v2 format)
+ *
+ * # Returns
+ * Hex-encoded compact PCZT
+ */
+export function redact_pczt_compact(pczt_hex: string): string;
+
+/**
  * Which shielded pool a transparent→shielded transaction must target at
  * `target_height`: `"ironwood"` at/after NU6.3 activation, `"orchard"` before.
  *
@@ -796,6 +842,7 @@ export interface InitOutput {
     readonly __wbg_walletkeys_free: (a: number, b: number) => void;
     readonly __wbg_watchonlywallet_free: (a: number, b: number) => void;
     readonly address_from_ufvk: (a: number, b: number, c: number) => [number, number, number, number];
+    readonly apply_signature_contributions: (a: number, b: number, c: number, d: number) => [number, number, number, number];
     readonly build_ironwood_send_pczt: (a: number, b: number, c: number, d: number, e: number, f: number, g: bigint, h: bigint, i: number, j: number, k: number, l: number, m: number, n: number, o: number, p: number, q: number, r: number) => [number, number, number];
     readonly build_merkle_paths: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number];
     readonly build_shielding_transaction: (a: number, b: number, c: number, d: number, e: number, f: number, g: bigint, h: bigint, i: number, j: number, k: number, l: number) => [number, number, number, number];
@@ -816,12 +863,14 @@ export interface InitOutput {
     readonly create_sign_request: (a: number, b: number, c: number, d: any, e: number, f: number) => [number, number, number, number];
     readonly derive_transparent_privkey: (a: number, b: number, c: number, d: number) => [number, number, number, number];
     readonly encode_notes_bundle: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number, number, number];
+    readonly estimate_compact_savings: (a: number, b: number) => [number, number, number, number];
     readonly extract_signed_tx_from_pczt: (a: number, b: number) => [number, number, number, number];
     readonly frontier_tree_size: (a: number, b: number) => [bigint, number, number];
     readonly generate_seed_phrase: () => [number, number, number, number];
     readonly get_commitment_proof_request: (a: number, b: number) => [number, number, number, number];
     readonly num_threads: () => number;
     readonly parse_signature_response: (a: number, b: number) => [number, number, number];
+    readonly redact_pczt_compact: (a: number, b: number) => [number, number, number, number];
     readonly shielding_pool_for_height: (a: number, b: number) => [number, number];
     readonly transparent_address_from_ufvk: (a: number, b: number, c: number) => [number, number, number, number];
     readonly transparent_pubkey_from_ufvk: (a: number, b: number, c: number) => [number, number, number, number];

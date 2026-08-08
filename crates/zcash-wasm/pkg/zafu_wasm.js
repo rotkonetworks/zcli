@@ -411,6 +411,47 @@ export function address_from_ufvk(ufvk_str, diversifier_index) {
 }
 
 /**
+ * Apply spend-auth signatures to a compact PCZT received from a signer.
+ *
+ * Signatures are supplied as a JSON array of objects with:
+ * - `pool`: "orchard" or "ironwood"
+ * - `action_index`: the action index in the corresponding bundle
+ * - `signature_hex`: 64-byte spend-auth signature as hex
+ *
+ * # Arguments
+ * * `pczt_hex` - hex-encoded compact PCZT (typically from `redact_pczt_compact`)
+ * * `contributions_json` - JSON array of signature contributions
+ *
+ * # Returns
+ * Hex-encoded PCZT with signatures applied
+ * @param {string} pczt_hex
+ * @param {string} contributions_json
+ * @returns {string}
+ */
+export function apply_signature_contributions(pczt_hex, contributions_json) {
+    let deferred4_0;
+    let deferred4_1;
+    try {
+        const ptr0 = passStringToWasm0(pczt_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(contributions_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.apply_signature_contributions(ptr0, len0, ptr1, len1);
+        var ptr3 = ret[0];
+        var len3 = ret[1];
+        if (ret[3]) {
+            ptr3 = 0; len3 = 0;
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        deferred4_0 = ptr3;
+        deferred4_1 = len3;
+        return getStringFromWasm0(ptr3, len3);
+    } finally {
+        wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
+    }
+}
+
+/**
  * COLD (zigner / watch-only) sibling of `build_signed_ironwood_send`: build the
  * general ironwood send PCZT - spend the wallet's REAL ironwood notes to an
  * ARBITRARY `recipient` (plus change back to self) in a single V6 transaction -
@@ -1322,6 +1363,40 @@ export function encode_notes_bundle(notes_json, merkle_result_json, anchor_heigh
 }
 
 /**
+ * Estimate the size savings from compact PCZT redaction.
+ *
+ * Returns JSON with `full_bytes` (original size) and `compact_bytes` (after redaction).
+ *
+ * # Arguments
+ * * `pczt_hex` - hex-encoded PCZT (v2 format)
+ *
+ * # Returns
+ * JSON string: `{"full_bytes": number, "compact_bytes": number}`
+ * @param {string} pczt_hex
+ * @returns {string}
+ */
+export function estimate_compact_savings(pczt_hex) {
+    let deferred3_0;
+    let deferred3_1;
+    try {
+        const ptr0 = passStringToWasm0(pczt_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.estimate_compact_savings(ptr0, len0);
+        var ptr2 = ret[0];
+        var len2 = ret[1];
+        if (ret[3]) {
+            ptr2 = 0; len2 = 0;
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        deferred3_0 = ptr2;
+        deferred3_1 = len2;
+        return getStringFromWasm0(ptr2, len2);
+    } finally {
+        wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+    }
+}
+
+/**
  * Extract a broadcast-ready v5 transaction from a signed PCZT returned by zigner.
  *
  * Replaces the legacy `parse_signature_response` + `complete_transaction` pair.
@@ -2102,6 +2177,43 @@ export function parse_signature_response(qr_hex) {
 }
 
 /**
+ * Compact a PCZT for transmission to a signer by redacting per-action cv_net,
+ * v6 bundle anchors, output cmx, and replacing enc_ciphertext with memo plaintext
+ * (trimmed to last nonzero byte). Builds on the existing signer redaction.
+ *
+ * This function is used to minimize the size of PCZT requests sent to a hardware
+ * signer device. The signer can recompute the redacted fields from the remaining data.
+ *
+ * # Arguments
+ * * `pczt_hex` - hex-encoded PCZT (v2 format)
+ *
+ * # Returns
+ * Hex-encoded compact PCZT
+ * @param {string} pczt_hex
+ * @returns {string}
+ */
+export function redact_pczt_compact(pczt_hex) {
+    let deferred3_0;
+    let deferred3_1;
+    try {
+        const ptr0 = passStringToWasm0(pczt_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.redact_pczt_compact(ptr0, len0);
+        var ptr2 = ret[0];
+        var len2 = ret[1];
+        if (ret[3]) {
+            ptr2 = 0; len2 = 0;
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        deferred3_0 = ptr2;
+        deferred3_1 = len2;
+        return getStringFromWasm0(ptr2, len2);
+    } finally {
+        wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+    }
+}
+
+/**
  * Which shielded pool a transparent→shielded transaction must target at
  * `target_height`: `"ironwood"` at/after NU6.3 activation, `"orchard"` before.
  *
@@ -2624,6 +2736,10 @@ function __wbg_get_imports(memory) {
             const ret = arg0.done;
             return ret;
         },
+        __wbg_entries_015dc610cd81ede0: function(arg0) {
+            const ret = Object.entries(arg0);
+            return ret;
+        },
         __wbg_error_a6fa202b58aa1cd3: function(arg0, arg1) {
             let deferred0_0;
             let deferred0_1;
@@ -2638,6 +2754,10 @@ function __wbg_get_imports(memory) {
         __wbg_getRandomValues_c44a50d8cfdaebeb: function() { return handleError(function (arg0, arg1) {
             arg0.getRandomValues(arg1);
         }, arguments); },
+        __wbg_get_507a50627bffa49b: function(arg0, arg1) {
+            const ret = arg0[arg1 >>> 0];
+            return ret;
+        },
         __wbg_get_c7eb1f358a7654df: function() { return handleError(function (arg0, arg1) {
             const ret = Reflect.get(arg0, arg1);
             return ret;
