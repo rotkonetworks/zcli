@@ -1,0 +1,46 @@
+[package]
+name = "voting-wasm"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Standalone WASM bindings for zafu shielded voting - delegation PCZT, hot vote-casting, and PIR non-membership proofs. Kept independent of zafu-wasm (the core wallet module) so orchard/pczt/zcash_primitives versions never have to co-version with the wallet scanner."
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# Curves - only for the PIR nullifier field element handling.
+pasta_curves = "0.5"
+ff = "0.13"
+
+# Shielded-voting crypto core (delegation ZKP #1, hot vote casting).
+# wasm-slim = pure byte-in/out: no SQLite, no lightwalletd/tonic, no PIR
+# network transport, no std::thread. See crates/zcash-voting for the vendored
+# fork this pins against.
+zcash-voting = { package = "zcash_voting", path = "../zcash-voting", default-features = false, features = ["wasm-slim"] }
+
+# PIR client for IMT non-membership proofs (delegation dummy/real nullifiers).
+# Vendored path fork with tokio stripped for wasm; the Transport trait is
+# network-free (backed by a JS `fetch` callback), so no hyper/tonic/tokio
+# enters wasm.
+pir-client = { path = "../pir-client" }
+
+# serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+base64 = "0.22"
+hex = "0.4"
+anyhow = "1"
+
+# wasm bindings
+wasm-bindgen = "0.2.113"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+console_error_panic_hook = "0.1"
+getrandom = { version = "0.2", features = ["js"] }
+rand = "0.8"
+
+# [profile.release] intentionally omitted: cargo ignores per-package profiles
+# for non-root workspace members (see build warning); the workspace root has
+# no [profile.release] override, so this builds under cargo's plain release
+# defaults, matching zafu-wasm's own recipe (see BUILD_PROVENANCE.md).

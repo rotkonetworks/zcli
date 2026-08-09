@@ -4418,6 +4418,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "pczt_signing"
+version = "0.1.0"
+dependencies = [
+ "bip39",
+ "getrandom 0.2.17",
+ "orchard",
+ "pczt",
+ "rand_core 0.6.4",
+ "sha2 0.10.9",
+ "zcash_keys",
+ "zcash_primitives",
+ "zcash_protocol",
+ "zcash_transparent",
+ "zip32",
+]
+
+[[package]]
 name = "pem"
 version = "3.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7845,6 +7862,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "voting-wasm"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "console_error_panic_hook",
+ "ff",
+ "getrandom 0.2.17",
+ "hex",
+ "js-sys",
+ "pasta_curves",
+ "pir-client 0.4.0-rc.2",
+ "rand 0.8.7",
+ "serde",
+ "serde_json",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "zcash_voting",
+]
+
+[[package]]
 name = "w3f-pcs"
 version = "0.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8896,6 +8934,7 @@ version = "2.0.0-rc.2"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
+ "bip39",
  "blake2b_simd",
  "bytes",
  "ed25519-dalek",
@@ -8916,6 +8955,7 @@ dependencies = [
  "orchard",
  "pasta_curves",
  "pczt",
+ "pczt_signing",
  "pir-client 0.4.0-rc.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "pir-types",
  "prost 0.14.4",

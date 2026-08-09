@@ -19,6 +19,7 @@ members = [
     "bin/poker",
     "bin/pokerbot",
     "crates/ring-vrf-wasm",
+    "crates/voting-wasm",
     "bin/license-server",
 ]
 
