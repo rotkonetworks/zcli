@@ -1,20 +1,17 @@
-//! REAL full-round voting driver against the local v09 chain.
+//! REAL cold (zigner air-gapped) delegation round-trip against the local v09 chain.
 //!
-//! Flow: build delegation crypto (real Halo2 ZKP #1) -> create round via Cosmos
-//! tx (docker exec svoted) with the delegation's OWN roots -> POST delegate-vote
-//! -> build vote commitment (real Halo2 ZKP #2 + real ElGamal shares) -> POST
-//! cast-vote -> POST 16 encrypted shares to the helper -> wait vote_end ->
-//! TALLYING -> FINALIZED -> read the real tally-results.
+//! Proves the COLD voting-delegation path end to end: build a zafu voting
+//! delegation as a redacted PCZT, sign it with zigner's REAL cold-signer code
+//! (`pczt_signing::sign_redacted_pczt`, not a reimplementation), finalize it
+//! locally (extract the spend-auth signature + real Halo2 ZKP #1), and get it
+//! ACCEPTED by the live local v09 chain. If accepted, continue through cast-vote
+//! and share reveal to FINALIZED/tally like the hot round-trip does.
 //!
-//! All crypto is real. This local v09 chain runs ProductionOpts (app/ante.go:
-//! redpallas.NewVerifier + halo2.NewVerifier), so the ante verifies BOTH the
-//! RedPallas spend-auth signatures AND ZKP #1 (delegation) and ZKP #2 (vote
-//! commitment). Hence: real delegation proof against the round's own roots, a
-//! real signed delegate, a real VAN Merkle witness synced from chain (so ZKP
-//! #2's VoteCommTreeRoot matches the on-chain anchor root), and real ElGamal
-//! shares the helper decrypts at tally.
+//! Everything past the delegation build/sign is copy-pasted verbatim from
+//! `v09_roundtrip_real.rs` (the proven-accepted hot path) - only the delegation
+//! build+sign step (Step 3) is swapped for the PCZT + zigner cold-signer seam.
 //!
-//! Run: cargo test -p zcash_voting --release --test v09_roundtrip_real -- --ignored --nocapture
+//! Run: cargo test -p zcash_voting --release --test v09_cold_zigner_roundtrip -- --ignored --nocapture
 
 use std::process::Command;
 use std::time::{Duration, Instant, SystemTime};
@@ -34,7 +31,6 @@ use pasta_curves::pallas;
 use rand::rngs::OsRng;
 use serde_json::{json, Value};
 use zcash_keys::keys::UnifiedSpendingKey;
-use zcash_protocol::consensus::MAIN_NETWORK;
 use zip32::AccountId;
 
 use voting_circuits::delegation::{ImtProofData, ImtProvider, SpacedLeafImtProvider};
@@ -45,16 +41,13 @@ use vote_commitment_tree_client::http_sync_api::HttpTreeSyncApi;
 use vote_commitment_tree_client::transport::{Transport, TransportError, TransportResponse};
 use std::sync::Arc;
 
-/// The v09 chain's `BlockCommitments` proto message (vote-sdk/proto/svote/v1/
-/// types.proto) has only `height`, `start_index`, `leaves` - no per-block
-/// `root`, and `QueryCommitmentLeavesResponse` has no `next_from_height`
-/// cursor. Both are required by `vote-commitment-tree-client` 0.6.0-rc.1's
-/// deserialization, so raw `HttpTreeSyncApi::get_block_commitments` always
-/// fails with `Parse(MissingField("block_commitments.root"))` against this
-/// chain. Fetch the raw leaves JSON ourselves (matching the chain's actual
-/// shape) and backfill each block's root via a separate
-/// `get_root_at_height` call (whose response DOES match the client crate's
-/// `CommitmentTreeState` parsing).
+use zcash_voting::types::{DelegationProgressReporter, Network, NoteInfo, NoopProgressReporter, WitnessData};
+use zcash_voting::wasm_delegation::InjectedImtProof;
+use zcash_voting::wire::VotingRoundParams;
+use zcash_voting::{BALLOT_DIVISOR, BUNDLE_NOTE_SLOTS};
+
+/// See v09_roundtrip_real.rs for why this shim exists (the chain's REST shape
+/// has no per-block `root` and no cursor). Reused verbatim.
 struct FixedTreeSyncApi {
     inner: HttpTreeSyncApi,
     round_id_hex: String,
@@ -91,80 +84,70 @@ impl vote_commitment_tree::sync_api::TreeSyncApi for FixedTreeSyncApi {
             blocks: Vec<RawBlock>,
         }
 
-        // The chain caps a single leaves query at a 1000-block range, but the
-        // v09 chain may be tens of thousands of blocks tall. Page the fetch in
-        // sub-1000-block windows and aggregate. The round's tree only has leaves
-        // from its creation height onward, so almost every window is empty
-        // (cheap, and tolerated by the serde(default) RawResponse).
-        let mut blocks = Vec::new();
-        let mut w_from = from_height;
-        loop {
-            let w_to = w_from.saturating_add(899).min(to_height);
-            let url = format!(
-                "{}/shielded-vote/v1/commitment-tree/{}/leaves?from_height={}&to_height={}",
-                CHAIN_REST_URL, self.round_id_hex, w_from, w_to
-            );
-            let resp = reqwest::blocking::Client::builder()
-                .timeout(Duration::from_secs(30))
-                .build()
-                .unwrap()
-                .get(&url)
-                .send()
-                .unwrap_or_else(|e| panic!("GET {url} failed: {e}"));
-            let status = resp.status().as_u16();
-            let body = resp
-                .bytes()
-                .unwrap_or_else(|e| panic!("reading body from {url} failed: {e}"));
-            assert!(
-                (200..300).contains(&status),
-                "GET {url} returned {status}: {}",
-                String::from_utf8_lossy(&body)
-            );
-            let raw: RawResponse = serde_json::from_slice(&body)
-                .unwrap_or_else(|e| panic!("parsing leaves response from {url} failed: {e}"));
+        // This chain caps a leaves query at a 1000-block span ("block range N
+        // exceeds maximum 1000"). The sync driver re-invokes us on
+        // `next_from_height`, so window each REST call to <=1000 blocks and
+        // hand back the next cursor until we reach `to_height`.
+        const MAX_SPAN: u32 = 1000;
+        let chunk_to = to_height.min(from_height + MAX_SPAN);
+        let url = format!(
+            "{}/shielded-vote/v1/commitment-tree/{}/leaves?from_height={}&to_height={}",
+            CHAIN_REST_URL, self.round_id_hex, from_height, chunk_to
+        );
+        let resp = reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(30))
+            .build()
+            .unwrap()
+            .get(&url)
+            .send()
+            .unwrap_or_else(|e| panic!("GET {url} failed: {e}"));
+        let status = resp.status().as_u16();
+        let body = resp
+            .bytes()
+            .unwrap_or_else(|e| panic!("reading body from {url} failed: {e}"));
+        assert!(
+            (200..300).contains(&status),
+            "GET {url} returned {status}: {}",
+            String::from_utf8_lossy(&body)
+        );
+        let raw: RawResponse = serde_json::from_slice(&body)
+            .unwrap_or_else(|e| panic!("parsing leaves response from {url} failed: {e}"));
 
-            for b in raw.blocks {
-                let height = b.height as u32;
-                let leaves: Vec<vote_commitment_tree::MerkleHashVote> = b
-                    .leaves
-                    .iter()
-                    .map(|b64_str| {
-                        let bytes = base64::engine::general_purpose::STANDARD
-                            .decode(b64_str)
-                            .expect("valid base64 leaf");
-                        let mut arr = [0u8; 32];
-                        arr.copy_from_slice(&bytes);
-                        let fp = Option::from(pasta_curves::Fp::from_repr(arr)).expect("canonical Fp leaf");
-                        vote_commitment_tree::MerkleHashVote::from_fp(fp)
-                    })
-                    .collect();
-                let root = self
-                    .inner
-                    .get_root_at_height(height)?
-                    .unwrap_or_else(|| panic!("no root at height {height} (round {})", self.round_id_hex));
-                blocks.push(vote_commitment_tree::sync_api::BlockCommitments {
-                    height,
-                    start_index: b.start_index,
-                    leaves,
-                    root,
-                });
-            }
-
-            if w_to >= to_height {
-                break;
-            }
-            w_from = w_to + 1;
+        let mut blocks = Vec::with_capacity(raw.blocks.len());
+        for b in raw.blocks {
+            let height = b.height as u32;
+            let leaves: Vec<vote_commitment_tree::MerkleHashVote> = b
+                .leaves
+                .iter()
+                .map(|b64_str| {
+                    let bytes = base64::engine::general_purpose::STANDARD
+                        .decode(b64_str)
+                        .expect("valid base64 leaf");
+                    let mut arr = [0u8; 32];
+                    arr.copy_from_slice(&bytes);
+                    let fp = Option::from(pasta_curves::Fp::from_repr(arr)).expect("canonical Fp leaf");
+                    vote_commitment_tree::MerkleHashVote::from_fp(fp)
+                })
+                .collect();
+            let root = self
+                .inner
+                .get_root_at_height(height)?
+                .unwrap_or_else(|| panic!("no root at height {height} (round {})", self.round_id_hex));
+            blocks.push(vote_commitment_tree::sync_api::BlockCommitments {
+                height,
+                start_index: b.start_index,
+                leaves,
+                root,
+            });
         }
 
+        let next_from_height = if chunk_to < to_height { chunk_to + 1 } else { 0 };
         Ok(vote_commitment_tree::sync_api::BlockCommitmentsPage {
             blocks,
-            next_from_height: 0,
+            next_from_height,
         })
     }
 }
-
-use zcash_voting::types::{DelegationProgressReporter, Network, NoteInfo, NoopProgressReporter, WitnessData};
-use zcash_voting::{BALLOT_DIVISOR, BUNDLE_NOTE_SLOTS};
 
 /// Blocking reqwest transport for the vote-commitment tree sync client.
 struct ReqwestTransport {
@@ -200,9 +183,6 @@ const CHAIN_REST_URL: &str = "http://127.0.0.1:1317";
 const CHAIN_ID: &str = "svote-1";
 const VOTE_MANAGER_KEY: &str = "vote-manager-1";
 const CONTAINER: &str = "val1";
-/// Voting window. Finalize is gated on block_time >= vote_end_time (module.go
-/// EndBlock), so this must outlast the full proving pipeline yet be short enough
-/// to actually wait for. 900s comfortably covers ZKP #1 + ZKP #2 + share reveal.
 const VOTE_WINDOW_SECS: u64 = 900;
 
 const PROPOSAL_ID: u32 = 1;
@@ -210,13 +190,22 @@ const CHOICE: u32 = 1; // Oppose
 const NUM_OPTIONS: u32 = 2;
 const PROPOSAL_AUTHORITY: u64 = 0xFFFF; // fresh bundle, no shares submitted yet
 
+/// Mainnet NU6.3 (Ironwood) activation height, per zcash-voting's own test
+/// `branch_id_for_height_follows_network_activation_heights` in src/lwd.rs.
+const NU6_3_ACTIVATION_HEIGHT: u64 = 3_428_143;
+
+/// Fixed 12-word BIP39 test mnemonic. zigner derives the spending key from
+/// `mnemonic.to_seed("")`; the owner notes MUST be built against the same key.
+const TEST_MNEMONIC: &str =
+    "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+
 struct NoopDelegReporter;
 impl DelegationProgressReporter for NoopDelegReporter {
     fn on_progress(&self, _p: zcash_voting::delegate::DelegationProgress) {}
 }
 
 fn log(msg: &str) {
-    eprintln!("[v09-real] {}", msg);
+    eprintln!("[v09-cold] {}", msg);
 }
 
 fn b64(bytes: &[u8]) -> String {
@@ -260,6 +249,7 @@ fn http_post(path: &str, body: &Value) -> Result<(u16, Value), String> {
 }
 
 /// Poseidon round-id derivation (mirrors chain deriveRoundID over 8 Fp elements).
+/// Copied verbatim from v09_roundtrip_real.rs.
 fn derive_round_id(
     snapshot_height: u64,
     snapshot_blockhash: &[u8; 32],
@@ -293,7 +283,6 @@ fn derive_round_id(
     hash.to_repr()
 }
 
-/// Round state query. GET /round/{id} returns {"round": {...}}.
 fn get_round(round_id_hex: &str) -> Option<Value> {
     let (status, json) = http_get(&format!("/shielded-vote/v1/round/{}", round_id_hex)).ok()?;
     if status != 200 {
@@ -368,6 +357,7 @@ fn docker_exec(args: &[&str]) -> Result<String, String> {
 }
 
 /// Create the voting round via a real Cosmos tx (svoted CLI inside the container).
+/// Copied verbatim from v09_roundtrip_real.rs.
 fn create_round_tx(
     session_json: &str,
     snapshot_height: u64,
@@ -377,14 +367,13 @@ fn create_round_tx(
     nullifier_imt_root: &[u8; 32],
     nc_root: &[u8; 32],
 ) -> Result<String, String> {
-    // Write the session JSON to a host temp file, copy into the container.
     let host_path = format!(
-        "{}/v09_session.json",
+        "{}/v09_cold_session.json",
         std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string())
     );
     std::fs::write(&host_path, session_json).map_err(|e| format!("write session json: {}", e))?;
     let cp = Command::new("docker")
-        .args(["cp", &host_path, &format!("{}:/tmp/v09_session.json", CONTAINER)])
+        .args(["cp", &host_path, &format!("{}:/tmp/v09_cold_session.json", CONTAINER)])
         .output()
         .map_err(|e| format!("docker cp spawn: {}", e))?;
     if !cp.status.success() {
@@ -399,7 +388,7 @@ fn create_round_tx(
         "tx",
         "vote",
         "create-voting-session",
-        "/tmp/v09_session.json",
+        "/tmp/v09_cold_session.json",
         "--from",
         VOTE_MANAGER_KEY,
         "--keyring-backend",
@@ -446,24 +435,38 @@ fn create_round_tx(
 
 #[test]
 #[ignore = "requires the local v09 chain running at 127.0.0.1:1317"]
-fn v09_roundtrip_real() {
+fn v09_cold_zigner_roundtrip() {
     let mut rng = OsRng;
 
     // ---------------------------------------------------------------
-    // Step 0: derive owner + hotkey keys (ZIP-32, same paths as prod).
+    // Step 0: derive owner key from a BIP39 mnemonic (same seed zigner will
+    // use). Hotkey stays a plain in-process ZIP-32 seed (unrelated to the
+    // cold seam under test - only the OWNER's delegation key must be cold).
     // ---------------------------------------------------------------
-    let owner_seed = [0x42u8; 32];
+    let mnemonic = bip39::Mnemonic::parse_in(bip39::Language::English, TEST_MNEMONIC)
+        .expect("parse test mnemonic");
+    let seed = mnemonic.to_seed("");
     let account = AccountId::try_from(0u32).unwrap();
-    let owner_usk = UnifiedSpendingKey::from_seed(&MAIN_NETWORK, &owner_seed, account).unwrap();
+    let network = Network::Mainnet;
+    let owner_usk = UnifiedSpendingKey::from_seed(&network, &seed, account).unwrap();
     let owner_ufvk = owner_usk.to_unified_full_viewing_key();
-    let owner_ufvk_str = owner_ufvk.encode(&MAIN_NETWORK);
+    let owner_ufvk_str = owner_ufvk.encode(&network);
     let owner_fvk = owner_ufvk.orchard().unwrap().clone();
-    let owner_ask = SpendAuthorizingKey::from(owner_usk.orchard());
+    let fvk_bytes: [u8; 96] = owner_fvk.to_bytes();
 
-    // Hotkey (VAN note recipient). Must match zkp2's spending_key_from_hotkey_seed
-    // (UnifiedSpendingKey::from_seed, account 0, orchard, address_at(0, External)).
+    let seed_fingerprint = zip32::fingerprint::SeedFingerprint::from_seed(&seed)
+        .expect("seed fingerprint")
+        .to_bytes();
+
+    log(&format!(
+        "owner derived from bip39 mnemonic, ufvk={}",
+        &owner_ufvk_str[..24.min(owner_ufvk_str.len())]
+    ));
+
+    // Hotkey (VAN note recipient). Unrelated to the cold seam - plain in-process
+    // key, same as the hot test's step 0.
     let hotkey_seed = [0x43u8; 32];
-    let hotkey_usk = UnifiedSpendingKey::from_seed(&MAIN_NETWORK, &hotkey_seed, account).unwrap();
+    let hotkey_usk = UnifiedSpendingKey::from_seed(&network, &hotkey_seed, account).unwrap();
     let hotkey_fvk = hotkey_usk
         .to_unified_full_viewing_key()
         .orchard()
@@ -474,7 +477,8 @@ fn v09_roundtrip_real() {
     let address_index: u32 = 0;
 
     // ---------------------------------------------------------------
-    // Step 1: build owner notes + NC tree + IMT (fills all 5 slots).
+    // Step 1: build owner notes + NC tree + IMT (fills all 5 slots, so there
+    // is zero padding and the dummy-IMT complexity is sidestepped).
     // ---------------------------------------------------------------
     let per_note_value = (BALLOT_DIVISOR / BUNDLE_NOTE_SLOTS as u64) + 1;
     let total_note_value = per_note_value * BUNDLE_NOTE_SLOTS as u64;
@@ -499,7 +503,6 @@ fn v09_roundtrip_real() {
         total_note_value / BALLOT_DIVISOR
     ));
 
-    // NC Merkle tree: 8-leaf subtree (5 real + 3 empty) folded to full depth.
     let empty_leaf = MerkleHashOrchard::empty_leaf();
     let mut leaves = [empty_leaf; 8];
     for (i, note) in notes.iter().enumerate() {
@@ -520,7 +523,6 @@ fn v09_roundtrip_real() {
     }
     let nc_root_bytes: [u8; 32] = current.to_bytes();
 
-    // Auth paths + IMT proofs for each real note.
     let l1 = [l1_0, l1_1, l1_2, l1_3];
     let l2 = [l2_0, l2_1];
     let imt = SpacedLeafImtProvider::new();
@@ -563,11 +565,13 @@ fn v09_roundtrip_real() {
     }
 
     // ---------------------------------------------------------------
-    // Step 2: fix session fields + derive round_id (needed as ZKP input).
+    // Step 2: fix session fields + derive round_id. snapshot_height must be
+    // >= NU6.3 activation so build_delegation_pczt's Ironwood-only check
+    // passes.
     // ---------------------------------------------------------------
-    let snapshot_height: u64 = 42_000;
-    let snapshot_blockhash = [0xAAu8; 32];
-    let proposals_hash = [0xBBu8; 32];
+    let snapshot_height: u64 = NU6_3_ACTIVATION_HEIGHT;
+    let snapshot_blockhash = [0xCCu8; 32];
+    let proposals_hash = [0xDDu8; 32];
     let vote_end_time = now_secs() + VOTE_WINDOW_SECS;
     let round_id = derive_round_id(
         snapshot_height,
@@ -580,35 +584,17 @@ fn v09_roundtrip_real() {
     let round_id_hex = hex::encode(round_id);
     log(&format!("derived round_id = {}", round_id_hex));
 
-    // ---------------------------------------------------------------
-    // Step 3: build delegation crypto (real Halo2 ZKP #1). 30-60s.
-    // ---------------------------------------------------------------
-    let alpha = pallas::Scalar::random(&mut rng);
-    let van_comm_rand = pallas::Base::random(&mut rng);
-    log("building delegation proof (ZKP #1, 30-60s)...");
-    let deleg = zcash_voting::zkp1::build_and_prove_delegation(
-        &full_notes,
-        &hotkey_raw_address,
-        &alpha.to_repr(),
-        &van_comm_rand.to_repr(),
-        &round_id,
-        &merkle_witnesses,
-        &imt_proofs,
-        &[],
-        Network::Mainnet,
-        &NoopDelegReporter,
-        None,
-    )
-    .expect("build_and_prove_delegation");
+    let consensus_branch_id = zcash_voting::lwd::branch_id_for_height(network, snapshot_height)
+        .expect("branch_id_for_height");
     log(&format!(
-        "delegation proof ready: proof={}B, van_comm={}, gov_nullifiers={}",
-        deleg.proof.len(),
-        hex::encode(&deleg.van_comm),
-        deleg.gov_nullifiers.len()
+        "consensus_branch_id = 0x{:08X} at snapshot_height {}",
+        consensus_branch_id, snapshot_height
     ));
 
     // ---------------------------------------------------------------
-    // Step 4: create the round on-chain (Cosmos tx) with OUR roots.
+    // Step 3: create the round on-chain FIRST. build_delegation_pczt validates
+    // params.ea_pk as a real 32-byte value (validate_round_params), so the
+    // round (and its per-round ea_pk) must exist before the PCZT can be built.
     // ---------------------------------------------------------------
     let session_json = json!({
         "snapshot_height": snapshot_height,
@@ -620,7 +606,7 @@ fn v09_roundtrip_real() {
         "proposals": [
             {
                 "id": 1,
-                "title": "zafu v09 real round-trip",
+                "title": "zafu v09 cold zigner round",
                 "options": [
                     {"index": 0, "label": "Support"},
                     {"index": 1, "label": "Oppose"}
@@ -646,7 +632,6 @@ fn v09_roundtrip_real() {
         "on-chain derived round_id must match local derivation"
     );
 
-    // Wait for ACTIVE (per-round ceremony auto-deals ea_pk).
     log("waiting for round to become ACTIVE...");
     let deadline = Instant::now() + Duration::from_secs(240);
     let mut active = false;
@@ -663,41 +648,167 @@ fn v09_roundtrip_real() {
     log(&format!("round ACTIVE, ea_pk={}", hex::encode(&ea_pk)));
 
     // ---------------------------------------------------------------
-    // Step 5: POST delegate-vote (appends van_cmx to the round's tree).
+    // Step 4: build the governance delegation PCZT (no chain anchor needed -
+    // it's self-contained per wasm_delegation.rs docs) and redact it for the
+    // cold signer.
+    // ---------------------------------------------------------------
+    let params = VotingRoundParams {
+        vote_round_id: round_id_hex.clone(),
+        snapshot_height,
+        ea_pk: ea_pk.clone(),
+        nc_root: nc_root_bytes.to_vec(),
+        nullifier_imt_root: nf_imt_root_bytes.to_vec(),
+    };
+
+    log("building delegation PCZT (build_delegation_pczt)...");
+    let artifact = zcash_voting::wasm_delegation::build_delegation_pczt(
+        &full_notes,
+        &params,
+        network,
+        &fvk_bytes,
+        &hotkey_raw_address,
+        consensus_branch_id,
+        &seed_fingerprint,
+        0,
+        "zafu v09 cold zigner round",
+    )
+    .expect("build_delegation_pczt");
+    log(&format!(
+        "delegation PCZT built: redacted_pczt={}B, action_index={}, total_note_value={}, memo={:?}",
+        artifact.redacted_pczt.len(),
+        artifact.governance.action_index,
+        artifact.total_note_value,
+        artifact.display_memo,
+    ));
+
+    // ---------------------------------------------------------------
+    // Step 5: sign with zigner's REAL cold-signer code. This is the
+    // load-bearing step - the entry point under test.
+    // ---------------------------------------------------------------
+    log("calling pczt_signing::sign_redacted_pczt (REAL zigner cold-signer)...");
+    let signed_pczt_bytes = pczt_signing::sign_redacted_pczt(
+        &artifact.redacted_pczt,
+        TEST_MNEMONIC,
+        0,
+        true, // mainnet
+    )
+    .unwrap_or_else(|e| panic!("pczt_signing::sign_redacted_pczt FAILED: {:?}", e));
+    log(&format!(
+        "zigner signed the PCZT: signed_pczt={}B",
+        signed_pczt_bytes.len()
+    ));
+
+    // ---------------------------------------------------------------
+    // Step 6: extract the spend-auth signature from the signed PCZT.
+    // ---------------------------------------------------------------
+    let spend_auth_sig = zcash_voting::delegate::spend_auth_signature(
+        &signed_pczt_bytes,
+        artifact.governance.action_index,
+    )
+    .expect("spend_auth_signature");
+    log(&format!(
+        "extracted spend_auth_sig ({} bytes)",
+        spend_auth_sig.len()
+    ));
+
+    // Correctness check on the cold seam: zigner recomputes the sighash from
+    // the PCZT contents itself (Signer::new(pczt).shielded_sighash()), so if
+    // the redact/sign/extract round-trip is honest, re-extracting the sighash
+    // from the SIGNED pczt must equal what build_delegation_pczt recorded.
+    let sighash_from_signed = zcash_voting::delegate::pczt_sighash(&signed_pczt_bytes)
+        .expect("pczt_sighash(signed)");
+    assert_eq!(
+        sighash_from_signed.as_slice(),
+        artifact.governance.pczt_sighash.as_slice(),
+        "sighash recomputed from zigner-signed PCZT must match the sighash \
+         build_delegation_pczt recorded before signing"
+    );
+    log(&format!(
+        "sighash cross-check OK: {}",
+        hex::encode(sighash_from_signed)
+    ));
+
+    // ---------------------------------------------------------------
+    // Step 7: build the real ZKP #1 delegation proof (prove_delegation).
+    // 5 real notes fill all BUNDLE_NOTE_SLOTS, so padded_note_secrets/
+    // dummy_imt_proofs are empty - no dummy-IMT complexity.
+    // ---------------------------------------------------------------
+    assert!(
+        artifact.governance.padded_note_secrets.is_empty(),
+        "expected zero padding with 5 real notes filling BUNDLE_NOTE_SLOTS"
+    );
+    let real_imt_proofs: Vec<InjectedImtProof> = imt_proofs
+        .iter()
+        .zip(full_notes.iter())
+        .map(|(p, note)| InjectedImtProof {
+            nullifier: note.nullifier.clone().try_into().unwrap(),
+            root: p.root.to_repr(),
+            nf_bounds: [
+                p.nf_bounds[0].to_repr(),
+                p.nf_bounds[1].to_repr(),
+                p.nf_bounds[2].to_repr(),
+            ],
+            leaf_pos: p.leaf_pos,
+            path: p.path.iter().map(|s| s.to_repr()).collect(),
+        })
+        .collect();
+
+    log("building delegation proof (ZKP #1, real Halo2, 30-60s)...");
+    let deleg_proof = zcash_voting::wasm_delegation::prove_delegation(
+        &full_notes,
+        &hotkey_raw_address,
+        &artifact.governance.alpha,
+        &artifact.governance.van_comm_rand,
+        &round_id,
+        &artifact.governance.padded_note_secrets,
+        &artifact.governance.rseed_signed,
+        &artifact.governance.rseed_output,
+        &merkle_witnesses,
+        &real_imt_proofs,
+        &[], // dummy_imt_proofs: none, zero padding
+        network,
+    )
+    .expect("prove_delegation");
+    log(&format!(
+        "delegation proof ready: proof={}B, van_comm={}, gov_nullifiers={}",
+        deleg_proof.proof.len(),
+        hex::encode(&deleg_proof.van_comm),
+        deleg_proof.gov_nullifiers.len()
+    ));
+
+    // ---------------------------------------------------------------
+    // Step 8: assemble + POST delegate-vote using the COLD-signed rk/sig and
+    // the real ZKP #1 proof. Field names match the hot test's proven-accepted
+    // JSON shape exactly.
     // ---------------------------------------------------------------
     let pre_next = tree_next_index(&round_id_hex).unwrap_or(0);
     let van_position = pre_next; // fresh round: 0
 
-    // The chain (ProductionOpts) verifies the RedPallas spend-auth signature
-    // over the client-provided sighash w.r.t. rk = ak.randomize(alpha). Sign a
-    // deterministic 32-byte sighash with rsk = owner_ask.randomize(alpha).
-    let deleg_sighash = {
-        let h = Blake2bParams::new()
-            .hash_length(32)
-            .personal(b"zafu-v09-deleg--")
-            .hash(&deleg.rk);
-        let mut b = [0u8; 32];
-        b.copy_from_slice(h.as_bytes());
-        b
-    };
-    let deleg_rsk = owner_ask.randomize(&alpha);
-    let deleg_sig = deleg_rsk.sign(&mut rng, &deleg_sighash);
-    let deleg_sig_bytes: [u8; 64] = (&deleg_sig).into();
-
     let deleg_body = json!({
-        "rk": b64(&deleg.rk),
-        "spend_auth_sig": b64(&deleg_sig_bytes),
-        "sighash": b64(&deleg_sighash),
-        "signed_note_nullifier": b64(&deleg.nf_signed),
-        "cmx_new": b64(&deleg.cmx_new),
-        "van_cmx": b64(&deleg.van_comm),
-        "gov_nullifiers": deleg.gov_nullifiers.iter().map(|g| b64(g)).collect::<Vec<_>>(),
-        "proof": b64(&deleg.proof),
+        "rk": b64(&artifact.governance.rk),
+        "spend_auth_sig": b64(&spend_auth_sig),
+        "sighash": b64(&artifact.governance.pczt_sighash),
+        "signed_note_nullifier": b64(&deleg_proof.nf_signed),
+        "cmx_new": b64(&deleg_proof.cmx_new),
+        "van_cmx": b64(&deleg_proof.van_comm),
+        "gov_nullifiers": deleg_proof.gov_nullifiers.iter().map(|g| b64(g)).collect::<Vec<_>>(),
+        "proof": b64(&deleg_proof.proof),
         "vote_round_id": b64(&round_id),
     });
     log(&format!("POST delegate-vote (van_position={})...", van_position));
     let (st, js) = http_post("/shielded-vote/v1/delegate-vote", &deleg_body).expect("post delegate");
-    log(&format!("delegate-vote resp: HTTP {} body={}", st, js));
+    log(&format!("=== COLD DELEGATE-VOTE RESPONSE: HTTP {} body={} ===", st, js));
+
+    let code = js.get("code").and_then(|c| c.as_i64());
+    let accepted = st == 200 && (code.is_none() || code == Some(0));
+    if !accepted {
+        panic!(
+            "delegate-vote REJECTED by chain: HTTP {} body={} -- STOPPING per task instructions \
+             (do not continue past a real rejection)",
+            st, js
+        );
+    }
+    log("cold delegate-vote ACCEPTED by chain (HTTP 200, code 0)");
 
     // Wait for van_cmx leaf to land.
     let deadline = Instant::now() + Duration::from_secs(90);
@@ -715,10 +826,7 @@ fn v09_roundtrip_real() {
     log(&format!("delegation committed, anchor_height={}", anchor_height));
 
     // ---------------------------------------------------------------
-    // Step 5b: sync the vote-commitment tree from chain + generate the VAN
-    // witness. The chain (halo2.NewVerifier) verifies ZKP #2, whose public
-    // VoteCommTreeRoot must equal the on-chain root at anchor_height, so a real
-    // Merkle path is required.
+    // Step 9: sync the vote-commitment tree + VAN witness (verbatim from hot test).
     // ---------------------------------------------------------------
     log(&format!("syncing vote-commitment tree, VAN witness @ pos {}...", van_position));
     let mut tree_client = TreeClient::empty();
@@ -745,7 +853,6 @@ fn v09_roundtrip_real() {
         witness.auth_path().iter().map(|h| h.to_bytes()).collect();
     assert_eq!(auth_path.len(), 24, "auth_path must have 24 siblings");
 
-    // Verify our local root at anchor_height matches the on-chain root.
     let local_root = tree_client
         .root_at_height(anchor_height)
         .expect("local root at anchor height");
@@ -770,15 +877,18 @@ fn v09_roundtrip_real() {
     }
 
     // ---------------------------------------------------------------
-    // Step 6: build vote commitment (real Halo2 ZKP #2 + ElGamal shares).
+    // Step 10: build vote commitment (real Halo2 ZKP #2 + ElGamal shares).
+    // The cast/hotkey side is unrelated to the cold seam under test, so this
+    // stays an in-process hotkey signer, exactly like the hot test.
     // ---------------------------------------------------------------
-    log("building vote commitment (ZKP #2, 30-60s)...");
+    log("building vote commitment (ZKP #2, real Halo2, 30-60s)...");
+    let van_comm_rand_bytes = &artifact.governance.van_comm_rand;
     let bundle = zcash_voting::zkp2::build_vote_commitment(
         &hotkey_seed,
-        Network::Mainnet,
+        network,
         address_index,
         total_note_value,
-        &van_comm_rand.to_repr(),
+        van_comm_rand_bytes,
         &round_id,
         &ea_pk,
         PROPOSAL_ID,
@@ -803,7 +913,7 @@ fn v09_roundtrip_real() {
     ));
 
     // ---------------------------------------------------------------
-    // Step 7: sign the cast sighash + POST cast-vote.
+    // Step 11: sign the cast sighash + POST cast-vote (verbatim from hot test).
     // ---------------------------------------------------------------
     const CAST_VOTE_SIGHASH_DOMAIN: &[u8] = b"SVOTE_CAST_VOTE_SIGHASH_V0";
     let mut canonical = Vec::new();
@@ -825,7 +935,6 @@ fn v09_roundtrip_real() {
     let mut sighash = [0u8; 32];
     sighash.copy_from_slice(sighash_full.as_bytes());
 
-    // Sign with the randomized voting key rsk_v = ask_hot.randomize(alpha_v).
     let hot_ask = SpendAuthorizingKey::from(hotkey_usk.orchard());
     let alpha_v = pallas::Scalar::from_repr(
         <[u8; 32]>::try_from(bundle.alpha_v.as_slice()).unwrap(),
@@ -848,10 +957,9 @@ fn v09_roundtrip_real() {
     });
     log("POST cast-vote...");
     let (st, js) = http_post("/shielded-vote/v1/cast-vote", &cast_body).expect("post cast");
-    log(&format!("cast-vote resp: HTTP {} body={}", st, js));
+    log(&format!("=== CAST-VOTE RESPONSE: HTTP {} body={} ===", st, js));
     assert_eq!(st, 200, "cast-vote must return 200");
 
-    // Wait for the 2 cast leaves (van_new @ +1, vote_commitment @ +2).
     let vc_position = van_position + 2;
     let cast_target = van_position + 3;
     let deadline = Instant::now() + Duration::from_secs(90);
@@ -867,7 +975,7 @@ fn v09_roundtrip_real() {
     log(&format!("cast committed, vc_position={}", vc_position));
 
     // ---------------------------------------------------------------
-    // Step 8: POST 16 encrypted shares to the helper.
+    // Step 12: POST 16 encrypted shares (verbatim from hot test).
     // ---------------------------------------------------------------
     let helper_token = std::env::var("HELPER_API_TOKEN").ok();
     let share_comms_b64: Vec<String> = bundle.share_comms.iter().map(|c| b64(c)).collect();
@@ -888,7 +996,6 @@ fn v09_roundtrip_real() {
             "primary_blind": b64(&bundle.share_blinds[i]),
             "submit_at": 0,
         });
-        // POST with optional helper token.
         let client = reqwest::blocking::Client::builder()
             .timeout(Duration::from_secs(30))
             .build()
@@ -907,11 +1014,10 @@ fn v09_roundtrip_real() {
             panic!("share {} rejected: HTTP {} body={}", i, status, body);
         }
         if i == 0 || i == 15 {
-            log(&format!("share {} accepted: {}", i, body));
+            log(&format!("=== SHARE {} RESPONSE: {} ===", i, body));
         }
     }
 
-    // Wait for the helper to reveal at least one share (tally accumulator appears).
     log("waiting for helper to submit reveal-share (tally accumulator)...");
     let deadline = Instant::now() + Duration::from_secs(360);
     let mut has_tally = false;
@@ -926,7 +1032,7 @@ fn v09_roundtrip_real() {
     log("tally accumulator present on chain");
 
     // ---------------------------------------------------------------
-    // Step 9: wait for vote_end -> TALLYING -> FINALIZED.
+    // Step 13: wait for vote_end -> TALLYING -> FINALIZED.
     // ---------------------------------------------------------------
     let secs_left = vote_end_time.saturating_sub(now_secs());
     log(&format!(
@@ -942,7 +1048,6 @@ fn v09_roundtrip_real() {
                 break;
             }
             Some(s) => {
-                // occasional heartbeat
                 if now_secs() % 30 == 0 {
                     log(&format!("round status={} (waiting for FINALIZED=3)", s));
                 }
@@ -955,18 +1060,16 @@ fn v09_roundtrip_real() {
     log("round FINALIZED");
 
     // ---------------------------------------------------------------
-    // Step 10: read the real tally-results.
+    // Step 14: read the real tally-results.
     // ---------------------------------------------------------------
     let (st, tally_json) =
         http_get(&format!("/shielded-vote/v1/tally-results/{}", round_id_hex)).expect("tally-results");
     assert_eq!(st, 200, "tally-results must return 200");
     let pretty = serde_json::to_string_pretty(&tally_json).unwrap_or_default();
-    log("=== FINAL TALLY RESULTS ===");
+    log("=== FINAL TALLY RESULTS (COLD ZIGNER ROUND-TRIP) ===");
     eprintln!("{}", pretty);
-    log(&format!("ROUND {} FINALIZED on v09", round_id_hex));
-    log(&format!("tally-results = {}", serde_json::to_string(&tally_json).unwrap_or_default()));
+    log(&format!("ROUND {} FINALIZED on v09 (cold delegation)", round_id_hex));
 
-    // Sanity: results should be non-empty.
     let non_empty = tally_json
         .get("results")
         .and_then(|r| r.as_array())
