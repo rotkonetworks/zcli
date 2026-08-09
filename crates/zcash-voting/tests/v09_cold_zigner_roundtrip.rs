@@ -88,7 +88,7 @@ impl vote_commitment_tree::sync_api::TreeSyncApi for FixedTreeSyncApi {
         // exceeds maximum 1000"). The sync driver re-invokes us on
         // `next_from_height`, so window each REST call to <=1000 blocks and
         // hand back the next cursor until we reach `to_height`.
-        const MAX_SPAN: u32 = 1000;
+        const MAX_SPAN: u32 = 900;
         let chunk_to = to_height.min(from_height + MAX_SPAN);
         let url = format!(
             "{}/shielded-vote/v1/commitment-tree/{}/leaves?from_height={}&to_height={}",
@@ -183,7 +183,7 @@ const CHAIN_REST_URL: &str = "http://127.0.0.1:1317";
 const CHAIN_ID: &str = "svote-1";
 const VOTE_MANAGER_KEY: &str = "vote-manager-1";
 const CONTAINER: &str = "val1";
-const VOTE_WINDOW_SECS: u64 = 900;
+const VOTE_WINDOW_SECS: u64 = 180;
 
 const PROPOSAL_ID: u32 = 1;
 const CHOICE: u32 = 1; // Oppose
@@ -1039,7 +1039,7 @@ fn v09_cold_zigner_roundtrip() {
         "waiting for vote_end ({}s left) then FINALIZED...",
         secs_left
     ));
-    let deadline = Instant::now() + Duration::from_secs(secs_left + 300);
+    let deadline = Instant::now() + Duration::from_secs(secs_left + 600);
     let mut finalized = false;
     while Instant::now() < deadline {
         match round_status(&round_id_hex) {

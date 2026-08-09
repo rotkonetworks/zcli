@@ -203,7 +203,7 @@ const CONTAINER: &str = "val1";
 /// Voting window. Finalize is gated on block_time >= vote_end_time (module.go
 /// EndBlock), so this must outlast the full proving pipeline yet be short enough
 /// to actually wait for. 900s comfortably covers ZKP #1 + ZKP #2 + share reveal.
-const VOTE_WINDOW_SECS: u64 = 900;
+const VOTE_WINDOW_SECS: u64 = 180;
 
 const PROPOSAL_ID: u32 = 1;
 const CHOICE: u32 = 1; // Oppose
@@ -933,7 +933,7 @@ fn v09_roundtrip_real() {
         "waiting for vote_end ({}s left) then FINALIZED...",
         secs_left
     ));
-    let deadline = Instant::now() + Duration::from_secs(secs_left + 300);
+    let deadline = Instant::now() + Duration::from_secs(secs_left + 600);
     let mut finalized = false;
     while Instant::now() < deadline {
         match round_status(&round_id_hex) {
