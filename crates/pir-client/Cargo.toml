@@ -1,0 +1,38 @@
+[package]
+edition = "2021"
+name = "pir-client"
+version = "0.4.0-rc.2"
+description = "Private Information Retrieval client for Zcash nullifier non-membership proofs. Fetches circuit-ready Merkle authentication paths without revealing the queried nullifier to the server. Vendored path fork for zafu-wasm (tokio stripped for wasm32)."
+readme = "README.md"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/valargroup/vote-nullifier-pir"
+
+[lib]
+name = "pir_client"
+path = "src/lib.rs"
+
+[dependencies]
+anyhow = "1.0"
+ff = "0.13"
+futures = "0.3"
+hex = "0.4"
+imt-tree = "0.2.0"
+log = "0.4"
+pasta_curves = "0.5"
+pir-types = { version = "=0.3.0-rc.2", features = ["reader"] }
+serde_json = "1"
+ypir = { version = "=0.1.5", default-features = false, package = "valar-ypir" }
+
+# tokio powers only the native blocking client + async tests; wasm32 uses
+# futures::try_join! and gates PirClientBlocking out, so tokio never enters wasm.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies.tokio]
+version = "1"
+features = ["rt-multi-thread", "macros", "time"]
+
+# wasm needs getrandom's browser backend (pulled transitively by valar-spiral-rs).
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.2", features = ["js"] }
+
+[dev-dependencies]
+rand = "0.8"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }

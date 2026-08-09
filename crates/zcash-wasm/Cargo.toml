@@ -89,9 +89,19 @@ blake2b_simd = "1.0"
 
 # wasm bindings
 wasm-bindgen = "0.2.113"
+wasm-bindgen-futures = "0.4"
 js-sys = "0.3"
 console_error_panic_hook = "0.1"
 getrandom = { version = "0.2", features = ["js"] }
+
+# PIR client for IMT non-membership proofs (delegation). Vendored path fork with
+# tokio stripped for wasm; the Transport trait is network-free (we back it with a
+# JS `fetch` callback), so no hyper/tonic/tokio enters wasm.
+pir-client = { path = "../pir-client" }
+# The IMT proof field type (imt_tree::ImtProofData) and its Fp field elements.
+imt-tree = "0.2.0"
+# pir_client's Transport trait returns anyhow::Result.
+anyhow = "1"
 
 # rng for proving
 rand = "0.8"
@@ -103,6 +113,12 @@ frost-spend = { path = "../frost-spend", features = ["wasm"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde-wasm-bindgen = "0.6"
+base64 = "0.22"
+
+# Shielded-voting crypto core (HOT vote casting). wasm-slim = pure byte-in/out:
+# no SQLite, no lightwalletd/tonic, no PIR, no std::thread. See
+# crates/zcash-voting for the vendored path fork.
+zcash-voting = { package = "zcash_voting", path = "../zcash-voting", default-features = false, features = ["wasm-slim"] }
 
 # UR encoding for QR transport
 ur = "0.4"

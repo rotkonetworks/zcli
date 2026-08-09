@@ -10,6 +10,8 @@ members = [
     "crates/ligerito-merkle",
     "crates/ligerito-reed-solomon",
     "crates/zcash-wasm",
+    "crates/zcash-voting",
+    "crates/pir-client",
     "crates/frost-spend",
     "crates/zoda-vss",
     "bin/relay",
