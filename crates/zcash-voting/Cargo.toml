@@ -34,6 +34,13 @@ native = [
 # error, phases, config, share_policy, plus the wasm_casting free fns. No SQLite,
 # no network, no PIR, no std::thread spawns.
 wasm-slim = []
+# `parallel` = forward halo2's multicore proving (maybe-rayon/rayon) through
+# to the underlying halo2_proofs instance shared with voting-circuits. Mirrors
+# zafu-wasm's `parallel = [..., "orchard/multicore"]` recipe: the host crate
+# (voting-wasm) must ALSO link wasm-bindgen-rayon and call initThreadPool()
+# before the first proof, or rayon's global pool init panics on wasm32
+# (no JS-side Worker spawn glue without it).
+parallel = ["halo2_proofs/multicore", "orchard/multicore"]
 
 [dependencies]
 # Curves (same as Orchard/Zcash)
@@ -111,3 +118,7 @@ getrandom = { version = "0.2", features = ["js"] }
 [dev-dependencies]
 secrecy = "0.8"
 reqwest = { version = "0.11", features = ["blocking", "json"] }
+vote-commitment-tree = { version = "=0.4.0-rc.1" }
+vote-commitment-tree-client = { version = "=0.6.0-rc.1", features = ["http"] }
+pczt_signing = { path = "/steam/rotko/zigner-wt-ironwood/rust/pczt_signing" }
+bip39 = "2"

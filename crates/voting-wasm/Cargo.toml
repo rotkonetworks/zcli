@@ -8,6 +8,13 @@ description = "Standalone WASM bindings for zafu shielded voting - delegation PC
 [lib]
 crate-type = ["cdylib"]
 
+[features]
+# Mirrors crates/zcash-wasm's recipe exactly: rayon + wasm-bindgen-rayon give
+# the host (offscreen prover) an initThreadPool export; zcash-voting/parallel
+# forwards into halo2_proofs/multicore + orchard/multicore so the K=14
+# delegation proof actually runs on the pool once it's initialized.
+parallel = ["rayon", "wasm-bindgen-rayon", "zcash-voting/parallel"]
+
 [dependencies]
 # Curves - only for the PIR nullifier field element handling.
 pasta_curves = "0.5"
@@ -39,6 +46,10 @@ js-sys = "0.3"
 console_error_panic_hook = "0.1"
 getrandom = { version = "0.2", features = ["js"] }
 rand = "0.8"
+
+# parallel processing (optional, enabled via --features parallel)
+rayon = { version = ">=1.10, <1.11", optional = true }
+wasm-bindgen-rayon = { version = "1.2", optional = true }
 
 # [profile.release] intentionally omitted: cargo ignores per-package profiles
 # for non-root workspace members (see build warning); the workspace root has
