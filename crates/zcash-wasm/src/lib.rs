@@ -3405,9 +3405,36 @@ pub fn build_unsigned_pczt(
     use zcash_keys::keys::UnifiedFullViewingKey;
     use zcash_primitives::transaction::builder::{BuildConfig, Builder, BundlePadding};
     use zcash_primitives::transaction::fees::fixed::FeeRule as FixedFeeRule;
-    use zcash_protocol::consensus::{BlockHeight, MainNetwork, TestNetwork};
+    use zcash_protocol::consensus::{BlockHeight, BranchId, MainNetwork, TestNetwork};
     use zcash_protocol::memo::MemoBytes;
     use zcash_protocol::value::Zatoshis;
+
+    // ── FAIL-CLOSED: orchard-V5 output creation is consensus-dead at NU6.3 ──
+    // This builder always emits at least one orchard output (the recipient for
+    // a z→z send, and/or the change note), and post-NU6.3 the orchard pool is
+    // spend/migrate-only: creating any new orchard output makes the bundle's
+    // value balance negative, which the node rejects ("Orchard value balance
+    // must be non-negative from NU6.3 onward"). Refuse before proving rather
+    // than mint an un-broadcastable PCZT. Unlike the hot builder this path
+    // takes no live branch id, so derive it from `target_height` (the same
+    // BranchId::for_height mapping the builder itself uses below).
+    {
+        let branch_id: u32 = if mainnet {
+            BranchId::for_height(&MainNetwork, BlockHeight::from(target_height))
+        } else {
+            BranchId::for_height(&TestNetwork, BlockHeight::from(target_height))
+        }
+        .into();
+        if branch_id == NU6_3_BRANCH_ID {
+            return Err(JsError::new(
+                "orchard-V5 output creation is consensus-dead post-NU6.3 (the \
+                 orchard pool is spend/migrate-only; no new orchard outputs) - \
+                 use the ironwood builder (build_ironwood_send_pczt); orchard \
+                 funds must first cross the one-way turnstile \
+                 (build_signed_turnstile_migration)",
+            ));
+        }
+    }
 
     // ── decode FVK from UFVK ───────────────────────────────────────────────
     // zcash_keys 5333c01b uses the same orchard 0.12 we do, so no byte
