@@ -9,6 +9,15 @@
 //! ```
 
 mod frost;
+/// HOT shielded-voting vote-casting bindings (casting slice only).
+mod voting;
+/// Shielded-voting delegation bindings (cold-signed PCZT + ZKP #1).
+mod voting_delegation;
+/// PIR bindings: fetch IMT non-membership proofs via a JS `fetch` callback.
+/// wasm-only: it backs pir-client's async Transport with a `!Send` JS handle,
+/// which only satisfies the (Send-relaxed) wasm Transport contract.
+#[cfg(target_arch = "wasm32")]
+mod voting_pir;
 /// Commitment-tree replay and witness serialization.
 ///
 /// Public because it is the SINGLE implementation of "walk a commitment tree

@@ -1,0 +1,112 @@
+[package]
+name = "zcash_voting"
+version = "2.0.0-rc.2"
+edition = "2021"
+rust-version = "1.88"
+description = "Client-side library for Zcash shielded voting: ZKP delegation and vote-commitment proofs (Halo 2), ElGamal encryption, governance PCZT construction, Merkle witness generation, and SQLite round-state persistence. Vendored path fork for zafu-wasm (wasm-slim casting slice)."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/valargroup/zcash_voting"
+readme = "README.md"
+
+[features]
+default = ["native"]
+# `native` = full upstream crate: SQLite round-state persistence, tokio/hyper/tonic
+# lightwalletd + PIR network transport, and the wallet-db orchestration modules.
+native = [
+    "dep:rusqlite",
+    "dep:tokio",
+    "dep:hyper",
+    "dep:hyper-util",
+    "dep:hyper-rustls",
+    "dep:tonic",
+    "dep:rustls",
+    "dep:http-body-util",
+    "dep:pir-client",
+    "dep:pir-types",
+    "dep:valar-spiral-rs",
+    "dep:valar-ypir",
+    "dep:vote-commitment-tree-client",
+    "dep:zcash_client_sqlite",
+    "dep:zcash_client_backend",
+]
+# `wasm-slim` = pure crypto core only (byte-in/out): hotkey, governance,
+# note_bundling, vote_commitment, zkp1, zkp2, action, wire, wire_codec, types,
+# error, phases, config, share_policy, plus the wasm_casting free fns. No SQLite,
+# no network, no PIR, no std::thread spawns.
+wasm-slim = []
+
+[dependencies]
+# Curves (same as Orchard/Zcash)
+pasta_curves = "0.5"
+ff = "0.13"
+group = "0.13"
+
+# Randomness
+rand = "0.8"
+
+# Hashing
+blake2b_simd = "1"
+halo2_gadgets = "=0.5.0"
+halo2_proofs = "0.3"
+sinsemilla = "0.1"
+
+# Serialization
+base64 = "0.22"
+hex = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+prost = "0.14"
+sha2 = "0.10"
+ed25519-dalek = "2"
+
+# PIR (private nullifier exclusion proofs) — native only.
+pir-client = { version = "=0.4.0-rc.2", default-features = false, optional = true }
+pir-types = { version = "=0.3.0-rc.2", default-features = false, optional = true }
+valar-spiral-rs = { version = "=0.5.2", default-features = false, optional = true }
+valar-ypir = { version = "=0.1.5", default-features = false, optional = true }
+imt-tree = { version = "=0.2.0" }
+
+bytes = { version = "1" }
+http = { version = "1" }
+http-body-util = { version = "0.1", optional = true }
+hyper = { version = "1", features = ["client", "http1", "http2"], optional = true }
+hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "http2", "ring", "webpki-roots"], optional = true }
+hyper-util = { version = "0.1", features = ["client-legacy", "http1", "http2", "tokio"], optional = true }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"], optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "time"], optional = true }
+tonic = { version = "0.14", features = ["channel", "tls-webpki-roots", "tls-ring"], optional = true }
+
+vote-commitment-tree = { version = "=0.4.0-rc.1" }
+vote-commitment-tree-client = { version = "=0.6.0-rc.1", features = ["http"], optional = true }
+
+# Storage — native only.
+rusqlite = { version = "0.37", features = ["bundled"], optional = true }
+
+# Error handling
+anyhow = "1"
+thiserror = "2"
+zeroize = "1"
+
+# Crypto core (all wasm-OK).
+subtle = "2.6"
+orchard = { version = "0.15.5", features = ["unstable-voting-circuits"] }
+voting-circuits = { version = "=0.9.0-rc.3" }
+nonempty = "0.11"
+zip32 = "0.2"
+incrementalmerkletree = "0.8"
+
+zcash_protocol = { version = "0.10" }
+zcash_client_backend = { version = "0.24.0-rc.7", features = ["orchard", "lightwalletd-tonic", "lightwalletd-tonic-tls-webpki-roots"], default-features = false, optional = true }
+zcash_client_sqlite = { version = "0.22.0-rc.8", features = ["orchard"], default-features = false, optional = true }
+zcash_keys = { version = "0.16", features = ["orchard"] }
+pczt = { version = "0.9.1", features = ["orchard", "io-finalizer", "signer", "zcp-builder"] }
+zcash_primitives = { version = "0.30" }
+uuid = "1.23.1"
+
+# wasm32 needs getrandom's browser backend. The zafu-wasm host also pins
+# getrandom/js; declaring it here keeps the standalone wasm-slim build green.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.2", features = ["js"] }
+
+[dev-dependencies]
+secrecy = "0.8"
