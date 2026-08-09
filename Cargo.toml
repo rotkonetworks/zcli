@@ -4,6 +4,7 @@ members = [
     "bin/zcli",
     "bin/zclid",
     "bin/zidecar",
+    "bin/integration-v09",
     "crates/zync-core",
     "crates/ligerito",
     "crates/ligerito-binary-fields",
