@@ -4693,6 +4693,18 @@ fn parse_ironwood_recipient(recipient: &str, mainnet: bool) -> Result<IronwoodRe
 /// `0xffff_ffff` is refused outright. No value or recipient appears in any
 /// error.
 #[allow(clippy::too_many_arguments)]
+/// A built+proven ironwood PCZT together with the FROST signing inputs captured
+/// from the builder parts before `Creator` consumed them.
+///
+/// `alphas`/`spend_indices` are empty for a single-signature send; they are the
+/// per-spend rerandomizers and action indices a FROST caller needs, in action
+/// order, which is the order host and joiner run the signing rounds in.
+pub struct IronwoodPcztWithFrost {
+    pub pczt: pczt::Pczt,
+    pub alphas: Vec<String>,
+    pub spend_indices: Vec<u32>,
+}
+
 pub fn build_ironwood_send_pczt_proven<P>(
     params: P,
     fvk: &orchard::keys::FullViewingKey,
@@ -4704,7 +4716,7 @@ pub fn build_ironwood_send_pczt_proven<P>(
     target_height: u32,
     expected_branch_id: u32,
     memo: zcash_protocol::memo::MemoBytes,
-) -> Result<pczt::Pczt, String>
+) -> Result<IronwoodPcztWithFrost, String>
 where
     P: zcash_protocol::consensus::Parameters,
 {
@@ -4854,6 +4866,31 @@ where
         .map_err(|e| format!("build_for_pczt: {:?}", e))?
         .pczt_parts;
 
+    // Capture FROST signing data from the ironwood parts BEFORE Creator consumes
+    // them. `into_pczt` sets `alpha` + `dummy_sk` at build_for_pczt time, so real
+    // spends (dummy_sk == None) carry their rerandomizer here. The pczt::Pczt that
+    // Creator produces keeps these pub(crate), so this is the only public read.
+    // Same capture the orchard FROST path does; see `extract_frost` above.
+    // Order = action order = the order host + joiner run the FROST rounds in.
+    let (frost_alphas, frost_spend_indices) = {
+        use group::ff::PrimeField;
+        let mut alphas: Vec<String> = Vec::new();
+        let mut spend_indices: Vec<u32> = Vec::new();
+        if let Some(b) = parts.ironwood.as_ref() {
+            for (i, action) in b.actions().iter().enumerate() {
+                if action.spend().dummy_sk().is_none() {
+                    let alpha = action
+                        .spend()
+                        .alpha()
+                        .ok_or_else(|| format!("missing alpha for real ironwood spend {i}"))?;
+                    alphas.push(hex_encode(&alpha.to_repr()));
+                    spend_indices.push(i as u32);
+                }
+            }
+        }
+        (alphas, spend_indices)
+    };
+
     let pczt = pczt::roles::creator::Creator::build_from_parts(parts)
         .ok_or_else(|| "Creator::build_from_parts: incompatible tx version".to_string())?;
 
@@ -4873,7 +4910,11 @@ where
     })
     .map_err(|e| format!("create ironwood proof: {:?}", e))?;
 
-    Ok(pczt)
+    Ok(IronwoodPcztWithFrost {
+        pczt,
+        alphas: frost_alphas,
+        spend_indices: frost_spend_indices,
+    })
 }
 
 /// Core of the HOT (local hot-wallet signing) general ironwood send builder,
@@ -4907,7 +4948,7 @@ where
 {
     use rand_core::OsRng;
 
-    let pczt = build_ironwood_send_pczt_proven(
+    let IronwoodPcztWithFrost { pczt, .. } = build_ironwood_send_pczt_proven(
         params,
         fvk,
         prepared,
@@ -5069,7 +5110,11 @@ pub fn build_ironwood_send_pczt(
 
     // Build+prove the UNREDACTED ironwood-send PCZT (Creator -> IoFinalizer ->
     // Prover, ironwood proof only). The fail-closed branch-id guard fires inside.
-    let pczt = if mainnet {
+    let IronwoodPcztWithFrost {
+        pczt,
+        alphas,
+        spend_indices,
+    } = if mainnet {
         build_ironwood_send_pczt_proven(
             Nu63Activated {
                 inner: MainNetwork,
@@ -5112,6 +5157,14 @@ pub fn build_ironwood_send_pczt(
     // `redact_turnstile_dummy_outputs` is deliberately NOT applied.
     let pczt = redact_pczt_for_signer(pczt);
 
+    // Shielded sighash computed from the REDACTED bytes, for the same reason the
+    // summary is: it must be the value bound to what the signer actually sees
+    // and signs. Redaction touches only spend-side witness material, never
+    // consensus-relevant effects, so this equals the value IoFinalizer bound.
+    let shielded_sighash = pczt::roles::signer::Signer::new(pczt.clone())
+        .map_err(|e| JsError::new(&format!("signer init: {:?}", e)))?
+        .shielded_sighash();
+
     // Recompute the confirmation summary from the REDACTED bytes (never from
     // builder-side bookkeeping) so what the device displays is bound to what it
     // signs - identical to `build_turnstile_migration_pczt_core`.
@@ -5123,6 +5176,12 @@ pub fn build_ironwood_send_pczt(
         pczt_hex: String,
         summary: PcztSummary,
         action_count: u32,
+        /// ZIP-244 shielded sighash - the message FROST signers commit to.
+        sighash: String,
+        /// Per-spend rerandomizers for the real ironwood spends, in action order.
+        alphas: Vec<String>,
+        /// Action indices those alphas correspond to.
+        spend_indices: Vec<u32>,
     }
     serde_wasm_bindgen::to_value(&Out {
         pczt_hex: hex_encode(
@@ -5132,6 +5191,9 @@ pub fn build_ironwood_send_pczt(
         ),
         summary,
         action_count,
+        sighash: hex_encode(&shielded_sighash),
+        alphas,
+        spend_indices,
     })
     .map_err(|e| JsError::new(&format!("serialization failed: {}", e)))
 }
