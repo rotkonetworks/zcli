@@ -697,23 +697,30 @@ pub fn frost_inspect_pczt_outputs(
 ) -> Result<String, JsError> {
     use orchard::keys::Scope;
     use zcash_keys::keys::UnifiedFullViewingKey;
-    use zcash_primitives::transaction::sighash::SignableInput;
-    use zcash_primitives::transaction::sighash_v5::v5_signature_hash;
-    use zcash_primitives::transaction::txid::TxIdDigester;
     use zcash_protocol::consensus::{MainNetwork, TestNetwork};
 
     let bytes = hex::decode(pczt_hex).map_err(|e| JsError::new(&format!("bad pczt hex: {}", e)))?;
     let pczt = pczt::Pczt::parse(&bytes)
         .map_err(|e| JsError::new(&format!("pczt parse failed: {:?}", e)))?;
 
-    // Canonical effects: the sighash AND the orchard bundle both derive from
-    // the same byte stream the FROST signature commits to.
+    // Canonical sighash, taken from pczt's own Signer because it dispatches on
+    // the transaction version. v5_signature_hash is WRONG for an ironwood (v6)
+    // PCZT: it hands the joiner a v5 digest while the signature it is about to
+    // produce commits to the v6 one, so the display<->sighash binding this
+    // function exists to provide would not actually hold. This is the same
+    // value build_ironwood_send_pczt returns and complete_ironwood_pczt
+    // verifies against, so builder, joiner and completion agree by
+    // construction rather than by three separate reimplementations.
+    let shielded_sighash = pczt::roles::signer::Signer::new(pczt.clone())
+        .map_err(|e| JsError::new(&format!("signer init: {:?}", e)))?
+        .shielded_sighash();
+    let computed_sighash_hex = hex::encode(shielded_sighash);
+
+    // Effects supply the bundles for the output display. Same byte stream the
+    // sighash above was derived from.
     let tx_data = pczt
         .into_effects()
         .map_err(|e| JsError::new(&format!("pczt into_effects: {:?}", e)))?;
-    let txid_parts = tx_data.digest(TxIdDigester);
-    let shielded_sighash = v5_signature_hash(&tx_data, &SignableInput::Shielded, &txid_parts);
-    let computed_sighash_hex = hex::encode(shielded_sighash.as_ref());
 
     // testnet uview prefix is `uviewtest1`, mainnet is `uview1`.
     let mainnet = !orchard_fvk_uview.starts_with("uviewtest");

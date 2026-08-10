@@ -5369,6 +5369,74 @@ pub fn complete_orchard_pczt(
     Ok(hex_encode(&tx_bytes))
 }
 
+/// Ironwood (NU6.3 / v6) sibling of `complete_orchard_pczt`: inject the
+/// externally-aggregated SpendAuth signatures - one per real ironwood spend, in
+/// the `spend_indices` order `build_ironwood_send_pczt` returned - and extract
+/// the broadcast-ready V6 tx.
+///
+/// FROST itself is pool-independent: a RedPallas spend-auth signature over the
+/// shielded sighash is the same for an ironwood action as for an orchard one.
+/// The only thing that differs here is which bundle the signature is applied
+/// to, so this is `complete_orchard_pczt` with `apply_ironwood_signature`.
+///
+/// The sighash the signatures must commit to is the `sighash` field returned by
+/// `build_ironwood_send_pczt`. `extract_signed_tx_from_pczt_bytes` re-verifies
+/// every spend-auth and binding signature against it, so a signature aggregated
+/// over the wrong message fails here rather than on the network.
+#[wasm_bindgen]
+pub fn complete_ironwood_pczt(
+    pczt_hex: &str,
+    ironwood_sigs_json: JsValue,
+    spend_indices_json: JsValue,
+) -> Result<String, JsError> {
+    use orchard::primitives::redpallas;
+
+    let sigs: Vec<String> = serde_wasm_bindgen::from_value(ironwood_sigs_json)
+        .map_err(|e| JsError::new(&format!("invalid ironwood_sigs: {}", e)))?;
+    let spend_indices: Vec<u32> = serde_wasm_bindgen::from_value(spend_indices_json)
+        .map_err(|e| JsError::new(&format!("invalid spend_indices: {}", e)))?;
+    if sigs.len() != spend_indices.len() {
+        return Err(JsError::new(
+            "ironwood_sigs and spend_indices length mismatch",
+        ));
+    }
+    if sigs.is_empty() {
+        // Guard the exact failure the wallet-side gate was protecting against:
+        // zero signing rounds producing an empty signature set, which would
+        // otherwise sail through into an unsignable extract.
+        return Err(JsError::new(
+            "no ironwood signatures supplied - refusing to extract an unsigned transaction",
+        ));
+    }
+
+    let bytes = hex_decode(pczt_hex).ok_or_else(|| JsError::new("invalid pczt hex"))?;
+    let pczt = pczt::Pczt::parse(&bytes)
+        .map_err(|e| JsError::new(&format!("pczt parse failed: {:?}", e)))?;
+    let mut signer = pczt::roles::signer::Signer::new(pczt)
+        .map_err(|e| JsError::new(&format!("signer init: {:?}", e)))?;
+
+    for (sig_hex, idx) in sigs.iter().zip(spend_indices.iter()) {
+        let raw = hex_decode(sig_hex).ok_or_else(|| JsError::new("invalid ironwood sig hex"))?;
+        let arr: [u8; 64] = raw
+            .as_slice()
+            .try_into()
+            .map_err(|_| JsError::new("ironwood sig must be 64 bytes"))?;
+        let sig = redpallas::Signature::<redpallas::SpendAuth>::from(arr);
+        signer
+            .apply_ironwood_signature(*idx as usize, sig)
+            .map_err(|e| JsError::new(&format!("apply_ironwood_signature[{}]: {:?}", idx, e)))?;
+    }
+
+    let signed = signer.finish();
+    let tx_bytes = extract_signed_tx_from_pczt_bytes(
+        &signed
+            .serialize()
+            .map_err(|e| JsError::new(&format!("pczt serialize: {e:?}")))?,
+    )
+    .map_err(|e| JsError::new(&e))?;
+    Ok(hex_encode(&tx_bytes))
+}
+
 /// Compact a PCZT for transmission to a signer by redacting per-action cv_net,
 /// v6 bundle anchors, output cmx, and replacing enc_ciphertext with memo plaintext
 /// (trimmed to last nonzero byte). Builds on the existing signer redaction.
