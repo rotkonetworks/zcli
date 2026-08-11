@@ -149,6 +149,29 @@ export function address_from_ufvk(ufvk_str: string, diversifier_index: number): 
 export function apply_signature_contributions(pczt_hex: string, contributions_json: string): string;
 
 /**
+ * Build the governance delegation PCZT for one bundle (phase 1 of 2).
+ *
+ * Args:
+ * * `fvk_hex` — 96-byte Orchard FVK of the voter's account.
+ * * `seed_fingerprint_hex` — 32-byte ZIP-32 seed fingerprint.
+ * * `account_index` — ZIP-32 account index.
+ * * `hotkey_pubkey_hex` — 43-byte hotkey raw Orchard address (from
+ *   `generate_voting_hotkey`); the governance output target.
+ * * `notes_json` — `[NoteInfoDto]` (the delegated notes).
+ * * `round_params_json` — `RoundParamsDto`.
+ * * `consensus_branch_id` — branch id at the snapshot height (host resolves via
+ *   lightwalletd).
+ * * `round_name` — display memo text.
+ * * `network` — "mainnet" | "testnet" | "regtest".
+ * * `bundle_index` — delegation bundle index (echoed into `delegation_state`).
+ *
+ * Returns `{ redacted_pczt_hex, pczt_sighash_hex, rk_hex, action_index,
+ * delegated_weight, display_memo, real_note_nullifiers_hex, dummy_note_
+ * nullifiers_hex, delegation_context_json, delegation_state_json }`.
+ */
+export function build_delegation_pczt(fvk_hex: string, seed_fingerprint_hex: string, account_index: number, hotkey_pubkey_hex: string, notes_json: string, round_params_json: string, consensus_branch_id: number, round_name: string, network: string, bundle_index: number): string;
+
+/**
  * COLD (zigner / watch-only) sibling of `build_signed_ironwood_send`: build the
  * general ironwood send PCZT - spend the wallet's REAL ironwood notes to an
  * ARBITRARY `recipient` (plus change back to self) in a single V6 transaction -
@@ -391,6 +414,22 @@ export function build_unsigned_shielding_transaction(utxos_json: string, recipie
 export function build_unsigned_transaction(ufvk_str: string, notes_json: any, recipient: string, amount: bigint, fee: bigint, anchor_hex: string, merkle_paths_json: any, _account_index: number, mainnet: boolean, memo_hex?: string | null, branch_id_hex?: string | null): any;
 
 /**
+ * Build the `POST /cast-vote` body ([`VoteCommitmentWire`]) for one HOT vote.
+ *
+ * Binary fields are base64 STANDARD; `vote_round_id` is hex-decoded then
+ * base64-encoded (matching `wire_codec`). Runs the ZKP #2 proof.
+ */
+export function build_vote_commitment_wire(hotkey_secret_hex: string, round_params_json: string, delegation_state_json: string, van_witness_json: string, vote_json: string, network: string): string;
+
+/**
+ * Build the helper-server share payloads (`[VoteShareWire]`) for one HOT vote.
+ *
+ * `submit_at` is the unix-seconds submission time stamped into each share.
+ * Runs the ZKP #2 proof.
+ */
+export function build_vote_shares_wire(hotkey_secret_hex: string, round_params_json: string, delegation_state_json: string, van_witness_json: string, vote_json: string, network: string, submit_at: bigint): string;
+
+/**
  * One-shot witness + path builder used for initial backfill: replays blocks
  * the same way `build_merkle_paths` does but also returns serialized
  * witnesses and the resulting frontier so the caller can cache them.
@@ -399,6 +438,34 @@ export function build_unsigned_transaction(ufvk_str: string, notes_json: any, re
  * `{anchor_hex, end_frontier_hex, entries: [{position, witness_hex, path: [{hash}]}]}`.
  */
 export function build_witnesses_and_paths(tree_state_hex: string, compact_blocks_json: string, note_positions_json: string): any;
+
+/**
+ * Build BOTH the commitment wire and share wires from a SINGLE proof run.
+ *
+ * Prefer this over calling the two builders separately: ZKP #2 is expensive and
+ * each of `build_vote_commitment_wire` / `build_vote_shares_wire` runs it once.
+ * Returns `SignedVoteCommitmentView`-shaped JSON
+ * `{ proposal_id, wire, shares, commitment_bundle_json }`.
+ */
+export function cast_vote_hot_wire(hotkey_secret_hex: string, round_params_json: string, delegation_state_json: string, van_witness_json: string, vote_json: string, network: string, submit_at: bigint): string;
+
+/**
+ * Ironwood (NU6.3 / v6) sibling of `complete_orchard_pczt`: inject the
+ * externally-aggregated SpendAuth signatures - one per real ironwood spend, in
+ * the `spend_indices` order `build_ironwood_send_pczt` returned - and extract
+ * the broadcast-ready V6 tx.
+ *
+ * FROST itself is pool-independent: a RedPallas spend-auth signature over the
+ * shielded sighash is the same for an ironwood action as for an orchard one.
+ * The only thing that differs here is which bundle the signature is applied
+ * to, so this is `complete_orchard_pczt` with `apply_ironwood_signature`.
+ *
+ * The sighash the signatures must commit to is the `sighash` field returned by
+ * `build_ironwood_send_pczt`. `extract_signed_tx_from_pczt_bytes` re-verifies
+ * every spend-auth and binding signature against it, so a signature aggregated
+ * over the wrong message fails here rather than on the network.
+ */
+export function complete_ironwood_pczt(pczt_hex: string, ironwood_sigs_json: any, spend_indices_json: any): string;
 
 /**
  * Complete an orchard-only FROST multisig PCZT: inject the externally-aggregated
@@ -506,6 +573,22 @@ export function estimate_compact_savings(pczt_hex: string): string;
  * Returns hex-encoded transaction bytes ready for broadcast.
  */
 export function extract_signed_tx_from_pczt(pczt_hex: string): string;
+
+/**
+ * Finalize delegation (phase 2 of 2): run ZKP #1 with host-injected IMT proofs
+ * and attach the cold signer's spend-auth signature into the submission wire.
+ *
+ * Args:
+ * * `delegation_context_json` — the opaque blob from `build_delegation_pczt`.
+ * * `merkle_witnesses_json` — `[WitnessDto]`, one per note, in note order.
+ * * `imt_proofs_json` — `[ImtProofDto]` covering BOTH the real note nullifiers
+ *   and the `dummy_note_nullifiers_hex` reported by phase 1 (keyed by nullifier).
+ * * `spend_auth_sig_hex` — 64-byte SpendAuth signature from the cold signer.
+ * * `sighash_hex` — 32-byte sighash the signer signed (must equal the PCZT sighash).
+ *
+ * Returns `{ delegation_submission_wire_json }` — the `POST /delegate-vote` body.
+ */
+export function finalize_delegation(delegation_context_json: string, merkle_witnesses_json: string, imt_proofs_json: string, spend_auth_sig_hex: string, sighash_hex: string): string;
 
 /**
  * Compute the tree size from a hex-encoded frontier.
@@ -669,6 +752,16 @@ export function frost_spend_sign_round2_signed(ephemeral_seed_hex: string, key_p
 export function generate_seed_phrase(): string;
 
 /**
+ * Generate a fresh app-owned voting hotkey.
+ *
+ * Returns `{ hotkey_secret_hex, hotkey_pubkey_hex }` where `hotkey_secret_hex`
+ * is the 64-byte stored secret (persist in secure storage) and
+ * `hotkey_pubkey_hex` is the 43-byte raw Orchard address that the delegation
+ * PCZT targets as the hotkey output (the hotkey's public identity).
+ */
+export function generate_voting_hotkey(network: string): string;
+
+/**
  * Get the commitment proof request data for a note
  * Returns the cmx that should be sent to zidecar's GetCommitmentProof
  */
@@ -689,6 +782,28 @@ export function num_threads(): number;
  * Returns JSON with sighash and orchard_sigs array
  */
 export function parse_signature_response(qr_hex: string): any;
+
+/**
+ * Does this PCZT carry ironwood (v6) actions?
+ *
+ * Completion has to route to `complete_ironwood_pczt` or
+ * `complete_orchard_pczt`, and the answer is a property of the artifact, not
+ * of the caller. Deriving it here rather than threading a `pool` flag through
+ * the relay means a caller that forgets the flag cannot silently apply
+ * signatures to the wrong bundle.
+ */
+export function pczt_has_ironwood_actions(pczt_hex: string): boolean;
+
+/**
+ * Fetch circuit-ready IMT non-membership proofs for a set of nullifiers.
+ *
+ * `nullifiers_json` is a JSON array of 32-byte LE hex strings — the host passes
+ * the UNION of the real-note nullifiers and the dummy-note nullifiers reported
+ * by `build_delegation_pczt`. Resolves to a JSON `[ImtProofDto]` exactly as
+ * `finalize_delegation` consumes it: `[{nullifier_hex, root_hex,
+ * nf_bounds_hex[3], leaf_pos, path_hex[29]}]`.
+ */
+export function pir_fetch_imt_proofs(pir_base_url: string, nullifiers_json: string, js_fetch: Function): Promise<string>;
 
 /**
  * Compact a PCZT for transmission to a signer by redacting per-action cv_net,
@@ -856,6 +971,7 @@ export interface InitOutput {
     readonly build_unsigned_shielding_transaction: (a: number, b: number, c: number, d: number, e: bigint, f: bigint, g: number, h: number, i: number, j: number) => [number, number, number, number];
     readonly build_unsigned_transaction: (a: number, b: number, c: any, d: number, e: number, f: bigint, g: bigint, h: number, i: number, j: any, k: number, l: number, m: number, n: number, o: number, p: number) => [number, number, number];
     readonly build_witnesses_and_paths: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number];
+    readonly complete_ironwood_pczt: (a: number, b: number, c: any, d: any) => [number, number, number, number];
     readonly complete_orchard_pczt: (a: number, b: number, c: any, d: any) => [number, number, number, number];
     readonly complete_shielding_transaction: (a: number, b: number, c: number, d: number) => [number, number, number, number];
     readonly complete_transaction: (a: number, b: number, c: any, d: any) => [number, number, number, number];
@@ -870,6 +986,7 @@ export interface InitOutput {
     readonly get_commitment_proof_request: (a: number, b: number) => [number, number, number, number];
     readonly num_threads: () => number;
     readonly parse_signature_response: (a: number, b: number) => [number, number, number];
+    readonly pczt_has_ironwood_actions: (a: number, b: number) => [number, number, number];
     readonly redact_pczt_compact: (a: number, b: number) => [number, number, number, number];
     readonly shielding_pool_for_height: (a: number, b: number) => [number, number];
     readonly transparent_address_from_ufvk: (a: number, b: number, c: number) => [number, number, number, number];
@@ -932,10 +1049,21 @@ export interface InitOutput {
     readonly frost_spend_aggregate: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => [number, number, number, number];
     readonly frost_spend_sign_round2: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => [number, number, number, number];
     readonly frost_spend_sign_round2_signed: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number) => [number, number, number, number];
+    readonly pir_fetch_imt_proofs: (a: number, b: number, c: number, d: number, e: any) => any;
+    readonly build_delegation_pczt: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number, p: number, q: number) => [number, number, number, number];
+    readonly build_vote_commitment_wire: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number) => [number, number, number, number];
+    readonly build_vote_shares_wire: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: bigint) => [number, number, number, number];
+    readonly cast_vote_hot_wire: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: bigint) => [number, number, number, number];
+    readonly finalize_delegation: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => [number, number, number, number];
+    readonly generate_voting_hotkey: (a: number, b: number) => [number, number, number, number];
     readonly rustsecp256k1_v0_10_0_default_error_callback_fn: (a: number, b: number) => void;
     readonly rustsecp256k1_v0_10_0_default_illegal_callback_fn: (a: number, b: number) => void;
     readonly rustsecp256k1_v0_10_0_context_destroy: (a: number) => void;
     readonly rustsecp256k1_v0_10_0_context_create: (a: number) => number;
+    readonly wasm_bindgen_75fefa18e6030595___convert__closures_____invoke___wasm_bindgen_75fefa18e6030595___JsValue__core_2fb3c31ab891fe54___result__Result_____wasm_bindgen_75fefa18e6030595___JsError___true_: (a: number, b: number, c: any) => [number, number];
+    readonly wasm_bindgen_75fefa18e6030595___convert__closures_____invoke___js_sys_9ec148cc023792e2___Function_fn_wasm_bindgen_75fefa18e6030595___JsValue_____wasm_bindgen_75fefa18e6030595___sys__Undefined___js_sys_9ec148cc023792e2___Function_fn_wasm_bindgen_75fefa18e6030595___JsValue_____wasm_bindgen_75fefa18e6030595___sys__Undefined_______true_: (a: number, b: number, c: any, d: any) => void;
+    readonly wasm_bindgen_75fefa18e6030595___convert__closures_____invoke___js_sys_9ec148cc023792e2___futures__task__wait_async_polyfill__MessageEvent______true_: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen_75fefa18e6030595___convert__closures_____invoke___wasm_bindgen_75fefa18e6030595___JsValue______true_: (a: number, b: number, c: any) => void;
     readonly memory: WebAssembly.Memory;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
@@ -943,6 +1071,7 @@ export interface InitOutput {
     readonly __externref_table_alloc: () => number;
     readonly __wbindgen_externrefs: WebAssembly.Table;
     readonly __wbindgen_free: (a: number, b: number, c: number) => void;
+    readonly __wbindgen_destroy_closure: (a: number, b: number) => void;
     readonly __externref_table_dealloc: (a: number) => void;
     readonly __wbindgen_thread_destroy: (a?: number, b?: number, c?: number) => void;
     readonly __wbindgen_start: (a: number) => void;
