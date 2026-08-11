@@ -37,7 +37,7 @@ mod scanner;
 use axum::{
     extract::{Path, State},
     response::Json,
-    routing::get,
+    routing::{get, post},
     Router,
 };
 use clap::Parser;
@@ -247,6 +247,7 @@ async fn main() {
     let cors = tower_http::cors::CorsLayer::permissive();
     let app = Router::new()
         .route("/license/:zid", get(get_license))
+        .route("/license", post(post_license))
         .route("/ring-keys", get(get_ring_keys))
         .layer(cors)
         .with_state(state);
@@ -407,6 +408,32 @@ async fn get_license(State(state): State<AppState>, Path(zid): Path<String>) -> 
             valid: false,
         })
     }
+}
+
+// POST /license - zid in the JSON body, never the URL path/query (keeps the
+// stable zid out of proxy access + Referer logs). Same result as GET /license/{zid}.
+async fn post_license(State(state): State<AppState>, Json(req): Json<LicenseReq>) -> Json<LicenseResp> {
+    let zid = req.zid;
+    // friends get permanent pro
+    if state.friends.contains(&zid) {
+        let mut sig = String::new();
+        if let Some(ref sk) = state.signing_key {
+            let payload = format!("zafu-license-v1\n{}\npro\n{}", zid, PERMANENT_EXPIRES);
+            sig = hex::encode(sk.sign(payload.as_bytes()).to_bytes());
+        }
+        return Json(LicenseResp { zid, plan: "pro".into(), expires: PERMANENT_EXPIRES, signature: sig, valid: true });
+    }
+    let licenses = state.licenses.read().await;
+    if let Some(entry) = licenses.get(&zid) {
+        Json(LicenseResp { zid: entry.zid.clone(), plan: entry.plan.clone(), expires: entry.expires, signature: entry.signature.clone(), valid: entry.valid })
+    } else {
+        Json(LicenseResp { zid, plan: "free".into(), expires: 0, signature: String::new(), valid: false })
+    }
+}
+
+#[derive(Deserialize)]
+struct LicenseReq {
+    zid: String,
 }
 
 #[derive(Serialize)]
