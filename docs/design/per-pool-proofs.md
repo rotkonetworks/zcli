@@ -157,7 +157,8 @@ The ligerito header proof still has **no constraint system**: the roots it
 nothing binds them to consensus, and block/action omission remains undetectable
 from a single endpoint. Per-pool pinned roots are a *precondition* for fixing
 that — you cannot bind a proof to a root the server cannot name — but they are
-not the fix. That remains a design project of its own.
+not the fix on their own. The concrete plan is in *Binding the header proof to
+consensus* below.
 
 Cross-endpoint verification (now wired, advisory) is the interim mitigation.
 
@@ -173,3 +174,120 @@ Additive, and no client is forced to move:
 5. retire the unpinned RPCs once no client uses them
 
 Step 4 is the payoff: it restores the check we had to demote.
+
+## Binding the header proof to consensus (contiguity + ZIP-221 / FlyClient)
+
+This is the "design project of its own" from *What it does not fix*, made
+concrete. The header trace (`bin/zidecar/src/header_chain.rs`) already commits
+to everything the binding needs — it is only missing the constraints and the
+client-side checks that turn committed data into a *bound* claim. So the fix is
+additive to the existing trace, not a rewrite.
+
+### What the trace already carries (and why that matters)
+
+`HeaderChainTrace` commits, per header (32 binary-field rows):
+
+- `block_hash` (fields 1-8), `prev_hash` (fields 9-16) — the linkage
+- `nBits` (17), `cumulative_difficulty` (18) — the work
+- `sapling_root` / `orchard_root` / `nullifier_root` at epoch boundaries (20-29)
+
+Ligerito commits this polynomial and can *open it at any position*. Today it
+only proves an opening is consistent with the commitment — it does not enforce
+any relation *between* committed fields, which is exactly why the roots are
+prover-chosen. Because the data is already committed and openable, the fix does
+not require rebuilding the trace: only (a) one in-proof relation and (b)
+client-side checks on openings. Ligerito being a **polynomial commitment** is
+the enabling property here, not a limitation — position openings are precisely
+what FlyClient sampling needs.
+
+### Three mechanisms — none needs a general SNARK or Equihash-in-circuit
+
+**1. Contiguity.** Each header's `prev_hash` must equal the previous header's
+`block_hash`: `prev_hash[N] (9-16) == block_hash[N-1] (1-8)`. There are two ways
+to check it, and the cheap one is the right first step:
+
+- *Sampled (no new crypto, do this first).* Ligerito today is a **pure PCS** —
+  its sumcheck (`eval_proof.rs`) only proves openings `P(z)=v`, there is no
+  relation/zerocheck harness. But the whole binding is FlyClient-probabilistic
+  (mechanism 2) anyway, so fold contiguity into the *same sampled openings*:
+  at each sampled position `N`, open `prev_hash[N]` and `block_hash[N-1]` and
+  check equality natively. Reuses the existing opening machinery; probabilistic,
+  which matches the model. A spliced/reordered chain fails the sample.
+- *In-proof zerocheck (optional hardening, later).* For **deterministic**
+  contiguity across all positions, add a zerocheck to ligerito: prove the
+  virtual polynomial `prev_hash(x) - block_hash(shift(x))` is zero over the
+  header hypercube (a standard eq-combined zero-check sumcheck). This is new
+  crypto in the library, not a config flag. Ligerito being over binary fields
+  makes any bit-level relation added here (e.g. later binding `block_hash` to
+  BLAKE2b of the header fields) far friendlier than in a prime-field SNARK — but
+  it is not needed for the probabilistic guarantee.
+
+**2. Client-side FlyClient sampling — real headers + canonical (native).**
+Use ligerito's position openings: the client asks the server to open the trace
+at chosen rows. Do FlyClient's difficulty-weighted sampling over
+`cumulative_difficulty` (field 18): sample O(polylog) header rows weighted by
+work, open them, and *natively* verify for each sample that
+`block_hash == BLAKE2b(header fields)` and that `block_hash` meets the `nBits`
+PoW target (Equihash verified on the handful of sampled headers, on the client,
+cheaply). This is the standard FlyClient argument — under an honest-difficulty
+majority a forged or low-work chain is caught with overwhelming probability —
+and it needs *no* PoW in-circuit. The trace comment already anticipated "full
+hash data for client-side PoW verification"; this wires that data into an actual
+sampling verifier instead of leaving it unused.
+
+**3. ZIP-221 root binding — ties the pinned roots to what consensus committed.**
+Zcash headers commit to `hashBlockCommitments` — the ZIP-221 chain-history MMR
+(alongside the sapling/orchard roots). Bind the epoch-boundary roots (20-29) and
+the per-pool `(height, root)` checkpoints (Design §2) to that MMR: the root the
+wallet syncs against is proven to be the value an authenticated header at that
+height committed, as an MMR-leaf membership against `hashBlockCommitments`. The
+`zcash_history` crate is the MMR. This is what actually *binds them to
+consensus* — the roots stop being prover-chosen and become leaves of a structure
+miners committed under consensus rules.
+
+### Why the pieces compose
+
+- (1) makes the committed chain a real chain (contiguous).
+- (2) makes it a real, probabilistically-canonical chain (headers hash
+  correctly and carry PoW) — without proving PoW in-circuit.
+- (3) makes the exported roots the ones consensus committed at those heights.
+- The precondition is Design §2: the server must be able to *name* a
+  `(height, root)` before any proof can bind to it.
+
+Together the badge moves from **advisory** to **sound + consensus-bound
+(probabilistically canonical)**.
+
+### What it still does not buy (keep the badge honest)
+
+- **Canonicity is probabilistic**, not SNARK-sound: it rests on FlyClient
+  sampling + an honest-difficulty-majority assumption over the sampled range. A
+  standard, accepted light-client model — not a proof of the single heaviest
+  chain.
+- **Omission / data availability**: the proof shows the roots are
+  consensus-committed and the chain canonical; it does *not* show the server
+  handed you *every* leaf under a root. NOMT non-membership + the pinned root
+  bound this for the *specific* queries you make (a server cannot forge a
+  non-membership against a bound root), but blanket "you saw all notes" still
+  needs consensus-layer DA commitments. Unchanged from *What it does not fix*.
+
+### Work plan (each step strictly tightens the badge)
+
+1. **Precondition** (Design §2): per-pool `(height, root)` checkpoints so roots
+   are nameable. Already migration step 1.
+2. **FlyClient opening RPC + client verifier** (the load-bearing step, no new
+   crypto): a height-pinned RPC returning difficulty-weighted sampled openings
+   of the trace; a client verifier that, per sampled position, checks natively
+   (a) `block_hash == BLAKE2b(header fields)`, (b) PoW meets `nBits`, and
+   (c) **contiguity** `prev_hash[N] == block_hash[N-1]`. All three ride the
+   existing ligerito position openings — (c) is the sampled contiguity above.
+3. **In-proof contiguity zerocheck** (optional hardening): add the
+   `prev_hash(x) - block_hash(shift(x))` zerocheck to ligerito for deterministic
+   (all-positions) contiguity. New library crypto; do only if the probabilistic
+   guarantee from step 2 is judged insufficient.
+4. **ZIP-221 MMR binding**: prove `(height, root)` membership in the header's
+   `hashBlockCommitments` MMR via `zcash_history`; bind the epoch roots (20-29)
+   to the sampled headers' committed roots.
+5. **Badge + disclosure**: "partial" today; "sound, canonical (probabilistic),
+   DA-residual" as (2)-(4) land.
+
+Steps 2-4 are independent of the voting work and land incrementally.
