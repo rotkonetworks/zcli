@@ -5369,6 +5369,21 @@ pub fn complete_orchard_pczt(
     Ok(hex_encode(&tx_bytes))
 }
 
+/// Does this PCZT carry ironwood (v6) actions?
+///
+/// Completion has to route to `complete_ironwood_pczt` or
+/// `complete_orchard_pczt`, and the answer is a property of the artifact, not
+/// of the caller. Deriving it here rather than threading a `pool` flag through
+/// the relay means a caller that forgets the flag cannot silently apply
+/// signatures to the wrong bundle.
+#[wasm_bindgen]
+pub fn pczt_has_ironwood_actions(pczt_hex: &str) -> Result<bool, JsError> {
+    let bytes = hex_decode(pczt_hex).ok_or_else(|| JsError::new("invalid pczt hex"))?;
+    let pczt = pczt::Pczt::parse(&bytes)
+        .map_err(|e| JsError::new(&format!("pczt parse failed: {:?}", e)))?;
+    Ok(!pczt.ironwood().actions().is_empty())
+}
+
 /// Ironwood (NU6.3 / v6) sibling of `complete_orchard_pczt`: inject the
 /// externally-aggregated SpendAuth signatures - one per real ironwood spend, in
 /// the `spend_indices` order `build_ironwood_send_pczt` returned - and extract
