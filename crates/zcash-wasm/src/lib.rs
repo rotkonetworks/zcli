@@ -5404,52 +5404,67 @@ pub fn complete_ironwood_pczt(
     ironwood_sigs_json: JsValue,
     spend_indices_json: JsValue,
 ) -> Result<String, JsError> {
-    use orchard::primitives::redpallas;
-
     let sigs: Vec<String> = serde_wasm_bindgen::from_value(ironwood_sigs_json)
         .map_err(|e| JsError::new(&format!("invalid ironwood_sigs: {}", e)))?;
     let spend_indices: Vec<u32> = serde_wasm_bindgen::from_value(spend_indices_json)
         .map_err(|e| JsError::new(&format!("invalid spend_indices: {}", e)))?;
+
+    let mut sig_bytes: Vec<[u8; 64]> = Vec::with_capacity(sigs.len());
+    for s in &sigs {
+        let raw = hex_decode(s).ok_or_else(|| JsError::new("invalid ironwood sig hex"))?;
+        let arr: [u8; 64] = raw
+            .as_slice()
+            .try_into()
+            .map_err(|_| JsError::new("ironwood sig must be 64 bytes"))?;
+        sig_bytes.push(arr);
+    }
+
+    let bytes = hex_decode(pczt_hex).ok_or_else(|| JsError::new("invalid pczt hex"))?;
+    let tx = complete_ironwood_pczt_core(&bytes, &sig_bytes, &spend_indices)
+        .map_err(|e| JsError::new(&e))?;
+    Ok(hex_encode(&tx))
+}
+
+/// Native core of `complete_ironwood_pczt`, so the money path is reachable from
+/// an integration test rather than only across the wasm boundary. Same split
+/// the builder uses (`build_ironwood_send_pczt_proven` vs its wasm wrapper).
+pub fn complete_ironwood_pczt_core(
+    pczt_bytes: &[u8],
+    sigs: &[[u8; 64]],
+    spend_indices: &[u32],
+) -> Result<Vec<u8>, String> {
+    use orchard::primitives::redpallas;
+
     if sigs.len() != spend_indices.len() {
-        return Err(JsError::new(
-            "ironwood_sigs and spend_indices length mismatch",
-        ));
+        return Err("ironwood_sigs and spend_indices length mismatch".to_string());
     }
     if sigs.is_empty() {
         // Guard the exact failure the wallet-side gate was protecting against:
         // zero signing rounds producing an empty signature set, which would
         // otherwise sail through into an unsignable extract.
-        return Err(JsError::new(
-            "no ironwood signatures supplied - refusing to extract an unsigned transaction",
-        ));
+        return Err(
+            "no ironwood signatures supplied - refusing to extract an unsigned transaction"
+                .to_string(),
+        );
     }
 
-    let bytes = hex_decode(pczt_hex).ok_or_else(|| JsError::new("invalid pczt hex"))?;
-    let pczt = pczt::Pczt::parse(&bytes)
-        .map_err(|e| JsError::new(&format!("pczt parse failed: {:?}", e)))?;
-    let mut signer = pczt::roles::signer::Signer::new(pczt)
-        .map_err(|e| JsError::new(&format!("signer init: {:?}", e)))?;
+    let pczt = pczt::Pczt::parse(pczt_bytes).map_err(|e| format!("pczt parse failed: {:?}", e))?;
+    let mut signer =
+        pczt::roles::signer::Signer::new(pczt).map_err(|e| format!("signer init: {:?}", e))?;
 
-    for (sig_hex, idx) in sigs.iter().zip(spend_indices.iter()) {
-        let raw = hex_decode(sig_hex).ok_or_else(|| JsError::new("invalid ironwood sig hex"))?;
-        let arr: [u8; 64] = raw
-            .as_slice()
-            .try_into()
-            .map_err(|_| JsError::new("ironwood sig must be 64 bytes"))?;
-        let sig = redpallas::Signature::<redpallas::SpendAuth>::from(arr);
+    for (sig, idx) in sigs.iter().zip(spend_indices.iter()) {
+        let sig = redpallas::Signature::<redpallas::SpendAuth>::from(*sig);
         signer
             .apply_ironwood_signature(*idx as usize, sig)
-            .map_err(|e| JsError::new(&format!("apply_ironwood_signature[{}]: {:?}", idx, e)))?;
+            .map_err(|e| format!("apply_ironwood_signature[{}]: {:?}", idx, e))?;
     }
 
     let signed = signer.finish();
-    let tx_bytes = extract_signed_tx_from_pczt_bytes(
+    extract_signed_tx_from_pczt_bytes(
         &signed
             .serialize()
-            .map_err(|e| JsError::new(&format!("pczt serialize: {e:?}")))?,
+            .map_err(|e| format!("pczt serialize: {e:?}"))?,
     )
-    .map_err(|e| JsError::new(&e))?;
-    Ok(hex_encode(&tx_bytes))
 }
 
 /// Compact a PCZT for transmission to a signer by redacting per-action cv_net,
