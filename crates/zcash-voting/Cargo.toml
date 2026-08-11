@@ -120,5 +120,4 @@ secrecy = "0.8"
 reqwest = { version = "0.11", features = ["blocking", "json"] }
 vote-commitment-tree = { version = "=0.4.0-rc.1" }
 vote-commitment-tree-client = { version = "=0.6.0-rc.1", features = ["http"] }
-pczt_signing = { path = "/steam/rotko/zigner-wt-ironwood/rust/pczt_signing" }
 bip39 = "2"
