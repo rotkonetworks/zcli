@@ -17,6 +17,7 @@ mod voting;
 /// Shielded-voting delegation bindings (cold-signed PCZT + ZKP #1).
 mod voting_delegation;
 /// PIR bindings: fetch IMT non-membership proofs via a JS `fetch` callback.
+#[cfg(target_arch = "wasm32")]
 mod voting_pir;
 
 use wasm_bindgen::prelude::*;
