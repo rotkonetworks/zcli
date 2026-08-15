@@ -850,3 +850,236 @@ fn parse_32(hex_str: &str, name: &str) -> Result<[u8; 32], JsError> {
         .try_into()
         .map_err(|_| JsError::new(&format!("{} must be 32 bytes", name)))
 }
+
+// ── Ledger DMK describe (host-side, orchard V5) ──
+//
+// zafu's Ledger signer (device-signer-kit-zcash, DMK) needs the unsigned PCZT
+// rendered as JSON so the device can present + sign it. Unlike the zigner cold
+// path - which signs a REDACTED PCZT delivered over an untrusted QR channel and
+// so must NOT see the note plaintext - a Ledger is a TRUSTED device holding the
+// seed. It therefore gets the full, UN-redacted describe: spend note plaintext
+// (recipient / value / rho / rseed), the spend-auth randomizer `alpha`, and the
+// ZIP-32 derivation path it needs to re-derive the spend authorizing key and
+// bind a signature.
+//
+// The emitted JSON is the exact contract consumed by
+// `apps/extension/src/ledger/pczt-translate.ts` in the zafu repo
+// (`LedgerPcztDescribe` / `LedgerPcztGlobalJson` / `LedgerPcztOrchardBundleJson`
+// / `LedgerPcztOrchardActionJson`). Byte fields are lowercase hex; value fields
+// are decimal strings (signed for `valueBalance`); an absent Option is `null`
+// (global) or an empty string (per-action optional bytes/values).
+//
+// This walks the same `pczt::Pczt` that `frost_inspect_pczt_outputs` opens, but
+// where that function displays decrypted OUTPUTS via `into_effects`, this reads
+// the raw per-action spend + output fields. The spend-side secrets are not
+// exposed on the pczt-crate `Spend` (they are `pub(crate)`), so we obtain the
+// fully-getter'd orchard-crate representation (`orchard::pczt::Bundle`) through
+// the read-only `Verifier` role, which parses the bundle and hands it to a
+// closure - the same parsed form the low-level signer drives.
+//
+// CONTRACT NOTES (Rust -> pczt-translate.ts):
+// - `coinType` is derived from the caller's `mainnet` flag (133 / 1). pczt
+//   0.9.3's `common::Global` exposes no getter for `coin_type`; the TS side
+//   only validates 133 or 1, so this is faithful.
+// - `fallbackLockTime` is emitted as `null` (absent Option). `Global` exposes
+//   no getter for `fallback_lock_time` either; `null` is the correct encoding
+//   for a shielded-only send whose inputs impose no required locktime (the tx
+//   nLockTime then falls back to 0). If a transparent leg with a required
+//   locktime is ever added, this needs a real value and an upstream getter.
+// - `txModifiable` is reconstructed from the four public flag predicates
+//   (`inputs_modifiable` | `outputs_modifiable` << 1 | `has_sighash_single`
+//   << 2 | `shielded_modifiable` << 7); bits 3-6 are always 0.
+//
+// IRONWOOD (NU6.3 / V6) - NOT IMPLEMENTED (scaffold below). Ledger's app-zcash
+// PR #28 signs V6 shielded PCZTs, and device-signer-kit-zcash models
+// `PcztIronwoodBundle`, but the TS mapper has no ironwood shape yet and fails
+// closed on `txVersion != 5`. To add it: drop the V5 gate; describe
+// `pczt.ironwood()` via `Verifier::with_ironwood` (identical getters), noting
+// that the V6 `TransmittedNoteCiphertext` has different `enc_ciphertext` /
+// `out_ciphertext` lengths than V5's [u8; 580] / [u8; 80]; then add a
+// `LedgerPcztIronwoodBundleJson` shape here and the matching
+// `PcztIronwoodBundle` mapping in pczt-translate.ts. See `ironwood_todo` below.
+#[wasm_bindgen]
+pub fn describe_pczt_for_ledger(pczt_hex: &str, mainnet: bool) -> Result<String, JsError> {
+    use ff::PrimeField;
+    use pczt::roles::verifier::{OrchardError, Verifier};
+
+    let bytes = hex::decode(pczt_hex).map_err(|e| JsError::new(&format!("bad pczt hex: {}", e)))?;
+    let pczt = pczt::Pczt::parse(&bytes)
+        .map_err(|e| JsError::new(&format!("pczt parse failed: {:?}", e)))?;
+
+    // V5 gate: this describe emits an orchard (V5) bundle, and the TS mapper
+    // binds a signature over a V5 shape - refuse V6 rather than mis-describe it
+    // as V5 (see the ironwood scaffold in the module comment above).
+    let tx_version = *pczt.global().tx_version();
+    if tx_version != 5 {
+        return Err(JsError::new(&format!(
+            "describe_pczt_for_ledger: only orchard V5 is supported (got tx_version {}); \
+             ironwood/V6 describe is not implemented",
+            tx_version
+        )));
+    }
+
+    // ── global (read before `pczt` is moved into the Verifier) ──
+    let g = pczt.global();
+    let tx_modifiable: u8 = (g.inputs_modifiable() as u8)
+        | ((g.outputs_modifiable() as u8) << 1)
+        | ((g.has_sighash_single() as u8) << 2)
+        | ((g.shielded_modifiable() as u8) << 7);
+    let coin_type: u32 = if mainnet { 133 } else { 1 };
+    let global_json = serde_json::json!({
+        "txVersion": tx_version,
+        "versionGroupId": *g.version_group_id(),
+        "consensusBranchId": *g.consensus_branch_id(),
+        "expiryHeight": *g.expiry_height(),
+        "coinType": coin_type,
+        "fallbackLockTime": serde_json::Value::Null,
+        "txModifiable": tx_modifiable,
+    });
+
+    // ── orchard bundle-level fields (raw pczt bundle has public getters for
+    //    these; the per-action secrets do not, hence the Verifier below) ──
+    let ob = pczt.orchard();
+    let flags: u8 = *ob.flags();
+    let (value_magnitude, value_is_negative) = *ob.value_sum();
+    let value_balance = if value_is_negative && value_magnitude != 0 {
+        format!("-{}", value_magnitude)
+    } else {
+        format!("{}", value_magnitude)
+    };
+    let anchor_hex = match ob.anchor() {
+        Some(a) => hex::encode(a),
+        None => hex::encode([0u8; 32]),
+    };
+
+    // ── per-action fields via the read-only Verifier role ──
+    let mut actions_json: Vec<serde_json::Value> = Vec::new();
+    Verifier::new(pczt)
+        .with_orchard(|bundle| {
+            for action in bundle.actions() {
+                let spend = action.spend();
+                let output = action.output();
+                let enc = output.encrypted_note();
+
+                let signing_path = spend
+                    .zip32_derivation()
+                    .as_ref()
+                    .map(|z| format_ledger_zip32_path(z.derivation_path()))
+                    .unwrap_or_default();
+                let seed_fingerprint = spend
+                    .zip32_derivation()
+                    .as_ref()
+                    .map(|z| hex::encode(z.seed_fingerprint()))
+                    .unwrap_or_default();
+                let alpha = spend
+                    .alpha()
+                    .as_ref()
+                    .map(|a| hex::encode(a.to_repr()))
+                    .unwrap_or_default();
+
+                actions_json.push(serde_json::json!({
+                    "cvNet": hex::encode(action.cv_net().to_bytes()),
+                    "nullifier": hex::encode(spend.nullifier().to_bytes()),
+                    "rk": hex::encode(<[u8; 32]>::from(spend.rk())),
+                    "spendRecipient": spend
+                        .recipient()
+                        .as_ref()
+                        .map(|r| hex::encode(r.to_raw_address_bytes()))
+                        .unwrap_or_default(),
+                    "spendValue": spend
+                        .value()
+                        .as_ref()
+                        .map(|v| v.inner().to_string())
+                        .unwrap_or_default(),
+                    "spendRho": spend
+                        .rho()
+                        .as_ref()
+                        .map(|r| hex::encode(r.to_bytes()))
+                        .unwrap_or_default(),
+                    "spendRseed": spend
+                        .rseed()
+                        .as_ref()
+                        .map(|r| hex::encode(r.as_bytes()))
+                        .unwrap_or_default(),
+                    "alpha": alpha,
+                    "signingPath": signing_path,
+                    "seedFingerprint": seed_fingerprint,
+                    "cmx": hex::encode(output.cmx().to_bytes()),
+                    "ephemeralKey": hex::encode(enc.epk_bytes),
+                    "encCiphertext": hex::encode(enc.enc_ciphertext),
+                    "outCiphertext": hex::encode(enc.out_ciphertext),
+                    "recipient": output
+                        .recipient()
+                        .as_ref()
+                        .map(|r| hex::encode(r.to_raw_address_bytes()))
+                        .unwrap_or_default(),
+                    "value": output
+                        .value()
+                        .as_ref()
+                        .map(|v| v.inner().to_string())
+                        .unwrap_or_default(),
+                    "rseed": output
+                        .rseed()
+                        .as_ref()
+                        .map(|r| hex::encode(r.as_bytes()))
+                        .unwrap_or_default(),
+                    "rcv": action
+                        .rcv()
+                        .as_ref()
+                        .map(|r| hex::encode(r.to_bytes()))
+                        .unwrap_or_default(),
+                }));
+            }
+            Ok::<(), OrchardError<String>>(())
+        })
+        .map_err(|e| JsError::new(&format!("orchard bundle parse/verify failed: {:?}", e)))?;
+
+    let result = serde_json::json!({
+        "global": global_json,
+        "orchardBundle": {
+            "actions": actions_json,
+            "flags": flags,
+            "valueBalance": value_balance,
+            "anchor": anchor_hex,
+        },
+    });
+    Ok(result.to_string())
+}
+
+/// Format a ZIP-32 derivation path as the device-expected string, e.g.
+/// `"32'/133'/0'"`. Hardened indices (high bit set) are rendered with a
+/// trailing apostrophe against the un-hardened value; non-hardened indices are
+/// rendered bare. `device-signer-kit-zcash`'s `signingPath` is a string, not an
+/// array of components.
+fn format_ledger_zip32_path(path: &[zip32::ChildIndex]) -> String {
+    path.iter()
+        .map(|c| {
+            let raw = c.index();
+            if raw >= 0x8000_0000 {
+                format!("{}'", raw - 0x8000_0000)
+            } else {
+                raw.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+// IRONWOOD (V6) describe scaffold - see the module comment on
+// `describe_pczt_for_ledger`. Intentionally not wired up: the TS mapper has no
+// ironwood shape and fails closed on V6, so exposing a half-built ironwood
+// describe would only invite a mis-signed V6 transaction. When Ledger's V6
+// support is plumbed through zafu, replace this with a real
+// `Verifier::with_ironwood` walk emitting a `LedgerPcztIronwoodBundleJson`.
+#[allow(dead_code)]
+fn ironwood_todo() {
+    // TODO(ledger-v6): describe `pczt.ironwood()` for NU6.3 signing.
+    // Needs, on this (Rust) side:
+    //   - drop the `tx_version != 5` gate in `describe_pczt_for_ledger`;
+    //   - walk `pczt.ironwood()` via `Verifier::with_ironwood` (same getters);
+    //   - account for the V6 `TransmittedNoteCiphertext` length difference
+    //     (enc/out ciphertext sizes differ from V5's [u8; 580] / [u8; 80]).
+    // Needs, on the zafu (TS) side:
+    //   - a `LedgerPcztIronwoodBundleJson` in pczt-translate.ts and the matching
+    //     `PcztIronwoodBundle` mapping into device-signer-kit-zcash.
+}
