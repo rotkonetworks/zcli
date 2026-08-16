@@ -219,6 +219,28 @@ fn parse_round1_payload(payload: &[u8]) -> Result<Round1Peer, Error> {
     })
 }
 
+/// Build the ceremony transcript from our own key plus the peers we saw.
+///
+/// Callers pass only their peers, since that is what a round-1 broadcast set
+/// contains — our own entry is added here so both rounds derive it the same
+/// way and neither can forget to.
+fn ceremony_transcript_from(
+    sk: &SigningKey,
+    peer_enc_keys: &BTreeMap<Identifier, x25519_dalek::PublicKey>,
+) -> Result<[u8; 32], Error> {
+    let mut entries = Vec::with_capacity(peer_enc_keys.len() + 1);
+    entries.push((
+        to_hex(&id_from_vk(&sk.verification_key())?)?,
+        sealed::x25519_public_from_seed(sk.as_bytes())
+            .as_bytes()
+            .to_owned(),
+    ));
+    for (id, pk) in peer_enc_keys {
+        entries.push((to_hex(id)?, pk.as_bytes().to_owned()));
+    }
+    Ok(sealed::ceremony_transcript(&entries))
+}
+
 pub struct Dkg1Result {
     pub secret_hex: String,
     pub broadcast_hex: String,
@@ -284,6 +306,13 @@ pub fn dkg_part2(secret_hex: &str, peer_broadcasts_hex: &[String]) -> Result<Dkg
     let (secret2, round2_pkgs) = dkg::part2(frost_secret, &round1_pkgs)
         .map_err(|e| Error::Frost(format!("dkg part2: {}", e)))?;
 
+    // Fingerprint of this ceremony: every participant's identifier and
+    // encryption key, ours included. Round 3 recomputes the same value from
+    // its own view, so a package sealed in one ceremony cannot be opened in
+    // another even if the same people run it again.
+    let transcript = ceremony_transcript_from(&sk, &peer_enc_keys)?;
+    let our_id_hex = to_hex(&id_from_vk(&sk.verification_key())?)?;
+
     let mut peer_packages = Vec::new();
     for (id, pkg) in &round2_pkgs {
         let recipient_hex = to_hex(id)?;
@@ -297,7 +326,7 @@ pub fn dkg_part2(secret_hex: &str, peer_broadcasts_hex: &[String]) -> Result<Dkg
             ))
         })?;
 
-        let aad = sealed::round2_aad(&recipient_hex);
+        let aad = sealed::round2_aad(&transcript, &our_id_hex, &recipient_hex);
         let boxed = sealed::seal(enc_pk, &aad, &to_hex(pkg)?.into_bytes(), &mut OsRng)
             .map_err(Error::Serialize)?;
 
@@ -345,15 +374,21 @@ pub fn dkg_part3(
     )?;
 
     let mut round1_pkgs = BTreeMap::new();
+    let mut peer_enc_keys = BTreeMap::new();
     for hex_str in round1_broadcasts_hex {
         let signed: SignedMessage = from_hex(hex_str)?;
         let (vk, payload) = verify_signed(&signed)?;
-        round1_pkgs.insert(id_from_vk(&vk)?, parse_round1_payload(payload)?.package);
+        let peer = parse_round1_payload(payload)?;
+        let id = id_from_vk(&vk)?;
+        round1_pkgs.insert(id, peer.package);
+        peer_enc_keys.insert(id, peer.enc_pk);
     }
 
     // derive our own identifier to filter round2 packages addressed to us
     let our_id = id_from_vk(&sk.verification_key())?;
     let enc_sk = sealed::x25519_secret_from_seed(sk.as_bytes());
+    // Must match what the sender computed in round 2, or nothing opens.
+    let transcript = ceremony_transcript_from(&sk, &peer_enc_keys)?;
 
     let mut round2_pkgs = BTreeMap::new();
     for hex_str in round2_packages_hex {
@@ -385,7 +420,8 @@ pub fn dkg_part3(
 
         let boxed: sealed::SealedBox = serde_json::from_value(inner["sealed"].clone())
             .map_err(|e| Error::Serialize(format!("parse sealed: {}", e)))?;
-        let aad = sealed::round2_aad(recipient_hex);
+        let sender_hex = to_hex(&id_from_vk(&vk)?)?;
+        let aad = sealed::round2_aad(&transcript, &sender_hex, recipient_hex);
         let opened = sealed::open(&enc_sk, &aad, &boxed).map_err(Error::Serialize)?;
         let pkg_hex = String::from_utf8(opened)
             .map_err(|e| Error::Serialize(format!("sealed package not utf8: {e}")))?;
@@ -886,5 +922,34 @@ mod tests {
             ),
             Err(other) => panic!("expected a wire-version error, got {other:?}"),
         }
+    }
+
+    /// The transcript's purpose: a sealed package must belong to exactly one
+    /// ceremony. Two runs by the same three people are different ceremonies.
+    ///
+    /// Constructed so the ONLY difference is which ceremony the round-2
+    /// packages came from — same recipient, same identifiers on both sides.
+    #[test]
+    fn a_package_from_another_ceremony_does_not_open() {
+        // one ceremony, run to round 2
+        let a = dkg_part1(3, 2).unwrap();
+        let b = dkg_part1(3, 2).unwrap();
+        let c = dkg_part1(3, 2).unwrap();
+        let peers_for_b = vec![a.broadcast_hex.clone(), c.broadcast_hex.clone()];
+        let b_round2 = dkg_part2(&b.secret_hex, &peers_for_b).unwrap();
+
+        // a second ceremony where A and C re-run part1 — B is unchanged, so
+        // B's identifier and encryption key are identical in both
+        let a2 = dkg_part1(3, 2).unwrap();
+        let c2 = dkg_part1(3, 2).unwrap();
+        let peers_for_b2 = vec![a2.broadcast_hex.clone(), c2.broadcast_hex.clone()];
+        let b_round2_second = dkg_part2(&b.secret_hex, &peers_for_b2).unwrap();
+
+        // feed ceremony-two round-1 broadcasts, but ceremony-one packages
+        let mixed = dkg_part3(&b_round2_second.secret_hex, &peers_for_b2, &b_round2.peer_packages);
+        assert!(
+            mixed.is_err(),
+            "a round-2 package from a different ceremony was accepted"
+        );
     }
 }

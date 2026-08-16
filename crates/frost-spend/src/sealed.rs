@@ -28,9 +28,15 @@
 //
 // Authenticity is NOT this module's job — the sealed box travels inside the
 // existing SignedMessage, which is what proves who sent it. What this module
-// must prevent is a valid ciphertext being replayed into a different slot,
-// so the recipient's identifier is bound into the AEAD associated data and a
-// package addressed to one participant will not open for another.
+// must prevent is a valid ciphertext being lifted out of the context it was
+// made for. Three things are bound into the AEAD associated data:
+//
+//   ceremony  — so a package cannot be replayed into a different run
+//   sender    — so it cannot be re-signed and passed off as someone else's
+//   recipient — so it cannot be moved into another participant's slot
+//
+// None of it costs anything on the wire: associated data is never
+// transmitted, both sides recompute it, and a mismatch simply fails to open.
 
 use chacha20poly1305::{
     aead::{Aead, KeyInit, Payload},
@@ -169,9 +175,57 @@ pub fn open(secret: &StaticSecret, aad: &[u8], sealed: &SealedBox) -> Result<Vec
         .map_err(|_| "sealed package did not open".to_string())
 }
 
-/// Associated data binding a round-2 package to its recipient.
-pub fn round2_aad(recipient_id_hex: &str) -> Vec<u8> {
+/// A hash over the whole participant set — the ceremony's fingerprint.
+///
+/// `entries` is every participant's (identifier, encryption key), including
+/// the caller's own. Both sides can build this: each knows its own pair and
+/// learns the rest from the round-1 broadcasts. Sorting makes it independent
+/// of the order broadcasts happened to arrive in.
+///
+/// This is what stops a sealed package being replayed into a different
+/// ceremony. Without it, the only thing preventing that is the fact that
+/// ephemeral keys usually differ between runs — true today, but a property
+/// of how the keys happen to be generated rather than anything enforced.
+///
+/// Length prefixes rather than plain concatenation: without them
+/// ("ab","c") and ("a","bc") hash identically, and a participant who can
+/// choose part of the input could exploit that.
+pub fn ceremony_transcript(entries: &[(String, [u8; 32])]) -> [u8; 32] {
+    use sha2::Digest;
+
+    let mut sorted: Vec<&(String, [u8; 32])> = entries.iter().collect();
+    sorted.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let mut hasher = Sha256::new();
+    hasher.update(b"frost-dkg-ceremony-transcript-v1");
+    hasher.update((sorted.len() as u64).to_le_bytes());
+    for (id_hex, epk) in sorted {
+        hasher.update((id_hex.len() as u64).to_le_bytes());
+        hasher.update(id_hex.as_bytes());
+        hasher.update(epk);
+    }
+    hasher.finalize().into()
+}
+
+/// Associated data binding a round-2 package to its ceremony, its sender and
+/// its recipient — all three.
+///
+/// The sender matters because the sealed box travels inside a signature
+/// rather than around one. Without binding, a participant could strip the
+/// signature off someone else's ciphertext and re-sign it as their own,
+/// claiming authorship of a package they cannot read. FROST's own round-3
+/// verification would eventually reject the result, but that is the wrong
+/// place to catch it: relying on a later check to notice means the property
+/// holds by consequence rather than by construction.
+///
+/// Costs nothing on the wire — associated data is never transmitted, both
+/// sides recompute it. A mismatch simply fails to open.
+pub fn round2_aad(transcript: &[u8; 32], sender_id_hex: &str, recipient_id_hex: &str) -> Vec<u8> {
     let mut aad = Vec::from(KDF_INFO);
+    aad.push(b'|');
+    aad.extend_from_slice(transcript);
+    aad.push(b'|');
+    aad.extend_from_slice(sender_id_hex.as_bytes());
     aad.push(b'|');
     aad.extend_from_slice(recipient_id_hex.as_bytes());
     aad
@@ -191,7 +245,7 @@ mod tests {
         let (seed, _) = seeds();
         let sk = x25519_secret_from_seed(&seed);
         let pk = x25519_public_from_seed(&seed);
-        let aad = round2_aad("aabb");
+        let aad = round2_aad(&[0u8; 32], "5e5e", "aabb");
 
         let sealed = seal(&pk, &aad, b"secret share", &mut OsRng).unwrap();
         assert_eq!(open(&sk, &aad, &sealed).unwrap(), b"secret share");
@@ -203,7 +257,7 @@ mod tests {
     fn ciphertext_does_not_contain_the_plaintext() {
         let (seed, _) = seeds();
         let pk = x25519_public_from_seed(&seed);
-        let aad = round2_aad("aabb");
+        let aad = round2_aad(&[0u8; 32], "5e5e", "aabb");
         let secret = b"this must not appear on a QR code";
 
         let sealed = seal(&pk, &aad, secret, &mut OsRng).unwrap();
@@ -218,7 +272,7 @@ mod tests {
         let (a, b) = seeds();
         let pk_a = x25519_public_from_seed(&a);
         let sk_b = x25519_secret_from_seed(&b);
-        let aad = round2_aad("aabb");
+        let aad = round2_aad(&[0u8; 32], "5e5e", "aabb");
 
         let sealed = seal(&pk_a, &aad, b"for a only", &mut OsRng).unwrap();
         assert!(open(&sk_b, &aad, &sealed).is_err());
@@ -232,8 +286,28 @@ mod tests {
         let sk = x25519_secret_from_seed(&seed);
         let pk = x25519_public_from_seed(&seed);
 
-        let sealed = seal(&pk, &round2_aad("aabb"), b"share", &mut OsRng).unwrap();
-        assert!(open(&sk, &round2_aad("ccdd"), &sealed).is_err());
+        let sealed = seal(&pk, &round2_aad(&[0u8; 32], "5e5e", "aabb"), b"share", &mut OsRng).unwrap();
+        assert!(open(&sk, &round2_aad(&[0u8; 32], "5e5e", "ccdd"), &sealed).is_err());
+    }
+
+    /// Stripping the signature off someone's ciphertext and re-signing it as
+    /// your own must not produce something that opens — the sealed box is
+    /// bound to who actually made it.
+    #[test]
+    fn a_package_cannot_be_reattributed_to_another_sender() {
+        let (seed, _) = seeds();
+        let sk = x25519_secret_from_seed(&seed);
+        let pk = x25519_public_from_seed(&seed);
+
+        let sealed = seal(
+            &pk,
+            &round2_aad(&[0u8; 32], "5e5e", "aabb"),
+            b"share",
+            &mut OsRng,
+        )
+        .unwrap();
+        // same ceremony, same recipient, different claimed sender
+        assert!(open(&sk, &round2_aad(&[0u8; 32], "9999", "aabb"), &sealed).is_err());
     }
 
     #[test]
@@ -241,7 +315,7 @@ mod tests {
         let (seed, _) = seeds();
         let sk = x25519_secret_from_seed(&seed);
         let pk = x25519_public_from_seed(&seed);
-        let aad = round2_aad("aabb");
+        let aad = round2_aad(&[0u8; 32], "5e5e", "aabb");
 
         let mut sealed = seal(&pk, &aad, b"share", &mut OsRng).unwrap();
         sealed.ct[0] ^= 0x01;
@@ -254,7 +328,7 @@ mod tests {
     fn each_seal_is_fresh() {
         let (seed, _) = seeds();
         let pk = x25519_public_from_seed(&seed);
-        let aad = round2_aad("aabb");
+        let aad = round2_aad(&[0u8; 32], "5e5e", "aabb");
 
         let one = seal(&pk, &aad, b"same", &mut OsRng).unwrap();
         let two = seal(&pk, &aad, b"same", &mut OsRng).unwrap();
