@@ -64,8 +64,24 @@ struct Args {
 
     /// OPT-IN: enable the FROST relay gRPC surface. Forwards opaque signed
     /// blobs between room participants without reading them.
+    ///
+    /// DEPRECATED in favour of --frostd. This speaks a room protocol nobody
+    /// outside this repo implements; frostd is what the Zcash FROST ecosystem
+    /// uses, so clients built against ZF's tooling can talk to it.
     #[arg(long)]
     frost_relay: bool,
+
+    /// OPT-IN: serve a standard ZF frostd relay on this address.
+    ///
+    /// This mounts upstream's own axum router unmodified - we implement none
+    /// of the nine endpoints. frostd is designed to be untrusted: every
+    /// message is end-to-end encrypted between participants, so running it
+    /// grants no ability to read or forge anything.
+    ///
+    /// Served on its own listener rather than merged into the gRPC surface,
+    /// so the lwd-compatible port stays exactly what it was.
+    #[arg(long)]
+    frostd_listen: Option<std::net::SocketAddr>,
 
     /// OPT-IN: require `Authorization: Bearer <TOKEN>` on every gRPC request.
     /// When unset (default), the server accepts anonymous requests — the
@@ -114,6 +130,34 @@ async fn main() -> Result<()> {
             "none"
         },
     );
+
+    // Standard frostd relay, on its own listener. Upstream's router, upstream's
+    // handlers - this spawns it and otherwise stays out of the way.
+    //
+    // Started BEFORE the zebrad connection deliberately: a FROST relay shuttles
+    // opaque bytes between signers and has nothing to do with the chain node.
+    // Signers coordinating a ceremony should not be blocked because the local
+    // zebrad happens to be down.
+    if let Some(addr) = args.frostd_listen {
+        let state = frostd::AppState::new()
+            .await
+            .map_err(|e| anyhow::anyhow!("frostd state: {e}"))?;
+        let app = frostd::router(state);
+        let frostd_listener = tokio::net::TcpListener::bind(addr)
+            .await
+            .map_err(|e| anyhow::anyhow!("failed to bind frostd on {}: {}", addr, e))?;
+        info!(
+            "frostd relay: enabled on {} (no TLS - put it behind a reverse proxy)",
+            addr
+        );
+        tokio::spawn(async move {
+            if let Err(e) = axum::serve(frostd_listener, app).await {
+                tracing::error!("frostd server stopped: {e}");
+            }
+        });
+    } else {
+        info!("frostd relay: disabled (use --frostd-listen ADDR to enable)");
+    }
 
     let zebrad = zebrad::ZebradClient::new(&args.zebrad_rpc);
     match zebrad.get_blockchain_info().await {

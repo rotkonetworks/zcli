@@ -72,6 +72,13 @@ ed25519-consensus = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 clap = { version = "4", features = ["derive", "env"] }
+
+# ZF's own frostd server, mounted as-is. We serve their router rather than
+# reimplementing their nine endpoints: fewer lines here, and a relay that
+# every ecosystem client already speaks. See --frostd in main.rs.
+frostd = { git = "https://github.com/ZcashFoundation/frost-tools", rev = "06c0dbd" }
+# must match frostd's axum, or its Router is not the Router we serve
+axum = "0.8"
 serde = { version = "1.0", features = ["derive"] }
 bincode = "1.3"
 
