@@ -112,11 +112,20 @@ impl FrostdTransport {
 
     /// Open a session as coordinator. `message_count` is how many messages
     /// each participant will send, which frostd uses for its own bookkeeping.
-    pub async fn create_session(&mut self, message_count: u8) -> Result<uuid::Uuid> {
+    ///
+    /// `pubkeys` is the full participant list and is passed explicitly rather
+    /// than reused from our cipher peers: in a DKG the coordinator is also a
+    /// participant, and must appear in the list to send and receive, while
+    /// never being its own cipher peer.
+    pub async fn create_session(
+        &mut self,
+        pubkeys: Vec<PublicKey>,
+        message_count: u8,
+    ) -> Result<uuid::Uuid> {
         let out = self
             .client
             .create_new_session(&api::CreateNewSessionArgs {
-                pubkeys: self.peers.clone(),
+                pubkeys,
                 message_count,
             })
             .await

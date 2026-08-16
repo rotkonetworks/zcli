@@ -156,5 +156,9 @@ zafu-wasm = { version = "0.2.0", path = "../../crates/zcash-wasm", default-featu
 tonic-build = "0.11"
 
 [dev-dependencies]
+# test-only: run a real frostd in-process so the ceremony test exercises the
+# actual server, not a mock of it
+frostd = { git = "https://github.com/ZcashFoundation/frost-tools", rev = "06c0dbd" }
+axum = "0.8"
 tokio = { version = "1", features = ["full", "test-util"] }
 tempfile = "3"
