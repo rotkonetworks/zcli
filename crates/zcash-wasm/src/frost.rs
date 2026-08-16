@@ -1083,3 +1083,89 @@ fn ironwood_todo() {
     //   - a `LedgerPcztIronwoodBundleJson` in pczt-translate.ts and the matching
     //     `PcztIronwoodBundle` mapping into device-signer-kit-zcash.
 }
+
+// ── frostd relay cipher ──
+//
+// End-to-end encryption for relay traffic, wire-compatible with ZF's
+// frost-client. See frost_spend::relay_cipher for why this lives in
+// frost-spend rather than being frost-client itself, and for the interop
+// test that keeps the two honest.
+//
+// The relay never sees plaintext. That is what makes it acceptable to run
+// someone else's relay — including ZF's — and it is what the zafu UI has
+// been claiming for a while without it being true.
+//
+// Sessions are STATEFUL: the first message to a peer carries the Noise
+// handshake, later ones run in transport mode. So a RelayCipher must live for
+// the whole session and messages must be processed in order. A fresh cipher
+// mid-session will not decrypt anything.
+
+/// A relay session's ciphers, held across the whole session.
+#[wasm_bindgen]
+pub struct FrostRelayCipher {
+    inner: frost_spend::relay_cipher::RelayCipher,
+}
+
+#[wasm_bindgen]
+impl FrostRelayCipher {
+    /// `peers_hex` is a JSON array of hex-encoded 32-byte public keys.
+    #[wasm_bindgen(constructor)]
+    pub fn new(private_key_hex: &str, peers_hex: &str) -> Result<FrostRelayCipher, JsError> {
+        let sk_bytes = hex::decode(private_key_hex)
+            .map_err(|e| JsError::new(&format!("private key hex: {e}")))?;
+        let sk: [u8; 32] = sk_bytes
+            .try_into()
+            .map_err(|_| JsError::new("private key is not 32 bytes"))?;
+
+        let peers: Vec<String> = serde_json::from_str(peers_hex)
+            .map_err(|e| JsError::new(&format!("peers json: {e}")))?;
+        let peers = peers
+            .iter()
+            .map(|p| hex::decode(p))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| JsError::new(&format!("peer key hex: {e}")))?;
+
+        Ok(FrostRelayCipher {
+            inner: frost_spend::relay_cipher::RelayCipher::new(sk, peers)
+                .map_err(|e| JsError::new(&e))?,
+        })
+    }
+
+    /// Encrypt for one peer. Returns hex.
+    pub fn encrypt(&mut self, recipient_hex: &str, msg: &[u8]) -> Result<String, JsError> {
+        let recipient = hex::decode(recipient_hex)
+            .map_err(|e| JsError::new(&format!("recipient hex: {e}")))?;
+        let out = self
+            .inner
+            .encrypt(&recipient, msg.to_vec())
+            .map_err(|e| JsError::new(&e))?;
+        Ok(hex::encode(out))
+    }
+
+    /// Decrypt from one peer. Authenticates the sender: Noise_K mixes the
+    /// sender's static key into the key schedule, so a message relabelled as
+    /// coming from somebody else does not decrypt.
+    pub fn decrypt(&mut self, sender_hex: &str, msg_hex: &str) -> Result<Vec<u8>, JsError> {
+        let sender =
+            hex::decode(sender_hex).map_err(|e| JsError::new(&format!("sender hex: {e}")))?;
+        let msg = hex::decode(msg_hex).map_err(|e| JsError::new(&format!("msg hex: {e}")))?;
+        self.inner
+            .decrypt(&sender, &msg)
+            .map_err(|e| JsError::new(&e))
+    }
+}
+
+/// Generate a relay keypair. Returns JSON `{ "private": hex, "public": hex }`.
+///
+/// The public key is what other participants address messages to, and what
+/// frostd authenticates you by.
+#[wasm_bindgen]
+pub fn frost_relay_generate_keypair() -> Result<String, JsError> {
+    let (private, public) =
+        frost_spend::relay_cipher::generate_keypair().map_err(|e| JsError::new(&e))?;
+    Ok(serde_json::json!({
+        "private": hex::encode(private),
+        "public": hex::encode(public),
+    })
+    .to_string())
+}
