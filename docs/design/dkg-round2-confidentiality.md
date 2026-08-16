@@ -83,6 +83,12 @@ Three constraints:
 
 ## Existing wallets
 
-Wallets created by past ceremonies are not retroactively protected — the
-packages were already displayed. Where a ceremony might have been observed,
-the clean remedy is a fresh DKG and a move of funds, not a patch.
+**No production wallets are affected.** The multisig path never shipped to
+users, so there is no ceremony in the wild whose packages were exposed and
+nothing to re-key.
+
+Recording that explicitly because the fix is a hard wire break, and a reader
+finding this later would otherwise reasonably assume there were compromised
+wallets to chase. Had it shipped, the remedy would have been a fresh DKG and
+a move of funds — a patch could not have helped, since the packages were
+already displayed.

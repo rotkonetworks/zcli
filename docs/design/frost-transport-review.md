@@ -47,11 +47,11 @@ byte-compatible reimplementation on the wasm side.
   one ordering bug that no unit test caught (rounds are now tagged); we would
   not assume that was the last one.
 
-## What is NOT protected
+## Blast radius
 
-Wallets from ceremonies run before this are not retroactively protected — the
-packages were already displayed. Where a ceremony could have been observed,
-the remedy is a fresh DKG and moving funds, not an upgrade.
+**None in production.** The multisig path never shipped, so no real wallet was
+ever created by an exposed ceremony. A reviewer should weigh this as a design
+flaw caught before release, not an incident.
 
 ## Running it
 
