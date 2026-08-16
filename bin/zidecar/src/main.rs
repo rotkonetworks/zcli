@@ -74,6 +74,14 @@ struct Args {
     #[arg(long)]
     frostd_listen: Option<std::net::SocketAddr>,
 
+    /// Serve frostd on a non-loopback address without TLS.
+    ///
+    /// Ceremony contents stay end-to-end encrypted either way; what leaks is
+    /// the login token and the participant public keys. Only sensible if
+    /// something else on the path is providing transport security.
+    #[arg(long)]
+    frostd_insecure: bool,
+
     /// OPT-IN: require `Authorization: Bearer <TOKEN>` on every gRPC request.
     /// When unset (default), the server accepts anonymous requests — the
     /// expected mode for a drop-in lightwalletd replacement serving Zashi or
@@ -130,6 +138,25 @@ async fn main() -> Result<()> {
     // Signers coordinating a ceremony should not be blocked because the local
     // zebrad happens to be down.
     if let Some(addr) = args.frostd_listen {
+        // We serve frostd without TLS. Every message on it is already
+        // end-to-end encrypted, so a listener cannot read a ceremony - but
+        // the bearer token and participant public keys do travel in clear,
+        // and a stolen token lets someone drain a peer's queue and inject
+        // rubbish into a session.
+        //
+        // So: loopback is fine unguarded, anything else needs saying out
+        // loud. Refusing rather than warning, because a warning in a log is
+        // not read by the person who typed the address.
+        if !addr.ip().is_loopback() && !args.frostd_insecure {
+            return Err(anyhow::anyhow!(
+                "refusing to serve frostd on {addr} without TLS.\n\
+                 Put it behind a reverse proxy that terminates TLS and point \
+                 this at 127.0.0.1, or pass --frostd-insecure if you genuinely \
+                 mean to expose plaintext HTTP (the login token and participant \
+                 keys are visible to anyone on the path; ceremony contents are \
+                 not, they are end-to-end encrypted)."
+            ));
+        }
         let state = frostd::AppState::new()
             .await
             .map_err(|e| anyhow::anyhow!("frostd state: {e}"))?;

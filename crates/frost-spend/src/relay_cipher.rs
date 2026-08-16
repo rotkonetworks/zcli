@@ -23,6 +23,15 @@
 //
 // If upstream changes any of that, the interop test fails and this must
 // follow. It has no licence to innovate.
+//
+// KNOWN GAP
+//
+// The DKG transcript in sealed.rs hashes values that reach it as serde_json,
+// which is not a canonical encoding - field order and escaping are not pinned
+// by anything. Nothing exploits that today, because both sides serialize with
+// the same serde on the same struct, so the bytes agree in practice. It is
+// still a promise resting on an implementation detail rather than on a format,
+// and the honest fix is a canonical encoding for anything that gets hashed.
 
 use std::collections::HashMap;
 
