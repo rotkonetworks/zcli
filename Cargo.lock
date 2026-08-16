@@ -9560,6 +9560,7 @@ name = "zecli"
 version = "0.6.0"
 dependencies = [
  "anyhow",
+ "axum 0.8.9",
  "bip39",
  "blake2",
  "blake2b_simd",
@@ -9568,6 +9569,7 @@ dependencies = [
  "ff",
  "frost-client",
  "frost-spend",
+ "frostd",
  "hex",
  "hmac 0.12.1",
  "incrementalmerkletree",
