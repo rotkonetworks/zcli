@@ -72,6 +72,12 @@ incrementalmerkletree = { version = "0.8", features = ["legacy-api"] }
 # frost-spend wraps ZF's audited libraries for sighash-bound spend authorization.
 # also re-exports reddsa FROST types for DKG and generic signing.
 frost-spend = { path = "../../crates/frost-spend" }
+# ZF's own frostd client and Noise_K cipher. Depending on upstream rather
+# than reimplementing their nine-endpoint API is the whole point: their wire
+# format cannot drift away from ours if it IS ours.
+frost-client = { git = "https://github.com/ZcashFoundation/frost-tools", rev = "06c0dbd" }
+# to name session ids in frostd's API
+uuid = { version = "1", features = ["v4", "serde"] }
 zoda-vss = { path = "../../crates/zoda-vss" }
 osst = { git = "https://github.com/rotkonetworks/frostito", rev = "14e38da", default-features = false, features = ["pallas"] }
 pasta_curves = "0.5"
