@@ -16,7 +16,7 @@ use rand_core::OsRng;
 use crate::{
     aggregate, dkg, frost, frost_keys,
     message::{self, identifier_from_vk, SignedMessage},
-    round1, round2, Identifier, RandomizedParams, Randomizer, SigningPackage,
+    round1, round2, sealed, Identifier, RandomizedParams, Randomizer, SigningPackage,
 };
 
 // ── error ──
@@ -164,6 +164,61 @@ pub fn dealer_keygen(min_signers: u16, max_signers: u16) -> Result<DealerResult,
 
 // ── DKG (interactive, no trusted dealer) ──
 
+/// Wire version for DKG round messages.
+///
+/// v1 sent round-2 packages in the clear. That is not something an old and a
+/// new participant should be able to negotiate their way through: a ceremony
+/// that silently completes with one side unsealed leaks the group key, so a
+/// version mismatch has to be a hard failure rather than a fallback.
+///
+/// v2 adds `epk` to the round-1 broadcast and seals round-2 packages to it.
+pub const DKG_WIRE_VERSION: u32 = 2;
+
+/// Round-1 broadcast contents, after verification.
+struct Round1Peer {
+    package: dkg::round1::Package,
+    enc_pk: x25519_dalek::PublicKey,
+}
+
+/// Parse a verified round-1 payload.
+///
+/// v1 payloads were a bare JSON string, so they fail to parse here rather
+/// than being mistaken for something sealed — which is the intent.
+fn parse_round1_payload(payload: &[u8]) -> Result<Round1Peer, Error> {
+    let value: serde_json::Value = serde_json::from_slice(payload).map_err(|_| {
+        Error::Serialize(
+            "round-1 broadcast is not v2 — every participant must run a build that seals \
+             round-2 packages, since a mixed ceremony would expose the group key"
+                .into(),
+        )
+    })?;
+
+    let v = value["v"].as_u64().unwrap_or(1) as u32;
+    if v != DKG_WIRE_VERSION {
+        return Err(Error::Serialize(format!(
+            "round-1 broadcast is wire version {v}, this build speaks {DKG_WIRE_VERSION}; \
+             all participants must match"
+        )));
+    }
+
+    let pkg_hex = value["pkg"]
+        .as_str()
+        .ok_or_else(|| Error::Serialize("round-1 broadcast missing pkg".into()))?;
+    let epk_hex = value["epk"]
+        .as_str()
+        .ok_or_else(|| Error::Serialize("round-1 broadcast missing epk".into()))?;
+
+    let epk_bytes: [u8; 32] = hex::decode(epk_hex)
+        .map_err(|e| Error::Serialize(format!("epk hex: {e}")))?
+        .try_into()
+        .map_err(|_| Error::Serialize("epk is not 32 bytes".into()))?;
+
+    Ok(Round1Peer {
+        package: from_hex(pkg_hex)?,
+        enc_pk: x25519_dalek::PublicKey::from(epk_bytes),
+    })
+}
+
 pub struct Dkg1Result {
     pub secret_hex: String,
     pub broadcast_hex: String,
@@ -177,8 +232,17 @@ pub fn dkg_part1(max_signers: u16, min_signers: u16) -> Result<Dkg1Result, Error
     let (secret, package) = dkg::part1(id, max_signers, min_signers, OsRng)
         .map_err(|e| Error::Frost(format!("dkg part1: {}", e)))?;
 
-    let payload =
-        serde_json::to_vec(&to_hex(&package)?).map_err(|e| Error::Serialize(e.to_string()))?;
+    // Advertise the X25519 key peers will seal their round-2 packages to.
+    // Derived from the session seed, so later rounds recover it without any
+    // extra state travelling between them.
+    let enc_pk = sealed::x25519_public_from_seed(sk.as_bytes());
+
+    let payload = serde_json::to_vec(&serde_json::json!({
+        "v": DKG_WIRE_VERSION,
+        "pkg": to_hex(&package)?,
+        "epk": hex::encode(enc_pk.as_bytes()),
+    }))
+    .map_err(|e| Error::Serialize(e.to_string()))?;
     let signed = SignedMessage::sign(&sk, &payload);
 
     let secret_state = serde_json::json!({
@@ -207,12 +271,14 @@ pub fn dkg_part2(secret_hex: &str, peer_broadcasts_hex: &[String]) -> Result<Dkg
     )?;
 
     let mut round1_pkgs = BTreeMap::new();
+    let mut peer_enc_keys = BTreeMap::new();
     for hex_str in peer_broadcasts_hex {
         let signed: SignedMessage = from_hex(hex_str)?;
         let (vk, payload) = verify_signed(&signed)?;
-        let pkg_hex: String = serde_json::from_slice(payload)
-            .map_err(|e| Error::Serialize(format!("parse: {}", e)))?;
-        round1_pkgs.insert(id_from_vk(&vk)?, from_hex(&pkg_hex)?);
+        let peer = parse_round1_payload(payload)?;
+        let id = id_from_vk(&vk)?;
+        round1_pkgs.insert(id, peer.package);
+        peer_enc_keys.insert(id, peer.enc_pk);
     }
 
     let (secret2, round2_pkgs) = dkg::part2(frost_secret, &round1_pkgs)
@@ -220,9 +286,29 @@ pub fn dkg_part2(secret_hex: &str, peer_broadcasts_hex: &[String]) -> Result<Dkg
 
     let mut peer_packages = Vec::new();
     for (id, pkg) in &round2_pkgs {
+        let recipient_hex = to_hex(id)?;
+        // No recipient key means no way to seal, and sending it in the clear
+        // "just this once" is exactly the failure this change exists to
+        // remove. Refuse the ceremony instead.
+        let enc_pk = peer_enc_keys.get(id).ok_or_else(|| {
+            Error::Serialize(format!(
+                "no encryption key for recipient {recipient_hex} — refusing to send an \
+                 unsealed round-2 package"
+            ))
+        })?;
+
+        let aad = sealed::round2_aad(&recipient_hex);
+        let boxed = sealed::seal(enc_pk, &aad, &to_hex(pkg)?.into_bytes(), &mut OsRng)
+            .map_err(Error::Serialize)?;
+
+        // `recipient` stays in the clear: round 3 needs it to pick out the
+        // packages addressed to it, and it is an identifier derived from a
+        // public key that was already broadcast in round 1. The share itself
+        // is what is sealed.
         let payload = serde_json::to_vec(&serde_json::json!({
-            "recipient": to_hex(id)?,
-            "package": to_hex(pkg)?,
+            "v": DKG_WIRE_VERSION,
+            "recipient": recipient_hex,
+            "sealed": boxed,
         }))
         .map_err(|e| Error::Serialize(e.to_string()))?;
         peer_packages.push(to_hex(&SignedMessage::sign(&sk, &payload))?);
@@ -262,13 +348,12 @@ pub fn dkg_part3(
     for hex_str in round1_broadcasts_hex {
         let signed: SignedMessage = from_hex(hex_str)?;
         let (vk, payload) = verify_signed(&signed)?;
-        let pkg_hex: String = serde_json::from_slice(payload)
-            .map_err(|e| Error::Serialize(format!("parse: {}", e)))?;
-        round1_pkgs.insert(id_from_vk(&vk)?, from_hex(&pkg_hex)?);
+        round1_pkgs.insert(id_from_vk(&vk)?, parse_round1_payload(payload)?.package);
     }
 
     // derive our own identifier to filter round2 packages addressed to us
     let our_id = id_from_vk(&sk.verification_key())?;
+    let enc_sk = sealed::x25519_secret_from_seed(sk.as_bytes());
 
     let mut round2_pkgs = BTreeMap::new();
     for hex_str in round2_packages_hex {
@@ -286,12 +371,26 @@ pub fn dkg_part3(
             continue; // not for us — skip
         }
 
-        let pkg = from_hex(
-            inner["package"]
-                .as_str()
-                .ok_or_else(|| Error::Serialize("missing package".into()))?,
-        )?;
-        round2_pkgs.insert(id_from_vk(&vk)?, pkg);
+        // A v1 package carried `package` in the clear. Refuse it rather than
+        // accepting a share that was broadcast unsealed: if this arrives, the
+        // ceremony has already exposed the key material and should be redone,
+        // not completed.
+        if inner.get("sealed").is_none() {
+            return Err(Error::Serialize(
+                "round-2 package is unsealed (wire v1) — this ceremony exposed its shares \
+                 and must be restarted with every participant on a sealing build"
+                    .into(),
+            ));
+        }
+
+        let boxed: sealed::SealedBox = serde_json::from_value(inner["sealed"].clone())
+            .map_err(|e| Error::Serialize(format!("parse sealed: {}", e)))?;
+        let aad = sealed::round2_aad(recipient_hex);
+        let opened = sealed::open(&enc_sk, &aad, &boxed).map_err(Error::Serialize)?;
+        let pkg_hex = String::from_utf8(opened)
+            .map_err(|e| Error::Serialize(format!("sealed package not utf8: {e}")))?;
+
+        round2_pkgs.insert(id_from_vk(&vk)?, from_hex(&pkg_hex)?);
     }
 
     let (key_pkg, pub_pkg) = dkg::part3(&frost_secret, &round1_pkgs, &round2_pkgs)
@@ -691,5 +790,101 @@ mod tests {
             &sig[..16],
             &sig[112..]
         );
+    }
+
+    /// A full 2-of-3 DKG must still complete once round-2 packages are
+    /// sealed. This is the regression that matters: sealing is worthless if
+    /// it also breaks the ceremony.
+    #[test]
+    fn dkg_2of3_completes_with_sealed_round2() {
+        let r1: Vec<_> = (0..3).map(|_| dkg_part1(3, 2).unwrap()).collect();
+        let broadcasts: Vec<String> = r1.iter().map(|r| r.broadcast_hex.clone()).collect();
+
+        let r2: Vec<_> = r1
+            .iter()
+            .enumerate()
+            .map(|(i, r)| {
+                // each participant sees the other two round-1 broadcasts
+                let peers: Vec<String> = broadcasts
+                    .iter()
+                    .enumerate()
+                    .filter(|(j, _)| *j != i)
+                    .map(|(_, b)| b.clone())
+                    .collect();
+                dkg_part2(&r.secret_hex, &peers).unwrap()
+            })
+            .collect();
+
+        // every sealed package from everyone; round 3 filters to its own
+        let all_round2: Vec<String> =
+            r2.iter().flat_map(|r| r.peer_packages.clone()).collect();
+
+        let finals: Vec<_> = r2
+            .iter()
+            .enumerate()
+            .map(|(i, r)| {
+                let peers: Vec<String> = broadcasts
+                    .iter()
+                    .enumerate()
+                    .filter(|(j, _)| *j != i)
+                    .map(|(_, b)| b.clone())
+                    .collect();
+                dkg_part3(&r.secret_hex, &peers, &all_round2).unwrap()
+            })
+            .collect();
+
+        // all three must agree on the group public key package, or they did
+        // not actually complete the same DKG
+        assert_eq!(
+            finals[0].public_key_package_hex,
+            finals[1].public_key_package_hex
+        );
+        assert_eq!(
+            finals[0].public_key_package_hex,
+            finals[2].public_key_package_hex
+        );
+    }
+
+    /// The point of the change: a round-2 package on the wire must not
+    /// contain the share. Reads the bytes an observer would actually see.
+    #[test]
+    fn round2_wire_bytes_do_not_contain_the_share() {
+        let r1: Vec<_> = (0..3).map(|_| dkg_part1(3, 2).unwrap()).collect();
+        let broadcasts: Vec<String> = r1.iter().map(|r| r.broadcast_hex.clone()).collect();
+
+        let peers: Vec<String> = broadcasts[1..].to_vec();
+        let r2 = dkg_part2(&r1[0].secret_hex, &peers).unwrap();
+
+        for wire in &r2.peer_packages {
+            let signed: SignedMessage = from_hex(wire).unwrap();
+            let inner: serde_json::Value =
+                serde_json::from_slice(&signed.payload).unwrap();
+            // the cleartext `package` field is gone entirely
+            assert!(inner.get("package").is_none(), "share still in the clear");
+            assert!(inner.get("sealed").is_some(), "package not sealed");
+        }
+    }
+
+    /// A participant running the old cleartext build must not be able to
+    /// join — a mixed ceremony would expose the group key.
+    #[test]
+    fn a_v1_round1_broadcast_is_rejected() {
+        let sk = message::ephemeral_identity(&mut OsRng);
+        let id = id_from_vk(&sk.verification_key()).unwrap();
+        let (_secret, package) = dkg::part1(id, 3, 2, OsRng).unwrap();
+
+        // v1 shape: payload was a bare JSON string of the package hex
+        let payload = serde_json::to_vec(&to_hex(&package).unwrap()).unwrap();
+        let legacy = to_hex(&SignedMessage::sign(&sk, &payload)).unwrap();
+
+        let mine = dkg_part1(3, 2).unwrap();
+        match dkg_part2(&mine.secret_hex, &[legacy]) {
+            Ok(_) => panic!("a v1 participant was allowed into a sealing ceremony"),
+            Err(Error::Serialize(m)) => assert!(
+                m.contains("v2") || m.contains("wire version"),
+                "unhelpful error: {m}"
+            ),
+            Err(other) => panic!("expected a wire-version error, got {other:?}"),
+        }
     }
 }

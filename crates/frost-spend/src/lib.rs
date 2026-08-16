@@ -19,6 +19,7 @@ pub mod memo_codec;
 pub mod message;
 pub mod nested;
 pub mod orchestrate;
+pub mod sealed;
 pub mod sign;
 pub mod transport;
 
