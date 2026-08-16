@@ -378,6 +378,35 @@ pub enum ServiceAction {
 
 #[derive(Subcommand)]
 pub enum MultisigAction {
+    /// generate a relay identity keypair (frostd addresses you by its pubkey)
+    RelayKeygen,
+
+    /// run a full DKG over a standard frostd relay
+    ///
+    /// The coordinator omits --session to create one and print its id;
+    /// everyone else passes the id they were given.
+    RelayDkg {
+        /// frostd base URL, e.g. http://relay.example:2744
+        #[arg(long)]
+        server: String,
+        /// our relay private key, hex (from relay-keygen)
+        #[arg(long)]
+        key: String,
+        /// our relay public key, hex (from relay-keygen)
+        #[arg(long)]
+        pubkey: String,
+        /// every OTHER participant's relay public key, hex
+        #[arg(long, num_args = 1.., required = true)]
+        peer: Vec<String>,
+        /// join an existing session instead of creating one
+        #[arg(long)]
+        session: Option<String>,
+        #[arg(short = 't', long, default_value_t = 2)]
+        min_signers: u16,
+        #[arg(short = 'n', long, default_value_t = 3)]
+        max_signers: u16,
+    },
+
     /// generate key shares using trusted dealer (each share includes an ed25519 identity)
     Dealer {
         #[arg(short = 't', long, default_value_t = 2)]

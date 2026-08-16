@@ -230,7 +230,7 @@ async fn run(cli: &Cli) -> Result<(), Error> {
             }
             ServiceAction::TreeInfo { height } => cmd_tree_info(cli, *height).await,
         },
-        Command::Multisig { action } => cmd_multisig(cli, action),
+        Command::Multisig { action } => cmd_multisig(cli, action).await,
     }
 }
 
@@ -2420,8 +2420,49 @@ async fn cmd_export_notes(
     notes_export::display_animated_qr(&parts, interval_ms, &status)
 }
 
-fn cmd_multisig(cli: &Cli, action: &MultisigAction) -> Result<(), Error> {
+async fn cmd_multisig(cli: &Cli, action: &MultisigAction) -> Result<(), Error> {
     match action {
+        MultisigAction::RelayKeygen => {
+            let (private, public) = frost_spend::relay_cipher::generate_keypair()
+                .map_err(|e| Error::Other(e))?;
+            if cli.json {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "private": hex::encode(private),
+                        "public": hex::encode(public),
+                    })
+                );
+            } else {
+                println!("private: {}", hex::encode(private));
+                println!("public:  {}", hex::encode(public));
+                println!();
+                println!("Share the public key with the other participants.");
+                println!("Keep the private key secret - it is your relay identity.");
+            }
+            Ok(())
+        }
+
+        MultisigAction::RelayDkg {
+            server,
+            key,
+            pubkey,
+            peer,
+            session,
+            min_signers,
+            max_signers,
+        } => cmd_relay_dkg(
+            cli,
+            server,
+            key,
+            pubkey,
+            peer,
+            session.as_deref(),
+            *min_signers,
+            *max_signers,
+        )
+        .await,
+
         MultisigAction::Dealer {
             min_signers,
             max_signers,
@@ -2688,4 +2729,79 @@ fn cmd_multisig(cli: &Cli, action: &MultisigAction) -> Result<(), Error> {
             Ok(())
         }
     }
+}
+
+/// Run a DKG over a standard frostd relay.
+///
+/// The coordinator omits --session, creates one and prints its id; the others
+/// pass that id. Everything after that is symmetric.
+#[allow(clippy::too_many_arguments)]
+async fn cmd_relay_dkg(
+    cli: &Cli,
+    server: &str,
+    key_hex: &str,
+    pubkey_hex: &str,
+    peer_hex: &[String],
+    session: Option<&str>,
+    min_signers: u16,
+    max_signers: u16,
+) -> Result<(), Error> {
+    use zecli::frostd_transport::FrostdTransport;
+
+    let decode = |h: &str, what: &str| -> Result<Vec<u8>, Error> {
+        hex::decode(h).map_err(|e| Error::Other(format!("{what}: bad hex: {e}")))
+    };
+
+    let private = frost_client::cipher::PrivateKey::from(decode(key_hex, "--key")?);
+    let public = frost_client::cipher::PublicKey(decode(pubkey_hex, "--pubkey")?);
+    let peers = peer_hex
+        .iter()
+        .map(|p| Ok(frost_client::cipher::PublicKey(decode(p, "--peer")?)))
+        .collect::<Result<Vec<_>, Error>>()?;
+
+    let mut t = FrostdTransport::connect(server.to_string(), private, public.clone(), peers.clone())
+        .await
+        .map_err(|e| Error::Other(e.to_string()))?;
+
+    match session {
+        None => {
+            let mut all = vec![public];
+            all.extend(peers.clone());
+            let id = t
+                .create_session(all, 3)
+                .await
+                .map_err(|e| Error::Other(e.to_string()))?;
+            eprintln!("session: {id}");
+            eprintln!("Give that id to the other participants, then wait.");
+        }
+        Some(id) => {
+            let id = id
+                .parse()
+                .map_err(|e| Error::Other(format!("--session is not a uuid: {e}")))?;
+            t.join_session(id);
+        }
+    }
+
+    let result = zecli::frost_ceremony::run_dkg(&mut t, peers, min_signers, max_signers)
+        .await
+        .map_err(|e| Error::Other(e.to_string()))?;
+
+    if cli.json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "key_package": result.key_package_hex,
+                "public_key_package": result.public_key_package_hex,
+                "ephemeral_seed": result.ephemeral_seed_hex,
+            })
+        );
+    } else {
+        println!("key_package:        {}", result.key_package_hex);
+        println!("public_key_package: {}", result.public_key_package_hex);
+        println!("ephemeral_seed:     {}", result.ephemeral_seed_hex);
+        println!();
+        println!("Keep the key package and ephemeral seed secret. Every participant");
+        println!("should see the SAME public_key_package - compare before using it.");
+    }
+    Ok(())
 }

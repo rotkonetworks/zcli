@@ -14,6 +14,8 @@ pub mod frost;
 #[cfg(feature = "cli")]
 pub mod frost_qr;
 
+/// Run a FROST ceremony over a standard frostd relay.
+pub mod frost_ceremony;
 /// Standard ZF frostd relay transport, via ZF's own frost-client.
 pub mod frostd_transport;
 #[cfg(feature = "cli")]
