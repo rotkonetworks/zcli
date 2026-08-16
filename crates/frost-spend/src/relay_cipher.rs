@@ -176,6 +176,25 @@ fn builder<'a>(
     .remote_public_key(peer_key))
 }
 
+/// Sign a frostd login challenge.
+///
+/// frostd verifies this with XEdDSA over the participant's X25519 key - the
+/// same key used for Noise. Using one key for both signing and DH normally
+/// needs justifying; XEdDSA is the construction that does the justifying, and
+/// it is what ZF's frost-client uses, so matching it is the whole point.
+///
+/// The rng is a parameter rather than OsRng so wasm callers can supply their
+/// own; XEdDSA signatures are randomized.
+pub fn sign_challenge(
+    private_key: &[u8; 32],
+    msg: &[u8],
+    rng: &mut (impl rand_core::RngCore + rand_core::CryptoRng),
+) -> Result<[u8; 64], String> {
+    let key = xeddsa::xed25519::PrivateKey::from(private_key);
+    use xeddsa::Sign as _;
+    Ok(key.sign(msg, rng))
+}
+
 /// Generate a relay keypair, in the encoding frostd expects.
 pub fn generate_keypair() -> Result<([u8; 32], [u8; 32]), String> {
     let keypair = snow::Builder::new(

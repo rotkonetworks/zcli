@@ -2,6 +2,28 @@
 /* eslint-disable */
 
 /**
+ * A relay session's ciphers, held across the whole session.
+ */
+export class FrostRelayCipher {
+    free(): void;
+    [Symbol.dispose](): void;
+    /**
+     * Decrypt from one peer. Authenticates the sender: Noise_K mixes the
+     * sender's static key into the key schedule, so a message relabelled as
+     * coming from somebody else does not decrypt.
+     */
+    decrypt(sender_hex: string, msg_hex: string): Uint8Array;
+    /**
+     * Encrypt for one peer. Returns hex.
+     */
+    encrypt(recipient_hex: string, msg: Uint8Array): string;
+    /**
+     * `peers_hex` is a JSON array of hex-encoded 32-byte public keys.
+     */
+    constructor(private_key_hex: string, peers_hex: string);
+}
+
+/**
  * Wallet keys derived from seed phrase
  */
 export class WalletKeys {
@@ -528,6 +550,8 @@ export function create_sign_request(account_index: number, sighash_hex: string, 
  */
 export function derive_transparent_privkey(seed_phrase: string, account: number, index: number): string;
 
+export function describe_pczt_for_ledger(pczt_hex: string, mainnet: boolean): string;
+
 /**
  * Encode notes + merkle paths into CBOR bytes for ur:zcash-notes.
  *
@@ -713,6 +737,24 @@ export function frost_inspect_pczt_outputs(pczt_hex: string, orchard_fvk_uview: 
  * }
  */
 export function frost_parse_tx_outputs(unsigned_tx_hex: string, orchard_fvk_uview: string): string;
+
+/**
+ * Generate a relay keypair. Returns JSON `{ "private": hex, "public": hex }`.
+ *
+ * The public key is what other participants address messages to, and what
+ * frostd authenticates you by.
+ */
+export function frost_relay_generate_keypair(): string;
+
+/**
+ * Sign a frostd login challenge with a relay private key.
+ *
+ * frostd authenticates by verifying XEdDSA over the participant's X25519
+ * key - the same key Noise uses. This exists because without it the browser
+ * can generate keys and encrypt, but cannot log in at all, which is how the
+ * gap was found: by trying to wire the client up.
+ */
+export function frost_relay_sign_challenge(private_key_hex: string, challenge: string): string;
 
 /**
  * host-only: sample a random 32-byte SpendingKey for nk/rivk derivation.
@@ -954,10 +996,12 @@ export function zt_encode_frames_auto(cbor_data: Uint8Array, zt_type: string, ma
 export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
 
 export interface InitOutput {
+    readonly __wbg_frostrelaycipher_free: (a: number, b: number) => void;
     readonly __wbg_walletkeys_free: (a: number, b: number) => void;
     readonly __wbg_watchonlywallet_free: (a: number, b: number) => void;
     readonly address_from_ufvk: (a: number, b: number, c: number) => [number, number, number, number];
     readonly apply_signature_contributions: (a: number, b: number, c: number, d: number) => [number, number, number, number];
+    readonly build_delegation_pczt: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number, p: number, q: number) => [number, number, number, number];
     readonly build_ironwood_send_pczt: (a: number, b: number, c: number, d: number, e: number, f: number, g: bigint, h: bigint, i: number, j: number, k: number, l: number, m: number, n: number, o: number, p: number, q: number, r: number) => [number, number, number];
     readonly build_merkle_paths: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number];
     readonly build_shielding_transaction: (a: number, b: number, c: number, d: number, e: number, f: number, g: bigint, h: bigint, i: number, j: number, k: number, l: number) => [number, number, number, number];
@@ -970,7 +1014,10 @@ export interface InitOutput {
     readonly build_unsigned_pczt: (a: number, b: number, c: any, d: number, e: number, f: bigint, g: bigint, h: number, i: number, j: any, k: number, l: number, m: number, n: number) => [number, number, number];
     readonly build_unsigned_shielding_transaction: (a: number, b: number, c: number, d: number, e: bigint, f: bigint, g: number, h: number, i: number, j: number) => [number, number, number, number];
     readonly build_unsigned_transaction: (a: number, b: number, c: any, d: number, e: number, f: bigint, g: bigint, h: number, i: number, j: any, k: number, l: number, m: number, n: number, o: number, p: number) => [number, number, number];
+    readonly build_vote_commitment_wire: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number) => [number, number, number, number];
+    readonly build_vote_shares_wire: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: bigint) => [number, number, number, number];
     readonly build_witnesses_and_paths: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number];
+    readonly cast_vote_hot_wire: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: bigint) => [number, number, number, number];
     readonly complete_ironwood_pczt: (a: number, b: number, c: any, d: any) => [number, number, number, number];
     readonly complete_orchard_pczt: (a: number, b: number, c: any, d: any) => [number, number, number, number];
     readonly complete_shielding_transaction: (a: number, b: number, c: number, d: number) => [number, number, number, number];
@@ -978,15 +1025,43 @@ export interface InitOutput {
     readonly compute_txid: (a: number, b: number) => [number, number, number, number];
     readonly create_sign_request: (a: number, b: number, c: number, d: any, e: number, f: number) => [number, number, number, number];
     readonly derive_transparent_privkey: (a: number, b: number, c: number, d: number) => [number, number, number, number];
+    readonly describe_pczt_for_ledger: (a: number, b: number, c: number) => [number, number, number, number];
     readonly encode_notes_bundle: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number, number, number];
     readonly estimate_compact_savings: (a: number, b: number) => [number, number, number, number];
     readonly extract_signed_tx_from_pczt: (a: number, b: number) => [number, number, number, number];
+    readonly finalize_delegation: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => [number, number, number, number];
     readonly frontier_tree_size: (a: number, b: number) => [bigint, number, number];
+    readonly frost_aggregate_shares: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => [number, number, number, number];
+    readonly frost_attestation_digest: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
+    readonly frost_attestation_verify: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number, number];
+    readonly frost_dealer_keygen: (a: number, b: number) => [number, number, number, number];
+    readonly frost_derive_address_from_sk: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
+    readonly frost_derive_address_raw: (a: number, b: number, c: number) => [number, number, number, number];
+    readonly frost_derive_ufvk: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
+    readonly frost_dkg_part1: (a: number, b: number) => [number, number, number, number];
+    readonly frost_dkg_part2: (a: number, b: number, c: number, d: number) => [number, number, number, number];
+    readonly frost_dkg_part3: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
+    readonly frost_generate_randomizer: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
+    readonly frost_inspect_pczt_outputs: (a: number, b: number, c: number, d: number) => [number, number, number, number];
+    readonly frost_parse_tx_outputs: (a: number, b: number, c: number, d: number) => [number, number, number, number];
+    readonly frost_relay_generate_keypair: () => [number, number, number, number];
+    readonly frost_relay_sign_challenge: (a: number, b: number, c: number, d: number) => [number, number, number, number];
+    readonly frost_sample_fvk_sk: () => [number, number];
+    readonly frost_sign_round1: (a: number, b: number, c: number, d: number) => [number, number, number, number];
+    readonly frost_sign_round2: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number) => [number, number, number, number];
+    readonly frost_spend_aggregate: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => [number, number, number, number];
+    readonly frost_spend_sign_round2: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => [number, number, number, number];
+    readonly frost_spend_sign_round2_signed: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number) => [number, number, number, number];
+    readonly frostrelaycipher_decrypt: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
+    readonly frostrelaycipher_encrypt: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
+    readonly frostrelaycipher_new: (a: number, b: number, c: number, d: number) => [number, number, number];
     readonly generate_seed_phrase: () => [number, number, number, number];
+    readonly generate_voting_hotkey: (a: number, b: number) => [number, number, number, number];
     readonly get_commitment_proof_request: (a: number, b: number) => [number, number, number, number];
     readonly num_threads: () => number;
     readonly parse_signature_response: (a: number, b: number) => [number, number, number];
     readonly pczt_has_ironwood_actions: (a: number, b: number) => [number, number, number];
+    readonly pir_fetch_imt_proofs: (a: number, b: number, c: number, d: number, e: any) => any;
     readonly redact_pczt_compact: (a: number, b: number) => [number, number, number, number];
     readonly shielding_pool_for_height: (a: number, b: number) => [number, number];
     readonly transparent_address_from_ufvk: (a: number, b: number, c: number) => [number, number, number, number];
@@ -1024,46 +1099,20 @@ export interface InitOutput {
     readonly zip317_shielding_fee_zat: (a: number) => bigint;
     readonly zt_encode_frames: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
     readonly zt_encode_frames_auto: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
-    readonly witness_extract_path_ironwood: (a: number, b: number) => [number, number, number];
-    readonly init: () => void;
-    readonly witness_sync_update_ironwood: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number, number];
     readonly build_merkle_paths_ironwood: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number];
-    readonly tree_root_hex_ironwood: (a: number, b: number) => [number, number, number, number];
+    readonly init: () => void;
+    readonly witness_extract_path_ironwood: (a: number, b: number) => [number, number, number];
     readonly frontier_tree_size_ironwood: (a: number, b: number) => [bigint, number, number];
-    readonly frost_aggregate_shares: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => [number, number, number, number];
-    readonly frost_attestation_digest: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
-    readonly frost_attestation_verify: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number, number];
-    readonly frost_dealer_keygen: (a: number, b: number) => [number, number, number, number];
-    readonly frost_derive_address_from_sk: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
-    readonly frost_derive_address_raw: (a: number, b: number, c: number) => [number, number, number, number];
-    readonly frost_derive_ufvk: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
-    readonly frost_dkg_part1: (a: number, b: number) => [number, number, number, number];
-    readonly frost_dkg_part2: (a: number, b: number, c: number, d: number) => [number, number, number, number];
-    readonly frost_dkg_part3: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
-    readonly frost_generate_randomizer: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
-    readonly frost_inspect_pczt_outputs: (a: number, b: number, c: number, d: number) => [number, number, number, number];
-    readonly frost_parse_tx_outputs: (a: number, b: number, c: number, d: number) => [number, number, number, number];
-    readonly frost_sample_fvk_sk: () => [number, number];
-    readonly frost_sign_round1: (a: number, b: number, c: number, d: number) => [number, number, number, number];
-    readonly frost_sign_round2: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number) => [number, number, number, number];
-    readonly frost_spend_aggregate: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => [number, number, number, number];
-    readonly frost_spend_sign_round2: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => [number, number, number, number];
-    readonly frost_spend_sign_round2_signed: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number) => [number, number, number, number];
-    readonly pir_fetch_imt_proofs: (a: number, b: number, c: number, d: number, e: any) => any;
-    readonly build_delegation_pczt: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number, p: number, q: number) => [number, number, number, number];
-    readonly build_vote_commitment_wire: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number) => [number, number, number, number];
-    readonly build_vote_shares_wire: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: bigint) => [number, number, number, number];
-    readonly cast_vote_hot_wire: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: bigint) => [number, number, number, number];
-    readonly finalize_delegation: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => [number, number, number, number];
-    readonly generate_voting_hotkey: (a: number, b: number) => [number, number, number, number];
+    readonly witness_sync_update_ironwood: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number, number];
+    readonly tree_root_hex_ironwood: (a: number, b: number) => [number, number, number, number];
     readonly rustsecp256k1_v0_10_0_default_error_callback_fn: (a: number, b: number) => void;
     readonly rustsecp256k1_v0_10_0_default_illegal_callback_fn: (a: number, b: number) => void;
     readonly rustsecp256k1_v0_10_0_context_destroy: (a: number) => void;
     readonly rustsecp256k1_v0_10_0_context_create: (a: number) => number;
-    readonly wasm_bindgen_75fefa18e6030595___convert__closures_____invoke___wasm_bindgen_75fefa18e6030595___JsValue__core_2fb3c31ab891fe54___result__Result_____wasm_bindgen_75fefa18e6030595___JsError___true_: (a: number, b: number, c: any) => [number, number];
-    readonly wasm_bindgen_75fefa18e6030595___convert__closures_____invoke___js_sys_9ec148cc023792e2___Function_fn_wasm_bindgen_75fefa18e6030595___JsValue_____wasm_bindgen_75fefa18e6030595___sys__Undefined___js_sys_9ec148cc023792e2___Function_fn_wasm_bindgen_75fefa18e6030595___JsValue_____wasm_bindgen_75fefa18e6030595___sys__Undefined_______true_: (a: number, b: number, c: any, d: any) => void;
-    readonly wasm_bindgen_75fefa18e6030595___convert__closures_____invoke___js_sys_9ec148cc023792e2___futures__task__wait_async_polyfill__MessageEvent______true_: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen_75fefa18e6030595___convert__closures_____invoke___wasm_bindgen_75fefa18e6030595___JsValue______true_: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen_aeea2c632802c019___convert__closures_____invoke___wasm_bindgen_aeea2c632802c019___JsValue__core_8266185441cb29e1___result__Result_____wasm_bindgen_aeea2c632802c019___JsError___true_: (a: number, b: number, c: any) => [number, number];
+    readonly wasm_bindgen_aeea2c632802c019___convert__closures_____invoke___js_sys_74738dcabc251f8d___Function_fn_wasm_bindgen_aeea2c632802c019___JsValue_____wasm_bindgen_aeea2c632802c019___sys__Undefined___js_sys_74738dcabc251f8d___Function_fn_wasm_bindgen_aeea2c632802c019___JsValue_____wasm_bindgen_aeea2c632802c019___sys__Undefined_______true_: (a: number, b: number, c: any, d: any) => void;
+    readonly wasm_bindgen_aeea2c632802c019___convert__closures_____invoke___js_sys_74738dcabc251f8d___futures__task__wait_async_polyfill__MessageEvent______true_: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen_aeea2c632802c019___convert__closures_____invoke___wasm_bindgen_aeea2c632802c019___JsValue______true_: (a: number, b: number, c: any) => void;
     readonly memory: WebAssembly.Memory;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;

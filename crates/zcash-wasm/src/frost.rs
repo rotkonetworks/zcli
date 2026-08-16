@@ -1169,3 +1169,29 @@ pub fn frost_relay_generate_keypair() -> Result<String, JsError> {
     })
     .to_string())
 }
+
+/// Sign a frostd login challenge with a relay private key.
+///
+/// frostd authenticates by verifying XEdDSA over the participant's X25519
+/// key - the same key Noise uses. This exists because without it the browser
+/// can generate keys and encrypt, but cannot log in at all, which is how the
+/// gap was found: by trying to wire the client up.
+#[wasm_bindgen]
+pub fn frost_relay_sign_challenge(
+    private_key_hex: &str,
+    challenge: &str,
+) -> Result<String, JsError> {
+    let sk_bytes =
+        hex::decode(private_key_hex).map_err(|e| JsError::new(&format!("private key hex: {e}")))?;
+    let sk: [u8; 32] = sk_bytes
+        .try_into()
+        .map_err(|_| JsError::new("private key is not 32 bytes"))?;
+
+    let sig = frost_spend::relay_cipher::sign_challenge(
+        &sk,
+        challenge.as_bytes(),
+        &mut rand_core::OsRng,
+    )
+    .map_err(|e| JsError::new(&e))?;
+    Ok(hex::encode(sig))
+}

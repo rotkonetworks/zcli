@@ -36,6 +36,10 @@ osst = { git = "https://github.com/rotkonetworks/frostito", rev = "14e38da", def
 # default-features=false drops the ring backend; the pure-Rust resolver is
 # what keeps the wasm build (zafu) working.
 snow = { version = "0.9", default-features = false, features = ["default-resolver"] }
+# frostd authenticates a login by verifying an XEdDSA signature over its
+# challenge, made with the SAME X25519 key used for Noise. Signal's
+# construction, and the reason ZF can get away with one key for both.
+xeddsa = "1"
 x25519-dalek = { version = "2", features = ["static_secrets"] }
 hkdf = "0.12"
 

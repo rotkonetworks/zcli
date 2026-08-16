@@ -1,6 +1,90 @@
 /* @ts-self-types="./zafu_wasm.d.ts" */
 
 /**
+ * A relay session's ciphers, held across the whole session.
+ */
+export class FrostRelayCipher {
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        FrostRelayCipherFinalization.unregister(this);
+        return ptr;
+    }
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_frostrelaycipher_free(ptr, 0);
+    }
+    /**
+     * Decrypt from one peer. Authenticates the sender: Noise_K mixes the
+     * sender's static key into the key schedule, so a message relabelled as
+     * coming from somebody else does not decrypt.
+     * @param {string} sender_hex
+     * @param {string} msg_hex
+     * @returns {Uint8Array}
+     */
+    decrypt(sender_hex, msg_hex) {
+        const ptr0 = passStringToWasm0(sender_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(msg_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.frostrelaycipher_decrypt(this.__wbg_ptr, ptr0, len0, ptr1, len1);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v3 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        return v3;
+    }
+    /**
+     * Encrypt for one peer. Returns hex.
+     * @param {string} recipient_hex
+     * @param {Uint8Array} msg
+     * @returns {string}
+     */
+    encrypt(recipient_hex, msg) {
+        let deferred4_0;
+        let deferred4_1;
+        try {
+            const ptr0 = passStringToWasm0(recipient_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ptr1 = passArray8ToWasm0(msg, wasm.__wbindgen_malloc);
+            const len1 = WASM_VECTOR_LEN;
+            const ret = wasm.frostrelaycipher_encrypt(this.__wbg_ptr, ptr0, len0, ptr1, len1);
+            var ptr3 = ret[0];
+            var len3 = ret[1];
+            if (ret[3]) {
+                ptr3 = 0; len3 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred4_0 = ptr3;
+            deferred4_1 = len3;
+            return getStringFromWasm0(ptr3, len3);
+        } finally {
+            wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
+        }
+    }
+    /**
+     * `peers_hex` is a JSON array of hex-encoded 32-byte public keys.
+     * @param {string} private_key_hex
+     * @param {string} peers_hex
+     */
+    constructor(private_key_hex, peers_hex) {
+        const ptr0 = passStringToWasm0(private_key_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(peers_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.frostrelaycipher_new(ptr0, len0, ptr1, len1);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        this.__wbg_ptr = ret[0];
+        FrostRelayCipherFinalization.register(this, this.__wbg_ptr, this);
+        return this;
+    }
+}
+if (Symbol.dispose) FrostRelayCipher.prototype[Symbol.dispose] = FrostRelayCipher.prototype.free;
+
+/**
  * Wallet keys derived from seed phrase
  */
 export class WalletKeys {
@@ -1564,6 +1648,32 @@ export function derive_transparent_privkey(seed_phrase, account, index) {
 }
 
 /**
+ * @param {string} pczt_hex
+ * @param {boolean} mainnet
+ * @returns {string}
+ */
+export function describe_pczt_for_ledger(pczt_hex, mainnet) {
+    let deferred3_0;
+    let deferred3_1;
+    try {
+        const ptr0 = passStringToWasm0(pczt_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.describe_pczt_for_ledger(ptr0, len0, mainnet);
+        var ptr2 = ret[0];
+        var len2 = ret[1];
+        if (ret[3]) {
+            ptr2 = 0; len2 = 0;
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        deferred3_0 = ptr2;
+        deferred3_1 = len2;
+        return getStringFromWasm0(ptr2, len2);
+    } finally {
+        wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+    }
+}
+
+/**
  * Encode notes + merkle paths into CBOR bytes for ur:zcash-notes.
  *
  * This produces the exact format zigner expects: CBOR map with anchor,
@@ -2165,6 +2275,66 @@ export function frost_parse_tx_outputs(unsigned_tx_hex, orchard_fvk_uview) {
         const ptr1 = passStringToWasm0(orchard_fvk_uview, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len1 = WASM_VECTOR_LEN;
         const ret = wasm.frost_parse_tx_outputs(ptr0, len0, ptr1, len1);
+        var ptr3 = ret[0];
+        var len3 = ret[1];
+        if (ret[3]) {
+            ptr3 = 0; len3 = 0;
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        deferred4_0 = ptr3;
+        deferred4_1 = len3;
+        return getStringFromWasm0(ptr3, len3);
+    } finally {
+        wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
+    }
+}
+
+/**
+ * Generate a relay keypair. Returns JSON `{ "private": hex, "public": hex }`.
+ *
+ * The public key is what other participants address messages to, and what
+ * frostd authenticates you by.
+ * @returns {string}
+ */
+export function frost_relay_generate_keypair() {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const ret = wasm.frost_relay_generate_keypair();
+        var ptr1 = ret[0];
+        var len1 = ret[1];
+        if (ret[3]) {
+            ptr1 = 0; len1 = 0;
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        deferred2_0 = ptr1;
+        deferred2_1 = len1;
+        return getStringFromWasm0(ptr1, len1);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+    }
+}
+
+/**
+ * Sign a frostd login challenge with a relay private key.
+ *
+ * frostd authenticates by verifying XEdDSA over the participant's X25519
+ * key - the same key Noise uses. This exists because without it the browser
+ * can generate keys and encrypt, but cannot log in at all, which is how the
+ * gap was found: by trying to wire the client up.
+ * @param {string} private_key_hex
+ * @param {string} challenge
+ * @returns {string}
+ */
+export function frost_relay_sign_challenge(private_key_hex, challenge) {
+    let deferred4_0;
+    let deferred4_1;
+    try {
+        const ptr0 = passStringToWasm0(private_key_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(challenge, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.frost_relay_sign_challenge(ptr0, len0, ptr1, len1);
         var ptr3 = ret[0];
         var len3 = ret[1];
         if (ret[3]) {
@@ -3237,7 +3407,7 @@ function __wbg_get_imports(memory) {
                     const a = state0.a;
                     state0.a = 0;
                     try {
-                        return wasm_bindgen_75fefa18e6030595___convert__closures_____invoke___js_sys_9ec148cc023792e2___Function_fn_wasm_bindgen_75fefa18e6030595___JsValue_____wasm_bindgen_75fefa18e6030595___sys__Undefined___js_sys_9ec148cc023792e2___Function_fn_wasm_bindgen_75fefa18e6030595___JsValue_____wasm_bindgen_75fefa18e6030595___sys__Undefined_______true_(a, state0.b, arg0, arg1);
+                        return wasm_bindgen_aeea2c632802c019___convert__closures_____invoke___js_sys_74738dcabc251f8d___Function_fn_wasm_bindgen_aeea2c632802c019___JsValue_____wasm_bindgen_aeea2c632802c019___sys__Undefined___js_sys_74738dcabc251f8d___Function_fn_wasm_bindgen_aeea2c632802c019___JsValue_____wasm_bindgen_aeea2c632802c019___sys__Undefined_______true_(a, state0.b, arg0, arg1);
                     } finally {
                         state0.a = a;
                     }
@@ -3267,7 +3437,7 @@ function __wbg_get_imports(memory) {
                     const a = state0.a;
                     state0.a = 0;
                     try {
-                        return wasm_bindgen_75fefa18e6030595___convert__closures_____invoke___js_sys_9ec148cc023792e2___Function_fn_wasm_bindgen_75fefa18e6030595___JsValue_____wasm_bindgen_75fefa18e6030595___sys__Undefined___js_sys_9ec148cc023792e2___Function_fn_wasm_bindgen_75fefa18e6030595___JsValue_____wasm_bindgen_75fefa18e6030595___sys__Undefined_______true_(a, state0.b, arg0, arg1);
+                        return wasm_bindgen_aeea2c632802c019___convert__closures_____invoke___js_sys_74738dcabc251f8d___Function_fn_wasm_bindgen_aeea2c632802c019___JsValue_____wasm_bindgen_aeea2c632802c019___sys__Undefined___js_sys_74738dcabc251f8d___Function_fn_wasm_bindgen_aeea2c632802c019___JsValue_____wasm_bindgen_aeea2c632802c019___sys__Undefined_______true_(a, state0.b, arg0, arg1);
                     } finally {
                         state0.a = a;
                     }
@@ -3399,18 +3569,18 @@ function __wbg_get_imports(memory) {
             return ret;
         },
         __wbindgen_cast_0000000000000001: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 3547, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen_75fefa18e6030595___convert__closures_____invoke___wasm_bindgen_75fefa18e6030595___JsValue__core_2fb3c31ab891fe54___result__Result_____wasm_bindgen_75fefa18e6030595___JsError___true_);
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 3321, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen_aeea2c632802c019___convert__closures_____invoke___wasm_bindgen_aeea2c632802c019___JsValue__core_8266185441cb29e1___result__Result_____wasm_bindgen_aeea2c632802c019___JsError___true_);
             return ret;
         },
         __wbindgen_cast_0000000000000002: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 3566, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen_75fefa18e6030595___convert__closures_____invoke___js_sys_9ec148cc023792e2___futures__task__wait_async_polyfill__MessageEvent______true_);
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 3323, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen_aeea2c632802c019___convert__closures_____invoke___js_sys_74738dcabc251f8d___futures__task__wait_async_polyfill__MessageEvent______true_);
             return ret;
         },
         __wbindgen_cast_0000000000000003: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 504, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen_75fefa18e6030595___convert__closures_____invoke___wasm_bindgen_75fefa18e6030595___JsValue______true_);
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 68, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen_aeea2c632802c019___convert__closures_____invoke___wasm_bindgen_aeea2c632802c019___JsValue______true_);
             return ret;
         },
         __wbindgen_cast_0000000000000004: function(arg0) {
@@ -3456,7 +3626,7 @@ function __wbg_get_imports(memory) {
             getDataViewMemory0().setInt32(arg0 + 4 * 1, len1, true);
             getDataViewMemory0().setInt32(arg0 + 4 * 0, ptr1, true);
         },
-        memory: memory || new WebAssembly.Memory({initial:59,maximum:32768,shared:true}),
+        memory: memory || new WebAssembly.Memory({initial:50,maximum:32768,shared:true}),
     };
     return {
         __proto__: null,
@@ -3464,25 +3634,28 @@ function __wbg_get_imports(memory) {
     };
 }
 
-function wasm_bindgen_75fefa18e6030595___convert__closures_____invoke___js_sys_9ec148cc023792e2___futures__task__wait_async_polyfill__MessageEvent______true_(arg0, arg1, arg2) {
-    wasm.wasm_bindgen_75fefa18e6030595___convert__closures_____invoke___js_sys_9ec148cc023792e2___futures__task__wait_async_polyfill__MessageEvent______true_(arg0, arg1, arg2);
+function wasm_bindgen_aeea2c632802c019___convert__closures_____invoke___js_sys_74738dcabc251f8d___futures__task__wait_async_polyfill__MessageEvent______true_(arg0, arg1, arg2) {
+    wasm.wasm_bindgen_aeea2c632802c019___convert__closures_____invoke___js_sys_74738dcabc251f8d___futures__task__wait_async_polyfill__MessageEvent______true_(arg0, arg1, arg2);
 }
 
-function wasm_bindgen_75fefa18e6030595___convert__closures_____invoke___wasm_bindgen_75fefa18e6030595___JsValue______true_(arg0, arg1, arg2) {
-    wasm.wasm_bindgen_75fefa18e6030595___convert__closures_____invoke___wasm_bindgen_75fefa18e6030595___JsValue______true_(arg0, arg1, arg2);
+function wasm_bindgen_aeea2c632802c019___convert__closures_____invoke___wasm_bindgen_aeea2c632802c019___JsValue______true_(arg0, arg1, arg2) {
+    wasm.wasm_bindgen_aeea2c632802c019___convert__closures_____invoke___wasm_bindgen_aeea2c632802c019___JsValue______true_(arg0, arg1, arg2);
 }
 
-function wasm_bindgen_75fefa18e6030595___convert__closures_____invoke___wasm_bindgen_75fefa18e6030595___JsValue__core_2fb3c31ab891fe54___result__Result_____wasm_bindgen_75fefa18e6030595___JsError___true_(arg0, arg1, arg2) {
-    const ret = wasm.wasm_bindgen_75fefa18e6030595___convert__closures_____invoke___wasm_bindgen_75fefa18e6030595___JsValue__core_2fb3c31ab891fe54___result__Result_____wasm_bindgen_75fefa18e6030595___JsError___true_(arg0, arg1, arg2);
+function wasm_bindgen_aeea2c632802c019___convert__closures_____invoke___wasm_bindgen_aeea2c632802c019___JsValue__core_8266185441cb29e1___result__Result_____wasm_bindgen_aeea2c632802c019___JsError___true_(arg0, arg1, arg2) {
+    const ret = wasm.wasm_bindgen_aeea2c632802c019___convert__closures_____invoke___wasm_bindgen_aeea2c632802c019___JsValue__core_8266185441cb29e1___result__Result_____wasm_bindgen_aeea2c632802c019___JsError___true_(arg0, arg1, arg2);
     if (ret[1]) {
         throw takeFromExternrefTable0(ret[0]);
     }
 }
 
-function wasm_bindgen_75fefa18e6030595___convert__closures_____invoke___js_sys_9ec148cc023792e2___Function_fn_wasm_bindgen_75fefa18e6030595___JsValue_____wasm_bindgen_75fefa18e6030595___sys__Undefined___js_sys_9ec148cc023792e2___Function_fn_wasm_bindgen_75fefa18e6030595___JsValue_____wasm_bindgen_75fefa18e6030595___sys__Undefined_______true_(arg0, arg1, arg2, arg3) {
-    wasm.wasm_bindgen_75fefa18e6030595___convert__closures_____invoke___js_sys_9ec148cc023792e2___Function_fn_wasm_bindgen_75fefa18e6030595___JsValue_____wasm_bindgen_75fefa18e6030595___sys__Undefined___js_sys_9ec148cc023792e2___Function_fn_wasm_bindgen_75fefa18e6030595___JsValue_____wasm_bindgen_75fefa18e6030595___sys__Undefined_______true_(arg0, arg1, arg2, arg3);
+function wasm_bindgen_aeea2c632802c019___convert__closures_____invoke___js_sys_74738dcabc251f8d___Function_fn_wasm_bindgen_aeea2c632802c019___JsValue_____wasm_bindgen_aeea2c632802c019___sys__Undefined___js_sys_74738dcabc251f8d___Function_fn_wasm_bindgen_aeea2c632802c019___JsValue_____wasm_bindgen_aeea2c632802c019___sys__Undefined_______true_(arg0, arg1, arg2, arg3) {
+    wasm.wasm_bindgen_aeea2c632802c019___convert__closures_____invoke___js_sys_74738dcabc251f8d___Function_fn_wasm_bindgen_aeea2c632802c019___JsValue_____wasm_bindgen_aeea2c632802c019___sys__Undefined___js_sys_74738dcabc251f8d___Function_fn_wasm_bindgen_aeea2c632802c019___JsValue_____wasm_bindgen_aeea2c632802c019___sys__Undefined_______true_(arg0, arg1, arg2, arg3);
 }
 
+const FrostRelayCipherFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_frostrelaycipher_free(ptr, 1));
 const WalletKeysFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_walletkeys_free(ptr, 1));

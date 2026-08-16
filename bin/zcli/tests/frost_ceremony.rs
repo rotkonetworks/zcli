@@ -331,3 +331,51 @@ async fn the_relay_never_sees_ceremony_plaintext() {
     // and a message really is in there, so the assertion is not vacuous
     assert!(raw.contains("\"msg\""), "no message in the queue at all: {raw}");
 }
+
+/// Our wasm-side challenge signing must satisfy the real frostd login, not
+/// just look plausible. zafu signs with frost_spend::relay_cipher because
+/// frost-client will not build for wasm32; if the two ever disagree, the
+/// browser silently cannot log in.
+#[tokio::test]
+async fn our_wasm_signature_is_accepted_by_a_real_frostd() {
+    use frost_client::api;
+    use frost_spend::relay_cipher::{generate_keypair, sign_challenge};
+
+    let addr = spawn_frostd().await;
+    let host = format!("http://{addr}");
+    let (sk, pk) = generate_keypair().expect("keypair");
+
+    let http = reqwest::Client::new();
+    let challenge: api::ChallengeOutput = http
+        .post(format!("{host}/challenge"))
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .expect("challenge")
+        .json()
+        .await
+        .expect("challenge json");
+
+    // signed the way the browser will sign it
+    let sig = sign_challenge(&sk, challenge.challenge.as_bytes(), &mut rand::rngs::OsRng)
+        .expect("sign");
+
+    let res = http
+        .post(format!("{host}/login"))
+        .json(&api::LoginArgs {
+            challenge: challenge.challenge,
+            pubkey: api::PublicKey(pk.to_vec()),
+            signature: sig.to_vec(),
+        })
+        .send()
+        .await
+        .expect("login");
+
+    assert!(
+        res.status().is_success(),
+        "frostd rejected our signature: {}",
+        res.status()
+    );
+    let out: api::LoginOutput = res.json().await.expect("login json");
+    assert!(!out.access_token.is_nil(), "no access token issued");
+}

@@ -2451,6 +2451,7 @@ dependencies = [
  "sha2 0.10.9",
  "snow",
  "x25519-dalek",
+ "xeddsa",
 ]
 
 [[package]]
