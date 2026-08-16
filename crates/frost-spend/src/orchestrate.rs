@@ -309,7 +309,6 @@ pub fn dkg_part2(secret_hex: &str, peer_broadcasts_hex: &[String]) -> Result<Dkg
     // its own view, so a package sealed in one ceremony cannot be opened in
     // another even if the same people run it again.
     let transcript = ceremony_transcript_from(&sk, &peer_enc_keys)?;
-    let our_id_hex = to_hex(&id_from_vk(&sk.verification_key())?)?;
 
     let mut peer_packages = Vec::new();
     for (id, pkg) in &round2_pkgs {

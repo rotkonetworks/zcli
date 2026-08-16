@@ -50,23 +50,30 @@ sha2 = { version = "0.10", default-features = false }
 thiserror = "1.0"
 wide = { version = "0.7", default-features = false }
 
+[profile.release]
+# LTO + single codegen unit: 5-20% runtime on the compute-heavy wasm (proving
+# AND scanning), for longer build times. Universal, fork-independent win.
+lto = true
+codegen-units = 1
+
 [patch.crates-io]
 maybe-rayon = { path = "crates/maybe-rayon" }
 
-# Zakura proving-stack fork - portable MSM speedups that apply to our wasm32
-# proving: signed Booth recoding for multiexp + a single-worker serial multiexp
-# path (skips the parallel algorithm's wasteful doublings when threads <= 1,
-# i.e. the wasm-single case). The native ADX `pasta_msm` backend has no
-# dependents in this graph, so wasm excludes it automatically. Same crate set
-# and rev Vizor benchmarked (chainapsis PR 506 / adam/pr506-zakura-proof-bench).
-halo2_proofs = { git = "https://github.com/zakura-core/libraries", rev = "7490b608930de93ee69ade037c7aea4bf8b29f32" }
-halo2_gadgets = { git = "https://github.com/zakura-core/libraries", rev = "7490b608930de93ee69ade037c7aea4bf8b29f32" }
-halo2_poseidon = { git = "https://github.com/zakura-core/libraries", rev = "7490b608930de93ee69ade037c7aea4bf8b29f32" }
-halo2_legacy_pdqsort = { git = "https://github.com/zakura-core/libraries", rev = "7490b608930de93ee69ade037c7aea4bf8b29f32" }
-orchard = { git = "https://github.com/zakura-core/libraries", rev = "7490b608930de93ee69ade037c7aea4bf8b29f32" }
-pasta_curves = { git = "https://github.com/zakura-core/libraries", rev = "7490b608930de93ee69ade037c7aea4bf8b29f32" }
-reddsa = { git = "https://github.com/zakura-core/libraries", rev = "7490b608930de93ee69ade037c7aea4bf8b29f32" }
-sinsemilla = { git = "https://github.com/zakura-core/libraries", rev = "7490b608930de93ee69ade037c7aea4bf8b29f32" }
+# Zakura proving-stack fork (zakura-core/libraries, main @ d1fe54e). Portable
+# halo2/orchard proving speedups that apply to our wasm32 build - the merged set
+# on main incl. lookup-argument compression and fixed-window witness (help every
+# rayon worker, so they carry into the parallel build), plus SIMD multiexp. The
+# native ADX `pasta_msm` backend has no dependents here, so wasm excludes it.
+# NOTE: the larger multiexp wins (Booth recoding, evaluator CSE, fixed-base MSM
+# table) are still on unmerged agent/* branches - revisit the rev when they land.
+halo2_proofs = { git = "https://github.com/zakura-core/libraries", rev = "d1fe54e56ffbb6c36cb4e54f7532957347f08397" }
+halo2_gadgets = { git = "https://github.com/zakura-core/libraries", rev = "d1fe54e56ffbb6c36cb4e54f7532957347f08397" }
+halo2_poseidon = { git = "https://github.com/zakura-core/libraries", rev = "d1fe54e56ffbb6c36cb4e54f7532957347f08397" }
+halo2_legacy_pdqsort = { git = "https://github.com/zakura-core/libraries", rev = "d1fe54e56ffbb6c36cb4e54f7532957347f08397" }
+orchard = { git = "https://github.com/zakura-core/libraries", rev = "d1fe54e56ffbb6c36cb4e54f7532957347f08397" }
+pasta_curves = { git = "https://github.com/zakura-core/libraries", rev = "d1fe54e56ffbb6c36cb4e54f7532957347f08397" }
+reddsa = { git = "https://github.com/zakura-core/libraries", rev = "d1fe54e56ffbb6c36cb4e54f7532957347f08397" }
+sinsemilla = { git = "https://github.com/zakura-core/libraries", rev = "d1fe54e56ffbb6c36cb4e54f7532957347f08397" }
 
 # vendored librustzcash fork removed: NU6.3 / Ironwood is upstream as of the
 # released crates (zcash_primitives 0.30 / zcash_protocol 0.10 / orchard

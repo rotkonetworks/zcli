@@ -13,7 +13,6 @@ mod compact;
 mod constants;
 mod epoch;
 mod error;
-mod frost_relay;
 mod grpc_service;
 mod header_chain;
 mod lwd_service;
@@ -62,14 +61,6 @@ struct Args {
     #[arg(long)]
     zidecar_rpc: bool,
 
-    /// OPT-IN: enable the FROST relay gRPC surface. Forwards opaque signed
-    /// blobs between room participants without reading them.
-    ///
-    /// DEPRECATED in favour of --frostd. This speaks a room protocol nobody
-    /// outside this repo implements; frostd is what the Zcash FROST ecosystem
-    /// uses, so clients built against ZF's tooling can talk to it.
-    #[arg(long)]
-    frost_relay: bool,
 
     /// OPT-IN: serve a standard ZF frostd relay on this address.
     ///
@@ -121,9 +112,9 @@ async fn main() -> Result<()> {
     info!("gRPC listen: {}", args.listen);
     info!("testnet: {}", args.testnet);
     info!(
-        "surfaces: lightwalletd (always-on) | zidecar-rpc={} | frost-relay={} | auth={}",
+        "surfaces: lightwalletd (always-on) | zidecar-rpc={} | frostd={} | auth={}",
         args.zidecar_rpc,
-        args.frost_relay,
+        args.frostd_listen.is_some(),
         if args.auth_token.is_some() {
             "bearer"
         } else {
@@ -303,20 +294,6 @@ async fn main() -> Result<()> {
         info!("zidecar-rpc surface: disabled (use --zidecar-rpc to enable)");
     }
 
-    // Opt-in: FROST relay (default off so the public lwd surface doesn't carry
-    // the relay endpoint).
-    if args.frost_relay {
-        let frost = frost_relay::FrostRelayService::new();
-        info!("frost relay: enabled");
-        let frost_server =
-            frost_relay_proto::frost_relay_server::FrostRelayServer::with_interceptor(
-                frost,
-                auth.clone(),
-            );
-        router = router.add_service(tonic_web::enable(frost_server));
-    } else {
-        info!("frost relay: disabled (use --frost-relay to enable)");
-    }
 
     // Bind the listener synchronously so EADDRINUSE / permission errors
     // propagate from main() with a clean error instead of surfacing as a late
@@ -387,6 +364,3 @@ pub mod lightwalletd {
     tonic::include_proto!("cash.z.wallet.sdk.rpc");
 }
 
-pub mod frost_relay_proto {
-    tonic::include_proto!("frost_relay.v1");
-}

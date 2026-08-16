@@ -13,12 +13,8 @@ pub mod client;
 pub mod frost;
 #[cfg(feature = "cli")]
 pub mod frost_qr;
-#[cfg(feature = "cli")]
-pub mod frost_relay;
 
-/// Standard ZF frostd relay transport. See the module note: this exists to
-/// replace frost_relay, which is ours to maintain and speaks nobody else's
-/// protocol.
+/// Standard ZF frostd relay transport, via ZF's own frost-client.
 pub mod frostd_transport;
 #[cfg(feature = "cli")]
 pub mod notes_export;
