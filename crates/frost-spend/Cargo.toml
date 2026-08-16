@@ -31,9 +31,12 @@ pasta_curves = "0.5"
 # feature, so `cargo build -p frost-spend` failed in isolation.
 osst = { git = "https://github.com/rotkonetworks/frostito", rev = "14e38da", default-features = false, features = ["pallas", "std"] }
 
-# round-2 package sealing (see sealed.rs)
+# round-2 package sealing (see sealed.rs). Noise_K, the same pattern ZF's
+# frost-client uses, so this is the ecosystem's transport rather than ours.
+# default-features=false drops the ring backend; the pure-Rust resolver is
+# what keeps the wasm build (zafu) working.
+snow = { version = "0.9", default-features = false, features = ["default-resolver"] }
 x25519-dalek = { version = "2", features = ["static_secrets"] }
-chacha20poly1305 = "0.10"
 hkdf = "0.12"
 
 # hashing

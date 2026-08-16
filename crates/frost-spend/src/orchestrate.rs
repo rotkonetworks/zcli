@@ -177,7 +177,7 @@ pub const DKG_WIRE_VERSION: u32 = 2;
 /// Round-1 broadcast contents, after verification.
 struct Round1Peer {
     package: dkg::round1::Package,
-    enc_pk: x25519_dalek::PublicKey,
+    enc_pk: [u8; 32],
 }
 
 /// Parse a verified round-1 payload.
@@ -215,7 +215,7 @@ fn parse_round1_payload(payload: &[u8]) -> Result<Round1Peer, Error> {
 
     Ok(Round1Peer {
         package: from_hex(pkg_hex)?,
-        enc_pk: x25519_dalek::PublicKey::from(epk_bytes),
+        enc_pk: epk_bytes,
     })
 }
 
@@ -226,17 +226,15 @@ fn parse_round1_payload(payload: &[u8]) -> Result<Round1Peer, Error> {
 /// way and neither can forget to.
 fn ceremony_transcript_from(
     sk: &SigningKey,
-    peer_enc_keys: &BTreeMap<Identifier, x25519_dalek::PublicKey>,
+    peer_enc_keys: &BTreeMap<Identifier, [u8; 32]>,
 ) -> Result<[u8; 32], Error> {
     let mut entries = Vec::with_capacity(peer_enc_keys.len() + 1);
     entries.push((
         to_hex(&id_from_vk(&sk.verification_key())?)?,
-        sealed::x25519_public_from_seed(sk.as_bytes())
-            .as_bytes()
-            .to_owned(),
+        sealed::x25519_public_from_seed(sk.as_bytes()),
     ));
     for (id, pk) in peer_enc_keys {
-        entries.push((to_hex(id)?, pk.as_bytes().to_owned()));
+        entries.push((to_hex(id)?, *pk));
     }
     Ok(sealed::ceremony_transcript(&entries))
 }
@@ -262,7 +260,7 @@ pub fn dkg_part1(max_signers: u16, min_signers: u16) -> Result<Dkg1Result, Error
     let payload = serde_json::to_vec(&serde_json::json!({
         "v": DKG_WIRE_VERSION,
         "pkg": to_hex(&package)?,
-        "epk": hex::encode(enc_pk.as_bytes()),
+        "epk": hex::encode(enc_pk),
     }))
     .map_err(|e| Error::Serialize(e.to_string()))?;
     let signed = SignedMessage::sign(&sk, &payload);
@@ -326,9 +324,13 @@ pub fn dkg_part2(secret_hex: &str, peer_broadcasts_hex: &[String]) -> Result<Dkg
             ))
         })?;
 
-        let aad = sealed::round2_aad(&transcript, &our_id_hex, &recipient_hex);
-        let boxed = sealed::seal(enc_pk, &aad, &to_hex(pkg)?.into_bytes(), &mut OsRng)
-            .map_err(Error::Serialize)?;
+        let boxed = sealed::seal(
+            &sealed::x25519_secret_from_seed(sk.as_bytes()),
+            enc_pk,
+            &transcript,
+            to_hex(pkg)?.as_bytes(),
+        )
+        .map_err(Error::Serialize)?;
 
         // `recipient` stays in the clear: round 3 needs it to pick out the
         // packages addressed to it, and it is an identifier derived from a
@@ -337,7 +339,7 @@ pub fn dkg_part2(secret_hex: &str, peer_broadcasts_hex: &[String]) -> Result<Dkg
         let payload = serde_json::to_vec(&serde_json::json!({
             "v": DKG_WIRE_VERSION,
             "recipient": recipient_hex,
-            "sealed": boxed,
+            "sealed": hex::encode(&boxed),
         }))
         .map_err(|e| Error::Serialize(e.to_string()))?;
         peer_packages.push(to_hex(&SignedMessage::sign(&sk, &payload))?);
@@ -418,11 +420,22 @@ pub fn dkg_part3(
             ));
         }
 
-        let boxed: sealed::SealedBox = serde_json::from_value(inner["sealed"].clone())
-            .map_err(|e| Error::Serialize(format!("parse sealed: {}", e)))?;
-        let sender_hex = to_hex(&id_from_vk(&vk)?)?;
-        let aad = sealed::round2_aad(&transcript, &sender_hex, recipient_hex);
-        let opened = sealed::open(&enc_sk, &aad, &boxed).map_err(Error::Serialize)?;
+        let boxed = hex::decode(
+            inner["sealed"]
+                .as_str()
+                .ok_or_else(|| Error::Serialize("sealed is not a hex string".into()))?,
+        )
+        .map_err(|e| Error::Serialize(format!("sealed hex: {e}")))?;
+
+        // Noise_K needs the SENDER's static key, looked up by who signed the
+        // envelope. A package from someone not in round 1 has no key here and
+        // is refused rather than guessed at.
+        let sender_id = id_from_vk(&vk)?;
+        let sender_pk = peer_enc_keys.get(&sender_id).ok_or_else(|| {
+            Error::Serialize("round-2 package from a participant absent from round 1".into())
+        })?;
+        let opened =
+            sealed::open(&enc_sk, sender_pk, &transcript, &boxed).map_err(Error::Serialize)?;
         let pkg_hex = String::from_utf8(opened)
             .map_err(|e| Error::Serialize(format!("sealed package not utf8: {e}")))?;
 

@@ -13,183 +13,87 @@
 // hands over the group signing key. RFC 9591 requires round 2 to be
 // confidential as well as authenticated; we had only the latter.
 //
-// SHAPE
+// WHY Noise_K
 //
-// Each recipient advertises an X25519 public key in its round-1 broadcast.
-// The sender generates a FRESH ephemeral X25519 keypair per package, does
-// ECDH against the recipient's key, and derives a one-use AEAD key from it.
+// This is the same pattern ZF's frost-client uses
+// (Noise_K_25519_ChaChaPoly_BLAKE2s), so it is the Zcash ecosystem's
+// transport rather than one of our own devising. That matters more than any
+// property below: a reviewer can ask "did they use Noise_K correctly", which
+// is answerable, instead of "is this bespoke construction sound", which is
+// not.
 //
-// Fresh-per-package is what makes the rest simple. The derived key is used
-// exactly once, so there is no nonce-reuse question to get wrong and no
-// per-pair counter to carry across rounds; a zero nonce is correct here for
-// the same reason it is in libsodium's sealed boxes and in age. It also
-// means a sender's compromised long-term state cannot retroactively open
-// packages it already sent.
+// The K is what makes it usable here. Both parties' static keys are known in
+// advance, so the handshake is a SINGLE message with no round trip. Round 1
+// already broadcasts each participant's static key, authenticated, so round 2
+// is one Noise message per recipient and the ceremony gains no extra QR
+// scans. An interactive pattern like XX would have cost 1.5 round trips, and
+// a round trip here means a human holding a phone up to another human.
 //
-// Authenticity is NOT this module's job — the sealed box travels inside the
-// existing SignedMessage, which is what proves who sent it. What this module
-// must prevent is a valid ciphertext being lifted out of the context it was
-// made for. Three things are bound into the AEAD associated data:
+// WHAT IT BINDS
 //
-//   ceremony  — so a package cannot be replayed into a different run
-//   sender    — so it cannot be re-signed and passed off as someone else's
-//   recipient — so it cannot be moved into another participant's slot
+//   recipient — it is the responder's static key; nobody else can read it
+//   sender    — the `ss` mix puts the sender's static key in the key
+//               schedule itself, not merely in a signature wrapped around it
+//   ceremony  — passed as the Noise prologue, so both sides must agree on
+//               the full participant set or the handshake produces different
+//               keys and the message does not open
 //
-// None of it costs anything on the wire: associated data is never
-// transmitted, both sides recompute it, and a mismatch simply fails to open.
+// Getting all three from the pattern is the point. The previous version of
+// this file derived a key by hand and bolted sender and ceremony binding on
+// through associated data, which worked but was mine to defend.
 
-use chacha20poly1305::{
-    aead::{Aead, KeyInit, Payload},
-    ChaCha20Poly1305, Key, Nonce,
-};
 use hkdf::Hkdf;
-use rand_core::{CryptoRng, RngCore};
-use serde::{Deserialize, Serialize};
 use sha2::Sha256;
-use x25519_dalek::{EphemeralSecret, PublicKey, StaticSecret};
+use x25519_dalek::{PublicKey, StaticSecret};
 
-/// Domain tag. Changing the wire format MUST change this, so that a package
-/// from an older format fails to open rather than opening as something else.
-const KDF_INFO: &[u8] = b"frost-dkg-round2-seal-v1";
+/// The Noise pattern. Identical to ZF frost-client's, deliberately.
+const NOISE_PATTERN: &str = "Noise_K_25519_ChaChaPoly_BLAKE2s";
 
 /// Separation tag for deriving the X25519 key from the session's ed25519
 /// seed. The two keys must not be the same key: one signs, one decrypts.
-const X25519_DERIVE_INFO: &[u8] = b"frost-dkg-x25519-v1";
-
-/// A package sealed to one recipient.
 ///
-/// Hex rather than serde's default byte arrays for the same reason
-/// SignedMessage does it: these ride in QR frames, where a 3.5x encoding
-/// blowup is the difference between one frame and several.
-#[derive(Clone, Serialize, Deserialize)]
-pub struct SealedBox {
-    /// Sender's ephemeral X25519 public key, fresh for this package.
-    #[serde(with = "hex::serde")]
-    pub epk: Vec<u8>,
-    /// ChaCha20-Poly1305 ciphertext with tag appended.
-    #[serde(with = "hex::serde")]
-    pub ct: Vec<u8>,
-}
+/// Note ZF made the opposite choice — one key, with XEdDSA to sign using an
+/// X25519 key. Both are sound; theirs is more compact, this one needs no
+/// special construction to justify. The wire format is unaffected either way.
+const X25519_DERIVE_INFO: &[u8] = b"frost-dkg-x25519-v1";
 
 /// Derive this session's X25519 secret from its ephemeral ed25519 seed.
 ///
-/// Deriving rather than storing means every round can recover the key from
-/// the `ephemeral_seed` already carried in the DKG secret state, so no round
-/// has to thread new state through.
+/// Deriving rather than storing means every round recovers the key from the
+/// `ephemeral_seed` already carried in the DKG secret state, so no round has
+/// to thread new state through.
 ///
 /// This is a KDF, not key reuse: the signing key is the seed, the decryption
 /// key is HKDF(seed). They share an ancestor, not an exponent.
-pub fn x25519_secret_from_seed(seed: &[u8; 32]) -> StaticSecret {
+pub fn x25519_secret_from_seed(seed: &[u8; 32]) -> [u8; 32] {
     let hk = Hkdf::<Sha256>::new(None, seed);
     let mut out = [0u8; 32];
     hk.expand(X25519_DERIVE_INFO, &mut out)
         .expect("32 bytes is a valid HKDF-SHA256 length");
-    StaticSecret::from(out)
+    out
 }
 
 /// The X25519 public key a participant advertises in round 1.
-pub fn x25519_public_from_seed(seed: &[u8; 32]) -> PublicKey {
-    PublicKey::from(&x25519_secret_from_seed(seed))
+pub fn x25519_public_from_seed(seed: &[u8; 32]) -> [u8; 32] {
+    let sk = StaticSecret::from(x25519_secret_from_seed(seed));
+    PublicKey::from(&sk).to_bytes()
 }
 
-/// Derive the one-use AEAD key for a (ephemeral, recipient) pair.
+/// A hash over the whole participant set — the ceremony's fingerprint,
+/// used as the Noise prologue.
 ///
-/// Both public keys go into the salt so that a shared secret cannot be
-/// repurposed under a different pairing.
-fn derive_key(shared: &[u8; 32], epk: &PublicKey, rpk: &PublicKey) -> Key {
-    let mut salt = Vec::with_capacity(64);
-    salt.extend_from_slice(epk.as_bytes());
-    salt.extend_from_slice(rpk.as_bytes());
-    let hk = Hkdf::<Sha256>::new(Some(&salt), shared);
-    let mut key = [0u8; 32];
-    hk.expand(KDF_INFO, &mut key)
-        .expect("32 bytes is a valid HKDF-SHA256 length");
-    *Key::from_slice(&key)
-}
-
-/// Seal `plaintext` to `recipient`, binding it to `aad`.
+/// `entries` is every participant's (identifier, static key), including the
+/// caller's own. Both sides build it: each knows its own pair and learns the
+/// rest from round-1 broadcasts. Sorting makes it independent of the order
+/// broadcasts happened to arrive in.
 ///
-/// `aad` should identify who the package is for. A sealed box that is not
-/// bound to its recipient can be lifted out of one participant's message and
-/// dropped into another's, which the AEAD will happily accept.
-pub fn seal(
-    recipient: &PublicKey,
-    aad: &[u8],
-    plaintext: &[u8],
-    rng: &mut (impl RngCore + CryptoRng),
-) -> Result<SealedBox, String> {
-    let esk = EphemeralSecret::random_from_rng(rng);
-    let epk = PublicKey::from(&esk);
-    let shared = esk.diffie_hellman(recipient);
-
-    // Reject a degenerate shared secret. A contributory-behaviour check costs
-    // nothing here and refuses the all-zero output that a small-order peer
-    // key would produce.
-    if !shared.was_contributory() {
-        return Err("x25519: non-contributory shared secret".into());
-    }
-
-    let key = derive_key(shared.as_bytes(), &epk, recipient);
-    let cipher = ChaCha20Poly1305::new(&key);
-    // Zero nonce: the key is derived from a fresh ephemeral scalar and is
-    // therefore used for exactly one message. See the module note.
-    let nonce = Nonce::from_slice(&[0u8; 12]);
-    let ct = cipher
-        .encrypt(nonce, Payload { msg: plaintext, aad })
-        .map_err(|_| "seal: aead encrypt failed".to_string())?;
-
-    Ok(SealedBox {
-        epk: epk.as_bytes().to_vec(),
-        ct,
-    })
-}
-
-/// Open a sealed box addressed to us. `aad` must match what the sender bound.
-pub fn open(secret: &StaticSecret, aad: &[u8], sealed: &SealedBox) -> Result<Vec<u8>, String> {
-    let epk_bytes: [u8; 32] = sealed
-        .epk
-        .as_slice()
-        .try_into()
-        .map_err(|_| "invalid x25519 ephemeral pubkey length")?;
-    let epk = PublicKey::from(epk_bytes);
-    let shared = secret.diffie_hellman(&epk);
-    if !shared.was_contributory() {
-        return Err("x25519: non-contributory shared secret".into());
-    }
-
-    let rpk = PublicKey::from(secret);
-    let key = derive_key(shared.as_bytes(), &epk, &rpk);
-    let cipher = ChaCha20Poly1305::new(&key);
-    let nonce = Nonce::from_slice(&[0u8; 12]);
-    cipher
-        .decrypt(
-            nonce,
-            Payload {
-                msg: &sealed.ct,
-                aad,
-            },
-        )
-        // Deliberately uninformative: whether it was the wrong recipient, a
-        // tampered ciphertext or a mismatched aad is not something to report
-        // back differentially.
-        .map_err(|_| "sealed package did not open".to_string())
-}
-
-/// A hash over the whole participant set — the ceremony's fingerprint.
+/// As a prologue this is what stops a message being replayed into a different
+/// ceremony: disagree on the participant set and the handshake derives
+/// different keys, so the message simply does not open.
 ///
-/// `entries` is every participant's (identifier, encryption key), including
-/// the caller's own. Both sides can build this: each knows its own pair and
-/// learns the rest from the round-1 broadcasts. Sorting makes it independent
-/// of the order broadcasts happened to arrive in.
-///
-/// This is what stops a sealed package being replayed into a different
-/// ceremony. Without it, the only thing preventing that is the fact that
-/// ephemeral keys usually differ between runs — true today, but a property
-/// of how the keys happen to be generated rather than anything enforced.
-///
-/// Length prefixes rather than plain concatenation: without them
-/// ("ab","c") and ("a","bc") hash identically, and a participant who can
-/// choose part of the input could exploit that.
+/// Length prefixes rather than plain concatenation: without them ("ab","c")
+/// and ("a","bc") hash identically, and a participant who can choose part of
+/// the input could exploit that.
 pub fn ceremony_transcript(entries: &[(String, [u8; 32])]) -> [u8; 32] {
     use sha2::Digest;
 
@@ -199,147 +103,199 @@ pub fn ceremony_transcript(entries: &[(String, [u8; 32])]) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(b"frost-dkg-ceremony-transcript-v1");
     hasher.update((sorted.len() as u64).to_le_bytes());
-    for (id_hex, epk) in sorted {
+    for (id_hex, key) in sorted {
         hasher.update((id_hex.len() as u64).to_le_bytes());
         hasher.update(id_hex.as_bytes());
-        hasher.update(epk);
+        hasher.update(key);
     }
     hasher.finalize().into()
 }
 
-/// Associated data binding a round-2 package to its ceremony, its sender and
-/// its recipient — all three.
-///
-/// The sender matters because the sealed box travels inside a signature
-/// rather than around one. Without binding, a participant could strip the
-/// signature off someone else's ciphertext and re-sign it as their own,
-/// claiming authorship of a package they cannot read. FROST's own round-3
-/// verification would eventually reject the result, but that is the wrong
-/// place to catch it: relying on a later check to notice means the property
-/// holds by consequence rather than by construction.
-///
-/// Costs nothing on the wire — associated data is never transmitted, both
-/// sides recompute it. A mismatch simply fails to open.
-pub fn round2_aad(transcript: &[u8; 32], sender_id_hex: &str, recipient_id_hex: &str) -> Vec<u8> {
-    let mut aad = Vec::from(KDF_INFO);
-    aad.push(b'|');
-    aad.extend_from_slice(transcript);
-    aad.push(b'|');
-    aad.extend_from_slice(sender_id_hex.as_bytes());
-    aad.push(b'|');
-    aad.extend_from_slice(recipient_id_hex.as_bytes());
-    aad
+/// Seal `plaintext` from us to `remote_public`, as a single Noise_K message.
+pub fn seal(
+    local_private: &[u8; 32],
+    remote_public: &[u8; 32],
+    prologue: &[u8],
+    plaintext: &[u8],
+) -> Result<Vec<u8>, String> {
+    let mut noise = snow::Builder::new(
+        NOISE_PATTERN
+            .parse()
+            .map_err(|e| format!("noise pattern: {e}"))?,
+    )
+    .prologue(prologue)
+    .local_private_key(local_private)
+    .remote_public_key(remote_public)
+    .build_initiator()
+    .map_err(|e| format!("noise initiator: {e}"))?;
+
+    // Noise_K is one message: ephemeral + encrypted payload + tag.
+    let mut out = vec![0u8; plaintext.len() + 128];
+    let n = noise
+        .write_message(plaintext, &mut out)
+        .map_err(|e| format!("noise write: {e}"))?;
+    out.truncate(n);
+    Ok(out)
+}
+
+/// Open a Noise_K message sent to us by `remote_public`.
+pub fn open(
+    local_private: &[u8; 32],
+    remote_public: &[u8; 32],
+    prologue: &[u8],
+    message: &[u8],
+) -> Result<Vec<u8>, String> {
+    let mut noise = snow::Builder::new(
+        NOISE_PATTERN
+            .parse()
+            .map_err(|e| format!("noise pattern: {e}"))?,
+    )
+    .prologue(prologue)
+    .local_private_key(local_private)
+    .remote_public_key(remote_public)
+    .build_responder()
+    .map_err(|e| format!("noise responder: {e}"))?;
+
+    let mut out = vec![0u8; message.len() + 128];
+    let n = noise
+        .read_message(message, &mut out)
+        // Deliberately uninformative: which of wrong-sender, wrong-recipient,
+        // wrong-ceremony or tampering caused it is not something to report
+        // back differentially.
+        .map_err(|_| "sealed package did not open".to_string())?;
+    out.truncate(n);
+    Ok(out)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rand_core::OsRng;
 
-    fn seeds() -> ([u8; 32], [u8; 32]) {
-        ([7u8; 32], [9u8; 32])
+    const SEED_A: [u8; 32] = [7u8; 32];
+    const SEED_B: [u8; 32] = [9u8; 32];
+    const SEED_C: [u8; 32] = [11u8; 32];
+
+    fn transcript(tag: &str) -> [u8; 32] {
+        ceremony_transcript(&[(tag.to_string(), x25519_public_from_seed(&SEED_A))])
     }
 
+    /// The x25519-dalek public key we advertise must be the one snow expects
+    /// for the same private bytes. If the two clamped differently, every
+    /// handshake would fail — this pins that they agree.
     #[test]
-    fn round_trips_to_the_intended_recipient() {
-        let (seed, _) = seeds();
-        let sk = x25519_secret_from_seed(&seed);
-        let pk = x25519_public_from_seed(&seed);
-        let aad = round2_aad(&[0u8; 32], "5e5e", "aabb");
+    fn our_advertised_key_is_the_one_noise_uses() {
+        let sk_a = x25519_secret_from_seed(&SEED_A);
+        let pk_a = x25519_public_from_seed(&SEED_A);
+        let sk_b = x25519_secret_from_seed(&SEED_B);
+        let pk_b = x25519_public_from_seed(&SEED_B);
+        let p = transcript("c");
 
-        let sealed = seal(&pk, &aad, b"secret share", &mut OsRng).unwrap();
-        assert_eq!(open(&sk, &aad, &sealed).unwrap(), b"secret share");
+        let msg = seal(&sk_a, &pk_b, &p, b"hello").unwrap();
+        assert_eq!(open(&sk_b, &pk_a, &p, &msg).unwrap(), b"hello");
     }
 
-    /// The property the whole module exists for: an observer of the wire
-    /// learns nothing, and the plaintext is not sitting in the bytes.
+    /// The property the whole module exists for.
     #[test]
-    fn ciphertext_does_not_contain_the_plaintext() {
-        let (seed, _) = seeds();
-        let pk = x25519_public_from_seed(&seed);
-        let aad = round2_aad(&[0u8; 32], "5e5e", "aabb");
+    fn the_wire_message_does_not_contain_the_plaintext() {
+        let sk_a = x25519_secret_from_seed(&SEED_A);
+        let pk_b = x25519_public_from_seed(&SEED_B);
         let secret = b"this must not appear on a QR code";
 
-        let sealed = seal(&pk, &aad, secret, &mut OsRng).unwrap();
-        assert!(sealed
-            .ct
-            .windows(secret.len())
-            .all(|w| w != secret.as_slice()));
+        let msg = seal(&sk_a, &pk_b, &transcript("c"), secret).unwrap();
+        assert!(msg.windows(secret.len()).all(|w| w != secret.as_slice()));
     }
 
+    /// Recipient binding: it is the responder's static key.
     #[test]
     fn another_participant_cannot_open_it() {
-        let (a, b) = seeds();
-        let pk_a = x25519_public_from_seed(&a);
-        let sk_b = x25519_secret_from_seed(&b);
-        let aad = round2_aad(&[0u8; 32], "5e5e", "aabb");
+        let sk_a = x25519_secret_from_seed(&SEED_A);
+        let pk_a = x25519_public_from_seed(&SEED_A);
+        let pk_b = x25519_public_from_seed(&SEED_B);
+        let sk_c = x25519_secret_from_seed(&SEED_C);
+        let p = transcript("c");
 
-        let sealed = seal(&pk_a, &aad, b"for a only", &mut OsRng).unwrap();
-        assert!(open(&sk_b, &aad, &sealed).is_err());
+        let msg = seal(&sk_a, &pk_b, &p, b"for b only").unwrap();
+        assert!(open(&sk_c, &pk_a, &p, &msg).is_err());
     }
 
-    /// Replaying a valid package into a different recipient slot must fail —
-    /// this is what binding the identifier into the aad buys.
+    /// Sender binding, and this is the upgrade over the previous hand-rolled
+    /// version: `ss` puts the sender's static key in the key schedule, so a
+    /// message cannot be reattributed even by someone who re-signs it.
     #[test]
-    fn a_package_cannot_be_replayed_under_another_identifier() {
-        let (seed, _) = seeds();
-        let sk = x25519_secret_from_seed(&seed);
-        let pk = x25519_public_from_seed(&seed);
+    fn a_message_cannot_be_reattributed_to_another_sender() {
+        let sk_a = x25519_secret_from_seed(&SEED_A);
+        let sk_b = x25519_secret_from_seed(&SEED_B);
+        let pk_b = x25519_public_from_seed(&SEED_B);
+        let pk_c = x25519_public_from_seed(&SEED_C);
+        let p = transcript("c");
 
-        let sealed = seal(&pk, &round2_aad(&[0u8; 32], "5e5e", "aabb"), b"share", &mut OsRng).unwrap();
-        assert!(open(&sk, &round2_aad(&[0u8; 32], "5e5e", "ccdd"), &sealed).is_err());
+        let msg = seal(&sk_a, &pk_b, &p, b"from a").unwrap();
+        // B tries to open it believing C sent it
+        assert!(open(&sk_b, &pk_c, &p, &msg).is_err());
     }
 
-    /// Stripping the signature off someone's ciphertext and re-signing it as
-    /// your own must not produce something that opens — the sealed box is
-    /// bound to who actually made it.
+    /// Ceremony binding, via the prologue.
     #[test]
-    fn a_package_cannot_be_reattributed_to_another_sender() {
-        let (seed, _) = seeds();
-        let sk = x25519_secret_from_seed(&seed);
-        let pk = x25519_public_from_seed(&seed);
+    fn a_message_from_another_ceremony_does_not_open() {
+        let sk_a = x25519_secret_from_seed(&SEED_A);
+        let pk_a = x25519_public_from_seed(&SEED_A);
+        let sk_b = x25519_secret_from_seed(&SEED_B);
+        let pk_b = x25519_public_from_seed(&SEED_B);
 
-        let sealed = seal(
-            &pk,
-            &round2_aad(&[0u8; 32], "5e5e", "aabb"),
-            b"share",
-            &mut OsRng,
-        )
-        .unwrap();
-        // same ceremony, same recipient, different claimed sender
-        assert!(open(&sk, &round2_aad(&[0u8; 32], "9999", "aabb"), &sealed).is_err());
+        let msg = seal(&sk_a, &pk_b, &transcript("ceremony-one"), b"share").unwrap();
+        assert!(open(&sk_b, &pk_a, &transcript("ceremony-two"), &msg).is_err());
     }
 
     #[test]
-    fn tampering_with_the_ciphertext_is_detected() {
-        let (seed, _) = seeds();
-        let sk = x25519_secret_from_seed(&seed);
-        let pk = x25519_public_from_seed(&seed);
-        let aad = round2_aad(&[0u8; 32], "5e5e", "aabb");
+    fn tampering_is_detected() {
+        let sk_a = x25519_secret_from_seed(&SEED_A);
+        let pk_a = x25519_public_from_seed(&SEED_A);
+        let sk_b = x25519_secret_from_seed(&SEED_B);
+        let pk_b = x25519_public_from_seed(&SEED_B);
+        let p = transcript("c");
 
-        let mut sealed = seal(&pk, &aad, b"share", &mut OsRng).unwrap();
-        sealed.ct[0] ^= 0x01;
-        assert!(open(&sk, &aad, &sealed).is_err());
+        let mut msg = seal(&sk_a, &pk_b, &p, b"share").unwrap();
+        let last = msg.len() - 1;
+        msg[last] ^= 0x01;
+        assert!(open(&sk_b, &pk_a, &p, &msg).is_err());
     }
 
-    /// Two seals of the same plaintext to the same recipient must differ,
-    /// or the ceremony leaks which dealers sent equal packages.
+    /// Noise_K mixes a fresh ephemeral, so two seals of the same plaintext
+    /// must differ — otherwise the ceremony leaks which dealers sent equal
+    /// packages.
     #[test]
-    fn each_seal_is_fresh() {
-        let (seed, _) = seeds();
-        let pk = x25519_public_from_seed(&seed);
-        let aad = round2_aad(&[0u8; 32], "5e5e", "aabb");
+    fn each_message_is_fresh() {
+        let sk_a = x25519_secret_from_seed(&SEED_A);
+        let pk_b = x25519_public_from_seed(&SEED_B);
+        let p = transcript("c");
 
-        let one = seal(&pk, &aad, b"same", &mut OsRng).unwrap();
-        let two = seal(&pk, &aad, b"same", &mut OsRng).unwrap();
-        assert_ne!(one.epk, two.epk);
-        assert_ne!(one.ct, two.ct);
+        let one = seal(&sk_a, &pk_b, &p, b"same").unwrap();
+        let two = seal(&sk_a, &pk_b, &p, b"same").unwrap();
+        assert_ne!(one, two);
     }
 
-    /// The signing key and the decryption key must not be the same bytes.
     #[test]
     fn the_x25519_key_is_not_the_ed25519_seed() {
-        let (seed, _) = seeds();
-        assert_ne!(x25519_secret_from_seed(&seed).to_bytes(), seed);
+        assert_ne!(x25519_secret_from_seed(&SEED_A), SEED_A);
+    }
+
+    /// The transcript must not depend on the order broadcasts arrived in.
+    #[test]
+    fn the_transcript_is_order_independent() {
+        let a = ("aa".to_string(), [1u8; 32]);
+        let b = ("bb".to_string(), [2u8; 32]);
+        assert_eq!(
+            ceremony_transcript(&[a.clone(), b.clone()]),
+            ceremony_transcript(&[b, a])
+        );
+    }
+
+    /// Length prefixing: these must not collide.
+    #[test]
+    fn the_transcript_is_not_ambiguous() {
+        assert_ne!(
+            ceremony_transcript(&[("ab".to_string(), [0u8; 32]), ("c".to_string(), [0u8; 32])]),
+            ceremony_transcript(&[("a".to_string(), [0u8; 32]), ("bc".to_string(), [0u8; 32])])
+        );
     }
 }
