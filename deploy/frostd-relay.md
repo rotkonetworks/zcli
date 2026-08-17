@@ -66,7 +66,7 @@ automatically. See `Caddyfile.frostd`.
     Type=simple
     User=frostd
     Group=frostd
-    # loopback only: nginx terminates TLS
+    # loopback only: caddy terminates TLS
     ExecStart=/usr/local/bin/frostd --ip 127.0.0.1 --port 2744 --no-tls-very-insecure
     Restart=on-failure
     RestartSec=5
