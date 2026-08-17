@@ -7585,6 +7585,13 @@ pub fn zip317_shielding_fee_zat(n_transparent_inputs: u32) -> u64 {
 /// FAIL CLOSED on the branch id, identical to `build_ironwood_send_pczt_proven`:
 /// the tx must bind NU6.3 (0x37a5165b), `expected_branch_id` must equal it, and
 /// the 0xffff_ffff placeholder is refused outright.
+///
+/// SHARED with the cold/unsigned path: everything from the fail-closed guards
+/// through the ZIP-317 recheck and the ironwood proof lives in
+/// [`build_shielding_pczt_proven`]; this signed builder differs only in the seam
+/// AFTER the proof (Signer → SpendFinalizer → TransactionExtractor). Keeping the
+/// guarded pipeline in one place is deliberate: an unsigned builder that copied
+/// the guards would let them drift out of sync on a money path.
 #[allow(clippy::too_many_arguments)]
 pub fn build_shielding_transaction_ironwood_core<P>(
     params: P,
@@ -7599,6 +7606,86 @@ pub fn build_shielding_transaction_ironwood_core<P>(
     expected_branch_id: u32,
     memo: zcash_protocol::memo::MemoBytes,
 ) -> Result<Vec<u8>, String>
+where
+    P: zcash_protocol::consensus::Parameters,
+{
+    // The pubkey the coins are locked to is DERIVED from the signing key, never
+    // trusted from the caller; the shared helper cross-checks every input's
+    // script against it.
+    let secp = secp256k1::Secp256k1::signing_only();
+    let pubkey = sk.public_key(&secp);
+
+    // Guarded, proven, IO-finalized PCZT (branch-id guards + ZIP-317 recheck +
+    // ironwood proof). This is the exact PCZT the cold path serializes and hands
+    // to an external transparent signer; here we sign it ourselves.
+    let pczt = build_shielding_pczt_proven(
+        params,
+        &pubkey,
+        inputs,
+        recipient,
+        fee,
+        target_height,
+        expected_branch_id,
+        memo,
+    )?;
+
+    // --- sign every transparent input ---------------------------------------
+    // All inputs are locked to the same key (checked in the helper), so index
+    // order is irrelevant to correctness: we sign all of them.
+    let n_inputs = pczt.transparent().inputs().len();
+    let mut signer =
+        pczt::roles::signer::Signer::new(pczt).map_err(|e| format!("signer init: {:?}", e))?;
+    for i in 0..n_inputs {
+        signer
+            .sign_transparent(i, sk)
+            .map_err(|e| format!("sign_transparent[{}]: {:?}", i, e))?;
+    }
+    let pczt = signer.finish();
+
+    // SpendFinalizer combines the partial transparent signatures into
+    // script_sigs; without it the extractor has no spend authorization.
+    let pczt = pczt::roles::spend_finalizer::SpendFinalizer::new(pczt)
+        .finalize_spends()
+        .map_err(|e| format!("finalize_spends: {:?}", e))?;
+
+    // Extract the broadcast-ready V6 tx (creates the ironwood binding signature
+    // and verifies the proof + every signature against the sighash).
+    extract_signed_tx_from_pczt_bytes(
+        &pczt
+            .serialize()
+            .map_err(|e| format!("pczt serialize: {e:?}"))?,
+    )
+}
+
+/// Guarded + proven shielding PCZT, SHARED by the signed hot builder
+/// ([`build_shielding_transaction_ironwood_core`]) and the unsigned cold builder
+/// ([`build_unsigned_shielding_pczt_ironwood_core`]).
+///
+/// Runs the money-critical pipeline through the ironwood proof: the fail-closed
+/// branch-id guards, the P2PKH-script cross-check of every input against
+/// `pubkey`, the ZIP-317 fee floor, the V6 `Builder` → `Creator` → `IoFinalizer`
+/// stages, the post-`IoFinalizer` ZIP-317 recheck against the real padded action
+/// counts, and the post-NU6.3 ironwood proof. Returns the proven, IO-finalized
+/// PCZT with NO transparent signatures yet — the single seam the two callers
+/// diverge at.
+///
+/// Takes the transparent PUBKEY rather than a secret key: the cold path has no
+/// secret key, and the hot path derives the pubkey from its key before calling
+/// in. Every input's `script_pubkey` must be the P2PKH script for `pubkey`.
+#[allow(clippy::too_many_arguments)]
+pub fn build_shielding_pczt_proven<P>(
+    params: P,
+    pubkey: &secp256k1::PublicKey,
+    inputs: &[(
+        zcash_transparent::bundle::OutPoint,
+        zcash_transparent::bundle::TxOut,
+    )],
+    recipient: orchard::Address,
+    fee: u64,
+    target_height: u32,
+    expected_branch_id: u32,
+    memo: zcash_protocol::memo::MemoBytes,
+) -> Result<pczt::Pczt, String>
 where
     P: zcash_protocol::consensus::Parameters,
 {
@@ -7660,10 +7747,8 @@ where
     }
 
     // --- transparent key / script consistency -------------------------------
-    let secp = secp256k1::Secp256k1::signing_only();
-    let pubkey = sk.public_key(&secp);
     let expected_script: zcash_transparent::address::Script =
-        TransparentAddress::from_pubkey(&pubkey).script().into();
+        TransparentAddress::from_pubkey(pubkey).script().into();
     for (i, (_, coin)) in inputs.iter().enumerate() {
         if coin.script_pubkey() != &expected_script {
             return Err(format!(
@@ -7727,7 +7812,7 @@ where
         .map_err(|e| format!("propose_version(V6): {:?}", e))?;
     for (outpoint, coin) in inputs {
         builder
-            .add_transparent_p2pkh_input(pubkey, outpoint.clone(), coin.clone())
+            .add_transparent_p2pkh_input(*pubkey, outpoint.clone(), coin.clone())
             .map_err(|e| format!("add_transparent_p2pkh_input: {:?}", e))?;
     }
     let shielded_zat =
@@ -7789,32 +7874,9 @@ where
     })
     .map_err(|e| format!("create ironwood proof: {:?}", e))?;
 
-    // --- sign every transparent input ---------------------------------------
-    // All inputs are locked to the same key (checked above), so index order is
-    // irrelevant to correctness: we sign all of them.
-    let n_inputs = pczt.transparent().inputs().len();
-    let mut signer =
-        pczt::roles::signer::Signer::new(pczt).map_err(|e| format!("signer init: {:?}", e))?;
-    for i in 0..n_inputs {
-        signer
-            .sign_transparent(i, sk)
-            .map_err(|e| format!("sign_transparent[{}]: {:?}", i, e))?;
-    }
-    let pczt = signer.finish();
-
-    // SpendFinalizer combines the partial transparent signatures into
-    // script_sigs; without it the extractor has no spend authorization.
-    let pczt = pczt::roles::spend_finalizer::SpendFinalizer::new(pczt)
-        .finalize_spends()
-        .map_err(|e| format!("finalize_spends: {:?}", e))?;
-
-    // Extract the broadcast-ready V6 tx (creates the ironwood binding signature
-    // and verifies the proof + every signature against the sighash).
-    extract_signed_tx_from_pczt_bytes(
-        &pczt
-            .serialize()
-            .map_err(|e| format!("pczt serialize: {e:?}"))?,
-    )
+    // The transparent inputs are unsigned: the hot caller signs with its key, the
+    // cold caller serializes this and hands the per-input sighashes out.
+    Ok(pczt)
 }
 
 /// Build a signed transparent→IRONWOOD shielding transaction (NU6.3 / V6).
@@ -7856,8 +7918,6 @@ pub fn build_shielding_transaction_ironwood(
 ) -> Result<String, JsError> {
     use zcash_protocol::consensus::{BlockHeight, MainNetwork, TestNetwork};
     use zcash_protocol::memo::MemoBytes;
-    use zcash_protocol::value::Zatoshis;
-    use zcash_transparent::bundle::{OutPoint, TxOut};
 
     // --- recipient (orchard-format receiver = ironwood recipient) ---
     let recipient_addr = parse_orchard_address(recipient, mainnet)
@@ -7873,69 +7933,10 @@ pub fn build_shielding_transaction_ironwood(
         .map_err(|e| JsError::new(&format!("invalid signing key: {}", e)))?;
     let secp = secp256k1::Secp256k1::signing_only();
     let pubkey = sk.public_key(&secp);
-    // The coin's scriptPubKey is DERIVED from the key we will sign with, never
-    // taken from the (untrusted) JSON; the JSON script is only cross-checked so
-    // a non-P2PKH / foreign UTXO fails loudly instead of at signing time.
-    let our_script = make_p2pkh_script(&hash160(&pubkey.serialize()));
-    let coin_script: zcash_transparent::address::Script =
-        zcash_transparent::address::TransparentAddress::from_pubkey(&pubkey)
-            .script()
-            .into();
 
-    // --- parse and select UTXOs (largest first, same policy as the orchard
-    // builder so the two paths select identically) ---
-    let mut utxos: Vec<TransparentUtxo> = serde_json::from_str(utxos_json)
-        .map_err(|e| JsError::new(&format!("invalid utxos json: {}", e)))?;
-    utxos.sort_by_key(|u| std::cmp::Reverse(u.value));
-
-    let target = amount
-        .checked_add(fee)
-        .ok_or_else(|| JsError::new("amount + fee overflow"))?;
-
-    let mut selected: Vec<TransparentUtxo> = Vec::new();
-    let mut total_in: u64 = 0;
-    for utxo in &utxos {
-        selected.push(utxo.clone());
-        total_in += utxo.value;
-        if total_in >= target {
-            break;
-        }
-    }
-    if total_in < target {
-        return Err(JsError::new(&format!(
-            "insufficient funds: have {} zat, need {} zat",
-            total_in, target
-        )));
-    }
-
-    let mut inputs: Vec<(OutPoint, TxOut)> = Vec::with_capacity(selected.len());
-    for utxo in &selected {
-        let txid_be =
-            hex_decode(&utxo.txid).ok_or_else(|| JsError::new("invalid utxo txid hex"))?;
-        if txid_be.len() != 32 {
-            return Err(JsError::new("txid must be 32 bytes"));
-        }
-        // OutPoint stores the txid in internal (little-endian) byte order,
-        // which is the reverse of the displayed hex.
-        let mut txid_le = [0u8; 32];
-        txid_le.copy_from_slice(&txid_be);
-        txid_le.reverse();
-
-        let script_bytes =
-            hex_decode(&utxo.script).ok_or_else(|| JsError::new("invalid utxo script hex"))?;
-        if script_bytes != our_script {
-            return Err(JsError::new(&format!(
-                "utxo {}:{} is not a P2PKH output locked to the supplied key",
-                utxo.txid, utxo.vout
-            )));
-        }
-        let value =
-            Zatoshis::from_u64(utxo.value).map_err(|_| JsError::new("utxo value out of range"))?;
-        inputs.push((
-            OutPoint::new(txid_le, utxo.vout),
-            TxOut::new(value, coin_script.clone()),
-        ));
-    }
+    // Parse + select + validate the UTXOs against the key's pubkey, identically
+    // to the unsigned cold builder (shared helper, so selection cannot drift).
+    let inputs = select_shielding_inputs(utxos_json, &pubkey, amount, fee)?;
 
     let memo_arr = decode_memo_hex(memo_hex.as_deref())?;
     let memo =
@@ -7973,6 +7974,280 @@ pub fn build_shielding_transaction_ironwood(
     .map_err(|e| JsError::new(&e))?;
 
     Ok(hex_encode(&tx_bytes))
+}
+
+/// Parse the `{txid, vout, value, script}` UTXO JSON, select largest-first until
+/// `amount + fee` is covered, and cross-check every selected coin's scriptPubkey
+/// against the P2PKH script derived from `pubkey`.
+///
+/// SHARED by the signed ([`build_shielding_transaction_ironwood`]) and unsigned
+/// ([`build_unsigned_shielding_transaction_ironwood`]) ironwood shielding
+/// wrappers so the two select and validate byte-for-byte identically. The coin's
+/// `TxOut` script is DERIVED from `pubkey`, never trusted from the JSON; the JSON
+/// `script` is only cross-checked so a non-P2PKH / foreign UTXO fails loudly.
+fn select_shielding_inputs(
+    utxos_json: &str,
+    pubkey: &secp256k1::PublicKey,
+    amount: u64,
+    fee: u64,
+) -> Result<
+    Vec<(
+        zcash_transparent::bundle::OutPoint,
+        zcash_transparent::bundle::TxOut,
+    )>,
+    JsError,
+> {
+    use zcash_protocol::value::Zatoshis;
+    use zcash_transparent::bundle::{OutPoint, TxOut};
+
+    let our_script = make_p2pkh_script(&hash160(&pubkey.serialize()));
+    let coin_script: zcash_transparent::address::Script =
+        zcash_transparent::address::TransparentAddress::from_pubkey(pubkey)
+            .script()
+            .into();
+
+    let mut utxos: Vec<TransparentUtxo> = serde_json::from_str(utxos_json)
+        .map_err(|e| JsError::new(&format!("invalid utxos json: {}", e)))?;
+    utxos.sort_by_key(|u| std::cmp::Reverse(u.value));
+
+    let target = amount
+        .checked_add(fee)
+        .ok_or_else(|| JsError::new("amount + fee overflow"))?;
+
+    let mut selected: Vec<TransparentUtxo> = Vec::new();
+    let mut total_in: u64 = 0;
+    for utxo in &utxos {
+        selected.push(utxo.clone());
+        total_in += utxo.value;
+        if total_in >= target {
+            break;
+        }
+    }
+    if total_in < target {
+        return Err(JsError::new(&format!(
+            "insufficient funds: have {} zat, need {} zat",
+            total_in, target
+        )));
+    }
+
+    let mut inputs: Vec<(OutPoint, TxOut)> = Vec::with_capacity(selected.len());
+    for utxo in &selected {
+        let txid_be =
+            hex_decode(&utxo.txid).ok_or_else(|| JsError::new("invalid utxo txid hex"))?;
+        if txid_be.len() != 32 {
+            return Err(JsError::new("txid must be 32 bytes"));
+        }
+        // OutPoint stores the txid in internal (little-endian) byte order, the
+        // reverse of the displayed hex.
+        let mut txid_le = [0u8; 32];
+        txid_le.copy_from_slice(&txid_be);
+        txid_le.reverse();
+
+        let script_bytes =
+            hex_decode(&utxo.script).ok_or_else(|| JsError::new("invalid utxo script hex"))?;
+        if script_bytes != our_script {
+            return Err(JsError::new(&format!(
+                "utxo {}:{} is not a P2PKH output locked to the supplied key",
+                utxo.txid, utxo.vout
+            )));
+        }
+        let value =
+            Zatoshis::from_u64(utxo.value).map_err(|_| JsError::new("utxo value out of range"))?;
+        inputs.push((
+            OutPoint::new(txid_le, utxo.vout),
+            TxOut::new(value, coin_script.clone()),
+        ));
+    }
+    Ok(inputs)
+}
+
+/// Testable core of the UNSIGNED ironwood shielding builder, generic over
+/// consensus params so native tests can drive it with an NU6.3-active network.
+///
+/// Runs the shared, guarded, proven pipeline ([`build_shielding_pczt_proven`]),
+/// records the compressed `pubkey` as the hash160 preimage on every transparent
+/// input (so the cold completion's `append_transparent_signature` can recover
+/// which pubkey an external ECDSA signature authorizes), serializes the PCZT, and
+/// returns `(per-input transparent sighashes, serialized PCZT bytes)`.
+///
+/// The sighashes are derived from a RE-PARSE of the exact bytes returned, so they
+/// can never disagree with the carrier the wallet keeps.
+#[allow(clippy::too_many_arguments)]
+pub fn build_unsigned_shielding_pczt_ironwood_core<P>(
+    params: P,
+    pubkey: &secp256k1::PublicKey,
+    inputs: &[(
+        zcash_transparent::bundle::OutPoint,
+        zcash_transparent::bundle::TxOut,
+    )],
+    recipient: orchard::Address,
+    fee: u64,
+    target_height: u32,
+    expected_branch_id: u32,
+    memo: zcash_protocol::memo::MemoBytes,
+) -> Result<(Vec<[u8; 32]>, Vec<u8>), String>
+where
+    P: zcash_protocol::consensus::Parameters,
+{
+    // Identical guards + ZIP-317 recheck + ironwood proof as the hot path.
+    let pczt = build_shielding_pczt_proven(
+        params,
+        pubkey,
+        inputs,
+        recipient,
+        fee,
+        target_height,
+        expected_branch_id,
+        memo,
+    )?;
+
+    // Record the pubkey as the hash160 preimage on every transparent input. The
+    // builder leaves `hash160_preimages` empty; the cold completion needs it to
+    // match an external signature to its pubkey. Preimages are auxiliary PCZT
+    // metadata committed to no digest, so this changes neither sighash nor proof.
+    let pubkey_bytes = pubkey.serialize().to_vec();
+    let n_inputs = pczt.transparent().inputs().len();
+    let pczt = pczt::roles::updater::Updater::new(pczt)
+        .update_transparent_with(|mut tu| {
+            for i in 0..n_inputs {
+                tu.update_input_with(i, |mut inp| {
+                    inp.set_hash160_preimage(pubkey_bytes.clone());
+                    Ok(())
+                })?;
+            }
+            Ok(())
+        })
+        .map_err(|e| format!("updater set hash160 preimage: {:?}", e))?
+        .finish();
+
+    let pczt_bytes = pczt
+        .serialize()
+        .map_err(|e| format!("pczt serialize: {e:?}"))?;
+
+    // Re-parse the exact bytes we return and take the sighashes from that copy,
+    // so the sighashes provably correspond to the carrier.
+    let reparsed =
+        pczt::Pczt::parse(&pczt_bytes).map_err(|e| format!("pczt re-parse: {:?}", e))?;
+    let signer = pczt::roles::signer::Signer::new(reparsed)
+        .map_err(|e| format!("signer init: {:?}", e))?;
+    let mut sighashes: Vec<[u8; 32]> = Vec::with_capacity(n_inputs);
+    for i in 0..n_inputs {
+        let sh = signer
+            .transparent_sighash(i)
+            .map_err(|e| format!("transparent_sighash[{}]: {:?}", i, e))?;
+        sighashes.push(sh);
+    }
+    Ok((sighashes, pczt_bytes))
+}
+
+/// Build an UNSIGNED transparent→IRONWOOD shielding transaction (NU6.3 / V6) for
+/// cold-wallet / watch-only / zigner signing.
+///
+/// The post-NU6.3 replacement for [`build_unsigned_shielding_transaction`] (which
+/// builds a now-consensus-disabled orchard V5 bundle). It runs the full guarded
+/// ironwood pipeline through the proof but stops BEFORE signing, and returns the
+/// SAME JSON contract the orchard unsigned builder returns:
+///   `{ sighashes: [hex_32b...], unsigned_tx_hex: hex, summary: string }`
+/// so the existing zigner sighash encoder needs no change.
+///
+/// IMPORTANT: `unsigned_tx_hex` here is the serialized PCZT (magic `b"PCZT"`), NOT
+/// a raw transaction - the canonical librustzcash cold-signing carrier. The
+/// air-gapped signer only ever handles the 32-byte `sighashes`; completion must
+/// route to [`complete_shielding_pczt`]. [`complete_shielding_transaction`]
+/// sniffs the PCZT magic and delegates, so an unchanged completion call site also
+/// works.
+///
+/// # Arguments
+/// * `utxos_json` - JSON array of `{txid, vout, value, script}` (same shape as the
+///   signed builder)
+/// * `pubkey_hex` - 33-byte compressed secp256k1 pubkey owning every UTXO (from
+///   e.g. [`transparent_pubkey_from_ufvk`])
+/// * `recipient` - unified address whose orchard-format receiver is the ironwood
+///   recipient
+/// * `amount`, `fee`, `target_height`, `expected_branch_id`, `mainnet`, `memo_hex`
+///   - identical semantics to [`build_shielding_transaction_ironwood`]
+#[wasm_bindgen]
+#[allow(clippy::too_many_arguments)]
+pub fn build_unsigned_shielding_transaction_ironwood(
+    utxos_json: &str,
+    pubkey_hex: &str,
+    recipient: &str,
+    amount: u64,
+    fee: u64,
+    target_height: u32,
+    expected_branch_id: u32,
+    mainnet: bool,
+    memo_hex: Option<String>,
+) -> Result<String, JsError> {
+    use zcash_protocol::consensus::{BlockHeight, MainNetwork, TestNetwork};
+    use zcash_protocol::memo::MemoBytes;
+
+    // --- recipient (orchard-format receiver = ironwood recipient) ---
+    let recipient_addr = parse_orchard_address(recipient, mainnet)
+        .map_err(|e| JsError::new(&format!("invalid recipient: {}", e)))?;
+
+    // --- transparent pubkey (no secret key on the cold path) ---
+    let pubkey_bytes = hex_decode(pubkey_hex).ok_or_else(|| JsError::new("invalid pubkey hex"))?;
+    if pubkey_bytes.len() != 33 {
+        return Err(JsError::new("pubkey must be a 33-byte compressed secp256k1 key"));
+    }
+    let pubkey = secp256k1::PublicKey::from_slice(&pubkey_bytes)
+        .map_err(|e| JsError::new(&format!("invalid pubkey: {}", e)))?;
+
+    let inputs = select_shielding_inputs(utxos_json, &pubkey, amount, fee)?;
+    let total_in: u64 = inputs.iter().map(|(_, c)| c.value().into_u64()).sum();
+
+    let memo_arr = decode_memo_hex(memo_hex.as_deref())?;
+    let memo =
+        MemoBytes::from_bytes(&memo_arr).map_err(|e| JsError::new(&format!("memo: {:?}", e)))?;
+
+    let (sighashes, pczt_bytes) = if mainnet {
+        build_unsigned_shielding_pczt_ironwood_core(
+            Nu63Activated {
+                inner: MainNetwork,
+                nu6_3_from: BlockHeight::from(target_height),
+            },
+            &pubkey,
+            &inputs,
+            recipient_addr,
+            fee,
+            target_height,
+            expected_branch_id,
+            memo,
+        )
+    } else {
+        build_unsigned_shielding_pczt_ironwood_core(
+            Nu63Activated {
+                inner: TestNetwork,
+                nu6_3_from: BlockHeight::from(target_height),
+            },
+            &pubkey,
+            &inputs,
+            recipient_addr,
+            fee,
+            target_height,
+            expected_branch_id,
+            memo,
+        )
+    }
+    .map_err(|e| JsError::new(&e))?;
+
+    let sighashes_hex: Vec<String> = sighashes.iter().map(|s| hex_encode(s)).collect();
+    let shielded_zec = (total_in - fee) as f64 / 1e8;
+    let fee_zec = fee as f64 / 1e8;
+    let summary = format!(
+        "shield {:.8} ZEC ({} utxos, fee {:.8} ZEC)",
+        shielded_zec,
+        inputs.len(),
+        fee_zec
+    );
+
+    let result = serde_json::json!({
+        "sighashes": sighashes_hex,
+        "unsigned_tx_hex": hex_encode(&pczt_bytes),
+        "summary": summary,
+    });
+    Ok(result.to_string())
 }
 
 /// Build a shielding transaction into whichever pool is CORRECT at
@@ -8351,17 +8626,21 @@ pub fn complete_shielding_transaction(
     unsigned_tx_hex: &str,
     signatures_json: &str,
 ) -> Result<String, JsError> {
-    #[derive(Deserialize)]
-    struct InputSig {
-        sig_hex: String,
-        pubkey_hex: String,
-    }
-
-    let input_sigs: Vec<InputSig> = serde_json::from_str(signatures_json)
+    let input_sigs: Vec<ShieldingInputSig> = serde_json::from_str(signatures_json)
         .map_err(|e| JsError::new(&format!("invalid signatures json: {}", e)))?;
 
     let tx_bytes =
         hex_decode(unsigned_tx_hex).ok_or_else(|| JsError::new("invalid unsigned tx hex"))?;
+
+    // IRONWOOD (V6) cold path: the unsigned carrier is a serialized PCZT, not a
+    // raw tx. Its 4-byte magic `b"PCZT"` (0x50 0x43 0x5a 0x54) can never collide
+    // with a raw Zcash tx, whose first header byte is the tx version (0x05 orchard
+    // / 0x06 ironwood). Sniff it so the completion call site stays unchanged while
+    // routing to the PCZT signer/finalizer/extractor path.
+    if tx_bytes.len() >= 4 && &tx_bytes[..4] == b"PCZT" {
+        let tx = complete_shielding_pczt_inner(&tx_bytes, &input_sigs)?;
+        return Ok(hex_encode(&tx));
+    }
 
     if tx_bytes.len() < 20 {
         return Err(JsError::new("unsigned tx too short"));
@@ -8428,6 +8707,125 @@ pub fn complete_shielding_transaction(
     out.extend_from_slice(&tx_bytes[pos..]);
 
     Ok(hex_encode(&out))
+}
+
+/// One external transparent signature: `{sig_hex, pubkey_hex}`, the shape the
+/// zigner sig-response encoder already emits. `sig_hex` is DER || sighash-type
+/// byte; `pubkey_hex` is the 33-byte compressed pubkey. Shared by the legacy raw
+/// completion and the ironwood PCZT completion.
+#[derive(Deserialize)]
+struct ShieldingInputSig {
+    sig_hex: String,
+    #[allow(dead_code)]
+    pubkey_hex: String,
+}
+
+/// Complete an UNSIGNED ironwood shielding PCZT by applying external transparent
+/// signatures, finalizing the spends and extracting the broadcast-ready V6 tx.
+///
+/// This is the ironwood (V6) counterpart of [`complete_shielding_transaction`]'s
+/// raw-tx scriptSig patching. Rather than splicing signature bytes into a
+/// hand-serialized tx, it feeds each signature to the pczt `Signer`, which
+/// CRYPTOGRAPHICALLY VERIFIES it against the input's sighash and its recorded
+/// pubkey before storing it - so a wrong or malleated signature is rejected here
+/// instead of by the network after the UTXOs are spent. The `SpendFinalizer` then
+/// assembles the P2PKH scriptSigs and the `TransactionExtractor` creates the
+/// ironwood binding signature and re-verifies the proof + every signature.
+///
+/// `signatures[i]` authorizes transparent input `i`; `sig_hex` is DER || a
+/// SIGHASH_ALL (0x01) byte (what the zigner emits). The trailing byte is stripped
+/// and REQUIRED to be 0x01: any other sighash type would authorize a different
+/// commitment than the tx we built.
+fn complete_shielding_pczt_inner(
+    pczt_bytes: &[u8],
+    input_sigs: &[ShieldingInputSig],
+) -> Result<Vec<u8>, JsError> {
+    let sigs: Vec<Vec<u8>> = input_sigs
+        .iter()
+        .map(|s| hex_decode(&s.sig_hex).ok_or_else(|| JsError::new("invalid sig hex")))
+        .collect::<Result<_, _>>()?;
+    complete_shielding_pczt_bytes(pczt_bytes, &sigs).map_err(|e| JsError::new(&e))
+}
+
+/// Testable core of the ironwood cold completion: apply external transparent
+/// signatures to a serialized shielding PCZT and extract the broadcast-ready V6
+/// tx. `sigs[i]` is the DER signature for input `i` with a trailing sighash-type
+/// byte (as the zigner emits). Uses `String` errors so native tests can drive it.
+///
+/// See [`complete_shielding_pczt`] for the semantics and the consensus rationale
+/// (SIGHASH_ALL enforcement, low-S normalization, verify-on-append).
+pub fn complete_shielding_pczt_bytes(
+    pczt_bytes: &[u8],
+    sigs: &[Vec<u8>],
+) -> Result<Vec<u8>, String> {
+    let pczt = pczt::Pczt::parse(pczt_bytes)
+        .map_err(|e| format!("invalid shielding pczt: {:?}", e))?;
+
+    let n_inputs = pczt.transparent().inputs().len();
+    if sigs.len() != n_inputs {
+        return Err(format!(
+            "signature count {} != transparent input count {}",
+            sigs.len(),
+            n_inputs
+        ));
+    }
+
+    let mut signer =
+        pczt::roles::signer::Signer::new(pczt).map_err(|e| format!("pczt signer init: {:?}", e))?;
+
+    for (i, sig_bytes) in sigs.iter().enumerate() {
+        // DER || sighash-type byte. The pczt Signer re-appends the input's
+        // SighashType itself, so strip the trailing byte and fail closed unless
+        // it is exactly SIGHASH_ALL.
+        let (hashtype, der) = sig_bytes
+            .split_last()
+            .ok_or_else(|| format!("input {}: empty signature", i))?;
+        if *hashtype != 0x01 {
+            return Err(format!(
+                "input {}: expected SIGHASH_ALL (0x01), got {:#04x}",
+                i, hashtype
+            ));
+        }
+        let mut signature = secp256k1::ecdsa::Signature::from_der(der)
+            .map_err(|e| format!("input {}: invalid DER signature: {}", i, e))?;
+        // Consensus requires low-S; normalize so a high-S external signer still
+        // yields a valid, canonical scriptSig (append_transparent_signature also
+        // verifies low-S via verify_ecdsa).
+        signature.normalize_s();
+        signer
+            .append_transparent_signature(i, signature)
+            .map_err(|e| format!("input {}: external signature rejected: {:?}", i, e))?;
+    }
+
+    let pczt = signer.finish();
+    let pczt = pczt::roles::spend_finalizer::SpendFinalizer::new(pczt)
+        .finalize_spends()
+        .map_err(|e| format!("finalize_spends: {:?}", e))?;
+
+    let pczt_bytes = pczt
+        .serialize()
+        .map_err(|e| format!("pczt serialize: {:?}", e))?;
+    extract_signed_tx_from_pczt_bytes(&pczt_bytes)
+}
+
+/// Complete an unsigned ironwood shielding PCZT (from
+/// [`build_unsigned_shielding_transaction_ironwood`]) into a broadcast-ready V6
+/// transaction hex. See [`complete_shielding_pczt_inner`] for the semantics.
+///
+/// `signatures_json` is `[{sig_hex, pubkey_hex}, ...]`, one per transparent input
+/// in index order - the exact shape [`complete_shielding_transaction`] accepts,
+/// so a caller that always routes ironwood completions here (or one that reuses
+/// `complete_shielding_transaction`, which sniffs the PCZT magic) is unchanged.
+#[wasm_bindgen]
+pub fn complete_shielding_pczt(
+    pczt_hex: &str,
+    signatures_json: &str,
+) -> Result<String, JsError> {
+    let pczt_bytes = hex_decode(pczt_hex).ok_or_else(|| JsError::new("invalid pczt hex"))?;
+    let input_sigs: Vec<ShieldingInputSig> = serde_json::from_str(signatures_json)
+        .map_err(|e| JsError::new(&format!("invalid signatures json: {}", e)))?;
+    let tx_bytes = complete_shielding_pczt_inner(&pczt_bytes, &input_sigs)?;
+    Ok(hex_encode(&tx_bytes))
 }
 
 /// Read a CompactSize value from a byte slice at the given position.
