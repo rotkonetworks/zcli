@@ -1,0 +1,48 @@
+# frostd FROST relay reverse proxy
+#
+# terminates TLS in front of a frostd bound to loopback. caddy handles ACME
+# certificates automatically, same as Caddyfile.zidecar.
+#
+#   DNS → caddy → 127.0.0.1:2744 (frostd)
+#
+# usage:
+#   caddy run --config Caddyfile.frostd --adapter caddyfile
+#
+# frostd serves plain HTTP and has no TLS of its own. Bind it to loopback
+# and let caddy be the only thing listening publicly: without TLS the login
+# token and the participant list are visible on the path. Ceremony contents
+# are NOT - they are end-to-end encrypted before they reach the wire - but
+# that is not a reason to serve them in the clear.
+
+{
+	email ops@rotko.net
+}
+
+relay.zafu.pro {
+	reverse_proxy 127.0.0.1:2744 {
+		# A participant may sit on /receive while its peers are still
+		# reading a confirmation prompt. Cutting that short aborts the
+		# ceremony for everyone.
+		transport http {
+			read_timeout 300s
+		}
+	}
+
+	# frostd rejects messages over 1 MiB itself; this stops a body that
+	# large from being buffered before it gets the chance to.
+	request_body {
+		max_size 2MB
+	}
+
+	# The relay stores nothing worth caching and sessions are short-lived.
+	header {
+		Cache-Control "no-store"
+		-Server
+	}
+
+	log {
+		# Deliberately no request bodies: they are ciphertext, but logging
+		# them would still record who talked to whom and when, at volume.
+		output file /var/log/caddy/frostd.log
+	}
+}

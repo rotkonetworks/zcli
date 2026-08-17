@@ -36,27 +36,22 @@ zidecar enforces this: `--frostd-listen` refuses a non-loopback address
 unless `--frostd-insecure` is passed, precisely so a misconfiguration fails
 at startup rather than quietly serving plaintext.
 
-## nginx
+## Caddy
 
-    server {
-        listen 443 ssl http2;
-        server_name relay.zafu.pro;
+Matching `Caddyfile.zidecar` in this directory — same pattern, ACME handled
+automatically. See `Caddyfile.frostd`.
 
-        ssl_certificate     /etc/letsencrypt/live/relay.zafu.pro/fullchain.pem;
-        ssl_certificate_key /etc/letsencrypt/live/relay.zafu.pro/privkey.pem;
-
-        # The extension calls this from a page context, so CORS matters.
-        # Keep it to the origins that should be asking.
-        location / {
-            proxy_pass http://127.0.0.1:2744;
-            proxy_set_header Host $host;
-            proxy_set_header X-Real-IP $remote_addr;
-
+    relay.zafu.pro {
+        reverse_proxy 127.0.0.1:2744 {
             # frostd holds queued messages until a peer polls; do not cut a
             # ceremony short because a participant is slow to answer
-            proxy_read_timeout 300s;
+            transport http {
+                read_timeout 300s
+            }
+        }
 
-            client_max_body_size 2m;   # frostd caps messages at 1 MiB
+        request_body {
+            max_size 2MB          # frostd caps messages at 1 MiB
         }
     }
 
