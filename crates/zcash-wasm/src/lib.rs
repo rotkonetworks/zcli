@@ -5494,8 +5494,16 @@ pub fn redact_pczt_compact(pczt_hex: &str) -> Result<String, JsError> {
     // Compact orchard bundle
     redactor = redactor.redact_orchard_with(|mut o| {
         o.redact_actions(|mut a| {
-            // Clear per-action cv_net
-            a.clear_cv_net();
+            // cv_net is deliberately NOT cleared. The signer rebuilds a redacted
+            // cv_net in resolve_cv_net() from the SPEND value - but
+            // redact_pczt_for_signer (applied above) has already stripped
+            // spend.value for privacy, so a cleared cv_net is unrecoverable on
+            // the device and it rejects the whole PCZT with
+            // ParseError::InvalidValueCommitment. cv_net is public 32-byte
+            // per-action data that appears in the final transaction regardless,
+            // so retaining it leaks nothing; the large savings (cmx +
+            // enc_ciphertext, both recoverable from retained output fields)
+            // stay below.
             // Clear output cmx
             a.clear_cmx();
             // The 580-byte enc_ciphertext collapses to the memo trimmed to
@@ -5516,8 +5524,16 @@ pub fn redact_pczt_compact(pczt_hex: &str) -> Result<String, JsError> {
     // Compact ironwood bundle (same compact redaction as orchard)
     redactor = redactor.redact_ironwood_with(|mut o| {
         o.redact_actions(|mut a| {
-            // Clear per-action cv_net
-            a.clear_cv_net();
+            // cv_net is deliberately NOT cleared. The signer rebuilds a redacted
+            // cv_net in resolve_cv_net() from the SPEND value - but
+            // redact_pczt_for_signer (applied above) has already stripped
+            // spend.value for privacy, so a cleared cv_net is unrecoverable on
+            // the device and it rejects the whole PCZT with
+            // ParseError::InvalidValueCommitment. cv_net is public 32-byte
+            // per-action data that appears in the final transaction regardless,
+            // so retaining it leaks nothing; the large savings (cmx +
+            // enc_ciphertext, both recoverable from retained output fields)
+            // stay below.
             // Clear output cmx
             a.clear_cmx();
             // The 580-byte enc_ciphertext collapses to the memo trimmed to
