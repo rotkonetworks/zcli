@@ -5485,69 +5485,41 @@ pub fn redact_pczt_compact(pczt_hex: &str) -> Result<String, JsError> {
     let pczt = pczt::Pczt::parse(&bytes)
         .map_err(|e| JsError::new(&format!("pczt parse failed: {:?}", e)))?;
 
-    // Start with existing signer redaction
+    // Standard signer redaction first (strips witnesses, spend note plaintext,
+    // fvk). Then LOSSLESS compaction on top.
     let pczt = redact_pczt_for_signer(pczt);
 
-    // Apply compact redaction on top
     let mut redactor = pczt::roles::redactor::Redactor::new(pczt);
 
-    // Compact orchard bundle
+    // Compact each shielded bundle with the CANONICAL primitive
+    // `compact_resolvable_fields`, which clears cv_net / cmx / enc_ciphertext
+    // for an action ONLY when the device's `resolve_fields()` reproduces the
+    // exact original bytes (it round-trips each field and RESTORES the original
+    // on any mismatch - pczt orchard.rs `compact_resolvable_fields`).
+    //
+    // This is the losslessness the previous hand-rolled version lacked: it
+    // unconditionally called `replace_enc_ciphertext_with_memo_plaintext([0u8;
+    // 512])` + `clear_cmx()` on EVERY action, which (a) destroyed real output
+    // memos and (b) corrupted the protocol padding-dummy outputs whose
+    // randomized enc_ciphertext is NOT regenerable from the retained fields.
+    // Both change bytes the transaction sighash commits to, so the device
+    // signed a different sighash than the wallet's retained tx and every
+    // returned signature failed to merge with
+    // `IronwoodSign(InvalidExternalSignature)` - on every send shape, not just
+    // memo'd ones. Reproduced natively in zigner
+    // `pczt_signing/tests/ironwood_send_fixture.rs`.
+    //
+    // cv_net stays RETAINED here: resolve_cv_net needs spend.value, which the
+    // signer redaction stripped for privacy, so compact_resolvable_fields
+    // detects the round-trip would fail and keeps it. This matches upstream
+    // `zcash_client_backend::data_api::wallet::redact_pczt_for_batch_signer`,
+    // which composes exactly this primitive.
     redactor = redactor.redact_orchard_with(|mut o| {
-        o.redact_actions(|mut a| {
-            // cv_net is deliberately NOT cleared. The signer rebuilds a redacted
-            // cv_net in resolve_cv_net() from the SPEND value - but
-            // redact_pczt_for_signer (applied above) has already stripped
-            // spend.value for privacy, so a cleared cv_net is unrecoverable on
-            // the device and it rejects the whole PCZT with
-            // ParseError::InvalidValueCommitment. cv_net is public 32-byte
-            // per-action data that appears in the final transaction regardless,
-            // so retaining it leaks nothing; the large savings (cmx +
-            // enc_ciphertext, both recoverable from retained output fields)
-            // stay below.
-            // Clear output cmx
-            a.clear_cmx();
-            // The 580-byte enc_ciphertext collapses to the memo trimmed to
-            // its last nonzero byte - ONE byte for the empty memo a turnstile
-            // migration uses. This is the single largest request-leg win
-            // (measured: 2.53x smaller request on a v6 migration, vs 1.08x
-            // without it). The signer re-encrypts it in `resolve_fields()`
-            // from the retained recipient/value/rseed plus the spend
-            // nullifier (rho), then runs every normal verification gate.
-            //
-            // MEMO_SIZE is crate-private upstream; it is 512 by spec.
-            a.replace_enc_ciphertext_with_memo_plaintext([0u8; 512]);
-        });
-        // Clear v6 bundle anchor
-        o.clear_anchor();
+        o.compact_resolvable_fields();
+        o.clear_anchor(); // v6 anchor is not signed; the device restores it
     });
-
-    // Compact ironwood bundle (same compact redaction as orchard)
     redactor = redactor.redact_ironwood_with(|mut o| {
-        o.redact_actions(|mut a| {
-            // cv_net is deliberately NOT cleared. The signer rebuilds a redacted
-            // cv_net in resolve_cv_net() from the SPEND value - but
-            // redact_pczt_for_signer (applied above) has already stripped
-            // spend.value for privacy, so a cleared cv_net is unrecoverable on
-            // the device and it rejects the whole PCZT with
-            // ParseError::InvalidValueCommitment. cv_net is public 32-byte
-            // per-action data that appears in the final transaction regardless,
-            // so retaining it leaks nothing; the large savings (cmx +
-            // enc_ciphertext, both recoverable from retained output fields)
-            // stay below.
-            // Clear output cmx
-            a.clear_cmx();
-            // The 580-byte enc_ciphertext collapses to the memo trimmed to
-            // its last nonzero byte - ONE byte for the empty memo a turnstile
-            // migration uses. This is the single largest request-leg win
-            // (measured: 2.53x smaller request on a v6 migration, vs 1.08x
-            // without it). The signer re-encrypts it in `resolve_fields()`
-            // from the retained recipient/value/rseed plus the spend
-            // nullifier (rho), then runs every normal verification gate.
-            //
-            // MEMO_SIZE is crate-private upstream; it is 512 by spec.
-            a.replace_enc_ciphertext_with_memo_plaintext([0u8; 512]);
-        });
-        // Clear v6 bundle anchor
+        o.compact_resolvable_fields();
         o.clear_anchor();
     });
 
