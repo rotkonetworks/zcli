@@ -4640,7 +4640,10 @@ pub enum IronwoodRecipient {
 /// address is parsed as a unified/orchard address.
 ///
 /// Errors never contain the address (they are logged and surfaced to JS).
-fn parse_ironwood_recipient(recipient: &str, mainnet: bool) -> Result<IronwoodRecipient, String> {
+pub fn parse_ironwood_recipient(
+    recipient: &str,
+    mainnet: bool,
+) -> Result<IronwoodRecipient, String> {
     use zcash_keys::encoding::decode_transparent_address;
     use zcash_protocol::consensus::{NetworkConstants, NetworkType};
 
@@ -5149,6 +5152,22 @@ pub fn build_ironwood_send_pczt(
     }
     .map_err(|e| JsError::new(&e))?;
 
+    // Retain the UNREDACTED pczt (WITH the fvk) as the wallet's own base copy.
+    // The compact-signing path re-applies the device's signatures-only response
+    // into THIS copy, and pczt's `apply_ironwood_signature` runs
+    // `verify_nullifier`, which needs the fvk - a redacted copy fails with
+    // `IronwoodVerify(MissingFullViewingKey)` before the signature is even
+    // checked (reproduced natively in tests/fvk_repro.rs). The fvk NEVER leaves
+    // zafu: the copy sent to the device is `pczt_hex` (redacted just below), or
+    // its further compaction via `redact_pczt_compact`. This mirrors vizor,
+    // which keeps the unredacted base and redacts only the signer copy.
+    let retained_pczt_hex = hex_encode(
+        &pczt
+            .clone()
+            .serialize()
+            .map_err(|e| JsError::new(&format!("retained pczt serialize: {e:?}")))?,
+    );
+
     // Redact for the external cold signer. `redact_pczt_for_signer` already
     // redacts the ironwood bundle's spend-side fields (witness/rseed/rho/
     // recipient/value/fvk); it does NOT touch output metadata, so the real
@@ -5173,7 +5192,14 @@ pub fn build_ironwood_send_pczt(
 
     #[derive(Serialize)]
     struct Out {
+        /// REDACTED-for-signer pczt: the copy the wallet sends to the cold
+        /// device (directly for a 0x03 full request, or after `redact_pczt_compact`
+        /// for a 0x05 compact request). fvk / witnesses / note plaintext stripped.
         pczt_hex: String,
+        /// UNREDACTED base pczt (WITH the fvk): the wallet's own retained copy.
+        /// The compact-signing merge re-applies the device's signatures into THIS
+        /// copy, whose `verify_nullifier` needs the fvk. NEVER sent to the device.
+        retained_pczt_hex: String,
         summary: PcztSummary,
         action_count: u32,
         /// ZIP-244 shielded sighash - the message FROST signers commit to.
@@ -5189,6 +5215,7 @@ pub fn build_ironwood_send_pczt(
                 .serialize()
                 .map_err(|e| JsError::new(&format!("pczt serialize: {e:?}")))?,
         ),
+        retained_pczt_hex,
         summary,
         action_count,
         sighash: hex_encode(&shielded_sighash),
@@ -5549,66 +5576,67 @@ pub fn apply_signature_contributions(
     pczt_hex: &str,
     contributions_json: &str,
 ) -> Result<String, JsError> {
+    apply_signature_contributions_inner(pczt_hex, contributions_json).map_err(|e| JsError::new(&e))
+}
+
+/// Native-testable core of [`apply_signature_contributions`]. Returns a plain
+/// `String` error so it can be exercised end-to-end from a `cargo test` harness
+/// (the `JsError` wrapper panics when formatted off-wasm). This is the exact
+/// merge path zafu's extension drives - covering it natively is what would have
+/// caught the compact-merge regressions the zigner-side harness could not (that
+/// one merges via zigner's `pczt_signing`, not this zcli export).
+pub fn apply_signature_contributions_inner(
+    pczt_hex: &str,
+    contributions_json: &str,
+) -> Result<String, String> {
     use orchard::primitives::redpallas;
 
-    let bytes = hex_decode(pczt_hex).ok_or_else(|| JsError::new("invalid pczt hex"))?;
-    let pczt = pczt::Pczt::parse(&bytes)
-        .map_err(|e| JsError::new(&format!("pczt parse failed: {:?}", e)))?;
+    let bytes = hex_decode(pczt_hex).ok_or_else(|| "invalid pczt hex".to_string())?;
+    let pczt =
+        pczt::Pczt::parse(&bytes).map_err(|e| format!("pczt parse failed: {:?}", e))?;
 
     let contributions: Vec<serde_json::Value> = serde_json::from_str(contributions_json)
-        .map_err(|e| JsError::new(&format!("failed to parse contributions JSON: {}", e)))?;
+        .map_err(|e| format!("failed to parse contributions JSON: {}", e))?;
 
     let mut signer = pczt::roles::signer::Signer::new(pczt)
-        .map_err(|e| JsError::new(&format!("signer init failed: {:?}", e)))?;
+        .map_err(|e| format!("signer init failed: {:?}", e))?;
 
     for (i, contrib) in contributions.iter().enumerate() {
         let pool = contrib
             .get("pool")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| JsError::new(&format!("contribution[{}]: missing pool", i)))?;
+            .ok_or_else(|| format!("contribution[{}]: missing pool", i))?;
         let action_index: usize = contrib
             .get("action_index")
             .and_then(|v| v.as_u64())
             .map(|v| v as usize)
-            .ok_or_else(|| JsError::new(&format!("contribution[{}]: missing action_index", i)))?;
+            .ok_or_else(|| format!("contribution[{}]: missing action_index", i))?;
         let signature_hex = contrib
             .get("signature_hex")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| JsError::new(&format!("contribution[{}]: missing signature_hex", i)))?;
+            .ok_or_else(|| format!("contribution[{}]: missing signature_hex", i))?;
 
         let raw = hex_decode(signature_hex)
-            .ok_or_else(|| JsError::new(&format!("contribution[{}]: invalid signature hex", i)))?;
-        let arr: [u8; 64] = raw.as_slice().try_into().map_err(|_| {
-            JsError::new(&format!("contribution[{}]: signature must be 64 bytes", i))
-        })?;
+            .ok_or_else(|| format!("contribution[{}]: invalid signature hex", i))?;
+        let arr: [u8; 64] = raw
+            .as_slice()
+            .try_into()
+            .map_err(|_| format!("contribution[{}]: signature must be 64 bytes", i))?;
         let sig = redpallas::Signature::<redpallas::SpendAuth>::from(arr);
 
         match pool {
             "orchard" => {
                 signer
                     .apply_orchard_signature(action_index, sig)
-                    .map_err(|e| {
-                        JsError::new(&format!(
-                            "apply_orchard_signature[{}]: {:?}",
-                            action_index, e
-                        ))
-                    })?;
+                    .map_err(|e| format!("apply_orchard_signature[{}]: {:?}", action_index, e))?;
             }
             "ironwood" => {
                 signer
                     .apply_ironwood_signature(action_index, sig)
-                    .map_err(|e| {
-                        JsError::new(&format!(
-                            "apply_ironwood_signature[{}]: {:?}",
-                            action_index, e
-                        ))
-                    })?;
+                    .map_err(|e| format!("apply_ironwood_signature[{}]: {:?}", action_index, e))?;
             }
             _ => {
-                return Err(JsError::new(&format!(
-                    "contribution[{}]: unknown pool '{}'",
-                    i, pool
-                )));
+                return Err(format!("contribution[{}]: unknown pool '{}'", i, pool));
             }
         }
     }
@@ -5616,7 +5644,7 @@ pub fn apply_signature_contributions(
     let signed = signer.finish();
     let serialized = signed
         .serialize()
-        .map_err(|e| JsError::new(&format!("pczt serialize failed: {:?}", e)))?;
+        .map_err(|e| format!("pczt serialize failed: {:?}", e))?;
     Ok(hex_encode(&serialized))
 }
 
