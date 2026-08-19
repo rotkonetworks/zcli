@@ -6109,6 +6109,31 @@ const MAX_UR_PART_BYTES: usize = 8 * 1024;
 /// without being so generous it negates the cap.
 const MAX_UR_PARTS_JSON_BYTES: usize = MAX_UR_PARTS * (MAX_UR_PART_BYTES * 2 + 16);
 
+/// True if `lower` (a lowercased `ur:<type>/…` string) is a *multi-part*
+/// (sequenced) fountain frame `ur:<type>/<seq>-<len>/<data>`, as opposed to a
+/// bare single-part UR `ur:<type>/<bytewords>`. Detected by the `<digits>-<digits>`
+/// segment immediately after the type. Bytewords are lowercase letters only, so
+/// they never look like a `N-M` sequence header.
+fn ur_is_multipart_frame(lower: &str) -> bool {
+    let mut segs = lower.splitn(3, '/');
+    let _prefix = segs.next(); // "ur:<type>"
+    match segs.next() {
+        Some(seg) => {
+            let mut halves = seg.splitn(2, '-');
+            match (halves.next(), halves.next()) {
+                (Some(a), Some(b)) => {
+                    !a.is_empty()
+                        && !b.is_empty()
+                        && a.bytes().all(|c| c.is_ascii_digit())
+                        && b.bytes().all(|c| c.is_ascii_digit())
+                }
+                _ => false,
+            }
+        }
+        None => false,
+    }
+}
+
 #[wasm_bindgen]
 pub fn ur_decode_frames(parts_json: &str, expected_type: &str) -> Result<String, JsError> {
     // Cap the raw input before serde_json::from_str allocates the Vec — a
@@ -6141,6 +6166,28 @@ pub fn ur_decode_frames(parts_json: &str, expected_type: &str) -> Result<String,
             p.len()
         )));
     }
+
+    // Single-part fast path. A payload that fits one fragment is emitted as a
+    // bare single-part UR `ur:<type>/<bytewords>` (via `ur::ur::encode`, no
+    // `<seq>-<len>/` header) - e.g. the compact signatures-only sign response,
+    // which is one static QR. The fountain `Decoder` below only ever finalizes
+    // *sequenced* multi-part frames, so a lone single-part frame would loop
+    // forever as "need more frames". Decode it directly here.
+    if parts.len() == 1 && !ur_is_multipart_frame(&parts[0].to_ascii_lowercase()) {
+        let p = &parts[0];
+        if !expected_type.is_empty() {
+            let prefix = format!("ur:{}/", expected_type.to_ascii_lowercase());
+            if !p.to_ascii_lowercase().starts_with(&prefix) {
+                return Err(JsError::new(&format!(
+                    "UR part 0 has wrong type (expected ur:{expected_type}/…)"
+                )));
+            }
+        }
+        let (_kind, bytes) = ur::ur::decode(p)
+            .map_err(|e| JsError::new(&format!("UR single-part decode: {e:?}")))?;
+        return Ok(hex_encode(&bytes));
+    }
+
     let mut decoder = ur::ur::Decoder::default();
     for (i, p) in parts.iter().enumerate() {
         // Optional type guard. Reject parts whose `ur:<type>/...` doesn't match
@@ -6169,6 +6216,42 @@ pub fn ur_decode_frames(parts_json: &str, expected_type: &str) -> Result<String,
         .map_err(|e| JsError::new(&format!("UR message: {e:?}")))?
         .ok_or_else(|| JsError::new("UR decoder reported complete but produced no message"))?;
     Ok(hex_encode(&bytes))
+}
+
+#[cfg(test)]
+mod ur_single_part_tests {
+    use super::*;
+
+    #[test]
+    fn multipart_frame_detection() {
+        assert!(ur_is_multipart_frame("ur:zcash-pczt/1-3/aabbcc"));
+        assert!(ur_is_multipart_frame("ur:zcash-pczt/12-34/aabbcc"));
+        // single-part: bytewords after the type, no N-M sequence header
+        assert!(!ur_is_multipart_frame("ur:zcash-pczt/goadcagtaabb"));
+        assert!(!ur_is_multipart_frame("ur:zigner-module/lolotinaoxrl"));
+    }
+
+    /// The exact failure the compact signatures-only response hit: a small
+    /// payload is emitted by `ur::ur::encode` as a bare single-part UR, which
+    /// the fountain `Decoder` never finalizes. `ur_decode_frames` must decode
+    /// it in one frame.
+    #[test]
+    fn single_part_ur_decodes_in_one_frame() {
+        let payload: Vec<u8> = (0u8..64).collect(); // ~ signatures-only size
+        let single = ur::ur::encode(&payload, &ur::ur::Type::Custom("zcash-pczt"));
+        assert!(
+            !single.to_ascii_lowercase().contains('-')
+                || !ur_is_multipart_frame(&single.to_ascii_lowercase()),
+            "expected a single-part UR, got {single}"
+        );
+
+        let json = serde_json::to_string(&vec![single]).unwrap();
+        let hex = ur_decode_frames(&json, "zcash-pczt").expect("single-part must decode");
+        let got = hex_decode(&hex).expect("hex");
+        assert_eq!(got, payload);
+    }
+    // NB: error-path tests (wrong type, incomplete) can't run natively -
+    // JsError construction panics off-wasm. Covered by wasm_bindgen_test.
 }
 
 /// Encode CBOR bytes as zoda transport QR frames (verified erasure coding).
