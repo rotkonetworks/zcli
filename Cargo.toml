@@ -59,21 +59,21 @@ codegen-units = 1
 [patch.crates-io]
 maybe-rayon = { path = "crates/maybe-rayon" }
 
-# Zakura proving-stack fork (zakura-core/libraries, main @ d1fe54e). Portable
+# Zakura proving-stack fork (zakura-core/libraries, main @ b44390b). Portable
 # halo2/orchard proving speedups that apply to our wasm32 build - the merged set
 # on main incl. lookup-argument compression and fixed-window witness (help every
 # rayon worker, so they carry into the parallel build), plus SIMD multiexp. The
 # native ADX `pasta_msm` backend has no dependents here, so wasm excludes it.
 # NOTE: the larger multiexp wins (Booth recoding, evaluator CSE, fixed-base MSM
 # table) are still on unmerged agent/* branches - revisit the rev when they land.
-halo2_proofs = { git = "https://github.com/zakura-core/libraries", rev = "d1fe54e56ffbb6c36cb4e54f7532957347f08397" }
-halo2_gadgets = { git = "https://github.com/zakura-core/libraries", rev = "d1fe54e56ffbb6c36cb4e54f7532957347f08397" }
-halo2_poseidon = { git = "https://github.com/zakura-core/libraries", rev = "d1fe54e56ffbb6c36cb4e54f7532957347f08397" }
-halo2_legacy_pdqsort = { git = "https://github.com/zakura-core/libraries", rev = "d1fe54e56ffbb6c36cb4e54f7532957347f08397" }
-orchard = { git = "https://github.com/zakura-core/libraries", rev = "d1fe54e56ffbb6c36cb4e54f7532957347f08397" }
-pasta_curves = { git = "https://github.com/zakura-core/libraries", rev = "d1fe54e56ffbb6c36cb4e54f7532957347f08397" }
-reddsa = { git = "https://github.com/zakura-core/libraries", rev = "d1fe54e56ffbb6c36cb4e54f7532957347f08397" }
-sinsemilla = { git = "https://github.com/zakura-core/libraries", rev = "d1fe54e56ffbb6c36cb4e54f7532957347f08397" }
+halo2_proofs = { git = "https://github.com/zakura-core/libraries", rev = "b44390bc487a37187a161b5b0f2536a6567afa8e" }
+halo2_gadgets = { git = "https://github.com/zakura-core/libraries", rev = "b44390bc487a37187a161b5b0f2536a6567afa8e" }
+halo2_poseidon = { git = "https://github.com/zakura-core/libraries", rev = "b44390bc487a37187a161b5b0f2536a6567afa8e" }
+halo2_legacy_pdqsort = { git = "https://github.com/zakura-core/libraries", rev = "b44390bc487a37187a161b5b0f2536a6567afa8e" }
+orchard = { git = "https://github.com/zakura-core/libraries", rev = "b44390bc487a37187a161b5b0f2536a6567afa8e" }
+pasta_curves = { git = "https://github.com/zakura-core/libraries", rev = "b44390bc487a37187a161b5b0f2536a6567afa8e" }
+reddsa = { git = "https://github.com/zakura-core/libraries", rev = "b44390bc487a37187a161b5b0f2536a6567afa8e" }
+sinsemilla = { git = "https://github.com/zakura-core/libraries", rev = "b44390bc487a37187a161b5b0f2536a6567afa8e" }
 
 # vendored librustzcash fork removed: NU6.3 / Ironwood is upstream as of the
 # released crates (zcash_primitives 0.30 / zcash_protocol 0.10 / orchard

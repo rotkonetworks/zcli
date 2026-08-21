@@ -2876,7 +2876,7 @@ dependencies = [
 [[package]]
 name = "halo2_gadgets"
 version = "0.5.0"
-source = "git+https://github.com/zakura-core/libraries?rev=d1fe54e56ffbb6c36cb4e54f7532957347f08397#d1fe54e56ffbb6c36cb4e54f7532957347f08397"
+source = "git+https://github.com/zakura-core/libraries?rev=b44390bc487a37187a161b5b0f2536a6567afa8e#b44390bc487a37187a161b5b0f2536a6567afa8e"
 dependencies = [
  "arrayvec",
  "bitvec",
@@ -2895,12 +2895,12 @@ dependencies = [
 [[package]]
 name = "halo2_legacy_pdqsort"
 version = "0.1.0"
-source = "git+https://github.com/zakura-core/libraries?rev=d1fe54e56ffbb6c36cb4e54f7532957347f08397#d1fe54e56ffbb6c36cb4e54f7532957347f08397"
+source = "git+https://github.com/zakura-core/libraries?rev=b44390bc487a37187a161b5b0f2536a6567afa8e#b44390bc487a37187a161b5b0f2536a6567afa8e"
 
 [[package]]
 name = "halo2_poseidon"
 version = "0.1.0"
-source = "git+https://github.com/zakura-core/libraries?rev=d1fe54e56ffbb6c36cb4e54f7532957347f08397#d1fe54e56ffbb6c36cb4e54f7532957347f08397"
+source = "git+https://github.com/zakura-core/libraries?rev=b44390bc487a37187a161b5b0f2536a6567afa8e#b44390bc487a37187a161b5b0f2536a6567afa8e"
 dependencies = [
  "bitvec",
  "ff",
@@ -2911,7 +2911,7 @@ dependencies = [
 [[package]]
 name = "halo2_proofs"
 version = "0.3.5"
-source = "git+https://github.com/zakura-core/libraries?rev=d1fe54e56ffbb6c36cb4e54f7532957347f08397#d1fe54e56ffbb6c36cb4e54f7532957347f08397"
+source = "git+https://github.com/zakura-core/libraries?rev=b44390bc487a37187a161b5b0f2536a6567afa8e#b44390bc487a37187a161b5b0f2536a6567afa8e"
 dependencies = [
  "blake2b_simd",
  "ff",
@@ -4603,7 +4603,7 @@ checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
 [[package]]
 name = "orchard"
 version = "0.15.5"
-source = "git+https://github.com/zakura-core/libraries?rev=d1fe54e56ffbb6c36cb4e54f7532957347f08397#d1fe54e56ffbb6c36cb4e54f7532957347f08397"
+source = "git+https://github.com/zakura-core/libraries?rev=b44390bc487a37187a161b5b0f2536a6567afa8e#b44390bc487a37187a161b5b0f2536a6567afa8e"
 dependencies = [
  "aes",
  "bitvec",
@@ -4784,7 +4784,7 @@ dependencies = [
 [[package]]
 name = "pasta_curves"
 version = "0.5.2"
-source = "git+https://github.com/zakura-core/libraries?rev=d1fe54e56ffbb6c36cb4e54f7532957347f08397#d1fe54e56ffbb6c36cb4e54f7532957347f08397"
+source = "git+https://github.com/zakura-core/libraries?rev=b44390bc487a37187a161b5b0f2536a6567afa8e#b44390bc487a37187a161b5b0f2536a6567afa8e"
 dependencies = [
  "blake2b_simd",
  "cc",
@@ -5786,7 +5786,7 @@ dependencies = [
 [[package]]
 name = "reddsa"
 version = "0.5.2"
-source = "git+https://github.com/zakura-core/libraries?rev=d1fe54e56ffbb6c36cb4e54f7532957347f08397#d1fe54e56ffbb6c36cb4e54f7532957347f08397"
+source = "git+https://github.com/zakura-core/libraries?rev=b44390bc487a37187a161b5b0f2536a6567afa8e#b44390bc487a37187a161b5b0f2536a6567afa8e"
 dependencies = [
  "blake2b_simd",
  "byteorder",
@@ -6840,7 +6840,7 @@ checksum = "e3a9fe34e3e7a50316060351f37187a3f546bce95496156754b601a5fa71b76e"
 [[package]]
 name = "sinsemilla"
 version = "0.1.0"
-source = "git+https://github.com/zakura-core/libraries?rev=d1fe54e56ffbb6c36cb4e54f7532957347f08397#d1fe54e56ffbb6c36cb4e54f7532957347f08397"
+source = "git+https://github.com/zakura-core/libraries?rev=b44390bc487a37187a161b5b0f2536a6567afa8e#b44390bc487a37187a161b5b0f2536a6567afa8e"
 dependencies = [
  "group",
  "pasta_curves",
