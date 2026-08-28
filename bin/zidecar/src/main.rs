@@ -19,6 +19,7 @@ mod lwd_service;
 mod middleware;
 mod orchard_tree;
 mod prover;
+mod rendezvous;
 mod ring_vrf;
 mod storage;
 mod witness;
@@ -160,7 +161,11 @@ async fn main() -> Result<()> {
         let state = frostd::AppState::new()
             .await
             .map_err(|e| anyhow::anyhow!("frostd state: {e}"))?;
-        let app = frostd::router(state);
+        // Upstream's router, plus our /rendezvous/* discovery routes on the
+        // same listener: a human room code that bootstraps the key exchange
+        // and hands joiners the session uuid. See rendezvous.rs — it admits
+        // nobody to anything; the nine frostd endpoints are untouched.
+        let app = frostd::router(state).merge(rendezvous::router(rendezvous::RendezvousState::new()));
         let frostd_listener = tokio::net::TcpListener::bind(addr)
             .await
             .map_err(|e| anyhow::anyhow!("failed to bind frostd on {}: {}", addr, e))?;
