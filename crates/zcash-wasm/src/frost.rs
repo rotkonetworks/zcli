@@ -1187,11 +1187,18 @@ pub fn frost_relay_sign_challenge(
         .try_into()
         .map_err(|_| JsError::new("private key is not 32 bytes"))?;
 
-    let sig = frost_spend::relay_cipher::sign_challenge(
-        &sk,
-        challenge.as_bytes(),
-        &mut rand_core::OsRng,
-    )
-    .map_err(|e| JsError::new(&e))?;
+    // frostd verifies over the challenge uuid's 16 RAW bytes (frost-client
+    // signs `Uuid::as_bytes`), not the 36-char string. Sign raw when the
+    // challenge parses as a uuid; fall back to the string bytes otherwise.
+    let uuid_raw: Option<[u8; 16]> = {
+        let hex_str: String = challenge.chars().filter(|c| *c != '-').collect();
+        hex::decode(&hex_str).ok().and_then(|b| b.try_into().ok())
+    };
+    let msg: &[u8] = match &uuid_raw {
+        Some(raw) => raw,
+        None => challenge.as_bytes(),
+    };
+    let sig = frost_spend::relay_cipher::sign_challenge(&sk, msg, &mut rand_core::OsRng)
+        .map_err(|e| JsError::new(&e))?;
     Ok(hex::encode(sig))
 }
