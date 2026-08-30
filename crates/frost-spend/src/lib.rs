@@ -26,8 +26,12 @@ pub mod transport;
 
 // re-export core types
 pub use reddsa::frost::redpallas::{
-    self as frost, aggregate, keys as frost_keys, keys::dkg, round1, round2, Identifier,
-    RandomizedParams, Randomizer, SigningPackage,
+    self as frost, keys as frost_keys, keys::dkg, round1, round2, Identifier, SigningPackage,
 };
+// frost-rerandomized 3.0: rerandomized aggregate + the Randomizer/
+// RandomizedParams types now live in redpallas::rerandomized (reddsa's
+// top-level `aggregate` is plain FROST). Per-share rerandomized signing uses
+// `frost_rerandomized::sign` directly (see sign.rs / orchestrate.rs).
+pub use reddsa::frost::redpallas::rerandomized::{aggregate, RandomizedParams, Randomizer};
 
 pub use ed25519_consensus;

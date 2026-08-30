@@ -10,13 +10,15 @@
 
 mod frost;
 /// HOT shielded-voting vote-casting bindings (casting slice only).
+#[cfg(feature = "voting")]
 mod voting;
 /// Shielded-voting delegation bindings (cold-signed PCZT + ZKP #1).
+#[cfg(feature = "voting")]
 mod voting_delegation;
 /// PIR bindings: fetch IMT non-membership proofs via a JS `fetch` callback.
 /// wasm-only: it backs pir-client's async Transport with a `!Send` JS handle,
 /// which only satisfies the (Send-relaxed) wasm Transport contract.
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", feature = "voting"))]
 mod voting_pir;
 /// Commitment-tree replay and witness serialization.
 ///
@@ -38,6 +40,35 @@ use orchard::note_encryption::{
 use zcash_note_encryption::{
     try_compact_note_decryption, EphemeralKeyBytes, ShieldedOutput, COMPACT_NOTE_SIZE,
 };
+
+/// rand_core 0.10 RNG backed directly by `getrandom` (OS / browser entropy).
+///
+/// Zakura Common 1.0's Orchard/transaction builders and PCZT signers take
+/// `impl rand_core::Rng` (rand_core 0.10), which is now a pure-trait crate with
+/// no bundled `OsRng`. This zero-sized adapter bridges `getrandom` 0.2 (already
+/// the wasm entropy source here) to rand_core 0.10's `TryRng`/`TryCryptoRng`,
+/// which the crate's blanket impls promote to `Rng` + `CryptoRng`.
+#[derive(Clone, Copy, Default)]
+struct OsRng10;
+
+impl rand_core_10::TryRng for OsRng10 {
+    type Error = core::convert::Infallible;
+    fn try_next_u32(&mut self) -> Result<u32, Self::Error> {
+        let mut b = [0u8; 4];
+        getrandom::getrandom(&mut b).expect("getrandom");
+        Ok(u32::from_le_bytes(b))
+    }
+    fn try_next_u64(&mut self) -> Result<u64, Self::Error> {
+        let mut b = [0u8; 8];
+        getrandom::getrandom(&mut b).expect("getrandom");
+        Ok(u64::from_le_bytes(b))
+    }
+    fn try_fill_bytes(&mut self, dst: &mut [u8]) -> Result<(), Self::Error> {
+        getrandom::getrandom(dst).expect("getrandom");
+        Ok(())
+    }
+}
+impl rand_core_10::TryCryptoRng for OsRng10 {}
 
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
@@ -2696,7 +2727,7 @@ pub fn build_unsigned_transaction(
     }
 
     // --- build PCZT bundle (gives us access to alphas) ---
-    let mut rng = OsRng;
+    let mut rng = OsRng10;
     let (mut pczt_bundle, _meta) = builder
         .build_for_pczt(&mut rng)
         .map_err(|e| JsError::new(&format!("pczt bundle build: {:?}", e)))?;
@@ -3591,7 +3622,7 @@ pub fn build_unsigned_pczt(
                     .map_err(|e| JsError::new(&format!("add_transparent_output: {:?}", e)))?;
             }
             builder
-                .build_for_pczt(OsRng, &fee_rule)
+                .build_for_pczt(OsRng10, &fee_rule)
                 .map_err(|e| JsError::new(&format!("build_for_pczt: {:?}", e)))?
                 .pczt_parts
         }};
@@ -4033,7 +4064,7 @@ where
     let fee_zat = Zatoshis::from_u64(fee).map_err(|_| "invalid fee amount".to_string())?;
     let fee_rule = FixedFeeRule::non_standard(fee_zat);
     let parts = builder
-        .build_for_pczt(OsRng, &fee_rule)
+        .build_for_pczt(OsRng10, &fee_rule)
         .map_err(|e| format!("build_for_pczt: {:?}", e))?
         .pczt_parts;
 
@@ -4206,7 +4237,7 @@ where
                             // foreign): skip it, do not abort the batch.
                             Err(_) => continue,
                         }
-                        if action.sign(shielded_sighash, ask, OsRng).is_ok() {
+                        if action.sign(shielded_sighash, ask, OsRng10).is_ok() {
                             counter.set(counter.get() + 1);
                         }
                     }
@@ -4865,7 +4896,7 @@ where
     let fee_zat = Zatoshis::from_u64(fee).map_err(|_| "invalid fee amount".to_string())?;
     let fee_rule = FixedFeeRule::non_standard(fee_zat);
     let parts = builder
-        .build_for_pczt(OsRng, &fee_rule)
+        .build_for_pczt(OsRng10, &fee_rule)
         .map_err(|e| format!("build_for_pczt: {:?}", e))?
         .pczt_parts;
 
@@ -4997,7 +5028,7 @@ where
                             // foreign): skip it, do not abort the batch.
                             Err(_) => continue,
                         }
-                        if action.sign(shielded_sighash, ask, OsRng).is_ok() {
+                        if action.sign(shielded_sighash, ask, OsRng10).is_ok() {
                             counter.set(counter.get() + 1);
                         }
                     }
@@ -6827,7 +6858,7 @@ pub fn build_signed_spend_transaction(
     }
 
     // --- build, prove, sign ---
-    let mut rng = OsRng;
+    let mut rng = OsRng10;
     let (unauthorized_bundle, _meta) = builder
         .build::<ZatBalance>(&mut rng)
         .map_err(|e| JsError::new(&format!("bundle build: {:?}", e)))?
@@ -7395,7 +7426,7 @@ pub fn build_shielding_transaction(
         )
         .map_err(|e| JsError::new(&format!("add_output: {:?}", e)))?;
 
-    let mut rng = OsRng;
+    let mut rng = OsRng10;
     let (unauthorized_bundle, _meta) = builder
         .build::<ZatBalance>(&mut rng)
         .map_err(|e| JsError::new(&format!("bundle build: {:?}", e)))?
@@ -7926,7 +7957,7 @@ where
     let fee_zat = Zatoshis::from_u64(fee).map_err(|_| "invalid fee amount".to_string())?;
     let fee_rule = FixedFeeRule::non_standard(fee_zat);
     let parts = builder
-        .build_for_pczt(OsRng, &fee_rule)
+        .build_for_pczt(OsRng10, &fee_rule)
         .map_err(|e| format!("build_for_pczt: {:?}", e))?
         .pczt_parts;
 
@@ -8530,7 +8561,7 @@ pub fn build_unsigned_shielding_transaction(
         )
         .map_err(|e| JsError::new(&format!("add_output: {:?}", e)))?;
 
-    let mut rng = OsRng;
+    let mut rng = OsRng10;
     let (unauthorized_bundle, _meta) = builder
         .build::<ZatBalance>(&mut rng)
         .map_err(|e| JsError::new(&format!("bundle build: {:?}", e)))?

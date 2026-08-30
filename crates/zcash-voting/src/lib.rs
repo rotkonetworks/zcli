@@ -9,6 +9,35 @@
 //! `confirmation`, `share`, and `session` rather than writing storage rows
 //! directly.
 
+/// rand_core 0.10 RNG adapter for the Zakura Common 1.0 stack.
+///
+/// Zakura's ff 0.14 / orchard 1.0 / voting-circuits 0.11 bound their RNG call
+/// sites on rand_core 0.10's `Rng` (a pure-trait crate). This zero-sized adapter
+/// bridges rand 0.8's `OsRng` (which works on both native and wasm-with-`js`) to
+/// rand_core 0.10's `TryRng`/`TryCryptoRng`, promoted to `Rng`/`CryptoRng` by
+/// the crate's blanket impls. Used at the `pallas::Base::random`,
+/// `orchard::Note::dummy`, `rsk.sign`, and `build_for_pczt` sites.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct OsRng10;
+
+impl rand_core_10::TryRng for OsRng10 {
+    type Error = core::convert::Infallible;
+    fn try_next_u32(&mut self) -> Result<u32, Self::Error> {
+        use rand::RngCore;
+        Ok(rand::rngs::OsRng.next_u32())
+    }
+    fn try_next_u64(&mut self) -> Result<u64, Self::Error> {
+        use rand::RngCore;
+        Ok(rand::rngs::OsRng.next_u64())
+    }
+    fn try_fill_bytes(&mut self, dst: &mut [u8]) -> Result<(), Self::Error> {
+        use rand::RngCore;
+        rand::rngs::OsRng.fill_bytes(dst);
+        Ok(())
+    }
+}
+impl rand_core_10::TryCryptoRng for OsRng10 {}
+
 // Modules kept under both `native` and `wasm-slim`. The wasm-slim casting slice
 // needs the pure crypto core; native-only items inside these modules (anything
 // taking `WalletDb`/`VotingDb`, rusqlite, tokio, or network transport) are

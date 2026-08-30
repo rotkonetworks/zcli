@@ -72,7 +72,7 @@ pub fn signer_round2(
 
     let signing_package = SigningPackage::new(all_commitments.clone(), sighash);
 
-    round2::sign(&signing_package, nonces, key_package, alpha)
+    frost_rerandomized::sign::<frost::PallasBlake2b512>(&signing_package, nonces, key_package, alpha)
 }
 
 /// aggregate FROST signature shares into a final RedPallas signature

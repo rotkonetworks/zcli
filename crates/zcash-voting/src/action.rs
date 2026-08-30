@@ -426,7 +426,7 @@ pub(crate) fn build_governance_pczt(
         })?;
 
     // Sample van_comm_rand
-    let van_comm_rand_fp = pallas::Base::random(&mut rng);
+    let van_comm_rand_fp = pallas::Base::random(&mut crate::OsRng10);
     let van_comm_rand: [u8; 32] = van_comm_rand_fp.to_repr();
 
     // Compute VAN
@@ -544,7 +544,7 @@ pub(crate) fn build_governance_pczt(
         // governance output are paired in the same action slot.
         let (mut pczt_bundle, bundle_meta) =
             builder
-                .build_for_pczt(&mut rng)
+                .build_for_pczt(&mut crate::OsRng10)
                 .map_err(|e| VotingError::Internal {
                     message: format!("Builder::build_for_pczt failed: {:?}", e),
                 })?;

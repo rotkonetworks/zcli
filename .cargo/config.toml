@@ -16,6 +16,10 @@ rustflags = [
     "-C", "link-args=--export=__tls_size",
     "-C", "link-args=--export=__tls_align",
     "-C", "link-args=--export=__tls_base",
+    # Zakura Common 1.0's crypto stack pulls getrandom 0.4, whose wasm32 backend
+    # is selected at compile time via this cfg (paired with the `wasm_js` feature
+    # enabled in zafu-wasm's wasm32 dependencies).
+    "--cfg", "getrandom_backend=\"wasm_js\"",
 ]
 # wasm parallel build requires nightly:
 # RUSTUP_TOOLCHAIN=nightly cargo build --target wasm32-unknown-unknown -Zbuild-std=panic_abort,std

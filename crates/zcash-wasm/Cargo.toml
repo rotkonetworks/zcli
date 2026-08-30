@@ -9,17 +9,21 @@ description = "WASM bindings for Zafu Zcash wallet - parallel trial decryption w
 crate-type = ["cdylib", "rlib"]
 
 [features]
-default = ["parallel"]
-# Gate orchard/multicore here so wasm-single (no parallel) skips halo2's
-# multicore code paths — keeps the single artifact ~3% smaller.
-parallel = ["rayon", "wasm-bindgen-rayon", "orchard/multicore"]
+default = ["parallel", "voting"]
+# Zakura Common 1.0's orchard fork does not expose a `multicore` feature (halo2
+# multicore is handled inside zakura-halo2-proofs), so `parallel` only wires up
+# rayon + wasm-bindgen-rayon now. The old `orchard/multicore` toggle is gone.
+parallel = ["rayon", "wasm-bindgen-rayon"]
+# Shielded-voting + PIR delegation stack (zcash-voting, pir-client, imt-tree).
+# Gated so the proving core can build without the voting cluster.
+voting = ["dep:zcash-voting", "dep:pir-client", "dep:imt-tree"]
 
 [dependencies]
-# crypto primitives (WASM-compatible)
-pasta_curves = "0.5"
+# crypto primitives (WASM-compatible) — Zakura Common 1.0 (pasta-1.0 / ff+group 0.14)
+pasta_curves = { package = "zakura-pasta-curves", version = "=1.0.0" }
 subtle = "2.5"
-ff = "0.13"
-group = "0.13"
+ff = "0.14"
+group = "0.14"
 
 # Orchard protocol - real key derivation and note encryption.
 # NU6.3 / Ironwood stack — upstream crates.io releases (no forks, no [patch]).
@@ -29,11 +33,14 @@ group = "0.13"
 #   zcash_protocol 0.10.x ships the real NU6.3 branch id (0x37a5165b,
 #   mainnet activation 3_428_143) and V6 version group id 0xD884B698 —
 #   NU6.3 is fully ungated upstream, so no zcash_unstable cfg is needed.
-orchard = { version = "0.15.5", default-features = false, features = ["circuit"] }
-zcash_keys = { version = "0.16", default-features = false, features = ["orchard", "transparent-inputs"] }
+orchard = { package = "zakura-orchard", version = "=1.0.0", default-features = false, features = ["circuit"] }
+zcash_keys = { package = "zakura-keys", version = "=1.0.0", default-features = false, features = ["orchard", "transparent-inputs"] }
 zcash_address = { version = "0.13", default-features = false }
 zcash_protocol = { version = "0.10", default-features = false }
 rand_core = "0.6"
+# rand_core 0.10 (pure-trait) for the OsRng10 adapter that feeds Zakura Common
+# 1.0's builders/signers, which now bound their RNG on rand_core 0.10's `Rng`.
+rand_core_10 = { package = "rand_core", version = "0.10", default-features = false }
 zip32 = { version = "0.2", default-features = false }
 
 # merkle witness building
@@ -53,19 +60,19 @@ zcash_note_encryption = "0.4"
 # zcash_primitives 0.28 + sapling-crypto 0.7 + orchard 0.14 line up with the
 # Released librustzcash workspace (NU6.3 is upstream as of these versions)
 # coords the zigner valar spike consumes. Required for `pczt` V6 interop.
-zcash_primitives = { version = "0.30", default-features = false, features = ["non-standard-fees", "transparent-inputs"] }
+zcash_primitives = { package = "zakura-primitives", version = "=1.0.0", default-features = false, features = ["non-standard-fees", "transparent-inputs"] }
 zcash_transparent = { version = "0.10", package = "zcash_transparent", default-features = false, features = ["transparent-inputs"] }
 
 # Partially-Created Zcash Transaction (PCZT) construction.
 # Pinned to the same librustzcash fork branch that zigner's valar spike
 # consumes so orchard/sapling/zcash_primitives versions match byte-for-byte.
-pczt = { version = "0.9", default-features = false, features = ["orchard", "transparent", "sapling", "zcp-builder", "prover", "io-finalizer", "tx-extractor", "signer", "spend-finalizer"] }
+pczt = { package = "zakura-pczt", version = "=0.1.0-rc2", default-features = false, features = ["orchard", "transparent", "sapling", "zcp-builder", "prover", "io-finalizer", "tx-extractor", "signer", "spend-finalizer"] }
 # zcash_primitives renames sapling-crypto to `sapling` internally; mirror the
 # alias so BuildConfig's `Option<sapling::Anchor>` field type-checks.
 # `circuit` feature pulls bellman+groth16 proving — bloats the wasm but is
 # required because pczt's prover/io-finalizer code paths reference
 # sapling::pczt::ProverError / Prover even when the tx has no sapling actions.
-sapling = { package = "sapling-crypto", version = "0.7", default-features = false, features = ["circuit"] }
+sapling = { package = "zakura-sapling-crypto", version = "=1.0.0", default-features = false, features = ["circuit"] }
 
 # key derivation
 bip39 = { version = "2.0", features = ["rand"] }
@@ -97,9 +104,10 @@ getrandom = { version = "0.2", features = ["js"] }
 # PIR client for IMT non-membership proofs (delegation). Vendored path fork with
 # tokio stripped for wasm; the Transport trait is network-free (we back it with a
 # JS `fetch` callback), so no hyper/tonic/tokio enters wasm.
-pir-client = { path = "../pir-client" }
+pir-client = { path = "../pir-client", optional = true }
 # The IMT proof field type (imt_tree::ImtProofData) and its Fp field elements.
-imt-tree = "0.2.0"
+# Zakura Common 1.0: imt-tree 0.5.2 gained a `zakura` feature (pasta-1.0).
+imt-tree = { version = "=0.5.2", default-features = false, features = ["zakura"], optional = true }
 # pir_client's Transport trait returns anyhow::Result.
 anyhow = "1"
 
@@ -118,7 +126,7 @@ base64 = "0.22"
 # Shielded-voting crypto core (HOT vote casting). wasm-slim = pure byte-in/out:
 # no SQLite, no lightwalletd/tonic, no PIR, no std::thread. See
 # crates/zcash-voting for the vendored path fork.
-zcash-voting = { package = "zcash_voting", path = "../zcash-voting", default-features = false, features = ["wasm-slim"] }
+zcash-voting = { package = "zcash_voting", path = "../zcash-voting", default-features = false, features = ["wasm-slim"], optional = true }
 
 # UR encoding for QR transport
 ur = "0.4"
@@ -129,6 +137,14 @@ zoda-vss = { path = "../zoda-vss", default-features = false }
 # parallel processing (optional, enabled by default)
 rayon = { version = ">=1.10, <1.11", optional = true }
 wasm-bindgen-rayon = { version = "1.2", optional = true }
+
+# Zakura Common 1.0's crypto stack (rand 0.10) pulls getrandom 0.4, whose
+# wasm32 backend must be opted into via the `wasm_js` feature AND a
+# `--cfg getrandom_backend="wasm_js"` rustflag (added to the wasm32 rustflags in
+# .cargo/config.toml). Depending on it directly enables that feature on the
+# transitive copy. (getrandom 0.2 with `js` stays for the older transitive copy.)
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom_v04 = { package = "getrandom", version = "0.4", features = ["wasm_js"] }
 
 [dev-dependencies]
 wasm-bindgen-test = "0.3"

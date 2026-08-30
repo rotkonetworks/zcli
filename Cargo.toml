@@ -14,6 +14,7 @@ members = [
     "crates/zcash-voting",
     "crates/pir-client",
     "crates/frost-spend",
+    "crates/osst",
     "crates/zoda-vss",
     "bin/relay",
     "bin/poker",
@@ -59,21 +60,16 @@ codegen-units = 1
 [patch.crates-io]
 maybe-rayon = { path = "crates/maybe-rayon" }
 
-# Zakura proving-stack fork (zakura-core/libraries, main @ b44390b). Portable
-# halo2/orchard proving speedups that apply to our wasm32 build - the merged set
-# on main incl. lookup-argument compression and fixed-window witness (help every
-# rayon worker, so they carry into the parallel build), plus SIMD multiexp. The
-# native ADX `pasta_msm` backend has no dependents here, so wasm excludes it.
-# NOTE: the larger multiexp wins (Booth recoding, evaluator CSE, fixed-base MSM
-# table) are still on unmerged agent/* branches - revisit the rev when they land.
-halo2_proofs = { git = "https://github.com/zakura-core/libraries", rev = "b44390bc487a37187a161b5b0f2536a6567afa8e" }
-halo2_gadgets = { git = "https://github.com/zakura-core/libraries", rev = "b44390bc487a37187a161b5b0f2536a6567afa8e" }
-halo2_poseidon = { git = "https://github.com/zakura-core/libraries", rev = "b44390bc487a37187a161b5b0f2536a6567afa8e" }
-halo2_legacy_pdqsort = { git = "https://github.com/zakura-core/libraries", rev = "b44390bc487a37187a161b5b0f2536a6567afa8e" }
-orchard = { git = "https://github.com/zakura-core/libraries", rev = "b44390bc487a37187a161b5b0f2536a6567afa8e" }
-pasta_curves = { git = "https://github.com/zakura-core/libraries", rev = "b44390bc487a37187a161b5b0f2536a6567afa8e" }
-reddsa = { git = "https://github.com/zakura-core/libraries", rev = "b44390bc487a37187a161b5b0f2536a6567afa8e" }
-sinsemilla = { git = "https://github.com/zakura-core/libraries", rev = "b44390bc487a37187a161b5b0f2536a6567afa8e" }
+# Vendored osst (frostito) ported to Zakura Common 1.0 (pasta-1.0). Redirects
+# the git dependency used by frost-spend, bin/zcli and bin/poker in one move.
+# TODO(upstream): push the pasta-1.0 pallas backend to github.com/rotkonetworks/frostito.
+[patch."https://github.com/rotkonetworks/frostito"]
+osst = { path = "crates/osst" }
+
+# Zakura Common 1.0 (pasta-1.0 generation) is now consumed directly as the
+# crates.io `zakura-*` packages (see per-crate Cargo.toml package renames), so
+# the old git-fork [patch] block that redirected orchard/pasta/halo2/reddsa/
+# sinsemilla at the 0.15.x `zakura-core/libraries` rev is gone.
 
 # vendored librustzcash fork removed: NU6.3 / Ironwood is upstream as of the
 # released crates (zcash_primitives 0.30 / zcash_protocol 0.10 / orchard

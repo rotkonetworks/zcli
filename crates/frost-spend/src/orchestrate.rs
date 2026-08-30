@@ -16,7 +16,7 @@ use rand_core::OsRng;
 use crate::{
     aggregate, dkg, frost, frost_keys,
     message::{self, identifier_from_vk, SignedMessage},
-    round1, round2, sealed, Identifier, RandomizedParams, Randomizer, SigningPackage,
+    round1, sealed, Identifier, RandomizedParams, Randomizer, SigningPackage,
 };
 
 // ── error ──
@@ -504,8 +504,13 @@ pub fn sign_round2(
 
     let signing_package = build_signing_package_from_signed(message, signed_commitments_hex)?;
 
-    let share = round2::sign(&signing_package, &nonces, &key_pkg, randomizer)
-        .map_err(|e| Error::Frost(format!("sign round2: {}", e)))?;
+    let share = frost_rerandomized::sign::<frost::PallasBlake2b512>(
+        &signing_package,
+        &nonces,
+        &key_pkg,
+        randomizer,
+    )
+    .map_err(|e| Error::Frost(format!("sign round2: {}", e)))?;
 
     let payload =
         serde_json::to_vec(&to_hex(&share)?).map_err(|e| Error::Serialize(e.to_string()))?;

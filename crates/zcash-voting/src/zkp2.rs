@@ -151,7 +151,7 @@ pub fn build_vote_commitment(
     progress.on_progress(0.10);
     // Generate spend-auth randomizer for the voting key.
     // The caller will need alpha_v to sign the TX2 sighash with rsk_v = ask_v.randomize(&alpha_v).
-    let alpha_v = pallas::Scalar::random(&mut rand::thread_rng());
+    let alpha_v = pallas::Scalar::random(&mut crate::OsRng10);
     let sk_for_proof = sk.clone();
     // Circuit synthesis + MockProver + proof generation can overflow a default
     // thread stack, so native runs it on a dedicated 64 MiB-stack thread. wasm32

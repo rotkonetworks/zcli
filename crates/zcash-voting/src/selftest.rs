@@ -73,7 +73,7 @@ pub fn run_selftest_delegation_proof() -> Result<DelegationProofResult, VotingEr
     let hotkey_raw_address = hotkey_addr.to_raw_address_bytes().to_vec();
 
     // 3. Fill all note slots so no padding or IMT server is needed.
-    let mut rng = OsRng;
+    let mut rng = crate::OsRng10;
     let note_values = vec![
         (crate::governance::BALLOT_DIVISOR / BUNDLE_NOTE_SLOTS as u64) + 1;
         BUNDLE_NOTE_SLOTS

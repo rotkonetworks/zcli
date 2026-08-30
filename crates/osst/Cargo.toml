@@ -1,0 +1,67 @@
+[package]
+name = "osst"
+version = "0.1.1"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "frostito: nested FROST with OSST identification, DKG, and proactive resharing"
+repository = "https://github.com/rotkonetworks/frostito"
+documentation = "https://docs.rs/osst"
+readme = "README.md"
+keywords = ["threshold", "cryptography", "schnorr", "mpc", "reshare"]
+categories = ["cryptography", "no-std"]
+
+[features]
+default = ["std", "ristretto255"]
+std = [
+    "sha2/std",
+    "rand_core/std",
+]
+# Curve backends
+ristretto255 = ["dep:curve25519-dalek"]
+pallas = ["dep:pasta_curves", "dep:blake2b_simd"]
+secp256k1 = ["dep:k256"]
+decaf377 = ["dep:decaf377"]
+
+[dependencies]
+# hashing
+sha2 = { version = "0.10", default-features = false }
+
+# randomness
+rand_core = { version = "0.6", default-features = false }
+
+# secret zeroization
+zeroize = { version = "1.8", default-features = false, features = ["derive"] }
+
+# Curve backends (optional)
+# ristretto255 - for Polkadot/sr25519 compatibility
+curve25519-dalek = { version = "4.1", default-features = false, features = ["digest", "group", "alloc", "rand_core", "zeroize"], optional = true }
+
+# pallas - for Zcash Orchard compatibility
+# Zakura Common 1.0 fork (pasta-1.0 / ff+group 0.14). Package rename keeps the
+# `use pasta_curves` paths working; the pallas backend only touches stable
+# ff/group traits (Field/PrimeField/FromUniformBytes/Group/GroupEncoding) that
+# are unchanged across the 0.13 -> 0.14 bump.
+pasta_curves = { package = "zakura-pasta-curves", version = "=1.0.0", default-features = false, features = ["alloc"], optional = true }
+
+# secp256k1 - for Bitcoin compatibility
+k256 = { version = "0.13", default-features = false, features = ["arithmetic", "ecdsa"], optional = true }
+
+# blake2b for Zcash RedPallas challenge hash
+blake2b_simd = { version = "1.0", default-features = false, optional = true }
+
+# for zeroize implementations on external scalar types
+generic-array = { version = "0.14", default-features = false, optional = true }
+
+# decaf377 - for Penumbra compatibility
+decaf377 = { version = "0.10", default-features = false, optional = true }
+
+# serialization
+serde = { version = "1.0", default-features = false, features = ["derive", "alloc"], optional = true }
+
+# substrate compatibility
+codec = { version = "3.6", package = "parity-scale-codec", default-features = false, features = ["derive"], optional = true }
+scale-info = { version = "2.11", default-features = false, features = ["derive"], optional = true }
+
+[dev-dependencies]
+rand = "0.8"
+hex = "0.4"

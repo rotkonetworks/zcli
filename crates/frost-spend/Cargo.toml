@@ -11,8 +11,16 @@ default = []
 wasm = ["getrandom/js"]
 
 [dependencies]
-# ZF FROST (RedPallas, rerandomized)
-reddsa = { git = "https://github.com/ZcashFoundation/reddsa.git", rev = "475a552", features = ["frost", "serde"] }
+# FROST (RedPallas, rerandomized) on Zakura Common 1.0. zakura-reddsa's `frost`
+# feature pulls frost-rerandomized 3.0 with serialization, and enables the
+# rand_core_06 shim so FROST APIs keep taking rand_core 0.6 RNGs.
+reddsa = { package = "zakura-reddsa", version = "=1.0.0", features = ["frost"] }
+# frost-rerandomized 3.0 moved rerandomized signing out of reddsa's redpallas
+# module: `redpallas::rerandomized` re-exports aggregate/Randomizer/
+# RandomizedParams, but per-share signing with an explicit randomizer (our
+# Orchard alpha) is only available as `frost_rerandomized::sign`. Matches the
+# version reddsa's `frost` feature pulls.
+frost-rerandomized = { version = "=3.0.0" }
 ed25519-consensus = "2"
 rand_core = "0.6"
 
@@ -20,10 +28,14 @@ rand_core = "0.6"
 # Released crates.io orchard — NU6.3/Ironwood is upstream as of 0.15.0, so no
 # fork is needed. The FROST FVK shape upstream lacks a constructor for is
 # built from the public raw encoding in keys::frost_fvk (see the note there).
-orchard = { version = "0.15.5", default-features = false, features = ["unstable-frost"] }
+# NOTE: `unstable-voting-circuits` is enabled only to work around a packaging
+# bug in zakura-orchard 1.0.0/1.0.1: keys.rs gates `visibility::make(pub)` on
+# `unstable-frost`, but the optional `visibility` dep is pulled in by
+# `unstable-voting-circuits` instead - so `unstable-frost` alone fails to build.
+orchard = { package = "zakura-orchard", version = "=1.0.0", default-features = false, features = ["unstable-frost", "unstable-voting-circuits"] }
 
 # Pallas curve
-pasta_curves = "0.5"
+pasta_curves = { package = "zakura-pasta-curves", version = "=1.0.0" }
 
 # OSST: nested FROST + reshare (public extract from zeratul)
 # "std" is required for osst::redpallas (rand_core::OsRng); without it the
