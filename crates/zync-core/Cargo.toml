@@ -47,15 +47,19 @@ bincode = "1.3"
 nomt-core = { version = "1.0", features = ["blake3-hasher", "serde"] }
 bitvec = "1"
 
-# zcash (same orchard fork as frost-spend for type compatibility)
-# default-features would pull orchard's `circuit`, and with it
-# halo2_gadgets 0.3.1 (GHSA soundness advisory). zync-core never builds or
-# verifies an orchard proof — it needs the FROST key types only — so the
-# circuit is dead weight AND a vulnerable dependency. Keep multicore for
-# the note-decryption parallelism we do use.
-orchard = { version = "0.15.5", default-features = false, features = ["unstable-frost", "multicore"] }
+# zcash — Zakura Common 1.0 (zakura-orchard 1.0), the SAME orchard the native
+# zecli graph now uses everywhere (via zafu-wasm / frost-spend). This retires
+# the second, upstream `orchard 0.15.5` that used to split the native graph.
+# default-features would pull orchard's `circuit`, and with it halo2_gadgets
+# (GHSA soundness advisory). zync-core never builds or verifies an orchard
+# proof — it needs the note-decryption key types only — so the circuit is dead
+# weight AND a vulnerable dependency. No `unstable-frost`: nothing here touches
+# a frost-gated API (the re-exported FullViewingKey/IncomingViewingKey/Scope/
+# SpendingKey are all ungated). Keep `multicore` for the note-decryption
+# parallelism we do use, and to agree with the rest of the native graph.
+orchard = { package = "zakura-orchard", version = "=1.0.0", default-features = false, features = ["multicore"] }
 zcash_note_encryption = "0.4"
-pasta_curves = "0.5"
+pasta_curves = { package = "zakura-pasta-curves", version = "=1.0.0" }
 subtle = "2.5"
 
 # gRPC client (optional)

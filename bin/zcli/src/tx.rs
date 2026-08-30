@@ -7,11 +7,41 @@ use orchard::builder::{Builder, BundleType};
 use orchard::keys::{FullViewingKey, Scope, SpendingKey};
 use orchard::tree::Anchor;
 use orchard::value::NoteValue;
-use rand::rngs::OsRng;
 use zcash_protocol::value::ZatBalance;
 
 use crate::error::Error;
 use crate::key::WalletSeed;
+
+/// rand_core 0.10 RNG backed by the OS entropy source (`rand::rngs::OsRng`).
+///
+/// Zakura Common 1.0's Orchard builders (`Builder::build` / `build_for_pczt`)
+/// and the PCZT binding-signature step take `impl rand_core::Rng` from
+/// rand_core 0.10, which is a pure-trait crate with no bundled `OsRng`. This
+/// zero-sized adapter bridges rand 0.8's `OsRng` to rand_core 0.10's
+/// `TryRng`/`TryCryptoRng`, whose blanket impls promote it to `Rng` +
+/// `CryptoRng`. Mirrors the `OsRng10` adapter in crates/zcash-wasm.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct OsRng10;
+
+impl rand_core_10::TryRng for OsRng10 {
+    type Error = core::convert::Infallible;
+    fn try_next_u32(&mut self) -> Result<u32, Self::Error> {
+        let mut b = [0u8; 4];
+        self.try_fill_bytes(&mut b)?;
+        Ok(u32::from_le_bytes(b))
+    }
+    fn try_next_u64(&mut self) -> Result<u64, Self::Error> {
+        let mut b = [0u8; 8];
+        self.try_fill_bytes(&mut b)?;
+        Ok(u64::from_le_bytes(b))
+    }
+    fn try_fill_bytes(&mut self, dst: &mut [u8]) -> Result<(), Self::Error> {
+        use rand::RngCore;
+        rand::rngs::OsRng.fill_bytes(dst);
+        Ok(())
+    }
+}
+impl rand_core_10::TryCryptoRng for OsRng10 {}
 
 // -- from zafu-wasm --
 
@@ -449,7 +479,7 @@ pub fn build_shielding_tx(
         )
         .map_err(|e| Error::Transaction(format!("add_output: {:?}", e)))?;
 
-    let mut rng = OsRng;
+    let mut rng = OsRng10;
     let (unauthorized, _meta) = builder
         .build::<ZatBalance>(&mut rng)
         .map_err(|e| Error::Transaction(format!("bundle build: {:?}", e)))?
@@ -727,7 +757,7 @@ pub fn build_orchard_spend_tx(
             .map_err(|e| Error::Transaction(format!("add_output (change): {:?}", e)))?;
     }
 
-    let mut rng = OsRng;
+    let mut rng = OsRng10;
     let (unauthorized, _meta) = builder
         .build::<ZatBalance>(&mut rng)
         .map_err(|e| Error::Transaction(format!("bundle build: {:?}", e)))?

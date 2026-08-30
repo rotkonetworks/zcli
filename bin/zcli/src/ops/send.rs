@@ -29,9 +29,31 @@ pub async fn send(
     recipient: &str,
     memo: Option<&str>,
     endpoint: &str,
+    // `dry_run` and `fee` are surfaced as `zcli tx send` CLI flags but were
+    // never wired into the send path (pre-existing incomplete refactor, present
+    // on master too). Accept them in the caller's arg order and fail CLOSED
+    // rather than silently ignoring them: honouring the flag by dropping it in
+    // money-moving code is the one genuinely dangerous behaviour here. The
+    // default call (`false`, `None`) behaves exactly as before.
+    dry_run: bool,
+    fee: Option<u64>,
     mainnet: bool,
     json: bool,
 ) -> Result<(), Error> {
+    if dry_run {
+        return Err(Error::Transaction(
+            "--dry-run is not implemented for `tx send` yet; refusing to proceed \
+             so a dry-run never broadcasts a real transaction"
+                .into(),
+        ));
+    }
+    if fee.is_some() {
+        return Err(Error::Transaction(
+            "--fee override is not supported for `tx send` yet; the fee is \
+             computed per ZIP-317. Re-run without --fee."
+                .into(),
+        ));
+    }
     let amount_zat = parse_amount(amount_str)?;
 
     // determine recipient type
