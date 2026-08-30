@@ -10,10 +10,20 @@ crate-type = ["cdylib", "rlib"]
 
 [features]
 default = ["parallel", "voting"]
-# Zakura Common 1.0's orchard fork does not expose a `multicore` feature (halo2
-# multicore is handled inside zakura-halo2-proofs), so `parallel` only wires up
-# rayon + wasm-bindgen-rayon now. The old `orchard/multicore` toggle is gone.
+# `parallel` wires up rayon + wasm-bindgen-rayon for zafu's own trial-decryption
+# work. It deliberately does NOT touch halo2's internal parallelism.
 parallel = ["rayon", "wasm-bindgen-rayon"]
+# Turns on zakura-halo2-proofs' `multicore` path (via zakura-orchard's re-exposed
+# `multicore` feature -> `halo2_proofs?/multicore` -> `maybe-rayon/threads`).
+# This is OFF for the wasm builds on purpose: with it off, maybe-rayon stays on
+# its single-threaded shim fallback and zakura-halo2-proofs' non-multicore code
+# path lines up with it. It is only enabled in the NATIVE zecli graph, where a
+# second, real `halo2_proofs 0.3.5` (pulled by zync-core -> orchard 0.15.5)
+# forces `maybe-rayon/threads` ON for the single shared shim crate - which then
+# REQUIRES zakura-halo2-proofs to also be on its multicore (rayon) path, or its
+# `the_best_reduce` / `IndexedParallelIterator` calls fail to resolve. See
+# zecli's Cargo.toml, which enables `zafu-wasm/multicore`.
+multicore = ["orchard/multicore"]
 # Shielded-voting + PIR delegation stack (zcash-voting, pir-client, imt-tree).
 # Gated so the proving core can build without the voting cluster.
 voting = ["dep:zcash-voting", "dep:pir-client", "dep:imt-tree"]

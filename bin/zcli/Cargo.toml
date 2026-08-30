@@ -39,6 +39,13 @@ cli = [
     "dep:zync-core",
     "dep:anyhow",
     "dep:zafu-wasm",
+    # Native-only: the zecli graph pulls a second, real halo2_proofs 0.3.5
+    # (multicore) alongside zakura-halo2-proofs, which forces the shared
+    # maybe-rayon shim onto its rayon/threads backend. zakura-halo2-proofs must
+    # then be on its own multicore path too, or its the_best_reduce /
+    # IndexedParallelIterator calls fail to resolve. This never reaches the wasm
+    # builds (they build -p zafu-wasm, which does not enable this).
+    "zafu-wasm/multicore",
 ]
 
 [dependencies]
