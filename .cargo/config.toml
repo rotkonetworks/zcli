@@ -31,4 +31,7 @@ wasm-parallel = "build -p zafu-wasm --target wasm32-unknown-unknown --release -Z
 
 # Single-threaded — needs build-std because global RUSTFLAGS force +atomics
 # and prebuilt stable std lacks them. Output still requires SharedArrayBuffer.
-wasm-single = "build -p zafu-wasm --target wasm32-unknown-unknown --release --no-default-features -Zbuild-std=panic_abort,std"
+# `voting` is added explicitly: it is now a default feature (was unconditional
+# before the Zakura Common 1.0 migration), and --no-default-features would
+# otherwise silently drop vote casting/delegation from the single-thread bundle.
+wasm-single = "build -p zafu-wasm --target wasm32-unknown-unknown --release --no-default-features --features voting -Zbuild-std=panic_abort,std"

@@ -2489,7 +2489,7 @@ dependencies = [
  "getrandom 0.2.17",
  "hex",
  "hkdf",
- "osst",
+ "osst 0.1.1",
  "rand_core 0.6.4",
  "serde",
  "serde_json",
@@ -4733,6 +4733,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "osst"
+version = "0.1.1"
+source = "git+https://github.com/rotkonetworks/frostito?rev=14e38da#14e38dae7065dd441a3746c859b6e681f2927cc5"
+dependencies = [
+ "blake2b_simd",
+ "pasta_curves",
+ "rand_core 0.6.4",
+ "sha2 0.10.9",
+ "zeroize",
+]
+
+[[package]]
 name = "p256"
 version = "0.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5173,7 +5185,7 @@ dependencies = [
  "clap",
  "hex",
  "orchard",
- "osst",
+ "osst 0.1.1 (git+https://github.com/rotkonetworks/frostito?rev=14e38da)",
  "pasta_curves",
  "prost 0.12.6",
  "rand 0.8.7",
@@ -10039,7 +10051,7 @@ dependencies = [
  "is-terminal",
  "k256",
  "orchard",
- "osst",
+ "osst 0.1.1 (git+https://github.com/rotkonetworks/frostito?rev=14e38da)",
  "pasta_curves",
  "prost 0.12.6",
  "qrcode",

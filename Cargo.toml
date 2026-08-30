@@ -60,11 +60,13 @@ codegen-units = 1
 [patch.crates-io]
 maybe-rayon = { path = "crates/maybe-rayon" }
 
-# Vendored osst (frostito) ported to Zakura Common 1.0 (pasta-1.0). Redirects
-# the git dependency used by frost-spend, bin/zcli and bin/poker in one move.
+# NOTE: the Zakura Common 1.0 (pasta-1.0) port of osst lives at crates/osst and
+# is consumed directly by `frost-spend` via a path dependency (NOT a workspace
+# [patch] redirect). A patch would force EVERY frostito-osst consumer onto
+# pasta-1.0, breaking bin/zecli and bin/poker, which are still on the old
+# orchard-0.15 / pasta-0.5 line. Path-depping scopes the new osst to the wasm
+# proving+FROST path only.
 # TODO(upstream): push the pasta-1.0 pallas backend to github.com/rotkonetworks/frostito.
-[patch."https://github.com/rotkonetworks/frostito"]
-osst = { path = "crates/osst" }
 
 # Zakura Common 1.0 (pasta-1.0 generation) is now consumed directly as the
 # crates.io `zakura-*` packages (see per-crate Cargo.toml package renames), so

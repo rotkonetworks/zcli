@@ -41,7 +41,9 @@ pasta_curves = { package = "zakura-pasta-curves", version = "=1.0.0" }
 # "std" is required for osst::redpallas (rand_core::OsRng); without it the
 # package only compiles when another workspace member happens to enable the
 # feature, so `cargo build -p frost-spend` failed in isolation.
-osst = { git = "https://github.com/rotkonetworks/frostito", rev = "14e38da", default-features = false, features = ["pallas", "std"] }
+# Vendored pasta-1.0 (Zakura Common 1.0) port at crates/osst. Path dep (not a
+# workspace [patch]) so bin/zecli and bin/poker keep their old git osst.
+osst = { path = "../osst", default-features = false, features = ["pallas", "std"] }
 
 # round-2 package sealing (see sealed.rs). Noise_K, the same pattern ZF's
 # frost-client uses, so this is the ecosystem's transport rather than ours.
