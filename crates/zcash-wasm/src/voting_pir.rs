@@ -25,7 +25,7 @@ use std::sync::Arc;
 use ff::PrimeField;
 use js_sys::{Function, Promise, Uint8Array};
 use pasta_curves::Fp;
-use pir_client::{PirClient, Transport, TransportFuture, TransportResponse};
+use pir_client::{PirClient, Transport, TransportFuture, TransportResponse, COMPILED_PIR_LAYOUT};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::JsFuture;
@@ -121,7 +121,10 @@ pub async fn pir_fetch_imt_proofs(
     }
 
     let transport: Arc<dyn Transport> = Arc::new(JsFetchTransport { js_fetch });
-    let client = PirClient::with_transport(&pir_base_url, transport)
+    // COMPILED_PIR_LAYOUT is the client's compile-time expected PIR layout
+    // (the current 4096-dim, 2-tier / 19-depth "ironwood" dataset v2); the
+    // client rejects a server advertising a different layout.
+    let client = PirClient::with_transport(&pir_base_url, COMPILED_PIR_LAYOUT, transport)
         .await
         .map_err(|e| JsError::new(&format!("PIR connect failed: {e}")))?;
 

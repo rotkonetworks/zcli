@@ -1,8 +1,8 @@
 [package]
 edition = "2021"
 name = "pir-client"
-version = "0.4.0-rc.2"
-description = "Private Information Retrieval client for Zcash nullifier non-membership proofs. Fetches circuit-ready Merkle authentication paths without revealing the queried nullifier to the server. Vendored path fork for zafu-wasm (tokio stripped for wasm32)."
+version = "0.7.2"
+description = "Private Information Retrieval client for Zcash nullifier non-membership proofs. Fetches circuit-ready Merkle authentication paths without revealing the queried nullifier to the server. Vendored path fork for zafu-wasm (tokio stripped for wasm32; rebased onto upstream 0.7.2 / pir-types 0.6.2 / ypir 0.2 / 4096-dim on the Zakura Common 1.0 line)."
 readme = "README.md"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/valargroup/vote-nullifier-pir"
@@ -11,16 +11,28 @@ repository = "https://github.com/valargroup/vote-nullifier-pir"
 name = "pir_client"
 path = "src/lib.rs"
 
+[features]
+default = ["zakura"]
+upstream = [
+    "voting-crypto-deps/lrz-vct",
+    "pir-types/upstream",
+    "imt-tree/upstream",
+]
+zakura = [
+    "voting-crypto-deps/vct",
+    "pir-types/zakura",
+    "imt-tree/zakura",
+]
+
 [dependencies]
 anyhow = "1.0"
-ff = "0.14"
 futures = "0.3"
 hex = "0.4"
-imt-tree = { version = "=0.5.2", default-features = false, features = ["zakura"] }
+imt-tree = { version = "=0.5.2", default-features = false }
 log = "0.4"
-pasta_curves = { package = "zakura-pasta-curves", version = "=1.0.0" }
-pir-types = { version = "=0.6.2" }
+pir-types = { version = "=0.6.2", default-features = false, features = ["reader"] }
 serde_json = "1"
+voting-crypto-deps = { version = "=0.2.2", default-features = false }
 ypir = { version = "=0.2.0", default-features = false, package = "valar-ypir" }
 
 # tokio powers only the native blocking client + async tests; wasm32 uses
@@ -29,7 +41,8 @@ ypir = { version = "=0.2.0", default-features = false, package = "valar-ypir" }
 version = "1"
 features = ["rt-multi-thread", "macros", "time"]
 
-# wasm needs getrandom's browser backend (pulled transitively by valar-spiral-rs).
+# wasm needs getrandom's browser backend + a monotonic clock shim (std::time is
+# unavailable on wasm32-unknown-unknown).
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom = { version = "0.2", features = ["js"] }
 

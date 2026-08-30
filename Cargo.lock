@@ -5051,25 +5051,6 @@ checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 [[package]]
 name = "pir-client"
 version = "0.4.0-rc.2"
-dependencies = [
- "anyhow",
- "ff 0.14.0",
- "futures",
- "getrandom 0.2.17",
- "hex",
- "imt-tree 0.5.2",
- "log",
- "pir-types 0.6.2",
- "rand 0.8.7",
- "serde_json",
- "tokio",
- "valar-ypir 0.2.0",
- "zakura-pasta-curves",
-]
-
-[[package]]
-name = "pir-client"
-version = "0.4.0-rc.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "666111370cf8a3fb2fa41a2442accc9d283226c1229828ff92c253dda1eb51e3"
 dependencies = [
@@ -5084,6 +5065,24 @@ dependencies = [
  "serde_json",
  "tokio",
  "valar-ypir 0.1.5",
+]
+
+[[package]]
+name = "pir-client"
+version = "0.7.2"
+dependencies = [
+ "anyhow",
+ "futures",
+ "getrandom 0.2.17",
+ "hex",
+ "imt-tree 0.5.2",
+ "log",
+ "pir-types 0.6.2",
+ "rand 0.8.7",
+ "serde_json",
+ "tokio",
+ "valar-ypir 0.2.0",
+ "voting-crypto-deps",
 ]
 
 [[package]]
@@ -5105,6 +5104,7 @@ version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "334dfc8e3e5b5f06b82bf6f1373b36a35a53d7f3cd44e7c71fab579fef99727a"
 dependencies = [
+ "anyhow",
  "imt-tree 0.5.2",
  "serde",
  "voting-crypto-deps",
@@ -8512,6 +8512,8 @@ version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a4d510090b7c0948010682561d4bea6c1aa4c28f6f6bdb38f24fd12098156287"
 dependencies = [
+ "halo2_gadgets",
+ "pasta_curves",
  "rand 0.10.2",
  "zakura-halo2-gadgets",
  "zakura-halo2-poseidon",
@@ -8533,7 +8535,7 @@ dependencies = [
  "hex",
  "js-sys",
  "pasta_curves",
- "pir-client 0.4.0-rc.2",
+ "pir-client 0.7.2",
  "rand 0.8.7",
  "rayon",
  "serde",
@@ -9298,7 +9300,7 @@ dependencies = [
  "indexmap 1.9.3",
  "js-sys",
  "k256",
- "pir-client 0.4.0-rc.2",
+ "pir-client 0.7.2",
  "rand 0.8.7",
  "rand_core 0.10.1",
  "rand_core 0.6.4",
@@ -9950,7 +9952,7 @@ dependencies = [
  "imt-tree 0.5.2",
  "incrementalmerkletree",
  "nonempty",
- "pir-client 0.4.0-rc.2 (registry+https://github.com/rust-lang/crates.io-index)",
+ "pir-client 0.4.0-rc.2",
  "pir-types 0.3.0-rc.2",
  "prost 0.14.4",
  "rand 0.8.7",
