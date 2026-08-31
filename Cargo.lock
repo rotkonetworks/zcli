@@ -2378,7 +2378,7 @@ dependencies = [
  "message-io",
  "postcard",
  "rand 0.8.7",
- "reddsa 0.5.1 (git+https://github.com/ZcashFoundation/reddsa.git?rev=ed49e9ca0699a6450f6d4a9fe62ff168f5ea1ead)",
+ "reddsa 0.5.1",
  "reqwest 0.12.28",
  "rpassword",
  "serde",
@@ -5852,24 +5852,6 @@ dependencies = [
  "rustls-pki-types",
  "time",
  "yasna",
-]
-
-[[package]]
-name = "reddsa"
-version = "0.5.1"
-source = "git+https://github.com/ZcashFoundation/reddsa.git?rev=475a552#475a552c6176dc03b0aebc9605e3810f1360dd91"
-dependencies = [
- "blake2b_simd",
- "byteorder",
- "frost-rerandomized 2.2.0",
- "group 0.13.0",
- "hex",
- "jubjub",
- "pasta_curves",
- "rand_core 0.6.4",
- "serde",
- "thiserror 2.0.19",
- "zeroize",
 ]
 
 [[package]]
@@ -10050,7 +10032,7 @@ dependencies = [
  "indicatif",
  "is-terminal",
  "k256",
- "osst 0.1.1 (git+https://github.com/rotkonetworks/frostito?rev=14e38da)",
+ "osst 0.1.1",
  "prost 0.12.6",
  "qrcode",
  "quinn",
@@ -10058,7 +10040,6 @@ dependencies = [
  "rand_core 0.10.1",
  "rand_core 0.6.4",
  "rcgen",
- "reddsa 0.5.1 (git+https://github.com/ZcashFoundation/reddsa.git?rev=475a552)",
  "reqwest 0.12.28",
  "ring",
  "ripemd 0.1.3",
@@ -10082,6 +10063,7 @@ dependencies = [
  "zakura-keys",
  "zakura-orchard",
  "zakura-pasta-curves",
+ "zakura-reddsa",
  "zcash_address",
  "zcash_note_encryption",
  "zcash_protocol",

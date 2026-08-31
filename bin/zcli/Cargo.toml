@@ -86,13 +86,24 @@ frost-client = { git = "https://github.com/ZcashFoundation/frost-tools", rev = "
 # to name session ids in frostd's API
 uuid = { version = "1", features = ["v4", "serde"] }
 zoda-vss = { path = "../../crates/zoda-vss" }
-osst = { git = "https://github.com/rotkonetworks/frostito", rev = "14e38da", default-features = false, features = ["pallas"] }
+# Vendored pasta-1.0 (Zakura Common 1.0) port at crates/osst, same path dep
+# frost-spend uses on this branch. The old frostito git rev (14e38da) still
+# built on pasta_curves 0.5 and was the last osst edge dragging a second pasta
+# into the native graph; the path port is on zakura-pasta-curves 1.0. "std" is
+# required for osst::redpallas / OsRng (matches frost-spend's comment).
+osst = { path = "../../crates/osst", default-features = false, features = ["pallas", "std"] }
 # Zakura Common 1.0 pasta (pasta-1.0 / ff+group 0.14). zecli's own source does
 # not name pasta types, but keeping this on the upstream `pasta_curves 0.5`
 # would re-introduce a second pasta into the native graph. Switch it to the
 # same fork the rest of the graph (zakura-orchard / frost-spend) uses.
 pasta_curves = { package = "zakura-pasta-curves", version = "=1.0.0" }
-reddsa = { git = "https://github.com/ZcashFoundation/reddsa.git", rev = "475a552", features = ["frost", "serde"] }
+# zakura-reddsa 1.0 (Zakura Common 1.0 pasta), its `frost` feature pulling
+# frost-rerandomized 3.0 - exactly what frost-spend consumes. zecli's own
+# source names no `reddsa::` paths (all FROST types flow through frost-spend's
+# re-exports), so this is effectively a vestigial dep; keeping it on the old ZF
+# reddsa git (rev 475a552) was the second pasta_curves 0.5 edge in the native
+# graph. Repointed to the migrated crate so no old pasta enters via zecli.
+reddsa = { package = "zakura-reddsa", version = "=1.0.0", features = ["frost"] }
 ed25519-consensus = "2"
 rand_core = "0.6"
 # rand_core 0.10 (pure-trait) for the OsRng10 adapter that feeds Zakura Common
