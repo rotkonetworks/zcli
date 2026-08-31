@@ -49,7 +49,7 @@ use zcash_note_encryption::{
 /// the wasm entropy source here) to rand_core 0.10's `TryRng`/`TryCryptoRng`,
 /// which the crate's blanket impls promote to `Rng` + `CryptoRng`.
 #[derive(Clone, Copy, Default)]
-struct OsRng10;
+pub struct OsRng10;
 
 impl rand_core_10::TryRng for OsRng10 {
     type Error = core::convert::Infallible;
@@ -2329,7 +2329,6 @@ mod tests {
         use orchard::keys::{FullViewingKey, Scope, SpendingKey};
         use orchard::tree::Anchor;
         use orchard::value::NoteValue;
-        use rand::rngs::OsRng;
         use zcash_protocol::value::ZatBalance;
 
         // derive orchard key from test seed
@@ -2363,9 +2362,9 @@ mod tests {
             .add_output(None, recipient, NoteValue::from_raw(50_000), [0u8; 512])
             .expect("add_output should succeed");
 
-        let mut rng = OsRng;
+        let rng = OsRng10;
         let (unauthorized, _meta) = builder
-            .build::<ZatBalance>(&mut rng)
+            .build::<ZatBalance>(rng)
             .expect("build should succeed")
             .expect("should produce a bundle");
 
@@ -2377,7 +2376,7 @@ mod tests {
         );
 
         // prove (expensive but should work natively)
-        let proven = with_proving_key(|pk| unauthorized.create_proof(pk, &mut rng))
+        let proven = with_proving_key(|pk| unauthorized.create_proof(pk, rng))
             .expect("proving should succeed");
 
         println!("proof generated");
@@ -2385,7 +2384,7 @@ mod tests {
         // apply signatures (no spend auth keys for output-only)
         let sighash = [0u8; 32]; // dummy sighash for test
         let authorized = proven
-            .apply_signatures(&mut rng, sighash, &[])
+            .apply_signatures(rng, sighash, &[])
             .expect("signatures should succeed");
 
         println!("authorized bundle: {} actions", authorized.actions().len());

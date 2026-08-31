@@ -271,7 +271,7 @@ fn turnstile_orchard_to_ironwood_builds_signs_extracts() {
     //    (dummy/padding spends were already signed by IoFinalizer; those error
     //    with a Wrong/Missing mismatch and are skipped - at least one real
     //    spend must land.)
-    use rand_core::OsRng;
+    use zafu_wasm::OsRng10 as OsRng;
     let shielded_sighash = pczt::roles::signer::Signer::new(pczt.clone())
         .expect("signer accepts PCZT")
         .shielded_sighash();

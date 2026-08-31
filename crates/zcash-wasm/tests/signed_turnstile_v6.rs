@@ -260,7 +260,7 @@ fn signed_turnstile_orchard_to_ironwood_verifies() {
             "orchard bundle rejected by validator (bad proof or spend-auth sig)"
         );
         assert!(
-            v.validate(rand_core::OsRng),
+            v.validate(zafu_wasm::OsRng10),
             "orchard spend-auth + binding signatures + proof FAILED to verify"
         );
 
@@ -272,7 +272,7 @@ fn signed_turnstile_orchard_to_ironwood_verifies() {
             "ironwood bundle rejected by validator (bad proof or binding sig)"
         );
         assert!(
-            vi.validate(rand_core::OsRng),
+            vi.validate(zafu_wasm::OsRng10),
             "ironwood binding signature + proof FAILED to verify"
         );
     }

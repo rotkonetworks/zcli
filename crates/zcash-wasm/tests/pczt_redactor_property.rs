@@ -19,7 +19,7 @@
 
 use orchard::keys::Scope;
 use pczt::{roles::creator::Creator, Pczt};
-use rand_core::OsRng;
+use zafu_wasm::OsRng10 as OsRng;
 use zcash_transparent::{address::TransparentAddress, bundle as transparent};
 
 // Signer::new is feature-gated; we have it on (see Cargo features list).
