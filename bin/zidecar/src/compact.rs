@@ -130,9 +130,16 @@ impl CompactBlock {
     /// returns one CompactBlock per mempool tx that has shielded data (height=0)
     pub async fn from_mempool(zebrad: &ZebradClient) -> Result<Vec<Self>> {
         let txids = zebrad.get_raw_mempool().await?;
+        Self::from_txids(zebrad, &txids).await
+    }
+
+    /// build compact blocks from an explicit txid list (display-order hex).
+    /// Same as `from_mempool` but with the txid source injected, so a warm
+    /// push-stream mempool set can be used in place of `get_raw_mempool`.
+    pub async fn from_txids(zebrad: &ZebradClient, txids: &[String]) -> Result<Vec<Self>> {
         let mut blocks = Vec::new();
 
-        for txid in &txids {
+        for txid in txids {
             match zebrad.get_raw_transaction(txid).await {
                 Ok(tx) => {
                     let txid_bytes = hex_to_bytes(txid)?;

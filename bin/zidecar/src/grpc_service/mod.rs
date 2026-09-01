@@ -35,6 +35,9 @@ pub struct ZidecarService {
     pub(crate) storage: Arc<Storage>,
     pub(crate) mempool_cache: Arc<RwLock<Option<MempoolCache>>>,
     pub(crate) mempool_cache_ttl: Duration,
+    /// Optional Zakura indexer: when live, its warm mempool txid set is
+    /// authoritative and bypasses `get_raw_mempool` + the TTL cache.
+    pub(crate) indexer: Option<crate::zakura_indexer::IndexerWatcher>,
     pub(crate) ring_vrf: Arc<RingVrfManager>,
     /// FlyClient history index; `None` unless started with --flyclient.
     pub(crate) history: Option<Arc<crate::history::HistoryIndex>>,
@@ -46,6 +49,7 @@ impl ZidecarService {
         storage: Arc<Storage>,
         mempool_cache_ttl: Duration,
         history: Option<Arc<crate::history::HistoryIndex>>,
+        indexer: Option<crate::zakura_indexer::IndexerWatcher>,
     ) -> Self {
         let license_url =
             std::env::var("ZCLI_LICENSE_URL").unwrap_or_else(|_| "http://127.0.0.1:3334".into());
@@ -54,6 +58,7 @@ impl ZidecarService {
             storage,
             mempool_cache: Arc::new(RwLock::new(None)),
             mempool_cache_ttl,
+            indexer,
             ring_vrf: Arc::new(RingVrfManager::new(license_url)),
             history,
         }

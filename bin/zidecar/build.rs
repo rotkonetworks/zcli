@@ -10,6 +10,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             &["proto"],
         )?;
 
+    // Zakura node `Indexer` gRPC (zebra.indexer.rpc). Client-only: zidecar is
+    // the consumer of the tip + mempool push streams, never the server. Kept a
+    // separate pass so the existing surfaces above stay deliberately
+    // server-only. Optional path - only used when --zakura-indexer-url is set.
+    tonic_build::configure()
+        .build_server(false)
+        .build_client(true)
+        .compile_protos(&["proto/indexer.proto"], &["proto"])?;
+
     // embed git commit hash at build time
     let output = std::process::Command::new("git")
         .args(["rev-parse", "--short", "HEAD"])

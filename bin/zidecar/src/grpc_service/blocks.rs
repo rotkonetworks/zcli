@@ -327,9 +327,10 @@ impl ZidecarService {
         let zebrad = self.zebrad.clone();
         let cache = self.mempool_cache.clone();
         let ttl = self.mempool_cache_ttl;
+        let indexer = self.indexer.clone();
 
         tokio::spawn(async move {
-            let blocks = match fetch_or_cached_mempool(&zebrad, &cache, ttl).await {
+            let blocks = match fetch_or_cached_mempool(&zebrad, &cache, ttl, &indexer).await {
                 Ok(b) => b,
                 Err(e) => {
                     error!("mempool fetch failed: {}", e);
@@ -360,7 +361,17 @@ async fn fetch_or_cached_mempool(
     zebrad: &ZebradClient,
     cache: &Arc<RwLock<Option<MempoolCache>>>,
     ttl: Duration,
+    indexer: &Option<crate::zakura_indexer::IndexerWatcher>,
 ) -> Result<Vec<InternalCompactBlock>> {
+    // Fallback-first: when the Zakura indexer is live its push-stream mempool
+    // set is authoritative and always fresh, so skip both get_raw_mempool and
+    // the TTL cache. A stale/dead stream returns None -> current path below.
+    if let Some(idx) = indexer {
+        if let Some(txids) = idx.mempool_txids().await {
+            return InternalCompactBlock::from_txids(zebrad, &txids).await;
+        }
+    }
+
     // ttl == 0 means caching disabled
     if ttl.is_zero() {
         return InternalCompactBlock::from_mempool(zebrad).await;
