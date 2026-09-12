@@ -232,14 +232,13 @@ async fn run_seat(
     );
     let dkg_nick = format!("dkgbot-seat-{seat}-{}", crate::random_nick());
     let t0 = Instant::now();
-    let dkg = dkg::run_dkg_joiner(
-        &coords.relay_url,
-        &coords.room_code,
-        dkg_nick,
-        network,
-        dkg_timeout,
-    )
-    .await;
+    // ws:// = old WS relay; http(s):// = frostd + rendezvous (the room code is a
+    // bip39 code the escrow announces the session under).
+    let dkg = if coords.relay_url.starts_with("ws") {
+        dkg::run_dkg_joiner(&coords.relay_url, &coords.room_code, dkg_nick, network, dkg_timeout).await
+    } else {
+        dkg::run_dkg_joiner_frostd(&coords.relay_url, &coords.room_code, network, dkg_timeout).await
+    };
     let wall = t0.elapsed();
     res.dkg_wall = Some(wall);
 
