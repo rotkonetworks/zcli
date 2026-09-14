@@ -789,8 +789,9 @@ pub fn self_play(
         let name = action_name(action);
 
         // the acting seat signs its own action (real ed25519 over the browser
-        // action message).
-        let sig = ids[seat].sign_action(name, amount as u64, seq);
+        // action message). Each hand is its own single-hand transcript, which the
+        // escrow verifies as hand 1, so we sign with hand = 1.
+        let sig = ids[seat].sign_action(1, name, amount as u64, seq);
 
         entries.push(TranscriptEntry {
             seq,

@@ -145,10 +145,13 @@ pub fn action_from_name(name: &str) -> Option<poker_pvm::Action> {
 }
 
 /// the exact bytes signed for a game action:
-/// `"{seat}|{action}|{amount}|{seq}"` — MUST byte-match the browser
-/// `identity.ts::signAction`.
-pub fn action_message(seat: u8, action: &str, amount: u64, seq: u32) -> Vec<u8> {
-    format!("{}|{}|{}|{}", seat, action, amount, seq).into_bytes()
+/// `"{hand}|{seat}|{action}|{amount}|{seq}"` — MUST byte-match the browser
+/// `identity.ts::signAction` and the escrow jury `transcript.rs::action_message`.
+/// `hand` is the 1-based hand number; seq restarts at 1 each hand, so the hand
+/// prefix stops a signature from being replayed in another hand. pokerbot builds
+/// one single-hand transcript per hand, which the escrow verifies as hand 1.
+pub fn action_message(hand: u32, seat: u8, action: &str, amount: u64, seq: u32) -> Vec<u8> {
+    format!("{}|{}|{}|{}|{}", hand, seat, action, amount, seq).into_bytes()
 }
 
 /// the exact bytes a zafu key signs to delegate to a per-room session key:
@@ -233,9 +236,10 @@ impl SessionIdentity {
         self.zafu_pub_hex().unwrap_or_else(|| self.session_pub_hex())
     }
 
-    /// sign a game action, returning the 64-byte signature as hex.
-    pub fn sign_action(&self, action: &str, amount: u64, seq: u32) -> String {
-        let msg = action_message(self.seat, action, amount, seq);
+    /// sign a game action, returning the 64-byte signature as hex. `hand` is the
+    /// 1-based hand number (1 for a single-hand transcript, as the escrow verifies it).
+    pub fn sign_action(&self, hand: u32, action: &str, amount: u64, seq: u32) -> String {
+        let msg = action_message(hand, self.seat, action, amount, seq);
         hex::encode(self.session.sign(&msg).to_bytes())
     }
 }
@@ -304,11 +308,11 @@ mod tests {
     #[test]
     fn session_identity_sign_and_verify_action() {
         let id = SessionIdentity::anon(0);
-        let sig = id.sign_action("bet", 50, 1);
-        let msg = action_message(0, "bet", 50, 1);
+        let sig = id.sign_action(1, "bet", 50, 1);
+        let msg = action_message(1, 0, "bet", 50, 1);
         assert!(verify_hex(&id.session_pub_hex(), &msg, &sig));
         // tampering the amount breaks the signature
-        let bad = action_message(0, "bet", 51, 1);
+        let bad = action_message(1, 0, "bet", 51, 1);
         assert!(!verify_hex(&id.session_pub_hex(), &bad, &sig));
     }
 

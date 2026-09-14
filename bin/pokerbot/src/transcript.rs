@@ -320,11 +320,12 @@ fn check_signatures(t: &Transcript, r: &mut Report) {
             );
             break;
         }
-        let msg = action_message(e.seat, &e.action, e.amount, e.seq);
+        // single-hand transcript -> hand 1 (matches the escrow's normalization).
+        let msg = action_message(1, e.seat, &e.action, e.amount, e.seq);
         if !verify_hex(&e.session_pub, &msg, &e.sig) {
             all_ok = false;
             detail = format!(
-                "entry seq {}: signature invalid over \"{}|{}|{}|{}\" (tampered action)",
+                "entry seq {}: signature invalid over \"1|{}|{}|{}|{}\" (tampered action)",
                 e.seq, e.seat, e.action, e.amount, e.seq
             );
             break;
