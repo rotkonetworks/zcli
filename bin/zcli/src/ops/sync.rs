@@ -311,6 +311,25 @@ async fn sync_inner(
     } else {
         [0u8; 32]
     };
+    // First height (if any) where the actions root this client computes from the
+    // block's actions disagrees with the root the server sent alongside them.
+    //
+    // The commitment check at the end of the scan is a single chained hash over
+    // the whole range: it can only say "the chain does not match", which reads
+    // as "server tampered" and is useless for telling a real attack apart from
+    // the two things that actually happen — a wallet and a server that disagree
+    // about which actions belong in a block, or a gap in the blocks streamed to
+    // the client. Recording the FIRST divergence turns that into a height, and a
+    // height can be looked at.
+    let mut first_root_divergence: Option<(u32, [u8; 32], [u8; 32])> = None;
+    // The commitment chain hashes in every height from `start` to the tip. The
+    // server proves it over a contiguous range, so a block MISSING from the
+    // stream breaks the chain just as surely as a wrong one — and looks
+    // identical at the end. Track the first gap separately.
+    let mut first_height_gap: Option<(u32, u32)> = None;
+    // The scan begins AT `start` (`current = start` below), not after it — the
+    // block at `start` is the first one streamed and the first one chained.
+    let mut expected_height = start;
 
     while current <= tip {
         let end = (current + batch_size - 1).min(tip);
@@ -459,7 +478,27 @@ async fn sync_inner(
                 .iter()
                 .map(|a| (a.cmx, a.nullifier, a.ephemeral_key))
                 .collect();
+            if block.height != expected_height && first_height_gap.is_none() {
+                first_height_gap = Some((expected_height, block.height));
+            }
+            expected_height = block.height + 1;
+
             let actions_root = zync_core::actions::compute_actions_root(&action_tuples);
+
+            // The server sends its own actions_root per block. It is NOT trusted
+            // (the root is recomputed above, which is the whole point), but
+            // comparing them localises a chain mismatch to one height instead of
+            // leaving the end-of-scan check to report the whole range. An
+            // all-zero server root means "not supplied", not "empty block", so
+            // skip those rather than flag every block a server declines to
+            // annotate.
+            if block.actions_root != [0u8; 32]
+                && block.actions_root != actions_root
+                && first_root_divergence.is_none()
+            {
+                first_root_divergence = Some((block.height, actions_root, block.actions_root));
+            }
+
             running_actions_commitment = zync_core::actions::update_actions_commitment(
                 &running_actions_commitment,
                 &actions_root,
@@ -493,7 +532,11 @@ async fn sync_inner(
             &proven_roots.actions_commitment,
             actions_commitment_available,
         )
-        .map_err(|e| Error::Other(e.to_string()))?;
+        .map_err(|e| Error::Other(explain_commitment_mismatch(
+            &e.to_string(),
+            first_height_gap,
+            first_root_divergence,
+        )))?;
         if !actions_commitment_available {
             eprintln!(
                 "actions commitment: migrating from pre-0.5.1 wallet, saving proven {}...",
@@ -783,6 +826,65 @@ async fn cross_verify(
         tip, tip_agree, tip_total, activation, act_agree, act_total,
     );
     Ok(())
+}
+
+/// Turn "actions commitment mismatch: server tampered with block actions" into
+/// something a person can act on.
+///
+/// The bare message is a single chained hash over tens of thousands of blocks
+/// saying only "these differ". Its wording asserts the most alarming of several
+/// possible causes, and in practice the likeliest ones are mundane: the stream
+/// skipped a height, or the client and server disagree about which actions
+/// belong to a block (for example across a network upgrade that introduced a new
+/// shielded pool). The per-block signals collected during the scan distinguish
+/// them, so report which one actually fired.
+fn explain_commitment_mismatch(
+    base: &str,
+    first_height_gap: Option<(u32, u32)>,
+    first_root_divergence: Option<(u32, [u8; 32], [u8; 32])>,
+) -> String {
+    let mut msg = base.to_string();
+
+    if let Some((expected, got)) = first_height_gap {
+        msg.push_str(&format!(
+            "\n\nFIRST GAP: expected block {} but the server sent {}. The \
+             commitment chains EVERY height, so a skipped block breaks it \
+             without any block being wrong. This is a server/stream problem, \
+             not evidence of tampering.",
+            expected, got
+        ));
+    }
+
+    if let Some((height, computed, served)) = first_root_divergence {
+        msg.push_str(&format!(
+            "\n\nFIRST DIVERGENT BLOCK: {} (this client computed actions root \
+             {}..., the server sent {}...). The chain is fine up to there, so \
+             this height is where wallet and server stop agreeing about which \
+             actions a block contains — compare that block's action set against \
+             the server's before concluding anything about the rest.",
+            height,
+            hex::encode(&computed[..8]),
+            hex::encode(&served[..8]),
+        ));
+    }
+
+    if first_height_gap.is_none() && first_root_divergence.is_none() {
+        msg.push_str(
+            "\n\nEvery block the server sent is contiguous and its actions root \
+             matched what this client computed from its actions. The mismatch is \
+             therefore NOT in the blocks scanned this run: the likely cause is \
+             the commitment saved at the last sync height, which chains in from \
+             before this range. `zcli init sync --full` rebuilds it from \
+             activation.",
+        );
+    }
+
+    msg.push_str(
+        "\n\n`zcli init sync --no-verify` skips this check for one run. It does \
+         NOT skip per-note commitment verification, so note values still cannot \
+         be faked; what it gives up is the guarantee that no block was withheld.",
+    );
+    msg
 }
 
 use zync_core::sync::ProvenRoots;
