@@ -1,0 +1,40 @@
+# Zakura (zakura-core/zakura, Zebra fork) Regtest config for the ironwood e2e:
+#   ZEBRAD=/path/to/zakurad ... with this file instead of zebrad-regtest.toml.
+# PoW is disabled on Regtest so generate works. Zakura enforces the ZIP-271
+# one-time lockbox disbursement at the NU6.1 activation block and ships no
+# Regtest defaults for funding streams or disbursements, so: a Deferred
+# (lockbox) funding stream from block 1 whose own contribution covers the
+# token disbursement in the NU6.1 activation block, so all upgrades can
+# activate at height 1 as the zcli harness asserts.
+[network]
+network = "Regtest"
+listen_addr = "127.0.0.1:28233"
+
+[network.testnet_parameters]
+lockbox_disbursements = [{ address = "t29ZerJMfzDN6pwQBcgqc7TghpPRGz5hmjY", amount = 1000 }]
+
+[[network.testnet_parameters.funding_streams]]
+height_range = { start = 1, end = 10000000 }
+recipients = [{ receiver = "Deferred", numerator = 20 }]
+
+[network.testnet_parameters.activation_heights]
+NU5 = 1
+NU6 = 1
+"NU6.1" = 1
+"NU6.2" = 1
+"NU6.3" = 1
+
+[state]
+ephemeral = true
+
+[rpc]
+listen_addr = "127.0.0.1:28232"
+enable_cookie_auth = false
+
+[mining]
+# zcli ironwood harness miner key (transparent_key(7)); Zakura has no
+# generatetoaddress, only generate, which pays this address.
+miner_address = "tmQeKW1jmhF1WiTUrErNTViu2RE6DdPcd6F"
+
+[tracing]
+filter = "info"

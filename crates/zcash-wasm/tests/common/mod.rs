@@ -115,7 +115,16 @@ pub fn tip_height() -> u32 {
 }
 
 pub fn mine(n: u32, to: &str) {
-    rpc_ok("generatetoaddress", json!([n, to]));
+    match rpc("generatetoaddress", json!([n, to])) {
+        Ok(_) => {}
+        // Zakura (Zebra fork) has no generatetoaddress; it mines with
+        // generate to the configured [mining] miner_address, which the node
+        // config must set to this test's miner key.
+        Err(e) if e.contains("Method not found") => {
+            rpc_ok("generate", json!([n]));
+        }
+        Err(e) => panic!("generatetoaddress failed: {e}"),
+    }
 }
 
 /// Size of a shielded note commitment tree as of `block`. Zebra omits
