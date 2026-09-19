@@ -17,8 +17,8 @@ parallel = ["rayon", "wasm-bindgen-rayon", "zcash-voting/parallel"]
 
 [dependencies]
 # Curves - only for the PIR nullifier field element handling.
-pasta_curves = "0.5"
-ff = "0.13"
+pasta_curves = { package = "zakura-pasta-curves", version = "=1.0.0" }
+ff = "0.14"
 
 # Shielded-voting crypto core (delegation ZKP #1, hot vote casting).
 # wasm-slim = pure byte-in/out: no SQLite, no lightwalletd/tonic, no PIR
