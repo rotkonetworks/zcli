@@ -17,12 +17,11 @@ parallel = ["rayon", "wasm-bindgen-rayon"]
 # `multicore` feature -> `halo2_proofs?/multicore` -> `maybe-rayon/threads`).
 # This is OFF for the wasm builds on purpose: with it off, maybe-rayon stays on
 # its single-threaded shim fallback and zakura-halo2-proofs' non-multicore code
-# path lines up with it. It is only enabled in the NATIVE zecli graph, where a
-# second, real `halo2_proofs 0.3.5` (pulled by zync-core -> orchard 0.15.5)
-# forces `maybe-rayon/threads` ON for the single shared shim crate - which then
-# REQUIRES zakura-halo2-proofs to also be on its multicore (rayon) path, or its
-# `the_best_reduce` / `IndexedParallelIterator` calls fail to resolve. See
-# zecli's Cargo.toml, which enables `zafu-wasm/multicore`.
+# path lines up with it. It is enabled in the NATIVE zecli graph, where real
+# threads are available and halo2 should use them. (It used to be mandatory
+# there rather than merely faster: an upstream `halo2_proofs 0.3.5` shared the
+# native graph and forced `maybe-rayon/threads` ON for the single shim crate.
+# The native graph is all Zakura Common 1.0 now and that crate is gone.)
 multicore = ["orchard/multicore"]
 # Shielded-voting + PIR delegation stack (zcash-voting, pir-client, imt-tree).
 # Gated so the proving core can build without the voting cluster.

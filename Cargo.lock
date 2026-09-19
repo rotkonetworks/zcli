@@ -2489,7 +2489,7 @@ dependencies = [
  "getrandom 0.2.17",
  "hex",
  "hkdf",
- "osst 0.1.1",
+ "osst",
  "rand_core 0.6.4",
  "serde",
  "serde_json",
@@ -4014,7 +4014,6 @@ dependencies = [
  "dotenvy",
  "ed25519-consensus",
  "hex",
- "orchard",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -4023,6 +4022,7 @@ dependencies = [
  "tower-http 0.5.2",
  "tracing",
  "tracing-subscriber",
+ "zakura-orchard",
  "zcash_note_encryption",
  "zecli",
  "zync-core",
@@ -4734,18 +4734,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "osst"
-version = "0.1.1"
-source = "git+https://github.com/rotkonetworks/frostito?rev=14e38da#14e38dae7065dd441a3746c859b6e681f2927cc5"
-dependencies = [
- "blake2b_simd",
- "pasta_curves",
- "rand_core 0.6.4",
- "sha2 0.10.9",
- "zeroize",
-]
-
-[[package]]
 name = "p256"
 version = "0.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5185,9 +5173,7 @@ dependencies = [
  "blake2b_simd",
  "clap",
  "hex",
- "orchard",
- "osst 0.1.1 (git+https://github.com/rotkonetworks/frostito?rev=14e38da)",
- "pasta_curves",
+ "osst",
  "prost 0.12.6",
  "rand 0.8.7",
  "serde",
@@ -5199,6 +5185,8 @@ dependencies = [
  "tonic-build 0.11.0",
  "tracing",
  "tracing-subscriber",
+ "zakura-orchard",
+ "zakura-pasta-curves",
  "zcash_address",
  "zcash_protocol",
  "zip32",
@@ -10039,7 +10027,7 @@ dependencies = [
  "indicatif",
  "is-terminal",
  "k256",
- "osst 0.1.1",
+ "osst",
  "prost 0.12.6",
  "qrcode",
  "quinn",
@@ -10199,7 +10187,6 @@ dependencies = [
  "ligerito",
  "ligerito-binary-fields",
  "nomt",
- "orchard",
  "prost 0.13.5",
  "prost-types 0.13.5",
  "rand 0.8.7",
@@ -10219,6 +10206,7 @@ dependencies = [
  "tower-http 0.5.2",
  "tracing",
  "tracing-subscriber",
+ "zakura-orchard",
  "zync-core",
 ]
 
