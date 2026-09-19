@@ -53,8 +53,8 @@ zclid -i ~/.ssh/id_ed25519 --listen 127.0.0.1:9067   # + TCP for agents
 | RPC | |
 | --- | --- |
 | `GetCustodyMode` | whether this daemon holds a spending key |
-| `GetAddress` | receiving address (rotates diversifier) |
-| `GetBalance` | shielded + transparent balance |
+| `GetAddress` | unified orchard address + a transparent address for shielding |
+| `GetBalance` | confirmed and pending-incoming zatoshis, note and pending-spend counts, sync height, chain tip |
 | `GetNotes` | unspent notes |
 | `GetStatus` | sync height, chain tip, mempool counters, uptime |
 | `GetPendingActivity` | unconfirmed incoming/outgoing |
@@ -150,6 +150,7 @@ tip:      3266078 (000000000075b2db)
    epoch proof anchored to activation hash: PASS
    epoch proof cryptographic verification:  PASS
    tip proof: 3265536 -> 3266078 (543 headers)
+   tip proof cryptographic verification:  PASS
    chain continuity (tip chains to epoch proof): PASS
    total blocks proven: 1578974
 4. cryptographically proven state roots
@@ -186,8 +187,11 @@ which notes are yours.
 
 The default endpoint is a **zidecar** (`https://zcash.rotko.net`), which serves
 compact blocks *and* the proof RPCs above. The cross-verification endpoints are
-plain **lightwalletd** `CompactTxStreamer` — any lightwalletd-compatible server
-(lightwalletd, zaino) works there.
+plain **lightwalletd** `CompactTxStreamer`, so any lightwalletd-compatible
+server works there — lightwalletd or zaino, self-hosted or public.
+`LightwalletdClient::connect` probes the endpoint with a grpc-web request and
+reads the response content-type, falling back to native gRPC framing when the
+server answers `application/grpc`, so neither transport needs configuring.
 
 The main data path still requires zidecar: compact blocks, tree state,
 transactions, and broadcast go over `zidecar.v1`. Running zcli against a bare
@@ -213,10 +217,10 @@ bin/
   zclid/           background wallet daemon — gRPC, the agent-facing surface
   zidecar/         light server — compact blocks + proofs
   relay/           dumb relay: rooms, participants, opaque bytes
-  poker/           mental-poker table over the relay
-  pokerbot/        automated player
-  license-server/  ZEC payment detection → license issuance
-  integration-v09/ end-to-end integration harness
+  poker/           heads-up poker CLI with frostito escrow via relay
+  pokerbot/        headless heads-up bot driving poker-pvm over the E2EE relay
+  license-server/  ZEC-paid pro license server for the zafu wallet
+  integration-v09/ end-to-end integration harness (not published)
 
 crates/
   zync-core/       shared primitives — verification, scanning, proof types, gRPC proto
@@ -225,9 +229,9 @@ crates/
   voting-wasm/     browser prover for the voting circuits
   pir-client/      private nullifier non-membership via PIR
   frost-spend/     FROST threshold spend authorization for orchard
-  osst/            One-Step Schnorr Threshold Identification (pallas + ristretto255)
-  zoda-vss/        verifiable secret sharing
-  ring-vrf-wasm/   ring VRF for the browser
+  osst/            frostito: nested FROST with OSST identification, DKG, proactive resharing
+  zoda-vss/        verifiable secret sharing via reed-solomon coding
+  ring-vrf-wasm/   Bandersnatch Ring VRF prover for zafu pro membership proofs
   maybe-rayon/     local fork: rayon shim compatible with halo2 on wasm32+atomics
   ligerito/        polynomial commitment scheme over binary extension fields
   ligerito-binary-fields/   binary field arithmetic (GF(2^128))
