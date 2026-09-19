@@ -68,8 +68,21 @@ zcash_address = "0.13"
 # so we do NOT pull the orchard crate in directly. `signer` gives us shielded_sighash
 # should the live host path ever need it; `orchard` feature enables the orchard bundle.
 pczt = { version = "0.9", default-features = false, features = ["orchard"] }
+# frostd transport: ZF's own frost-client (Noise_K cipher + session HTTP client),
+# so the bot joins the escrow's frostd DKG session; + rendezvous room-code deps.
+# Same rev as zecli so the on-wire cipher stays byte-identical across all clients.
+frost-client = { git = "https://github.com/ZcashFoundation/frost-tools", rev = "06c0dbd" }
+uuid = { version = "1", features = ["v4", "serde"] }
+bip39 = { version = "2.0", features = ["rand"] }
+# lets the DKG joiner protocol be generic over the WS and frostd transports
+async-trait = "0.1"
 zcash_protocol = { version = "0.10", default-features = false }
 # ff::PrimeField — sample a valid Pallas scalar for the fvk-seed sk (host mode).
 ff = "0.13"
 pasta_curves = "0.5"
 rand_core = "0.6"
+
+[dev-dependencies]
+# spin up a real in-process frostd to prove the FrostdDkg adapter round-trips
+frostd = { git = "https://github.com/ZcashFoundation/frost-tools", rev = "06c0dbd" }
+axum = "0.8"

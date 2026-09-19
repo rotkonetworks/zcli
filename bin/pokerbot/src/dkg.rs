@@ -26,8 +26,10 @@
 //! SAFETY: DKG generates keys only. Nothing here builds, signs, or broadcasts a
 //! Zcash transaction; no ZEC moves.
 
+use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
+use async_trait::async_trait;
 use ff::PrimeField;
 use frost_spend::orchestrate as fs;
 use futures_util::{SinkExt, StreamExt};
@@ -96,6 +98,60 @@ pub enum RelayError {
     Protocol(String),
     #[error("io: {0}")]
     Io(String),
+}
+
+/// The relay ops the DKG joiner protocol needs, so it runs over either the old
+/// WS relay (`FrostRelayClient`) or frostd (`FrostdDkg`) without forking the
+/// protocol - mirrors poker-escrow's `frost_dkg::DkgTransport`.
+#[async_trait]
+pub(crate) trait DkgTransport: Send {
+    async fn dkg_send(&mut self, payload: &[u8]) -> Result<(), RelayError>;
+    async fn dkg_recv(&mut self, timeout: Duration) -> Result<Option<RelayEvent>, RelayError>;
+}
+
+/// frostd transport as a DKG joiner: broadcasts to the fixed peer set and buffers
+/// each drained batch into an inbox so the protocol can pull one event at a time
+/// with a deadline, the way it does over the WS relay.
+pub(crate) struct FrostdDkg {
+    transport: crate::frostd_transport::FrostdTransport,
+    peers: Vec<frost_client::cipher::PublicKey>,
+    inbox: VecDeque<RelayEvent>,
+}
+
+fn map_transport_err(e: crate::frostd_transport::TransportError) -> RelayError {
+    RelayError::Protocol(e.to_string())
+}
+
+#[async_trait]
+impl DkgTransport for FrostdDkg {
+    async fn dkg_send(&mut self, payload: &[u8]) -> Result<(), RelayError> {
+        self.transport
+            .send(self.peers.clone(), payload.to_vec())
+            .await
+            .map_err(map_transport_err)
+    }
+
+    async fn dkg_recv(&mut self, timeout: Duration) -> Result<Option<RelayEvent>, RelayError> {
+        if let Some(ev) = self.inbox.pop_front() {
+            return Ok(Some(ev));
+        }
+        let deadline = Instant::now() + timeout;
+        loop {
+            let msgs = self.transport.receive(false).await.map_err(map_transport_err)?;
+            for (_sender, payload) in msgs {
+                // the joiner protocol collects by count/tag, not by sender, so we
+                // drop the (verified-by-decrypt) sender and mirror the WS event
+                self.inbox.push_back(RelayEvent::Message { payload });
+            }
+            if let Some(ev) = self.inbox.pop_front() {
+                return Ok(Some(ev));
+            }
+            if Instant::now() >= deadline {
+                return Ok(None);
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    }
 }
 
 /// FROST relay WS client shared by the DKG joiner (this module) and the payout
@@ -292,6 +348,8 @@ const DKG_TOTAL: u16 = 3;
 /// `network` is the network to derive/echo on; if the escrow echoes a UFVK on the
 /// OTHER network we re-derive to match it and report that in the output — the FVK
 /// echo (network-tagged) is the source of truth.
+/// DKG joiner over the OLD WS relay. Kept for back-compat with a WS escrow;
+/// `run_dkg_joiner_frostd` is the migrated path.
 pub async fn run_dkg_joiner(
     relay_url: &str,
     frost_room_code: &str,
@@ -300,31 +358,112 @@ pub async fn run_dkg_joiner(
     timeout: Duration,
 ) -> Result<DkgOutput, DkgError> {
     let deadline = Instant::now() + timeout;
-
     let mut client = FrostRelayClient::connect(relay_url, nick).await?;
     let count = client.join_room(frost_room_code).await?;
+    run_joiner_protocol(&mut client, count, network, deadline).await
+}
 
+/// DKG joiner over frostd + rendezvous - the migrated path matching the escrow's
+/// frostd coordinator. `room` is the escrow's bip39 code (from `RoomInfo`). We
+/// publish our relay key into the rendezvous room, wait for the coordinator to
+/// announce the frostd session (and both peers' keys to be present), connect to
+/// the session frostd fixed at creation, and run the same joiner protocol.
+pub async fn run_dkg_joiner_frostd(
+    relay_url: &str,
+    room: &str,
+    network: NetworkType,
+    timeout: Duration,
+) -> Result<DkgOutput, DkgError> {
+    use crate::frostd_transport::FrostdTransport;
+    use crate::rendezvous::{room_id_from_code, Rendezvous};
+    use frost_client::cipher::PublicKey;
+
+    let deadline = Instant::now() + timeout;
+    let (sk, pk) = FrostdTransport::generate_keypair()
+        .map_err(|e| DkgError::Protocol(format!("relay keygen: {e}")))?;
+    let our_hex = hex::encode(&pk.0);
+    let rdv = Rendezvous::new(relay_url);
+    let room_id = room_id_from_code(room);
+    rdv.publish(&room_id, &our_hex, "pokerbot")
+        .await
+        .map_err(|e| DkgError::Protocol(format!("rendezvous publish: {e}")))?;
+
+    // wait for the coordinator to announce the session and both peers' keys
+    let (session_id, peer_hexes) = loop {
+        let view = rdv
+            .poll(&room_id)
+            .await
+            .map_err(|e| DkgError::Protocol(format!("rendezvous poll: {e}")))?;
+        let peers: Vec<String> = view
+            .entries
+            .into_iter()
+            .map(|e| e.pubkey)
+            .filter(|k| !k.eq_ignore_ascii_case(&our_hex))
+            .collect();
+        if let Some(sid) = view.session_id {
+            if peers.len() >= (DKG_TOTAL - 1) as usize {
+                break (sid, peers);
+            }
+        }
+        if Instant::now() >= deadline {
+            return Err(DkgError::Timeout("waiting for escrow to announce session".into()));
+        }
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    };
+
+    let session_uuid = session_id
+        .parse::<uuid::Uuid>()
+        .map_err(|e| DkgError::Protocol(format!("announced session id is not a uuid: {e}")))?;
+    let peers: Vec<PublicKey> = peer_hexes
+        .iter()
+        .map(|h| {
+            hex::decode(h)
+                .map(PublicKey)
+                .map_err(|e| DkgError::Protocol(format!("peer pubkey hex: {e}")))
+        })
+        .collect::<Result<_, _>>()?;
+
+    let mut transport = FrostdTransport::connect(relay_url.to_string(), sk, pk, peers.clone())
+        .await
+        .map_err(|e| DkgError::Protocol(format!("frostd connect: {e}")))?;
+    transport.join_session(session_uuid);
+    let mut client = FrostdDkg { transport, peers, inbox: VecDeque::new() };
+
+    // frostd fixes membership at creation: the room is already full, so pass
+    // DKG_TOTAL to short-circuit the join wait.
+    run_joiner_protocol(&mut client, DKG_TOTAL as u32, network, deadline).await
+}
+
+/// The transport-agnostic joiner half of the DKG: wait for a full room (a no-op
+/// over frostd), then R1 -> R2 -> part3 -> derive UA/UFVK -> FVK echo. Runs over
+/// any `DkgTransport`, so the WS and frostd entries share one protocol body.
+async fn run_joiner_protocol<C: DkgTransport + ?Sized>(
+    client: &mut C,
+    initial_count: u32,
+    network: NetworkType,
+    deadline: Instant,
+) -> Result<DkgOutput, DkgError> {
     // wait until all 3 parties (escrow host + 2 seats) are present.
-    wait_for_full_room(&mut client, DKG_TOTAL as u32, count, &deadline).await?;
+    wait_for_full_room(client, DKG_TOTAL as u32, initial_count, &deadline).await?;
 
     // round 1 — joiner sends bare broadcast; escrow (host) sends the SK-bearing R1.
     let r1 =
         fs::dkg_part1(DKG_TOTAL, DKG_THRESHOLD).map_err(|e| DkgError::Frost(format!("part1: {:?}", e)))?;
     client
-        .send_message(format!("R1:{}", r1.broadcast_hex).as_bytes())
+        .dkg_send(format!("R1:{}", r1.broadcast_hex).as_bytes())
         .await?;
 
-    let (r1_peers, learned_sk) = collect_r1(&mut client, (DKG_TOTAL - 1) as usize, &deadline).await?;
+    let (r1_peers, learned_sk) = collect_r1(client, (DKG_TOTAL - 1) as usize, &deadline).await?;
     let sk_hex = learned_sk.ok_or_else(|| DkgError::Protocol("no host SK seen in R1".into()))?;
 
     // round 2
     let r2 = fs::dkg_part2(&r1.secret_hex, &r1_peers)
         .map_err(|e| DkgError::Frost(format!("part2: {:?}", e)))?;
     for pkg in &r2.peer_packages {
-        client.send_message(format!("R2:{}", pkg).as_bytes()).await?;
+        client.dkg_send(format!("R2:{}", pkg).as_bytes()).await?;
     }
     let expected_r2 = ((DKG_TOTAL - 1) as usize).pow(2);
-    let r2_peers = collect_tagged(&mut client, "R2:", expected_r2, &deadline).await?;
+    let r2_peers = collect_tagged(client, "R2:", expected_r2, &deadline).await?;
 
     // round 3 — the group public key package
     let r3 = fs::dkg_part3(&r2.secret_hex, &r1_peers, &r2_peers)
@@ -340,8 +479,8 @@ pub async fn run_dkg_joiner(
     let ufvk = encode_ufvk_from_sk(&r3.public_key_package_hex, sk_bytes, network).map_err(DkgError::Ua)?;
 
     // FVK echo — every party sends its UFVK; all must agree (source of truth).
-    client.send_message(format!("FVK:{}", ufvk).as_bytes()).await?;
-    let peer_fvks = collect_tagged(&mut client, "FVK:", (DKG_TOTAL - 1) as usize, &deadline).await?;
+    client.dkg_send(format!("FVK:{}", ufvk).as_bytes()).await?;
+    let peer_fvks = collect_tagged(client, "FVK:", (DKG_TOTAL - 1) as usize, &deadline).await?;
 
     // If a peer echoed a UFVK on the OTHER network (escrow ran mainnet vs testnet),
     // re-derive on that network so we converge on the escrow's canonical string
@@ -425,8 +564,18 @@ fn decode_sk(hex_string: &str) -> Result<[u8; 32], DkgError> {
     Ok(out)
 }
 
-async fn wait_for_full_room(
-    client: &mut FrostRelayClient,
+#[async_trait]
+impl DkgTransport for FrostRelayClient {
+    async fn dkg_send(&mut self, payload: &[u8]) -> Result<(), RelayError> {
+        self.send_message(payload).await
+    }
+    async fn dkg_recv(&mut self, timeout: Duration) -> Result<Option<RelayEvent>, RelayError> {
+        self.recv_event_timeout(timeout).await
+    }
+}
+
+async fn wait_for_full_room<C: DkgTransport + ?Sized>(
+    client: &mut C,
     total: u32,
     initial_count: u32,
     deadline: &Instant,
@@ -436,7 +585,7 @@ async fn wait_for_full_room(
     }
     loop {
         let remaining = remaining_or_timeout(deadline, "waiting for peers")?;
-        match client.recv_event_timeout(remaining).await? {
+        match client.dkg_recv(remaining).await? {
             Some(RelayEvent::PeerJoined { count }) if count >= total => return Ok(()),
             Some(RelayEvent::PeerJoined { .. }) => continue,
             Some(RelayEvent::Message { .. }) => continue, // pre-DKG noise
@@ -448,8 +597,8 @@ async fn wait_for_full_room(
 
 /// returns (peer broadcasts, host-supplied sk if any). Joiners never emit an SK,
 /// so exactly one peer R1 (the escrow host's) carries it.
-async fn collect_r1(
-    client: &mut FrostRelayClient,
+async fn collect_r1<C: DkgTransport + ?Sized>(
+    client: &mut C,
     n: usize,
     deadline: &Instant,
 ) -> Result<(Vec<String>, Option<String>), DkgError> {
@@ -458,7 +607,7 @@ async fn collect_r1(
     while broadcasts.len() < n {
         let label = || format!("R1 collected {}/{}", broadcasts.len(), n);
         let remaining = remaining_or_timeout(deadline, &label())?;
-        match client.recv_event_timeout(remaining).await? {
+        match client.dkg_recv(remaining).await? {
             Some(RelayEvent::Message { payload }) => {
                 let text = String::from_utf8(payload)
                     .map_err(|e| DkgError::Frost(format!("non-utf8 dkg payload: {}", e)))?;
@@ -508,8 +657,8 @@ fn parse_host_prefix(body: &str) -> Option<(String, String)> {
 /// collect n messages with the given tag, returning bodies with tag stripped.
 /// Frames with a different (already-consumed) tag are skipped, so a party that
 /// races ahead can't wedge us.
-async fn collect_tagged(
-    client: &mut FrostRelayClient,
+async fn collect_tagged<C: DkgTransport + ?Sized>(
+    client: &mut C,
     tag: &str,
     n: usize,
     deadline: &Instant,
@@ -518,7 +667,7 @@ async fn collect_tagged(
     while out.len() < n {
         let label = || format!("{} collected {}/{}", tag, out.len(), n);
         let remaining = remaining_or_timeout(deadline, &label())?;
-        match client.recv_event_timeout(remaining).await? {
+        match client.dkg_recv(remaining).await? {
             Some(RelayEvent::Message { payload }) => {
                 let text = String::from_utf8(payload)
                     .map_err(|e| DkgError::Frost(format!("non-utf8 dkg payload: {}", e)))?;
@@ -667,5 +816,71 @@ mod tests {
         let uf_b = encode_ufvk_from_sk(&r3b.public_key_package_hex, sk, net).unwrap();
         assert_eq!(uf_a, uf_b, "UFVK echo must agree across parties");
         assert!(uf_a.starts_with("uviewtest1"));
+    }
+}
+
+#[cfg(test)]
+mod frostd_adapter_tests {
+    use super::*;
+    use crate::frostd_transport::FrostdTransport;
+
+    /// Spawn a real in-process ZF frostd on an ephemeral port; returns its base URL.
+    async fn spawn_frostd() -> String {
+        let state = frostd::AppState::new().await.expect("frostd AppState");
+        let app = frostd::router(state);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        format!("http://{addr}")
+    }
+
+    /// Proves the pokerbot-specific new code: `FrostdDkg` broadcasts a frame to the
+    /// peer set over frostd and the peer's `dkg_recv` (inbox + deadline drain)
+    /// decrypts and returns it as a `Message` event. This is the transport the
+    /// migrated `run_dkg_joiner_frostd` runs the DKG protocol over.
+    #[tokio::test]
+    async fn frostd_dkg_adapter_round_trips() {
+        let url = spawn_frostd().await;
+        let (sk_a, pk_a) = FrostdTransport::generate_keypair().unwrap();
+        let (sk_b, pk_b) = FrostdTransport::generate_keypair().unwrap();
+
+        // A is coordinator: connect (with B whitelisted) and open the session.
+        let mut ta = FrostdTransport::connect(url.clone(), sk_a, pk_a.clone(), vec![pk_b.clone()])
+            .await
+            .expect("A connect");
+        let sid = ta
+            .create_session(vec![pk_a.clone(), pk_b.clone()], 3)
+            .await
+            .expect("create session");
+
+        // B joins the session A created.
+        let mut tb = FrostdTransport::connect(url.clone(), sk_b, pk_b.clone(), vec![pk_a.clone()])
+            .await
+            .expect("B connect");
+        tb.join_session(sid);
+
+        let mut a = FrostdDkg { transport: ta, peers: vec![pk_b], inbox: VecDeque::new() };
+        let mut b = FrostdDkg { transport: tb, peers: vec![pk_a], inbox: VecDeque::new() };
+
+        a.dkg_send(b"R1:deadbeef").await.expect("A send");
+        let ev = b.dkg_recv(Duration::from_secs(5)).await.expect("B recv");
+        match ev {
+            Some(RelayEvent::Message { payload }) => assert_eq!(payload, b"R1:deadbeef"),
+            other => panic!("expected a Message event, got {:?}", other),
+        }
+
+        // and the reverse direction
+        b.dkg_send(b"R2:cafe").await.expect("B send");
+        let ev = a.dkg_recv(Duration::from_secs(5)).await.expect("A recv");
+        match ev {
+            Some(RelayEvent::Message { payload }) => assert_eq!(payload, b"R2:cafe"),
+            other => panic!("expected a Message event, got {:?}", other),
+        }
+
+        // a drained inbox with nothing pending times out cleanly (not an error)
+        let ev = a.dkg_recv(Duration::from_millis(300)).await.expect("A recv timeout");
+        assert!(ev.is_none(), "expected timeout -> None, got {:?}", ev);
     }
 }

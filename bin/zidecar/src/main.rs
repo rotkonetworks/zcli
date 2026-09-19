@@ -19,6 +19,7 @@ mod lwd_service;
 mod middleware;
 mod orchard_tree;
 mod prover;
+mod rendezvous;
 mod ring_vrf;
 mod storage;
 mod witness;
@@ -97,6 +98,11 @@ struct Args {
     /// Start height for header chain proofs (only used when --zidecar-rpc).
     #[arg(long, default_value_t = zync_core::ORCHARD_ACTIVATION_HEIGHT)]
     start_height: u32,
+    /// Ironwood (NU6.3) activation height of the chain being indexed. Defaults
+    /// to mainnet, or testnet with --testnet; set explicitly for regtest
+    /// chains that activate NU6.3 at a custom height.
+    #[arg(long)]
+    ironwood_activation: Option<u32>,
 }
 
 #[tokio::main]
@@ -160,7 +166,11 @@ async fn main() -> Result<()> {
         let state = frostd::AppState::new()
             .await
             .map_err(|e| anyhow::anyhow!("frostd state: {e}"))?;
-        let app = frostd::router(state);
+        // Upstream's router, plus our /rendezvous/* discovery routes on the
+        // same listener: a human room code that bootstraps the key exchange
+        // and hands joiners the session uuid. See rendezvous.rs — it admits
+        // nobody to anything; the nine frostd endpoints are untouched.
+        let app = frostd::router(state).merge(rendezvous::router(rendezvous::RendezvousState::new()));
         let frostd_listener = tokio::net::TcpListener::bind(addr)
             .await
             .map_err(|e| anyhow::anyhow!("failed to bind frostd on {}: {}", addr, e))?;
@@ -247,12 +257,18 @@ async fn main() -> Result<()> {
             zync_core::EPOCH_PROOF_TRACE_LOG_SIZE
         );
 
+        let ironwood_activation = args.ironwood_activation.unwrap_or(if args.testnet {
+            zync_core::IRONWOOD_ACTIVATION_HEIGHT_TESTNET
+        } else {
+            crate::constants::IRONWOOD_ACTIVATION_HEIGHT
+        });
         let epoch_manager = Arc::new(EpochManager::new(
             zebrad.clone(),
             storage_arc.clone(),
             zync_core::epoch_proof_prover_config(),
             zync_core::tip_prover_config(),
             args.start_height,
+            ironwood_activation,
         ));
 
         let start_epoch = args.start_height / zync_core::EPOCH_SIZE;

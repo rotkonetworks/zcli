@@ -89,7 +89,26 @@ pub struct WalletNote {
 
 impl WalletNote {
     /// reconstruct an orchard::Note from stored bytes
+    ///
+    /// # Note version
+    ///
+    /// `Note::from_parts` takes a [`orchard::note::NoteVersion`], and the
+    /// version is part of what the note commits to: reconstruct a V3 note as V2
+    /// and you get a DIFFERENT note, whose commitment and nullifier do not match
+    /// the ones on chain. The spend then fails deep inside the builder, or —
+    /// worse — produces a transaction the network rejects after minutes of
+    /// proving.
+    ///
+    /// The version is not stored (notes predating ironwood have no such field),
+    /// so it is derived from the pool: orchard notes are V2 (ZIP-212), ironwood
+    /// notes are V3 (quantum-recoverable). That mapping is then VERIFIED rather
+    /// than trusted — the reconstructed note's commitment must equal the `cmx`
+    /// recorded at scan time. If it does not, the other version is tried before
+    /// giving up, so a wrong assumption here surfaces as an explicit error
+    /// instead of an invalid transaction.
     pub fn reconstruct_note(&self) -> Result<orchard::Note, Error> {
+        use orchard::note::NoteVersion;
+
         if self.recipient.len() != 43 {
             return Err(Error::Wallet(format!(
                 "recipient bytes wrong length: {} (expected 43)",
@@ -105,17 +124,34 @@ impl WalletNote {
             .ok_or_else(|| Error::Wallet("invalid rho bytes".into()))?;
         let rseed = Option::from(RandomSeed::from_bytes(self.rseed, &rho))
             .ok_or_else(|| Error::Wallet("invalid rseed bytes".into()))?;
-        // NU6.3 fork: Note::from_parts gained a trailing NoteVersion.
-        // TODO(ironwood correctness): V2 (ZIP-212) is the pre-NU6.3 plaintext;
-        // Ironwood notes use V3 (quantum-recoverable) plaintexts post-activation.
-        Option::from(orchard::Note::from_parts(
-            recipient,
-            value,
-            rho,
-            rseed,
-            orchard::note::NoteVersion::V2,
-        ))
-        .ok_or_else(|| Error::Wallet("failed to reconstruct note".into()))
+
+        let expected = match self.pool {
+            Pool::Orchard => NoteVersion::V2,
+            Pool::Ironwood => NoteVersion::V3,
+        };
+        // Expected version first, then the other one. Notes scanned before the
+        // cmx check existed are still accepted on the expected version.
+        let fallback = match expected {
+            NoteVersion::V2 => NoteVersion::V3,
+            NoteVersion::V3 => NoteVersion::V2,
+        };
+
+        for version in [expected, fallback] {
+            let note: Option<orchard::Note> =
+                Option::from(orchard::Note::from_parts(recipient, value, rho, rseed, version));
+            let Some(note) = note else { continue };
+            let cmx = orchard::note::ExtractedNoteCommitment::from(note.commitment());
+            if cmx.to_bytes() == self.cmx {
+                return Ok(note);
+            }
+        }
+
+        Err(Error::Wallet(format!(
+            "failed to reconstruct {} note: no note version reproduces the \
+             commitment recorded at scan time. The stored note is inconsistent \
+             with the chain; re-run `zcli init sync --full`.",
+            self.pool.name()
+        )))
     }
 }
 

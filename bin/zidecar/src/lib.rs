@@ -15,6 +15,7 @@ pub mod lwd_service;
 pub mod middleware;
 pub mod orchard_tree;
 pub mod prover;
+pub mod rendezvous;
 pub mod ring_vrf;
 pub mod storage;
 pub mod witness;

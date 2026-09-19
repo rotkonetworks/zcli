@@ -289,7 +289,12 @@ async fn run_seat(
     // 5. run the REAL FROST DKG on the FROST relay as a joiner (money-free key-gen).
     info!(seat, relay = %coords.relay_url, frost_room = %coords.room_code, "starting FROST DKG (joiner)");
     let dkg_nick = format!("stakedbot-seat-{seat}-{}", crate::random_nick());
-    let dkg = dkg::run_dkg_joiner(&coords.relay_url, &coords.room_code, dkg_nick, network, dkg_timeout).await;
+    // ws:// = old WS relay; http(s):// = frostd + rendezvous (room code is bip39).
+    let dkg = if coords.relay_url.starts_with("ws") {
+        dkg::run_dkg_joiner(&coords.relay_url, &coords.room_code, dkg_nick, network, dkg_timeout).await
+    } else {
+        dkg::run_dkg_joiner_frostd(&coords.relay_url, &coords.room_code, network, dkg_timeout).await
+    };
     let out = match dkg {
         Ok(o) => {
             info!(seat, ua = %o.orchard_ua, net = ?o.network, "DKG complete — escrow UA derived");

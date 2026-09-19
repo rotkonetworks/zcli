@@ -74,6 +74,8 @@ async fn run(cli: &Cli) -> Result<(), Error> {
                 recipient,
                 memo,
                 airgap,
+                dry_run,
+                fee,
             } => {
                 if cli.watch {
                     let fvk = load_fvk(cli, mainnet)?;
@@ -107,6 +109,8 @@ async fn run(cli: &Cli) -> Result<(), Error> {
                         recipient,
                         memo.as_deref(),
                         &cli.endpoint,
+                        *dry_run,
+                        *fee,
                         mainnet,
                         cli.json,
                     )
@@ -2160,6 +2164,8 @@ async fn cmd_init_migrate(cli: &Cli, mainnet: bool, dry_run: bool) -> Result<(),
         &new_addr,
         None,
         &cli.endpoint,
+        false,
+        None,
         mainnet,
         cli.json,
     )
@@ -2443,12 +2449,54 @@ async fn cmd_multisig(cli: &Cli, action: &MultisigAction) -> Result<(), Error> {
             Ok(())
         }
 
+        // Wormhole-style verbs: mint a per-ceremony identity here so the user
+        // never touches hex keys - same privacy property the UI has (fresh
+        // identity per ceremony, unlinkable across them).
+        MultisigAction::Host {
+            min_signers,
+            max_signers,
+            server,
+        } => {
+            let (private, public) =
+                frost_spend::relay_cipher::generate_keypair().map_err(Error::Other)?;
+            cmd_relay_dkg(
+                cli,
+                server,
+                &hex::encode(private),
+                &hex::encode(public),
+                &[],
+                None,
+                Some(""),
+                *min_signers,
+                *max_signers,
+            )
+            .await
+        }
+        MultisigAction::Join { code, server } => {
+            let (private, public) =
+                frost_spend::relay_cipher::generate_keypair().map_err(Error::Other)?;
+            // 0/0 = learn t and n from the coordinator's room entry
+            cmd_relay_dkg(
+                cli,
+                server,
+                &hex::encode(private),
+                &hex::encode(public),
+                &[],
+                None,
+                Some(code),
+                0,
+                0,
+            )
+            .await
+        }
+
         MultisigAction::RelayDkg {
             server,
             key,
             pubkey,
             peer,
             session,
+            room,
             min_signers,
             max_signers,
         } => cmd_relay_dkg(
@@ -2458,6 +2506,7 @@ async fn cmd_multisig(cli: &Cli, action: &MultisigAction) -> Result<(), Error> {
             pubkey,
             peer,
             session.as_deref(),
+            room.as_deref(),
             *min_signers,
             *max_signers,
         )
@@ -2736,6 +2785,7 @@ async fn cmd_multisig(cli: &Cli, action: &MultisigAction) -> Result<(), Error> {
 /// The coordinator omits --session, creates one and prints its id; the others
 /// pass that id. Everything after that is symmetric.
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 async fn cmd_relay_dkg(
     cli: &Cli,
     server: &str,
@@ -2743,6 +2793,7 @@ async fn cmd_relay_dkg(
     pubkey_hex: &str,
     peer_hex: &[String],
     session: Option<&str>,
+    room: Option<&str>,
     min_signers: u16,
     max_signers: u16,
 ) -> Result<(), Error> {
@@ -2754,7 +2805,36 @@ async fn cmd_relay_dkg(
 
     let private = frost_client::cipher::PrivateKey::from(decode(key_hex, "--key")?);
     let public = frost_client::cipher::PublicKey(decode(pubkey_hex, "--pubkey")?);
-    let peers = peer_hex
+
+    // Room-code flow: discover the peer set and session id through the
+    // relay's rendezvous instead of couriering hex keys and a uuid around.
+    // The uuid remains the ground truth - this only front-loads discovery.
+    let (peers, discovered_session) = match room {
+        Some(code) => relay_dkg_rendezvous(server, pubkey_hex, code, min_signers, max_signers).await?,
+        None => {
+            if peer_hex.is_empty() {
+                return Err(Error::Other(
+                    "list every co-signer with --peer, or use --room for the code flow".into(),
+                ));
+            }
+            (peer_hex.to_vec(), None)
+        }
+    };
+    // `multisig join` passes 0/0 and learns t-of-n from the coordinator's
+    // room entry; explicit flags are respected as given.
+    let (min_signers, max_signers) = if min_signers == 0 {
+        discovered_session
+            .as_ref()
+            .and_then(|r| r.signers)
+            .ok_or_else(|| {
+                Error::Other(
+                    "the coordinator's room entry carries no t-of-n - pass -t/-n explicitly".into(),
+                )
+            })?
+    } else {
+        (min_signers, max_signers)
+    };
+    let peers = peers
         .iter()
         .map(|p| Ok(frost_client::cipher::PublicKey(decode(p, "--peer")?)))
         .collect::<Result<Vec<_>, Error>>()?;
@@ -2763,8 +2843,32 @@ async fn cmd_relay_dkg(
         .await
         .map_err(|e| Error::Other(e.to_string()))?;
 
-    match session {
-        None => {
+    match (&discovered_session, session) {
+        // room-code host: create the session and hand the uuid to the room
+        (Some(rdv), None) if rdv.session_id.is_none() => {
+            let mut all = vec![public];
+            all.extend(peers.clone());
+            let id = t
+                .create_session(all, 3)
+                .await
+                .map_err(|e| Error::Other(e.to_string()))?;
+            rdv.rendezvous
+                .announce(&rdv.room_id, rdv.creator_token.as_deref().unwrap_or(""), &id.to_string())
+                .await
+                .map_err(|e| Error::Other(e.to_string()))?;
+            eprintln!("session {id} announced to the room - waiting for the others");
+        }
+        // room-code joiner: the uuid came out of the room
+        (Some(rdv), None) => {
+            let id = rdv
+                .session_id
+                .as_deref()
+                .expect("checked above")
+                .parse()
+                .map_err(|e| Error::Other(format!("announced session id is not a uuid: {e}")))?;
+            t.join_session(id);
+        }
+        (None, None) => {
             let mut all = vec![public];
             all.extend(peers.clone());
             let id = t
@@ -2774,7 +2878,7 @@ async fn cmd_relay_dkg(
             eprintln!("session: {id}");
             eprintln!("Give that id to the other participants, then wait.");
         }
-        Some(id) => {
+        (_, Some(id)) => {
             let id = id
                 .parse()
                 .map_err(|e| Error::Other(format!("--session is not a uuid: {e}")))?;
@@ -2804,4 +2908,168 @@ async fn cmd_relay_dkg(
         println!("should see the SAME public_key_package - compare before using it.");
     }
     Ok(())
+}
+
+/// What the room-code discovery hands back to the DKG proper.
+struct RdvOutcome {
+    rendezvous: zecli::rendezvous::Rendezvous,
+    room_id: String,
+    /// Some for the host (needed to announce), None for a joiner.
+    creator_token: Option<String>,
+    /// Some for a joiner (the announced uuid), None for the host.
+    session_id: Option<String>,
+    /// t-of-n parsed from the coordinator's room entry (joiner side).
+    signers: Option<(u16, u16)>,
+}
+
+/// Discover the peer set (and, for a joiner, the session uuid) through the
+/// relay's rendezvous. `code` is "" for the host (bare --room mints one).
+async fn relay_dkg_rendezvous(
+    server: &str,
+    my_pubkey: &str,
+    code: &str,
+    min_signers: u16,
+    max_signers: u16,
+) -> Result<(Vec<String>, Option<RdvOutcome>), Error> {
+    use std::io::IsTerminal;
+
+    const POLL: std::time::Duration = std::time::Duration::from_secs(1);
+    const DEADLINE: std::time::Duration = std::time::Duration::from_secs(600);
+
+    let rdv = zecli::rendezvous::Rendezvous::new(server);
+    if !rdv.available().await {
+        return Err(Error::Other(format!(
+            "{server} has no rendezvous - use the manual --peer/--session flow on this relay"
+        )));
+    }
+    let my_pubkey = my_pubkey.to_lowercase();
+    let started = std::time::Instant::now();
+
+    if code.is_empty() {
+        // ── host: mint a code, own the room, collect keys ──
+        let mut room_code = String::new();
+        let mut room_id = String::new();
+        let mut token = None;
+        for _ in 0..3 {
+            room_code = zecli::rendezvous::generate_room_code();
+            room_id = zecli::rendezvous::room_id_from_code(&room_code);
+            // t-of-n rides in the note so joiners need no flags at all
+            token = rdv
+                .publish(
+                    &room_id,
+                    &my_pubkey,
+                    &format!("coordinator:{min_signers}:{max_signers}"),
+                )
+                .await
+                .map_err(|e| Error::Other(e.to_string()))?;
+            if token.is_some() {
+                break;
+            }
+        }
+        if token.is_none() {
+            return Err(Error::Other("could not open a rendezvous room".into()));
+        }
+        eprintln!("room code: {room_code}");
+        eprintln!("Send that to your co-signers; they run: zcli multisig join {room_code}");
+
+        let mut seen = 0usize;
+        let peers = loop {
+            let view = rdv.poll(&room_id).await.map_err(|e| Error::Other(e.to_string()))?;
+            let peers: Vec<String> = view
+                .entries
+                .iter()
+                .filter(|e| e.pubkey != my_pubkey)
+                .map(|e| e.pubkey.clone())
+                .collect();
+            for e in view.entries.iter().filter(|e| e.pubkey != my_pubkey).skip(seen) {
+                eprintln!("  joined: {}… ({})", &e.pubkey[..8], e.note);
+            }
+            seen = peers.len();
+            if peers.len() >= usize::from(max_signers) - 1 {
+                break peers;
+            }
+            if started.elapsed() > DEADLINE {
+                return Err(Error::Other(format!(
+                    "waited {}s and only {} of {} co-signers joined the room",
+                    DEADLINE.as_secs(),
+                    peers.len(),
+                    max_signers - 1
+                )));
+            }
+            tokio::time::sleep(POLL).await;
+        };
+
+        // The code is discovery, not admission - this confirmation is the
+        // admission. Whoever holds these keys becomes a signer.
+        if std::io::stdin().is_terminal() {
+            eprint!("create the session with these {} keys? [y/N] ", peers.len());
+            let mut line = String::new();
+            std::io::stdin()
+                .read_line(&mut line)
+                .map_err(|e| Error::Other(e.to_string()))?;
+            if !matches!(line.trim(), "y" | "Y" | "yes") {
+                return Err(Error::Other("aborted before session creation".into()));
+            }
+        } else {
+            eprintln!("(non-interactive: proceeding with the keys listed above)");
+        }
+
+        Ok((
+            peers,
+            Some(RdvOutcome {
+                rendezvous: rdv,
+                room_id,
+                creator_token: token,
+                session_id: None,
+                signers: None,
+            }),
+        ))
+    } else {
+        // ── joiner: drop our key in, wait for the announce ──
+        let room_id = zecli::rendezvous::room_id_from_code(code);
+        let token = rdv
+            .publish(&room_id, &my_pubkey, "")
+            .await
+            .map_err(|e| Error::Other(e.to_string()))?;
+        if token.is_some() {
+            return Err(Error::Other(
+                "that room does not exist (yet) - check the code with the coordinator, \
+                 who hosts with bare --room"
+                    .into(),
+            ));
+        }
+        eprintln!("in the room - waiting for the coordinator to start…");
+        loop {
+            let view = rdv.poll(&room_id).await.map_err(|e| Error::Other(e.to_string()))?;
+            if let Some(session_id) = view.session_id {
+                let peers = view
+                    .entries
+                    .iter()
+                    .filter(|e| e.pubkey != my_pubkey)
+                    .map(|e| e.pubkey.clone())
+                    .collect();
+                let signers = view.entries.iter().find_map(|e| {
+                    let (t, n) = e.note.strip_prefix("coordinator:")?.split_once(':')?;
+                    Some((t.parse().ok()?, n.parse().ok()?))
+                });
+                return Ok((
+                    peers,
+                    Some(RdvOutcome {
+                        rendezvous: rdv,
+                        room_id,
+                        creator_token: None,
+                        session_id: Some(session_id),
+                        signers,
+                    }),
+                ));
+            }
+            if started.elapsed() > DEADLINE {
+                return Err(Error::Other(format!(
+                    "waited {}s and the coordinator never announced a session",
+                    DEADLINE.as_secs()
+                )));
+            }
+            tokio::time::sleep(POLL).await;
+        }
+    }
 }

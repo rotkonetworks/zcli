@@ -114,6 +114,8 @@ pub struct EpochManager {
     epoch_proof_config: ProverConfig<BinaryElem32, BinaryElem128>,
     tip_config: ProverConfig<BinaryElem32, BinaryElem128>,
     start_height: u32,
+    /// Ironwood (NU6.3) activation height of the indexed chain.
+    ironwood_activation: u32,
     /// last complete epoch that has a epoch proof (in-memory cache)
     last_epoch_proof_epoch: Arc<RwLock<Option<u32>>>,
     /// cached tip proof (pre-generated)
@@ -127,6 +129,7 @@ impl EpochManager {
         epoch_proof_config: ProverConfig<BinaryElem32, BinaryElem128>,
         tip_config: ProverConfig<BinaryElem32, BinaryElem128>,
         start_height: u32,
+        ironwood_activation: u32,
     ) -> Self {
         Self {
             zebrad,
@@ -134,6 +137,7 @@ impl EpochManager {
             epoch_proof_config,
             tip_config,
             start_height,
+            ironwood_activation,
             last_epoch_proof_epoch: Arc::new(RwLock::new(None)),
             cached_tip_proof: Arc::new(RwLock::new(None)),
         }
@@ -983,7 +987,7 @@ impl EpochManager {
         self: Arc<Self>,
         mut shutdown: tokio::sync::watch::Receiver<bool>,
     ) {
-        let activation = crate::constants::IRONWOOD_ACTIVATION_HEIGHT;
+        let activation = self.ironwood_activation;
 
         let mut last_synced = self
             .storage

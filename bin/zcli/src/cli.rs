@@ -192,6 +192,22 @@ pub enum TxAction {
         /// airgap mode: display PCZT QR for zigner signing
         #[arg(long)]
         airgap: bool,
+
+        /// build and prove the transaction but do NOT broadcast it
+        ///
+        /// Ironwood sends only (i.e. at/after NU6.3). Proving is the expensive
+        /// and failure-prone step, so this exercises the whole money path —
+        /// note selection, witnesses, fee, proof, signatures — without
+        /// committing to it.
+        #[arg(long)]
+        dry_run: bool,
+
+        /// fee override in zatoshis (ZIP-317 auto-computed if omitted)
+        ///
+        /// Ironwood sends only. ZIP-317 is a consensus floor: underpaying is
+        /// rejected outright, so this can only sensibly be used to overpay.
+        #[arg(long)]
+        fee: Option<u64>,
     },
 
     /// shield transparent funds (t→z)
@@ -381,10 +397,40 @@ pub enum MultisigAction {
     /// generate a relay identity keypair (frostd addresses you by its pubkey)
     RelayKeygen,
 
+    /// host a multisig DKG - prints a room code for the others to join
+    ///
+    /// Wormhole-style: no keys or uuids to courier. A fresh relay identity
+    /// is minted for the ceremony, co-signers run `multisig join <code>`,
+    /// and you approve the joined keys before anything is created.
+    Host {
+        #[arg(short = 't', long, default_value_t = 2)]
+        min_signers: u16,
+        #[arg(short = 'n', long, default_value_t = 3)]
+        max_signers: u16,
+        /// frostd relay with a rendezvous
+        #[arg(long, default_value = "https://relay.zafu.pro")]
+        server: String,
+    },
+
+    /// join a multisig DKG with the room code the host gave you
+    Join {
+        /// the four-word room code
+        code: String,
+        /// frostd relay with a rendezvous
+        #[arg(long, default_value = "https://relay.zafu.pro")]
+        server: String,
+    },
+
     /// run a full DKG over a standard frostd relay
     ///
-    /// The coordinator omits --session to create one and print its id;
-    /// everyone else passes the id they were given.
+    /// Friendly flow (relays with a rendezvous, e.g. zidecar): the
+    /// coordinator passes bare --room to mint a four-word code, everyone
+    /// else passes --room <code> - keys and the session id flow through the
+    /// room, no --peer or --session needed.
+    ///
+    /// Manual flow (works everywhere): swap relay pubkeys out of band and
+    /// list them with --peer; the coordinator omits --session to create one
+    /// and print its uuid, everyone else passes the uuid they were given.
     RelayDkg {
         /// frostd base URL, e.g. http://relay.example:2744
         #[arg(long)]
@@ -395,12 +441,16 @@ pub enum MultisigAction {
         /// our relay public key, hex (from relay-keygen)
         #[arg(long)]
         pubkey: String,
-        /// every OTHER participant's relay public key, hex
-        #[arg(long, num_args = 1.., required = true)]
+        /// every OTHER participant's relay public key, hex (manual flow)
+        #[arg(long, num_args = 1..)]
         peer: Vec<String>,
-        /// join an existing session instead of creating one
-        #[arg(long)]
+        /// join an existing session by uuid instead of creating one (manual flow)
+        #[arg(long, conflicts_with = "room")]
         session: Option<String>,
+        /// room-code flow: bare --room hosts (mints and prints a code),
+        /// --room <code> joins one
+        #[arg(long, num_args = 0..=1, default_missing_value = "", conflicts_with = "peer")]
+        room: Option<String>,
         #[arg(short = 't', long, default_value_t = 2)]
         min_signers: u16,
         #[arg(short = 'n', long, default_value_t = 3)]

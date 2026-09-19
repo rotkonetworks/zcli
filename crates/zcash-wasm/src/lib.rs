@@ -4640,7 +4640,10 @@ pub enum IronwoodRecipient {
 /// address is parsed as a unified/orchard address.
 ///
 /// Errors never contain the address (they are logged and surfaced to JS).
-fn parse_ironwood_recipient(recipient: &str, mainnet: bool) -> Result<IronwoodRecipient, String> {
+pub fn parse_ironwood_recipient(
+    recipient: &str,
+    mainnet: bool,
+) -> Result<IronwoodRecipient, String> {
     use zcash_keys::encoding::decode_transparent_address;
     use zcash_protocol::consensus::{NetworkConstants, NetworkType};
 
@@ -5149,6 +5152,22 @@ pub fn build_ironwood_send_pczt(
     }
     .map_err(|e| JsError::new(&e))?;
 
+    // Retain the UNREDACTED pczt (WITH the fvk) as the wallet's own base copy.
+    // The compact-signing path re-applies the device's signatures-only response
+    // into THIS copy, and pczt's `apply_ironwood_signature` runs
+    // `verify_nullifier`, which needs the fvk - a redacted copy fails with
+    // `IronwoodVerify(MissingFullViewingKey)` before the signature is even
+    // checked (reproduced natively in tests/fvk_repro.rs). The fvk NEVER leaves
+    // zafu: the copy sent to the device is `pczt_hex` (redacted just below), or
+    // its further compaction via `redact_pczt_compact`. This mirrors vizor,
+    // which keeps the unredacted base and redacts only the signer copy.
+    let retained_pczt_hex = hex_encode(
+        &pczt
+            .clone()
+            .serialize()
+            .map_err(|e| JsError::new(&format!("retained pczt serialize: {e:?}")))?,
+    );
+
     // Redact for the external cold signer. `redact_pczt_for_signer` already
     // redacts the ironwood bundle's spend-side fields (witness/rseed/rho/
     // recipient/value/fvk); it does NOT touch output metadata, so the real
@@ -5173,7 +5192,14 @@ pub fn build_ironwood_send_pczt(
 
     #[derive(Serialize)]
     struct Out {
+        /// REDACTED-for-signer pczt: the copy the wallet sends to the cold
+        /// device (directly for a 0x03 full request, or after `redact_pczt_compact`
+        /// for a 0x05 compact request). fvk / witnesses / note plaintext stripped.
         pczt_hex: String,
+        /// UNREDACTED base pczt (WITH the fvk): the wallet's own retained copy.
+        /// The compact-signing merge re-applies the device's signatures into THIS
+        /// copy, whose `verify_nullifier` needs the fvk. NEVER sent to the device.
+        retained_pczt_hex: String,
         summary: PcztSummary,
         action_count: u32,
         /// ZIP-244 shielded sighash - the message FROST signers commit to.
@@ -5189,6 +5215,7 @@ pub fn build_ironwood_send_pczt(
                 .serialize()
                 .map_err(|e| JsError::new(&format!("pczt serialize: {e:?}")))?,
         ),
+        retained_pczt_hex,
         summary,
         action_count,
         sighash: hex_encode(&shielded_sighash),
@@ -5485,69 +5512,41 @@ pub fn redact_pczt_compact(pczt_hex: &str) -> Result<String, JsError> {
     let pczt = pczt::Pczt::parse(&bytes)
         .map_err(|e| JsError::new(&format!("pczt parse failed: {:?}", e)))?;
 
-    // Start with existing signer redaction
+    // Standard signer redaction first (strips witnesses, spend note plaintext,
+    // fvk). Then LOSSLESS compaction on top.
     let pczt = redact_pczt_for_signer(pczt);
 
-    // Apply compact redaction on top
     let mut redactor = pczt::roles::redactor::Redactor::new(pczt);
 
-    // Compact orchard bundle
+    // Compact each shielded bundle with the CANONICAL primitive
+    // `compact_resolvable_fields`, which clears cv_net / cmx / enc_ciphertext
+    // for an action ONLY when the device's `resolve_fields()` reproduces the
+    // exact original bytes (it round-trips each field and RESTORES the original
+    // on any mismatch - pczt orchard.rs `compact_resolvable_fields`).
+    //
+    // This is the losslessness the previous hand-rolled version lacked: it
+    // unconditionally called `replace_enc_ciphertext_with_memo_plaintext([0u8;
+    // 512])` + `clear_cmx()` on EVERY action, which (a) destroyed real output
+    // memos and (b) corrupted the protocol padding-dummy outputs whose
+    // randomized enc_ciphertext is NOT regenerable from the retained fields.
+    // Both change bytes the transaction sighash commits to, so the device
+    // signed a different sighash than the wallet's retained tx and every
+    // returned signature failed to merge with
+    // `IronwoodSign(InvalidExternalSignature)` - on every send shape, not just
+    // memo'd ones. Reproduced natively in zigner
+    // `pczt_signing/tests/ironwood_send_fixture.rs`.
+    //
+    // cv_net stays RETAINED here: resolve_cv_net needs spend.value, which the
+    // signer redaction stripped for privacy, so compact_resolvable_fields
+    // detects the round-trip would fail and keeps it. This matches upstream
+    // `zcash_client_backend::data_api::wallet::redact_pczt_for_batch_signer`,
+    // which composes exactly this primitive.
     redactor = redactor.redact_orchard_with(|mut o| {
-        o.redact_actions(|mut a| {
-            // cv_net is deliberately NOT cleared. The signer rebuilds a redacted
-            // cv_net in resolve_cv_net() from the SPEND value - but
-            // redact_pczt_for_signer (applied above) has already stripped
-            // spend.value for privacy, so a cleared cv_net is unrecoverable on
-            // the device and it rejects the whole PCZT with
-            // ParseError::InvalidValueCommitment. cv_net is public 32-byte
-            // per-action data that appears in the final transaction regardless,
-            // so retaining it leaks nothing; the large savings (cmx +
-            // enc_ciphertext, both recoverable from retained output fields)
-            // stay below.
-            // Clear output cmx
-            a.clear_cmx();
-            // The 580-byte enc_ciphertext collapses to the memo trimmed to
-            // its last nonzero byte - ONE byte for the empty memo a turnstile
-            // migration uses. This is the single largest request-leg win
-            // (measured: 2.53x smaller request on a v6 migration, vs 1.08x
-            // without it). The signer re-encrypts it in `resolve_fields()`
-            // from the retained recipient/value/rseed plus the spend
-            // nullifier (rho), then runs every normal verification gate.
-            //
-            // MEMO_SIZE is crate-private upstream; it is 512 by spec.
-            a.replace_enc_ciphertext_with_memo_plaintext([0u8; 512]);
-        });
-        // Clear v6 bundle anchor
-        o.clear_anchor();
+        o.compact_resolvable_fields();
+        o.clear_anchor(); // v6 anchor is not signed; the device restores it
     });
-
-    // Compact ironwood bundle (same compact redaction as orchard)
     redactor = redactor.redact_ironwood_with(|mut o| {
-        o.redact_actions(|mut a| {
-            // cv_net is deliberately NOT cleared. The signer rebuilds a redacted
-            // cv_net in resolve_cv_net() from the SPEND value - but
-            // redact_pczt_for_signer (applied above) has already stripped
-            // spend.value for privacy, so a cleared cv_net is unrecoverable on
-            // the device and it rejects the whole PCZT with
-            // ParseError::InvalidValueCommitment. cv_net is public 32-byte
-            // per-action data that appears in the final transaction regardless,
-            // so retaining it leaks nothing; the large savings (cmx +
-            // enc_ciphertext, both recoverable from retained output fields)
-            // stay below.
-            // Clear output cmx
-            a.clear_cmx();
-            // The 580-byte enc_ciphertext collapses to the memo trimmed to
-            // its last nonzero byte - ONE byte for the empty memo a turnstile
-            // migration uses. This is the single largest request-leg win
-            // (measured: 2.53x smaller request on a v6 migration, vs 1.08x
-            // without it). The signer re-encrypts it in `resolve_fields()`
-            // from the retained recipient/value/rseed plus the spend
-            // nullifier (rho), then runs every normal verification gate.
-            //
-            // MEMO_SIZE is crate-private upstream; it is 512 by spec.
-            a.replace_enc_ciphertext_with_memo_plaintext([0u8; 512]);
-        });
-        // Clear v6 bundle anchor
+        o.compact_resolvable_fields();
         o.clear_anchor();
     });
 
@@ -5577,66 +5576,67 @@ pub fn apply_signature_contributions(
     pczt_hex: &str,
     contributions_json: &str,
 ) -> Result<String, JsError> {
+    apply_signature_contributions_inner(pczt_hex, contributions_json).map_err(|e| JsError::new(&e))
+}
+
+/// Native-testable core of [`apply_signature_contributions`]. Returns a plain
+/// `String` error so it can be exercised end-to-end from a `cargo test` harness
+/// (the `JsError` wrapper panics when formatted off-wasm). This is the exact
+/// merge path zafu's extension drives - covering it natively is what would have
+/// caught the compact-merge regressions the zigner-side harness could not (that
+/// one merges via zigner's `pczt_signing`, not this zcli export).
+pub fn apply_signature_contributions_inner(
+    pczt_hex: &str,
+    contributions_json: &str,
+) -> Result<String, String> {
     use orchard::primitives::redpallas;
 
-    let bytes = hex_decode(pczt_hex).ok_or_else(|| JsError::new("invalid pczt hex"))?;
-    let pczt = pczt::Pczt::parse(&bytes)
-        .map_err(|e| JsError::new(&format!("pczt parse failed: {:?}", e)))?;
+    let bytes = hex_decode(pczt_hex).ok_or_else(|| "invalid pczt hex".to_string())?;
+    let pczt =
+        pczt::Pczt::parse(&bytes).map_err(|e| format!("pczt parse failed: {:?}", e))?;
 
     let contributions: Vec<serde_json::Value> = serde_json::from_str(contributions_json)
-        .map_err(|e| JsError::new(&format!("failed to parse contributions JSON: {}", e)))?;
+        .map_err(|e| format!("failed to parse contributions JSON: {}", e))?;
 
     let mut signer = pczt::roles::signer::Signer::new(pczt)
-        .map_err(|e| JsError::new(&format!("signer init failed: {:?}", e)))?;
+        .map_err(|e| format!("signer init failed: {:?}", e))?;
 
     for (i, contrib) in contributions.iter().enumerate() {
         let pool = contrib
             .get("pool")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| JsError::new(&format!("contribution[{}]: missing pool", i)))?;
+            .ok_or_else(|| format!("contribution[{}]: missing pool", i))?;
         let action_index: usize = contrib
             .get("action_index")
             .and_then(|v| v.as_u64())
             .map(|v| v as usize)
-            .ok_or_else(|| JsError::new(&format!("contribution[{}]: missing action_index", i)))?;
+            .ok_or_else(|| format!("contribution[{}]: missing action_index", i))?;
         let signature_hex = contrib
             .get("signature_hex")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| JsError::new(&format!("contribution[{}]: missing signature_hex", i)))?;
+            .ok_or_else(|| format!("contribution[{}]: missing signature_hex", i))?;
 
         let raw = hex_decode(signature_hex)
-            .ok_or_else(|| JsError::new(&format!("contribution[{}]: invalid signature hex", i)))?;
-        let arr: [u8; 64] = raw.as_slice().try_into().map_err(|_| {
-            JsError::new(&format!("contribution[{}]: signature must be 64 bytes", i))
-        })?;
+            .ok_or_else(|| format!("contribution[{}]: invalid signature hex", i))?;
+        let arr: [u8; 64] = raw
+            .as_slice()
+            .try_into()
+            .map_err(|_| format!("contribution[{}]: signature must be 64 bytes", i))?;
         let sig = redpallas::Signature::<redpallas::SpendAuth>::from(arr);
 
         match pool {
             "orchard" => {
                 signer
                     .apply_orchard_signature(action_index, sig)
-                    .map_err(|e| {
-                        JsError::new(&format!(
-                            "apply_orchard_signature[{}]: {:?}",
-                            action_index, e
-                        ))
-                    })?;
+                    .map_err(|e| format!("apply_orchard_signature[{}]: {:?}", action_index, e))?;
             }
             "ironwood" => {
                 signer
                     .apply_ironwood_signature(action_index, sig)
-                    .map_err(|e| {
-                        JsError::new(&format!(
-                            "apply_ironwood_signature[{}]: {:?}",
-                            action_index, e
-                        ))
-                    })?;
+                    .map_err(|e| format!("apply_ironwood_signature[{}]: {:?}", action_index, e))?;
             }
             _ => {
-                return Err(JsError::new(&format!(
-                    "contribution[{}]: unknown pool '{}'",
-                    i, pool
-                )));
+                return Err(format!("contribution[{}]: unknown pool '{}'", i, pool));
             }
         }
     }
@@ -5644,7 +5644,7 @@ pub fn apply_signature_contributions(
     let signed = signer.finish();
     let serialized = signed
         .serialize()
-        .map_err(|e| JsError::new(&format!("pczt serialize failed: {:?}", e)))?;
+        .map_err(|e| format!("pczt serialize failed: {:?}", e))?;
     Ok(hex_encode(&serialized))
 }
 
@@ -6137,6 +6137,31 @@ const MAX_UR_PART_BYTES: usize = 8 * 1024;
 /// without being so generous it negates the cap.
 const MAX_UR_PARTS_JSON_BYTES: usize = MAX_UR_PARTS * (MAX_UR_PART_BYTES * 2 + 16);
 
+/// True if `lower` (a lowercased `ur:<type>/…` string) is a *multi-part*
+/// (sequenced) fountain frame `ur:<type>/<seq>-<len>/<data>`, as opposed to a
+/// bare single-part UR `ur:<type>/<bytewords>`. Detected by the `<digits>-<digits>`
+/// segment immediately after the type. Bytewords are lowercase letters only, so
+/// they never look like a `N-M` sequence header.
+fn ur_is_multipart_frame(lower: &str) -> bool {
+    let mut segs = lower.splitn(3, '/');
+    let _prefix = segs.next(); // "ur:<type>"
+    match segs.next() {
+        Some(seg) => {
+            let mut halves = seg.splitn(2, '-');
+            match (halves.next(), halves.next()) {
+                (Some(a), Some(b)) => {
+                    !a.is_empty()
+                        && !b.is_empty()
+                        && a.bytes().all(|c| c.is_ascii_digit())
+                        && b.bytes().all(|c| c.is_ascii_digit())
+                }
+                _ => false,
+            }
+        }
+        None => false,
+    }
+}
+
 #[wasm_bindgen]
 pub fn ur_decode_frames(parts_json: &str, expected_type: &str) -> Result<String, JsError> {
     // Cap the raw input before serde_json::from_str allocates the Vec — a
@@ -6169,6 +6194,28 @@ pub fn ur_decode_frames(parts_json: &str, expected_type: &str) -> Result<String,
             p.len()
         )));
     }
+
+    // Single-part fast path. A payload that fits one fragment is emitted as a
+    // bare single-part UR `ur:<type>/<bytewords>` (via `ur::ur::encode`, no
+    // `<seq>-<len>/` header) - e.g. the compact signatures-only sign response,
+    // which is one static QR. The fountain `Decoder` below only ever finalizes
+    // *sequenced* multi-part frames, so a lone single-part frame would loop
+    // forever as "need more frames". Decode it directly here.
+    if parts.len() == 1 && !ur_is_multipart_frame(&parts[0].to_ascii_lowercase()) {
+        let p = &parts[0];
+        if !expected_type.is_empty() {
+            let prefix = format!("ur:{}/", expected_type.to_ascii_lowercase());
+            if !p.to_ascii_lowercase().starts_with(&prefix) {
+                return Err(JsError::new(&format!(
+                    "UR part 0 has wrong type (expected ur:{expected_type}/…)"
+                )));
+            }
+        }
+        let (_kind, bytes) = ur::ur::decode(p)
+            .map_err(|e| JsError::new(&format!("UR single-part decode: {e:?}")))?;
+        return Ok(hex_encode(&bytes));
+    }
+
     let mut decoder = ur::ur::Decoder::default();
     for (i, p) in parts.iter().enumerate() {
         // Optional type guard. Reject parts whose `ur:<type>/...` doesn't match
@@ -6197,6 +6244,42 @@ pub fn ur_decode_frames(parts_json: &str, expected_type: &str) -> Result<String,
         .map_err(|e| JsError::new(&format!("UR message: {e:?}")))?
         .ok_or_else(|| JsError::new("UR decoder reported complete but produced no message"))?;
     Ok(hex_encode(&bytes))
+}
+
+#[cfg(test)]
+mod ur_single_part_tests {
+    use super::*;
+
+    #[test]
+    fn multipart_frame_detection() {
+        assert!(ur_is_multipart_frame("ur:zcash-pczt/1-3/aabbcc"));
+        assert!(ur_is_multipart_frame("ur:zcash-pczt/12-34/aabbcc"));
+        // single-part: bytewords after the type, no N-M sequence header
+        assert!(!ur_is_multipart_frame("ur:zcash-pczt/goadcagtaabb"));
+        assert!(!ur_is_multipart_frame("ur:zigner-module/lolotinaoxrl"));
+    }
+
+    /// The exact failure the compact signatures-only response hit: a small
+    /// payload is emitted by `ur::ur::encode` as a bare single-part UR, which
+    /// the fountain `Decoder` never finalizes. `ur_decode_frames` must decode
+    /// it in one frame.
+    #[test]
+    fn single_part_ur_decodes_in_one_frame() {
+        let payload: Vec<u8> = (0u8..64).collect(); // ~ signatures-only size
+        let single = ur::ur::encode(&payload, &ur::ur::Type::Custom("zcash-pczt"));
+        assert!(
+            !single.to_ascii_lowercase().contains('-')
+                || !ur_is_multipart_frame(&single.to_ascii_lowercase()),
+            "expected a single-part UR, got {single}"
+        );
+
+        let json = serde_json::to_string(&vec![single]).unwrap();
+        let hex = ur_decode_frames(&json, "zcash-pczt").expect("single-part must decode");
+        let got = hex_decode(&hex).expect("hex");
+        assert_eq!(got, payload);
+    }
+    // NB: error-path tests (wrong type, incomplete) can't run natively -
+    // JsError construction panics off-wasm. Covered by wasm_bindgen_test.
 }
 
 /// Encode CBOR bytes as zoda transport QR frames (verified erasure coding).

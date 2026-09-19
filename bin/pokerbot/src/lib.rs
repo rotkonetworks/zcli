@@ -11,6 +11,12 @@ pub mod crypto;
 pub mod deposit;
 pub mod dkg;
 pub mod dkgtest;
+/// Standard ZF frostd relay transport (copy of zecli's, kept in sync) - lets the
+/// bot join the escrow's frostd DKG session over ZF's own frost-client cipher.
+pub mod frostd_transport;
+/// Room-code discovery layer over frostd session uuids (copy of zecli's + the
+/// zafu/poker-escrow client; number-word-word codes resolve across all of them).
+pub mod rendezvous;
 pub mod game;
 pub mod identity;
 pub mod payout;

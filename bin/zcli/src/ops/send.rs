@@ -23,16 +23,58 @@ pub fn compute_fee(
     MARGINAL_FEE * logical_actions.max(GRACE_ACTIONS) as u64
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn send(
     seed: &WalletSeed,
     amount_str: &str,
     recipient: &str,
     memo: Option<&str>,
     endpoint: &str,
+    dry_run: bool,
+    fee_override: Option<u64>,
     mainnet: bool,
     json: bool,
 ) -> Result<(), Error> {
     let amount_zat = parse_amount(amount_str)?;
+
+    // ROUTING: past NU6.3, a send is an IRONWOOD spend.
+    //
+    // Both builders below pin the pre-NU6.2 orchard bundle protocol, and NU6.3
+    // consensus-disables orchard OUTPUTS — so at/after activation they cannot
+    // produce a valid transaction at all (see
+    // `tx::guard_pre_nu6_2_orchard_builder_allowed`, which refuses them by
+    // name). Routing on the LIVE branch id rather than a height keeps the two
+    // paths from disagreeing, and keeps the user-facing command the same one it
+    // has always been: `zcli tx send <amount> <recipient>`.
+    let branch_id = {
+        let client = ZidecarClient::connect(endpoint).await?;
+        client.resolve_branch_id().await?
+    };
+    if branch_id == crate::ops::send_ironwood::NU6_3_BRANCH_ID {
+        return crate::ops::send_ironwood::send_ironwood(
+            seed,
+            amount_zat,
+            recipient,
+            memo,
+            endpoint,
+            fee_override,
+            dry_run,
+            mainnet,
+            json,
+        )
+        .await;
+    }
+
+    // --dry-run and --fee are ironwood-only. Silently ignoring --dry-run on the
+    // orchard path would broadcast a transaction the user asked NOT to send,
+    // which is the one mistake this flag exists to prevent.
+    if dry_run || fee_override.is_some() {
+        return Err(Error::Transaction(
+            "--dry-run and --fee are only supported for ironwood sends (NU6.3 and \
+             later); this node reports a pre-NU6.3 consensus branch."
+                .into(),
+        ));
+    }
 
     // determine recipient type
     if recipient.starts_with("t1") || recipient.starts_with("tm") {

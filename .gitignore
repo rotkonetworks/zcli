@@ -1,4 +1,6 @@
 /target
+# alternate CARGO_TARGET_DIR outputs (bookworm cross-build, prod build, etc.)
+/target-*
 /www/memos.raw.json
 
 # env files — keep .env.example tracked

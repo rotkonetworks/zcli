@@ -24,6 +24,9 @@ pub mod notes_export;
 pub mod ops;
 #[cfg(feature = "cli")]
 pub mod quic;
+/// Room-code discovery layer on top of frostd session uuids.
+#[cfg(feature = "cli")]
+pub mod rendezvous;
 #[cfg(feature = "cli")]
 pub mod wallet;
 #[cfg(feature = "cli")]

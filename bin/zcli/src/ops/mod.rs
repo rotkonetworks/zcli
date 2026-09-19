@@ -7,5 +7,6 @@ pub mod merchant;
 pub mod migrate;
 pub mod multisig;
 pub mod send;
+pub mod send_ironwood;
 pub mod shield;
 pub mod sync;
