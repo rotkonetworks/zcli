@@ -476,7 +476,7 @@ pub fn build_and_prove_delegation(
     };
 
     // Build the delegation bundle (circuit + instance).
-    let mut rng = OsRng;
+    let mut rng = crate::OsRng10;
     let bundle = build_delegation_bundle(
         real_inputs,
         &fvk,
@@ -510,7 +510,7 @@ pub fn build_and_prove_delegation(
     // it runs inline (wasm-bindgen-rayon supplies halo2's parallelism).
     let create_delegation_proof = move || -> Result<Vec<u8>, VotingError> {
         let instance_refs: Vec<&[vesta::Scalar]> = vec![proof_instance.as_slice()];
-        let mut local_rng = OsRng;
+        let mut local_rng = crate::OsRng10;
         let mut transcript = Blake2bWrite::<_, vesta::Affine, Challenge255<_>>::init(vec![]);
         plonk::create_proof(
             params,

@@ -24,13 +24,16 @@ prost = "0.12"
 http = "0.2"
 tower = "0.4"
 
-# orchard (same version as zecli)
-# same FORK source as zecli/zafu-wasm - version alone is not enough, the
-# crates.io 0.14 and the valar fork are distinct crates to cargo
-orchard = { version = "0.15.5", default-features = false }
-zip32 = "0.2"
-pasta_curves = "0.5"
-ff = "0.13"
+# orchard — MUST be the exact same package as zecli's, not merely the same
+# version: zclid passes orchard values (Note, Address, Anchor, MerklePath,
+# FullViewingKey) straight through zecli's APIs, and cargo treats
+# `zakura-orchard` and crates.io `orchard` as unrelated crates even where the
+# types are structurally identical. Zakura Common 1.0 across the board here,
+# matching bin/zcli/Cargo.toml.
+orchard = { package = "zakura-orchard", version = "=1.0.0", default-features = false }
+zip32 = { version = "0.2", default-features = false }
+pasta_curves = { package = "zakura-pasta-curves", version = "=1.0.0" }
+ff = "0.14"
 rand = "0.8"
 
 # security

@@ -664,6 +664,8 @@ fn sign_with_ask(
 
     // sign the sighash with the randomized key
     #[allow(clippy::needless_borrows_for_generic_args)]
-    let sig = rsk.sign(&mut rand::rngs::OsRng, sighash);
+    // Zakura Common 1.0's reddsa bounds `sign` on rand_core 0.10's `Rng`;
+    // rand 0.8's `OsRng` does not implement it. Reuse zecli's adapter.
+    let sig = rsk.sign(&mut zecli::tx::OsRng10, sighash);
     <[u8; 64]>::from(&sig)
 }

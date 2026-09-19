@@ -26,6 +26,19 @@ use pasta_curves::pallas::{Point, Scalar};
 // re-export types from osst::nested that we still use
 pub use nested::{InnerCommitments, InnerNonces, InnerSignatureShare, InnerSigningParams};
 
+/// Sample a uniformly random Pallas scalar from a rand_core 0.6 RNG.
+///
+/// ff 0.14 (Zakura Common 1.0) moved `Field::random` onto rand_core 0.10's
+/// `Rng` trait, incompatible with the rand_core 0.6 `OsRng` used here. Sampling
+/// 64 bytes and reducing (`FromUniformBytes`) is the standard uniform
+/// construction and keeps this module on rand_core 0.6.
+fn rand_scalar<R: rand_core::RngCore + rand_core::CryptoRng>(rng: &mut R) -> Scalar {
+    use pasta_curves::group::ff::FromUniformBytes;
+    let mut bytes = [0u8; 64];
+    rng.fill_bytes(&mut bytes);
+    Scalar::from_uniform_bytes(&bytes)
+}
+
 // ── frostito: stake-weighted validator types ──
 
 /// a validator's bundle of shares (stake-weighted)
@@ -120,8 +133,8 @@ pub struct FrostitoResponse {
 /// round 1: validator generates ONE nonce commitment
 pub fn frostito_commit(validator_index: u32, weight: u32) -> (FrostitoNonce, FrostitoCommitment) {
     let mut rng = rand_core::OsRng;
-    let hiding = <Scalar as Field>::random(&mut rng);
-    let binding = <Scalar as Field>::random(&mut rng);
+    let hiding = rand_scalar(&mut rng);
+    let binding = rand_scalar(&mut rng);
 
     let commitment = FrostitoCommitment {
         validator_index,
@@ -345,10 +358,10 @@ mod tests {
         ];
 
         // group secret split into stake-weighted Shamir shares
-        let group_secret = <Scalar as Field>::random(&mut rng);
+        let group_secret = rand_scalar(&mut rng);
         let mut coeffs = vec![group_secret];
         for _ in 1..inner_threshold {
-            coeffs.push(<Scalar as Field>::random(&mut rng));
+            coeffs.push(rand_scalar(&mut rng));
         }
         let all_shares: Vec<SecretShare<Scalar>> = (1..=inner_total_shares)
             .map(|i| {
@@ -406,9 +419,9 @@ mod tests {
 
         // ── outer context (values the outer protocol would supply) ─────────
         let params = FrostitoSigningParamsV2 {
-            outer_binding: <Scalar as Field>::random(&mut rng),
-            outer_challenge: <Scalar as Field>::random(&mut rng),
-            outer_lambda: <Scalar as Field>::random(&mut rng),
+            outer_binding: rand_scalar(&mut rng),
+            outer_challenge: rand_scalar(&mut rng),
+            outer_lambda: rand_scalar(&mut rng),
             active_share_indices: active.clone(),
         };
 
@@ -451,10 +464,10 @@ mod tests {
     #[test]
     fn frostito_v2_names_the_faulty_validator() {
         let mut rng = rand_core::OsRng;
-        let secret = <Scalar as Field>::random(&mut rng);
+        let secret = rand_scalar(&mut rng);
         let mut coeffs = vec![secret];
         for _ in 1..3 {
-            coeffs.push(<Scalar as Field>::random(&mut rng));
+            coeffs.push(rand_scalar(&mut rng));
         }
         let all_shares: Vec<SecretShare<Scalar>> = (1..=4u32)
             .map(|i| {
@@ -483,9 +496,9 @@ mod tests {
             commitments.push(c);
         }
         let params = FrostitoSigningParamsV2 {
-            outer_binding: <Scalar as Field>::random(&mut rng),
-            outer_challenge: <Scalar as Field>::random(&mut rng),
-            outer_lambda: <Scalar as Field>::random(&mut rng),
+            outer_binding: rand_scalar(&mut rng),
+            outer_challenge: rand_scalar(&mut rng),
+            outer_lambda: rand_scalar(&mut rng),
             active_share_indices: active.clone(),
         };
         let effective_pubkeys: Vec<(u32, Point)> = bundles
@@ -533,14 +546,14 @@ mod tests {
         ];
 
         // generate a group secret and split into shares
-        let group_secret = <Scalar as Field>::random(&mut rng);
+        let group_secret = rand_scalar(&mut rng);
         let group_key = Point::generator().mul_scalar(&group_secret);
 
         // create Shamir shares for each share index
         // polynomial: f(x) = group_secret + a1*x + a2*x² + ... (degree = threshold-1)
         let mut coeffs = vec![group_secret];
         for _ in 1..inner_threshold {
-            coeffs.push(<Scalar as Field>::random(&mut rng));
+            coeffs.push(rand_scalar(&mut rng));
         }
 
         let all_shares: Vec<SecretShare<Scalar>> = (1..=inner_total_shares)

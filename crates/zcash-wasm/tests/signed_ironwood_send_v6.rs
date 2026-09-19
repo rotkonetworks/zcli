@@ -319,7 +319,7 @@ fn signed_ironwood_send_spends_real_v3_note_verifies() {
             "ironwood bundle rejected by validator (bad proof or spend-auth/binding sig)"
         );
         assert!(
-            vi.validate(rand_core::OsRng),
+            vi.validate(zafu_wasm::OsRng10),
             "ironwood proof + spend-auth + binding signatures FAILED to verify"
         );
     }

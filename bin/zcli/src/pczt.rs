@@ -8,10 +8,10 @@ use orchard::builder::{Builder, BundleType};
 use orchard::keys::{FullViewingKey, Scope};
 use orchard::tree::Anchor;
 use orchard::value::NoteValue;
-use rand::rngs::OsRng;
 use zcash_protocol::value::ZatBalance;
 
 use crate::error::Error;
+use crate::tx::OsRng10;
 use crate::tx;
 
 // -- FVK parsing --
@@ -636,7 +636,7 @@ pub fn build_pczt_and_qr(
             .map_err(|e| Error::Transaction(format!("add_output (change): {:?}", e)))?;
     }
 
-    let mut rng = OsRng;
+    let mut rng = OsRng10;
 
     let (mut pczt_bundle, _meta) = builder
         .build_for_pczt(&mut rng)
@@ -775,7 +775,7 @@ pub fn complete_pczt_tx(mut state: PcztState, orchard_sigs: &[[u8; 64]]) -> Resu
         .ok_or_else(|| Error::Transaction("extract returned None".into()))?;
 
     // apply binding signature
-    let rng = OsRng;
+    let rng = OsRng10;
     let authorized = bundle
         .apply_binding_signature(state.sighash, rng)
         .ok_or_else(|| Error::Transaction("binding signature verification failed".into()))?;

@@ -16,6 +16,10 @@ rustflags = [
     "-C", "link-args=--export=__tls_size",
     "-C", "link-args=--export=__tls_align",
     "-C", "link-args=--export=__tls_base",
+    # Zakura Common 1.0's crypto stack pulls getrandom 0.4, whose wasm32 backend
+    # is selected at compile time via this cfg (paired with the `wasm_js` feature
+    # enabled in zafu-wasm's wasm32 dependencies).
+    "--cfg", "getrandom_backend=\"wasm_js\"",
 ]
 # wasm parallel build requires nightly:
 # RUSTUP_TOOLCHAIN=nightly cargo build --target wasm32-unknown-unknown -Zbuild-std=panic_abort,std
@@ -27,4 +31,7 @@ wasm-parallel = "build -p zafu-wasm --target wasm32-unknown-unknown --release -Z
 
 # Single-threaded — needs build-std because global RUSTFLAGS force +atomics
 # and prebuilt stable std lacks them. Output still requires SharedArrayBuffer.
-wasm-single = "build -p zafu-wasm --target wasm32-unknown-unknown --release --no-default-features -Zbuild-std=panic_abort,std"
+# `voting` is added explicitly: it is now a default feature (was unconditional
+# before the Zakura Common 1.0 migration), and --no-default-features would
+# otherwise silently drop vote casting/delegation from the single-thread bundle.
+wasm-single = "build -p zafu-wasm --target wasm32-unknown-unknown --release --no-default-features --features voting -Zbuild-std=panic_abort,std"

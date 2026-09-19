@@ -9,7 +9,17 @@ repository = "https://github.com/valargroup/zcash_voting"
 readme = "README.md"
 
 [features]
-default = ["native"]
+# Upstream defaults to `native`. This vendored fork exists for the wasm-slim
+# slice, and BOTH of its consumers here (zafu-wasm, voting-wasm) take it with
+# `default-features = false, features = ["wasm-slim"]`. `native` additionally
+# pulls zcash_client_backend / zcash_client_sqlite, which are still on the
+# upstream orchard-0.15 / pasta-0.5 line while this crate's own code is on
+# Zakura Common 1.0 — so `native` does not currently compile (Fp vs Fp,
+# MerkleHashOrchard vs MerkleHashOrchard, etc). Defaulting to the slice keeps
+# `cargo check --workspace` honest instead of failing on a configuration
+# nothing in this repo builds. Re-enable `native` once the zcash_client_*
+# crates exist on the Zakura line.
+default = ["wasm-slim"]
 # `native` = full upstream crate: SQLite round-state persistence, tokio/hyper/tonic
 # lightwalletd + PIR network transport, and the wallet-db orchestration modules.
 native = [
@@ -40,22 +50,26 @@ wasm-slim = []
 # (voting-wasm) must ALSO link wasm-bindgen-rayon and call initThreadPool()
 # before the first proof, or rayon's global pool init panics on wasm32
 # (no JS-side Worker spawn glue without it).
-parallel = ["halo2_proofs/multicore", "orchard/multicore"]
+parallel = ["halo2_proofs/multicore"]
 
 [dependencies]
 # Curves (same as Orchard/Zcash)
-pasta_curves = "0.5"
-ff = "0.13"
-group = "0.13"
+pasta_curves = { package = "zakura-pasta-curves", version = "=1.0.0" }
+ff = "0.14"
+group = "0.14"
 
 # Randomness
 rand = "0.8"
+# rand_core 0.10 (pure-trait) for the OsRng10 adapter bridging rand 0.8's OsRng
+# to the rand_core 0.10 `Rng` bound that Zakura Common 1.0's ff/orchard/
+# voting-circuits now require at RNG call sites.
+rand_core_10 = { package = "rand_core", version = "0.10", default-features = false }
 
 # Hashing
 blake2b_simd = "1"
-halo2_gadgets = "=0.5.0"
-halo2_proofs = "0.3"
-sinsemilla = "0.1"
+halo2_gadgets = { package = "zakura-halo2-gadgets", version = "=1.0.0" }
+halo2_proofs = { package = "zakura-halo2-proofs", version = "=1.0.0" }
+sinsemilla = { package = "zakura-sinsemilla", version = "=1.0.0" }
 
 # Serialization
 base64 = "0.22"
@@ -71,7 +85,7 @@ pir-client = { version = "=0.4.0-rc.2", default-features = false, optional = tru
 pir-types = { version = "=0.3.0-rc.2", default-features = false, optional = true }
 valar-spiral-rs = { version = "=0.5.2", default-features = false, optional = true }
 valar-ypir = { version = "=0.1.5", default-features = false, optional = true }
-imt-tree = { version = "=0.2.0" }
+imt-tree = { version = "=0.5.2", default-features = false, features = ["zakura"] }
 
 bytes = { version = "1" }
 http = { version = "1" }
@@ -83,7 +97,7 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 tokio = { version = "1", features = ["rt-multi-thread", "time"], optional = true }
 tonic = { version = "0.14", features = ["channel", "tls-webpki-roots", "tls-ring"], optional = true }
 
-vote-commitment-tree = { version = "=0.4.0-rc.1" }
+vote-commitment-tree = { version = "=0.6.0", default-features = false, features = ["zakura"] }
 vote-commitment-tree-client = { version = "=0.6.0-rc.1", features = ["http"], optional = true }
 
 # Storage — native only.
@@ -96,8 +110,8 @@ zeroize = "1"
 
 # Crypto core (all wasm-OK).
 subtle = "2.6"
-orchard = { version = "0.15.5", features = ["unstable-voting-circuits"] }
-voting-circuits = { version = "=0.9.0-rc.3" }
+orchard = { package = "zakura-orchard", version = "=1.0.0", features = ["unstable-voting-circuits"] }
+voting-circuits = { version = "=0.11.2" }
 nonempty = "0.11"
 zip32 = "0.2"
 incrementalmerkletree = "0.8"
@@ -105,9 +119,9 @@ incrementalmerkletree = "0.8"
 zcash_protocol = { version = "0.10" }
 zcash_client_backend = { version = "0.24.0-rc.7", features = ["orchard", "lightwalletd-tonic", "lightwalletd-tonic-tls-webpki-roots"], default-features = false, optional = true }
 zcash_client_sqlite = { version = "0.22.0-rc.8", features = ["orchard"], default-features = false, optional = true }
-zcash_keys = { version = "0.16", features = ["orchard"] }
-pczt = { version = "0.9.1", features = ["orchard", "io-finalizer", "signer", "zcp-builder"] }
-zcash_primitives = { version = "0.30" }
+zcash_keys = { package = "zakura-keys", version = "=1.0.0", features = ["orchard"] }
+pczt = { package = "zakura-pczt", version = "=0.1.0-rc2", features = ["orchard", "io-finalizer", "signer", "zcp-builder"] }
+zcash_primitives = { package = "zakura-primitives", version = "=1.0.0" }
 uuid = "1.23.1"
 
 # wasm32 needs getrandom's browser backend. The zafu-wasm host also pins
@@ -118,6 +132,6 @@ getrandom = { version = "0.2", features = ["js"] }
 [dev-dependencies]
 secrecy = "0.8"
 reqwest = { version = "0.11", features = ["blocking", "json"] }
-vote-commitment-tree = { version = "=0.4.0-rc.1" }
+vote-commitment-tree = { version = "=0.6.0", default-features = false, features = ["zakura"] }
 vote-commitment-tree-client = { version = "=0.6.0-rc.1", features = ["http"] }
 bip39 = "2"

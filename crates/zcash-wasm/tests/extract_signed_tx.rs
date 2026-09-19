@@ -28,7 +28,7 @@ use pczt::{
     },
     Pczt,
 };
-use rand_core::OsRng;
+use zafu_wasm::OsRng10 as OsRng;
 use std::sync::OnceLock;
 use zcash_primitives::transaction::{
     builder::{BuildConfig, Builder, BundlePadding},

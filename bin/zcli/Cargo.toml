@@ -39,6 +39,13 @@ cli = [
     "dep:zync-core",
     "dep:anyhow",
     "dep:zafu-wasm",
+    # Native-only: the zecli graph pulls a second, real halo2_proofs 0.3.5
+    # (multicore) alongside zakura-halo2-proofs, which forces the shared
+    # maybe-rayon shim onto its rayon/threads backend. zakura-halo2-proofs must
+    # then be on its own multicore path too, or its the_best_reduce /
+    # IndexedParallelIterator calls fail to resolve. This never reaches the wasm
+    # builds (they build -p zafu-wasm, which does not enable this).
+    "zafu-wasm/multicore",
 ]
 
 [dependencies]
@@ -54,8 +61,8 @@ bip39 = { version = "2.0", features = ["rand"] }
 # against. See that crate's Cargo.toml for the frozen interface contract.
 #   orchard 0.15.5 / librustzcash crates: crates.io releases (no forks, no
 #   [patch]). NU6.3 / Ironwood is ungated upstream, so no zcash_unstable cfg.
-orchard = { version = "0.15.5", default-features = false, features = ["circuit"] }
-zcash_keys = { version = "0.16", default-features = false, features = ["orchard"] }
+orchard = { package = "zakura-orchard", version = "=1.0.0", default-features = false, features = ["circuit"] }
+zcash_keys = { package = "zakura-keys", version = "=1.0.0", default-features = false, features = ["orchard"] }
 zcash_protocol = { version = "0.10", default-features = false }
 # EXACT same source as zafu-wasm — a second copy of these types would not be
 # the same types, and the shielding core takes them by value.
@@ -79,11 +86,30 @@ frost-client = { git = "https://github.com/ZcashFoundation/frost-tools", rev = "
 # to name session ids in frostd's API
 uuid = { version = "1", features = ["v4", "serde"] }
 zoda-vss = { path = "../../crates/zoda-vss" }
-osst = { git = "https://github.com/rotkonetworks/frostito", rev = "14e38da", default-features = false, features = ["pallas"] }
-pasta_curves = "0.5"
-reddsa = { git = "https://github.com/ZcashFoundation/reddsa.git", rev = "475a552", features = ["frost", "serde"] }
+# Vendored pasta-1.0 (Zakura Common 1.0) port at crates/osst, same path dep
+# frost-spend uses on this branch. The old frostito git rev (14e38da) still
+# built on pasta_curves 0.5 and was the last osst edge dragging a second pasta
+# into the native graph; the path port is on zakura-pasta-curves 1.0. "std" is
+# required for osst::redpallas / OsRng (matches frost-spend's comment).
+osst = { path = "../../crates/osst", default-features = false, features = ["pallas", "std"] }
+# Zakura Common 1.0 pasta (pasta-1.0 / ff+group 0.14). zecli's own source does
+# not name pasta types, but keeping this on the upstream `pasta_curves 0.5`
+# would re-introduce a second pasta into the native graph. Switch it to the
+# same fork the rest of the graph (zakura-orchard / frost-spend) uses.
+pasta_curves = { package = "zakura-pasta-curves", version = "=1.0.0" }
+# zakura-reddsa 1.0 (Zakura Common 1.0 pasta), its `frost` feature pulling
+# frost-rerandomized 3.0 - exactly what frost-spend consumes. zecli's own
+# source names no `reddsa::` paths (all FROST types flow through frost-spend's
+# re-exports), so this is effectively a vestigial dep; keeping it on the old ZF
+# reddsa git (rev 475a552) was the second pasta_curves 0.5 edge in the native
+# graph. Repointed to the migrated crate so no old pasta enters via zecli.
+reddsa = { package = "zakura-reddsa", version = "=1.0.0", features = ["frost"] }
 ed25519-consensus = "2"
 rand_core = "0.6"
+# rand_core 0.10 (pure-trait) for the OsRng10 adapter that feeds Zakura Common
+# 1.0's Orchard builders / PCZT binding-sig, which now bound their RNG on
+# rand_core 0.10's `Rng`. See `OsRng10` in src/tx.rs.
+rand_core_10 = { package = "rand_core", version = "0.10", default-features = false }
 
 # transparent address crypto (secp256k1)
 k256 = { version = "0.13", features = ["ecdsa-core", "ecdsa", "sha256"] }
@@ -91,8 +117,9 @@ hmac = "0.12"
 sha2 = "0.10"
 ripemd = "0.1"
 
-# finite field traits (for pallas::Scalar::to_repr)
-ff = "0.13"
+# finite field traits (for pallas::Scalar::to_repr). Zakura Common 1.0 moved
+# pasta/orchard onto ff 0.14, so the in-scope `ff::PrimeField` must match.
+ff = "0.14"
 
 # hashing
 blake2 = "0.10"

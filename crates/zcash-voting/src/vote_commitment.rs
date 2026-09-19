@@ -130,7 +130,7 @@ pub(crate) fn sign_cast_vote(
     )?;
 
     // Sign
-    let mut rng = rand::rngs::OsRng;
+    let mut rng = crate::OsRng10;
     let sig = rsk_v.sign(&mut rng, &sighash);
     let sig_bytes: [u8; 64] = (&sig).into();
 
