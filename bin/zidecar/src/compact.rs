@@ -58,8 +58,14 @@ pub struct CompactBlock {
 impl CompactBlock {
     /// build compact block from zebrad
     pub async fn from_zebrad(zebrad: &ZebradClient, height: u32) -> Result<Self> {
-        let hash_str = zebrad.get_block_hash(height).await?;
-        let block = zebrad.get_block(&hash_str, 1).await?;
+        // One verbose getblock carries every transaction with its shielded
+        // components, the same call the backfill uses. The previous shape
+        // (getblockhash + getblock(1) + one getrawtransaction PER TX) made a
+        // sapling-sandblast block with hundreds of transactions cost hundreds
+        // of round-trips to zebrad, so serving 500 of them took ~2 minutes and
+        // full syncs timed out in that region.
+        let block = zebrad.get_block_verbose_at(height).await?;
+        let hash_str = block.hash.clone();
 
         // pull raw block to extract the canonical header bytes; lwd clients hash
         // these to validate chain continuity.
@@ -76,24 +82,17 @@ impl CompactBlock {
         let mut sapling_outputs = Vec::new();
         let mut ironwood_actions = Vec::new();
 
-        for (block_tx_index, txid) in block.tx.iter().enumerate() {
-            match zebrad.get_raw_transaction(txid).await {
-                Ok(tx) => {
-                    let txid_bytes = hex_to_bytes(txid)?;
-                    extract_tx_shielded(
-                        &tx,
-                        &txid_bytes,
-                        block_tx_index as BlockTxIndex,
-                        &mut actions,
-                        &mut sapling_spends,
-                        &mut sapling_outputs,
-                        &mut ironwood_actions,
-                    );
-                }
-                Err(e) => {
-                    debug!("failed to fetch tx {}: {}", txid, e);
-                }
-            }
+        for (block_tx_index, tx) in block.tx.iter().enumerate() {
+            let txid_bytes = hex_to_bytes(&tx.txid)?;
+            extract_tx_shielded(
+                tx,
+                &txid_bytes,
+                block_tx_index as BlockTxIndex,
+                &mut actions,
+                &mut sapling_spends,
+                &mut sapling_outputs,
+                &mut ironwood_actions,
+            );
         }
 
         let hash = hex_to_bytes(&hash_str)?;
