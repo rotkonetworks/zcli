@@ -1620,7 +1620,6 @@ dependencies = [
  "curve25519-dalek-derive",
  "digest 0.10.7",
  "fiat-crypto",
- "group 0.13.0",
  "rand_core 0.6.4",
  "rustc_version",
  "subtle",
@@ -1729,19 +1728,6 @@ name = "debugless-unwrap"
 version = "0.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f400d0750c0c069e8493f2256cb4da6f604b6d2eeb69a0ca8863acde352f8400"
-
-[[package]]
-name = "decaf377"
-version = "0.10.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2097c5f69d06259112bea2024ddc41095c5001b503448f84ac169efc7cc8fd75"
-dependencies = [
- "cfg-if",
- "hex",
- "rand_core 0.6.4",
- "subtle",
- "zeroize",
-]
 
 [[package]]
 name = "delay_map"
@@ -4714,20 +4700,11 @@ dependencies = [
 
 [[package]]
 name = "osst"
-version = "0.1.1"
+version = "0.2.0"
+source = "git+https://github.com/penumbrafi/frostito?rev=20ff2e37a488a54e0b0b581b0c9c4af566290de6#20ff2e37a488a54e0b0b581b0c9c4af566290de6"
 dependencies = [
  "blake2b_simd",
- "curve25519-dalek",
- "decaf377",
- "generic-array",
- "hex",
- "k256",
- "parity-scale-codec",
- "rand 0.8.7",
- "rand_core 0.10.1",
  "rand_core 0.6.4",
- "scale-info",
- "serde",
  "sha2 0.10.9",
  "zakura-pasta-curves",
  "zeroize",

@@ -14,7 +14,6 @@ members = [
     "crates/zcash-voting",
     "crates/pir-client",
     "crates/frost-spend",
-    "crates/osst",
     "crates/zoda-vss",
     "bin/relay",
     "bin/poker",
@@ -36,6 +35,10 @@ ligerito-binary-fields = { path = "crates/ligerito-binary-fields" }
 ligerito-merkle = { path = "crates/ligerito-merkle" }
 ligerito-reed-solomon = { path = "crates/ligerito-reed-solomon" }
 zync-core = { path = "crates/zync-core" }
+
+# frostito/osst: canonical upstream at github.com/penumbrafi/frostito.
+# Was vendored at crates/osst; consolidated upstream in osst 0.2.0.
+osst = { git = "https://github.com/penumbrafi/frostito", rev = "20ff2e37a488a54e0b0b581b0c9c4af566290de6", default-features = false }
 
 # shared deps inherited by ligerito crates
 bytemuck = { version = "1", default-features = false, features = ["extern_crate_alloc"] }
@@ -59,13 +62,6 @@ codegen-units = 1
 
 [patch.crates-io]
 maybe-rayon = { path = "crates/maybe-rayon" }
-
-# NOTE: the Zakura Common 1.0 (pasta-1.0) port of osst lives at crates/osst and
-# is consumed directly, via path dependency, by every frostito-osst consumer in
-# this workspace (`frost-spend`, `bin/poker`) — not via a [patch] redirect. The
-# whole native graph is on pasta-1.0 now, so the patch would be harmless, but a
-# path dep says plainly which osst you get.
-# TODO(upstream): push the pasta-1.0 pallas backend to github.com/rotkonetworks/frostito.
 
 # Zakura Common 1.0 (pasta-1.0 generation) is now consumed directly as the
 # crates.io `zakura-*` packages (see per-crate Cargo.toml package renames), so
