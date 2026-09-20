@@ -18,6 +18,12 @@ const BATCH_SIZE_MIN: u32 = 500;
 /// full block from zebrad to learn that, so 500 such blocks take longer than
 /// the request timeout. Shrinking further makes progress instead of failing.
 const BATCH_SIZE_FLOOR: u32 = 50;
+/// A batch that took at least this long to serve is shrunk, whatever it held.
+/// Half the 300 s stream timeout: one more doubling of a batch this slow would
+/// time out.
+const BATCH_SLOW_SECS: u64 = 60;
+/// A batch must be served faster than this before the size may grow.
+const BATCH_QUICK_SECS: u64 = 20;
 const BATCH_SIZE_MAX: u32 = 2_000; // reduced from 5k — zidecar chokes on dense blocks
 const BATCH_ACTIONS_TARGET: usize = 20_000; // reduced from 50k
 
@@ -338,6 +344,7 @@ async fn sync_inner(
 
     while current <= tip {
         let end = (current + batch_size - 1).min(tip);
+        let fetch_started = std::time::Instant::now();
         let blocks = match retry_compact_blocks(&client, current, end).await {
             Ok(b) => b,
             Err(_) if batch_size > BATCH_SIZE_FLOOR => {
@@ -363,9 +370,22 @@ async fn sync_inner(
             );
         }
 
-        // adaptive batch sizing: grow for sparse blocks, shrink for dense
-        // cap growth to 2x per step to avoid overshooting
-        if action_count == 0 {
+        // adaptive batch sizing: grow for sparse blocks, shrink for dense,
+        // capped to 2x per step to avoid overshooting.
+        //
+        // Sizing by action count alone misjudges ranges that are SLOW rather
+        // than dense: the sapling-sandblast blocks carry zero orchard actions
+        // but take the server ~0.2 s each, so "sparse" doubled the batch,
+        // the doubled batch timed out twice, and each 500 blocks cost three
+        // attempts (~12 min). Serve time is the signal that matters for the
+        // timeout, so it takes precedence: a slow batch shrinks, and only a
+        // quick one may grow.
+        let fetch_secs = fetch_started.elapsed().as_secs();
+        if fetch_secs >= BATCH_SLOW_SECS {
+            batch_size = (batch_size / 2).max(BATCH_SIZE_FLOOR);
+        } else if fetch_secs >= BATCH_QUICK_SECS {
+            // hold
+        } else if action_count == 0 {
             batch_size = (batch_size * 2).min(BATCH_SIZE_MAX);
         } else if action_count > BATCH_ACTIONS_TARGET {
             batch_size = (batch_size / 2).max(BATCH_SIZE_MIN);
