@@ -16,12 +16,10 @@ prost = "0.12"
 tokio = { version = "1", features = ["full"] }
 tokio-stream = "0.1"
 
-# frostito (nested FROST + OSST)
-# crates/osst is the Zakura Common 1.0 (pasta-1.0) port of frostito's osst.
-# poker has to be on the same pasta as its pallas types, so it takes the path
-# fork rather than the git rev pinned to pasta-0.5. The OSST wire encoding is
-# unchanged — same curve, same point/scalar serialization.
-osst = { path = "../../crates/osst", default-features = false, features = ["std", "pallas"] }
+# frostito (nested FROST + OSST), canonical upstream penumbrafi/frostito
+# pinned in [workspace.dependencies]. osst 0.2.0 is on zakura-pasta-curves
+# 1.0, the same pasta as poker's own pallas types.
+osst = { workspace = true, features = ["std", "pallas"] }
 
 # crypto
 rand = "0.8"
