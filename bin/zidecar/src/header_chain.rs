@@ -415,17 +415,8 @@ impl HeaderChainTrace {
             // Fields 20-31: state roots at epoch boundaries
             if let Some(roots) = state_root_map.get(&header.height) {
                 // This is an epoch boundary - include state roots
-                let sapling = if roots.sapling_root.is_empty() {
-                    vec![0u8; 32]
-                } else {
-                    hex_to_bytes(&roots.sapling_root)?
-                };
-
-                let orchard = if roots.orchard_root.is_empty() {
-                    vec![0u8; 32]
-                } else {
-                    hex_to_bytes(&roots.orchard_root)?
-                };
+                let sapling = root_bytes_or_zero(&roots.sapling_root, "sapling", header.height)?;
+                let orchard = root_bytes_or_zero(&roots.orchard_root, "orchard", header.height)?;
 
                 // Fields 20-23: sapling_root (16 bytes = 4 x 4-byte fields)
                 for j in 0..4 {
@@ -439,6 +430,13 @@ impl HeaderChainTrace {
 
                 // Fields 28-29: nullifier_root (8 bytes = 2 x 4-byte fields)
                 let nf_root = &roots.nullifier_root;
+                if nf_root.len() < 8 {
+                    return Err(ZidecarError::InvalidRange(format!(
+                        "nullifier root at height {} is {} bytes, expected 32",
+                        header.height,
+                        nf_root.len()
+                    )));
+                }
                 trace[offset + 28] = bytes_to_field(&nf_root[0..4]);
                 trace[offset + 29] = bytes_to_field(&nf_root[4..8]);
 
@@ -648,6 +646,36 @@ fn bytes_to_field(bytes: &[u8]) -> BinaryElem32 {
 }
 
 /// hex string to bytes
+
+/// Decode the tree state a node reports for an epoch boundary.
+///
+/// `z_gettreestate` returns `commitments.finalState`, which is a serialized
+/// frontier of variable length, not a bare 32-byte root; the trace encoder
+/// only ever reads its first 16 bytes (fields 20-27), and the deployed epoch
+/// proofs were built that way, so the bytes are passed through unchanged
+/// whenever there are enough of them. A value SHORTER than 16 bytes used to
+/// panic the encoder (`range end index 4 out of range for slice of length
+/// 3`) and put the server in a restart loop at startup: Zakura's testnet
+/// returns a 3-byte placeholder for a pool before its activation. Pad those
+/// with zeros, as an empty tree is encoded, and say so per height.
+fn root_bytes_or_zero(root_hex: &str, pool: &str, height: u32) -> Result<Vec<u8>> {
+    if root_hex.is_empty() {
+        return Ok(vec![0u8; 32]);
+    }
+    let mut bytes = hex_to_bytes(root_hex)?;
+    if bytes.len() < 16 {
+        warn!(
+            "{} tree state at height {} is {} bytes ({:?}); padding with zeros (encoded as an empty tree)",
+            pool,
+            height,
+            bytes.len(),
+            root_hex
+        );
+        bytes.resize(32, 0);
+    }
+    Ok(bytes)
+}
+
 fn hex_to_bytes(hex: &str) -> Result<Vec<u8>> {
     hex::decode(hex).map_err(|e| ZidecarError::Serialization(e.to_string()))
 }
