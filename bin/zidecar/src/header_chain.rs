@@ -241,7 +241,7 @@ impl HeaderChainTrace {
 
         // Compute running actions commitment chain over all headers
         let final_actions_commitment =
-            Self::compute_actions_commitment(storage, start_height, end_height)?;
+            Self::compute_actions_commitment(zebrad, storage, start_height, end_height).await?;
 
         let (trace, final_commitment, final_state_commitment, cumulative_difficulty) =
             Self::encode_trace(
@@ -524,7 +524,7 @@ impl HeaderChainTrace {
 
             // Recompute running actions commitment chain
             let final_actions_commitment =
-                Self::compute_actions_commitment(storage, start_height, end_height)?;
+                Self::compute_actions_commitment(zebrad, storage, start_height, end_height).await?;
 
             let (new_trace, final_commitment, final_state_commitment, cumulative_difficulty) =
                 Self::encode_trace(
@@ -550,20 +550,47 @@ impl HeaderChainTrace {
 
     /// Compute the running actions commitment chain over a height range.
     /// For each height, loads the stored actions_root and chains it using
-    /// `zync_core::actions::update_actions_commitment`. Heights without a
-    /// stored actions_root are treated as empty blocks (all-zeros root).
-    fn compute_actions_commitment(
+    /// `zync_core::actions::update_actions_commitment`.
+    ///
+    /// A height with NO stored root used to be chained as an empty block.
+    /// That silently proved a wrong chain whenever the backfill had not yet
+    /// reached a height (or a root was lost): clients computing the true
+    /// chain from the blocks then failed the end-of-scan check with "server
+    /// tampered", and the proven value changed under wallets as roots were
+    /// filled in by later requests. Now a missing root is repaired from
+    /// zebrad on the spot, through the same extraction the backfill uses, and
+    /// stored so the repair happens once.
+    async fn compute_actions_commitment(
+        zebrad: &ZebradClient,
         storage: &Arc<Storage>,
         start_height: u32,
         end_height: u32,
     ) -> Result<[u8; 32]> {
         let mut actions_commitment = [0u8; 32];
+        let mut repaired = 0u32;
         for height in start_height..=end_height {
-            let actions_root = storage.get_actions_root(height)?.unwrap_or([0u8; 32]);
+            let actions_root = match storage.get_actions_root(height)? {
+                Some(root) => root,
+                None => {
+                    let block = zebrad.get_block_verbose_at(height).await?;
+                    let triples = crate::epoch::EpochManager::orchard_action_triples(&block);
+                    let root = zync_core::actions::compute_actions_root(&triples);
+                    storage.store_actions_root(height, root)?;
+                    repaired += 1;
+                    root
+                }
+            };
             actions_commitment = zync_core::actions::update_actions_commitment(
                 &actions_commitment,
                 &actions_root,
                 height,
+            );
+        }
+        if repaired > 0 {
+            warn!(
+                "actions commitment {}..{}: {} heights had no stored actions_root; \
+                 recomputed from zebrad and stored (the backfill had not covered them)",
+                start_height, end_height, repaired
             );
         }
         Ok(actions_commitment)

@@ -770,6 +770,34 @@ impl EpochManager {
     /// `compute_actions_root` so the actions_commitment becomes deterministic
     /// from server state rather than path-dependent on which blocks have been
     /// queried via GetCompactBlocks.
+    /// The `(cmx, nullifier, epk)` triples that feed a block's actions root.
+    ///
+    /// Orchard only: the actions_root chain behind the ligerito proofs is
+    /// Orchard-scoped and widening it would invalidate historical commitments.
+    /// This is THE definition of a block's root inputs; the backfill, the
+    /// serve path and the header-chain repair all go through it so they
+    /// cannot drift apart.
+    pub fn orchard_action_triples(
+        block: &crate::zebrad::BlockVerbose,
+    ) -> Vec<([u8; 32], [u8; 32], [u8; 32])> {
+        let mut action_triples = Vec::new();
+        for tx in &block.tx {
+            if let Some(ref orchard) = tx.orchard {
+                for action in &orchard.actions {
+                    let nf = action.nullifier_bytes();
+                    let cmx = action.cmx_bytes();
+                    let epk: Option<[u8; 32]> = hex::decode(&action.ephemeral_key)
+                        .ok()
+                        .and_then(|b| b.try_into().ok());
+                    if let (Some(cmx), Some(nf), Some(epk)) = (cmx, nf, epk) {
+                        action_triples.push((cmx, nf, epk));
+                    }
+                }
+            }
+        }
+        action_triples
+    }
+
     pub async fn extract_block_state(
         &self,
         height: u32,
@@ -783,7 +811,7 @@ impl EpochManager {
 
         let mut nullifiers = Vec::new();
         let mut cmxs = Vec::new();
-        let mut action_triples = Vec::new();
+        let action_triples = Self::orchard_action_triples(&block);
 
         for tx in &block.tx {
             if let Some(ref spends) = tx.sapling_spends {
@@ -799,23 +827,14 @@ impl EpochManager {
 
             if let Some(ref orchard) = tx.orchard {
                 for action in &orchard.actions {
-                    let nf = action.nullifier_bytes();
-                    let cmx = action.cmx_bytes();
-                    let epk: Option<[u8; 32]> = hex::decode(&action.ephemeral_key)
-                        .ok()
-                        .and_then(|b| b.try_into().ok());
-
-                    if let Some(nf) = nf {
+                    if let Some(nf) = action.nullifier_bytes() {
                         nullifiers.push(ExtractedNullifier {
                             nullifier: nf,
                             pool: NullifierPool::Orchard,
                         });
                     }
-                    if let Some(cmx) = cmx {
+                    if let Some(cmx) = action.cmx_bytes() {
                         cmxs.push(cmx);
-                    }
-                    if let (Some(cmx), Some(nf), Some(epk)) = (cmx, nf, epk) {
-                        action_triples.push((cmx, nf, epk));
                     }
                 }
             }
