@@ -13,6 +13,11 @@ use crate::key::WalletSeed;
 use crate::wallet::{Wallet, WalletNote};
 
 const BATCH_SIZE_MIN: u32 = 500;
+/// Floor when a batch keeps timing out. The sapling-sandblast region (~1.72M)
+/// has blocks of 500 KB with zero orchard actions; zidecar must fetch each
+/// full block from zebrad to learn that, so 500 such blocks take longer than
+/// the request timeout. Shrinking further makes progress instead of failing.
+const BATCH_SIZE_FLOOR: u32 = 50;
 const BATCH_SIZE_MAX: u32 = 2_000; // reduced from 5k — zidecar chokes on dense blocks
 const BATCH_ACTIONS_TARGET: usize = 20_000; // reduced from 50k
 
@@ -335,9 +340,9 @@ async fn sync_inner(
         let end = (current + batch_size - 1).min(tip);
         let blocks = match retry_compact_blocks(&client, current, end).await {
             Ok(b) => b,
-            Err(_) if batch_size > BATCH_SIZE_MIN => {
-                // batch too large — halve and retry
-                batch_size = (batch_size / 2).max(BATCH_SIZE_MIN);
+            Err(_) if batch_size > BATCH_SIZE_FLOOR => {
+                // batch too large (or too slow to serve) — halve and retry
+                batch_size = (batch_size / 2).max(BATCH_SIZE_FLOOR);
                 eprintln!("  reducing batch size to {}", batch_size);
                 continue;
             }

@@ -401,7 +401,10 @@ impl ZidecarClient {
             .post(&url)
             .header("content-type", "application/grpc-web+proto")
             .header("x-grpc-web", "1")
-            .timeout(std::time::Duration::from_secs(120))
+            // Streams of sapling-heavy blocks can take minutes server-side; the
+            // sync loop halves the batch on failure, so this only needs to be
+            // long enough for a floor-sized batch.
+            .timeout(std::time::Duration::from_secs(300))
             .body(body)
             .send()
             .await
