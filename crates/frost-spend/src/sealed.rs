@@ -41,6 +41,42 @@
 // Getting all three from the pattern is the point. The previous version of
 // this file derived a key by hand and bolted sender and ceremony binding on
 // through associated data, which worked but was mine to defend.
+//
+// WHY THIS STILL EXISTS ALONGSIDE `osst::sealed` (osst 0.4.0, findings D-1/D-2)
+//
+// osst 0.4.0 grew an `osst::sealed` module addressing the same class of bug
+// for osst's OWN DKG, with the same pattern, the same prologue idea and the
+// same HKDF-from-the-identity-seed key derivation — `seal_round2` there is
+// this module's `seal` there in spirit. It does not subsume this one, and the
+// `sealed` feature is deliberately not enabled on our `osst` dependency:
+//
+//   * osst's API is typed to osst's own DKG objects — `seal_subshare` takes an
+//     `osst::dkg::SubShare<P::Scalar>` plus that dealer's
+//     `osst::reshare::DealerCommitment<P>`, and runs the Feldman check inside
+//     `open_subshare`. The round-2 packages `orchestrate.rs` seals are ZF
+//     `frost-core` / `reddsa` `round2::Package`s, serialized by frost-core,
+//     whose own DKG part 2/3 does that verification. There is no osst
+//     `SubShare` anywhere in that path to hand it.
+//
+//   * osst's `SealedRoster` keys participants by `u32` index; the frostd /
+//     zcli ceremony keys them by the `String` identifier frost-core uses, and
+//     that identifier is what goes into the prologue transcript. Mapping one
+//     onto the other would change the transcript bytes for no gain.
+//
+//   * this module is a generic byte envelope (`seal`/`open` over any payload);
+//     osst's is a sub-share envelope with the dealer's commitment digest bound
+//     inside the plaintext. Ours cannot express that binding and osst's cannot
+//     carry our payload.
+//
+// So the two coexist by type, not by accident. The right resolution is
+// upstream: a generic `seal`/`open` over `SealedRoster`'s prologue, with
+// `seal_subshare` layered on top of it, at which point this module becomes a
+// thin `String`-identifier adapter. Listed as an upstream item on the osst
+// 0.4.0 adoption PR; until then the duplication is one Noise_K handshake
+// builder in each crate and both are covered by their own tests.
+//
+// The Zcash-specific memo transport (`memo_codec.rs`, `relay_cipher.rs`) stays
+// here regardless — it is not threshold-signing surface at all.
 
 use hkdf::Hkdf;
 use sha2::Sha256;
