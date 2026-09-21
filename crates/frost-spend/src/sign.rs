@@ -72,6 +72,11 @@ pub fn signer_round2(
 
     let signing_package = SigningPackage::new(all_commitments.clone(), sighash);
 
+    // TODO(zcli): frost-rerandomized 3.0 deprecates `sign` in favour of
+    // sign_with_randomizer_seed(), which derives alpha from a seed rather than
+    // taking the explicit Orchard alpha this call site has. Protocol change,
+    // tracked separately.
+    #[allow(deprecated)]
     frost_rerandomized::sign::<frost::PallasBlake2b512>(&signing_package, nonces, key_package, alpha)
 }
 

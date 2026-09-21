@@ -38,7 +38,7 @@ zync-core = { path = "crates/zync-core" }
 
 # frostito/osst: canonical upstream at github.com/penumbrafi/frostito.
 # Was vendored at crates/osst; consolidated upstream in osst 0.2.0.
-osst = { git = "https://github.com/penumbrafi/frostito", rev = "cbe7797a05892a8b184480a57a1cc11f5d430265", default-features = false }
+osst = { git = "https://github.com/penumbrafi/frostito", rev = "bf30136b0a14d04c90a3cd2374bb7d38a0a51069", default-features = false }
 
 # shared deps inherited by ligerito crates
 bytemuck = { version = "1", default-features = false, features = ["extern_crate_alloc"] }

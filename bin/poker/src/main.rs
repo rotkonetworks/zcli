@@ -168,8 +168,8 @@ impl Escrow {
     /// happy path: both players sign (RedPallas BLAKE2b)
     fn settle(&self, message: &[u8]) -> Option<(String, String)> {
         let mut rng = rand::thread_rng();
-        let (na, ca) = redpallas::commit(self.player_a.index, &mut rng);
-        let (nb, cb) = redpallas::commit(self.player_b.index, &mut rng);
+        let (na, ca) = redpallas::commit(self.player_a.index, &mut rng).ok()?;
+        let (nb, cb) = redpallas::commit(self.player_b.index, &mut rng).ok()?;
         let pkg = redpallas::RedPallasPackage::new(message.to_vec(), vec![ca, cb]).ok()?;
         let sa = redpallas::sign(&pkg, na, &self.player_a, &self.jury.outer_group_pubkey).ok()?;
         let sb = redpallas::sign(&pkg, nb, &self.player_b, &self.jury.outer_group_pubkey).ok()?;

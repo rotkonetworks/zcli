@@ -475,6 +475,10 @@ pub fn generate_randomizer(
 ) -> Result<String, Error> {
     let sk = signing_key_from_seed(ephemeral_seed);
     let signing_package = build_signing_package_from_signed(message, signed_commitments_hex)?;
+    // TODO(zcli): frost-rerandomized 3.0 deprecates this in favour of
+    // Randomizer::new_from_commitments(); switching changes how alpha is
+    // derived and so is a protocol change, not a lint fix. Tracked separately.
+    #[allow(deprecated)]
     let randomizer = Randomizer::new(OsRng, &signing_package)
         .map_err(|e| Error::Frost(format!("randomizer: {}", e)))?;
 
@@ -504,6 +508,9 @@ pub fn sign_round2(
 
     let signing_package = build_signing_package_from_signed(message, signed_commitments_hex)?;
 
+    // TODO(zcli): see the note on Randomizer::new above — the replacement
+    // takes a randomizer *seed*, not our explicit Orchard alpha.
+    #[allow(deprecated)]
     let share = frost_rerandomized::sign::<frost::PallasBlake2b512>(
         &signing_package,
         &nonces,
@@ -686,7 +693,7 @@ mod tests {
     use super::*;
 
     /// helper: extract ephemeral_seed and key_package from a dealer package
-    fn unwrap_dealer_pkg(pkg_hex: &str) -> (([u8; 32]), String) {
+    fn unwrap_dealer_pkg(pkg_hex: &str) -> ([u8; 32], String) {
         let signed: SignedMessage = from_hex(pkg_hex).unwrap();
         let bundle: serde_json::Value = serde_json::from_slice(&signed.payload).unwrap();
         let seed_hex = bundle["ephemeral_seed"].as_str().unwrap();
@@ -753,12 +760,6 @@ mod tests {
         let r1_a = dkg_part1(3, 2).expect("dkg part1 A");
         let r1_b = dkg_part1(3, 2).expect("dkg part1 B");
         let r1_c = dkg_part1(3, 2).expect("dkg part1 C");
-
-        let all_broadcasts = vec![
-            r1_a.broadcast_hex.clone(),
-            r1_b.broadcast_hex.clone(),
-            r1_c.broadcast_hex.clone(),
-        ];
 
         // round 2: each participant processes OTHER participants' broadcasts
         let bc_for_a = vec![r1_b.broadcast_hex.clone(), r1_c.broadcast_hex.clone()];

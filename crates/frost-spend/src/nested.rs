@@ -1,20 +1,62 @@
-// nested.rs — frostito: stake-weighted nested FROST signing
+// nested.rs — stake-weighted nested FROST v2 (osst 0.4)
 //
-// each physical validator holds N Shamir shares (proportional to stake).
-// instead of running FROST with 200 identifiers, each validator locally
-// aggregates their shares into ONE commitment + ONE response.
+// One physical validator holds N Shamir shares of the nested position's secret,
+// N proportional to its stake. Rather than running FROST with one identifier
+// per share, each validator aggregates its own shares locally into ONE
+// commitment and ONE response:
 //
-// flow:
-//   1. each validator: commit ONE nonce (regardless of share count)
-//   2. coordinator: aggregate commitments → R_nested
-//   3. outer protocol: R_nested is position B's commitment
-//   4. coordinator: compute outer challenge, broadcast to validators
-//   5. each validator: locally aggregate shares, produce ONE response
-//   6. coordinator: sum responses → z_nested (one scalar)
-//   7. outer protocol: z_nested is position B's signature share
+//   effective_k = Σ_{j ∈ bundle_k} λ_j · s_j        (λ over the FULL active set)
+//   z_k         = d_k + ρ·e_k + (λ_out · c) · effective_k
 //
-// messages per round: 25 (one per physical validator), not 200 (one per share)
-// stake weighting: automatic via Lagrange coefficients over the share set
+// Summing over the participating validators, with d = Σd_k, e = Σe_k and
+// Σ_k effective_k = σ_out (Lagrange interpolation over the active share set):
+//
+//   z_nested = d + ρ·e + λ_out · c · σ_out
+//
+// which is bit-for-bit what a flat FROST signer holding σ_out with nonces
+// (d, e) produces. The nested position is therefore indistinguishable from an
+// ordinary outer signer, and `frostito_v2_equals_flat_frost_signer` below
+// asserts that on real values against a real outer `SigningPackage`.
+//
+// Messages per round: one per physical validator, not one per share.
+//
+// ── relationship to osst::nested ────────────────────────────────────────────
+//
+// This module is the WEIGHTED specialization of `osst::nested`'s v2 nested
+// position: the unweighted inner holder contributes μ_k·σ_k, the weighted
+// validator contributes Σ_j λ_j·s_j, and everything else — commit–reveal,
+// session binding, the aggregate commitment pair, the outer context derivation,
+// per-signer share verification — is osst's and is used from osst here.
+//
+// Concretely it reuses `InnerCommitments`, `InnerSignatureShare`,
+// `inner_precommit`/`verify_inner_precommit`, `aggregate_inner_commitment_pair`,
+// `verify_nested_commitment`, `NestedSigningRequest`,
+// `InnerSigningParamsV2::from_outer` and `verify_inner_share`. Nothing about
+// the binding factor or the challenge is recomputed locally; `from_outer` is
+// the only derivation, so a coordinator cannot assert an outer context (W-1).
+//
+// It cannot call `osst::nested::inner_sign_v2` itself for two reasons:
+//
+//   1. `inner_sign_v2` computes μ_k from `share.index` and multiplies the
+//      single share by it. A weighted validator's `effective_share` has the
+//      Lagrange coefficients applied already, so routing it through that
+//      function would apply them twice.
+//   2. `InnerNonces`' scalars are `pub(crate)` in osst, so the nonce pair
+//      cannot be consumed outside the crate.
+//
+// Both are upstream items (see the PR description); until osst grows an
+// `inner_sign_v2` variant taking a precomputed effective scalar, the
+// N-1/N-2 precondition block is mirrored here, calling osst for every check it
+// exposes.
+//
+// ── weights ─────────────────────────────────────────────────────────────────
+//
+// Weight is a property of the signed epoch roster ([`WeightedRoster`]), never
+// of a message a validator sends (W-2). `WeightedRoster::new` enforces the
+// invariant that no single validator can reconstruct alone — `max_weight <
+// threshold` (W-3) — plus non-zero, non-duplicate, non-overlapping share
+// allocations and checked `u64` weight sums (W-4). The invariant is re-checked
+// at signing time.
 
 use osst::compute_lagrange_coefficients;
 use osst::curve::{OsstPoint, OsstScalar};
@@ -23,8 +65,11 @@ use osst::SecretShare;
 use pasta_curves::group::ff::Field;
 use pasta_curves::pallas::{Point, Scalar};
 
-// re-export types from osst::nested that we still use
-pub use nested::{InnerCommitments, InnerNonces, InnerSignatureShare, InnerSigningParams};
+pub use nested::{
+    aggregate_inner_commitment_pair, inner_precommit, verify_inner_precommit, verify_inner_share,
+    verify_nested_commitment, InnerCommitments, InnerNonces, InnerSignatureShare,
+    InnerSigningParamsV2, NestedSigningRequest,
+};
 
 /// Sample a uniformly random Pallas scalar from a rand_core 0.6 RNG.
 ///
@@ -39,37 +84,370 @@ fn rand_scalar<R: rand_core::RngCore + rand_core::CryptoRng>(rng: &mut R) -> Sca
     Scalar::from_uniform_bytes(&bytes)
 }
 
-// ── frostito: stake-weighted validator types ──
+// ── errors ──────────────────────────────────────────────────────────────────
 
-/// a validator's bundle of shares (stake-weighted)
+/// Failures specific to the weighted layer.
+///
+/// The roster rejections have no `OsstError` analogue — osst's only "weights"
+/// are verification scalars, not integer stake — so they live here and osst
+/// errors are wrapped.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WeightedError {
+    /// An error from osst itself.
+    Osst(osst::OsstError),
+    /// A validator or share index was 0; both are 1-indexed.
+    ZeroIndex,
+    /// A threshold below 2 admits no roster: `max_weight < threshold` and
+    /// `weight >= 1` cannot both hold.
+    ThresholdTooSmall(u32),
+    /// The roster is empty.
+    EmptyRoster,
+    /// This validator index appears in two allocations.
+    DuplicateValidator(u32),
+    /// This share index is allocated to two validators, or twice to one — an
+    /// overlap would double-count `λ_j·s_j` (W-4).
+    DuplicateShareIndex(u32),
+    /// A validator was allocated no shares. Weight 0 contributes nonce only
+    /// and is never intended (W-4).
+    ZeroWeight(u32),
+    /// The roster's total weight overflows `u64` (W-4).
+    WeightOverflow,
+    /// **W-3.** This validator alone holds `threshold` or more shares, so it
+    /// can reconstruct the nested position's secret without anybody else.
+    WeightReachesThreshold {
+        validator_index: u32,
+        weight: u32,
+        threshold: u32,
+    },
+    /// Even the whole roster cannot reach the threshold.
+    RosterBelowThreshold { total: u64, threshold: u32 },
+    /// No allocation for this validator index.
+    UnknownValidator(u32),
+    /// The share bundle handed to [`ValidatorShares::from_roster`] is not the
+    /// set of indices the roster allocates to that validator.
+    ShareSetMismatch(u32),
+    /// The participating validators' combined weight is below the threshold.
+    InsufficientWeight { got: u64, need: u32 },
+    /// The `active_indices` the coordinator supplied are not the ones the
+    /// roster derives for the participating validator set (W-2).
+    ActiveIndicesMismatch,
+    /// No participants were supplied.
+    EmptyParticipants,
+}
+
+impl core::fmt::Display for WeightedError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Osst(e) => write!(f, "{}", e),
+            Self::ZeroIndex => write!(f, "validator and share indices are 1-indexed"),
+            Self::ThresholdTooSmall(t) => {
+                write!(f, "threshold {} admits no valid weight allocation", t)
+            }
+            Self::EmptyRoster => write!(f, "roster is empty"),
+            Self::DuplicateValidator(i) => write!(f, "duplicate validator index {}", i),
+            Self::DuplicateShareIndex(i) => write!(f, "share index {} allocated twice", i),
+            Self::ZeroWeight(i) => write!(f, "validator {} was allocated no shares", i),
+            Self::WeightOverflow => write!(f, "weight sum overflows"),
+            Self::WeightReachesThreshold {
+                validator_index,
+                weight,
+                threshold,
+            } => write!(
+                f,
+                "validator {} holds {} of {} shares and can reconstruct alone",
+                validator_index, weight, threshold
+            ),
+            Self::RosterBelowThreshold { total, threshold } => write!(
+                f,
+                "roster total weight {} is below threshold {}",
+                total, threshold
+            ),
+            Self::UnknownValidator(i) => write!(f, "validator {} is not on the roster", i),
+            Self::ShareSetMismatch(i) => {
+                write!(f, "share bundle does not match validator {}'s roster entry", i)
+            }
+            Self::InsufficientWeight { got, need } => {
+                write!(f, "participating weight {} is below threshold {}", got, need)
+            }
+            Self::ActiveIndicesMismatch => write!(
+                f,
+                "active share indices do not match the roster's for this participant set"
+            ),
+            Self::EmptyParticipants => write!(f, "no participating validators"),
+        }
+    }
+}
+
+impl std::error::Error for WeightedError {}
+
+impl From<osst::OsstError> for WeightedError {
+    fn from(e: osst::OsstError) -> Self {
+        Self::Osst(e)
+    }
+}
+
+// ── the roster: where weight comes from (W-2/W-3/W-4) ───────────────────────
+
+/// The epoch's stake allocation: which share indices each validator holds.
+///
+/// This is the object a weight is read from. It is meant to be the *signed*
+/// epoch roster — derived from the DKG output and stake at epoch boundary —
+/// distributed to every validator, so that no participant's claim about its
+/// own weight is ever load-bearing (W-2).
+///
+/// [`WeightedRoster::new`] is the only constructor and enforces:
+///
+/// - validator and share indices are 1-indexed;
+/// - no duplicate validator index;
+/// - every validator holds at least one share (weight 0 rejected, W-4);
+/// - no share index appears in two bundles or twice in one (W-4) — an overlap
+///   would double-count `λ_j·s_j` in the aggregate;
+/// - **`max_weight < threshold`** — no single validator can reconstruct the
+///   nested position's secret alone (W-3);
+/// - the total weight is summed with `u64` `checked_add` and reaches the
+///   threshold (W-4).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WeightedRoster {
+    /// (validator_index, its share indices), sorted by validator index, each
+    /// bundle sorted.
+    allocations: Vec<(u32, Vec<u32>)>,
+    threshold: u32,
+}
+
+impl WeightedRoster {
+    /// Build and check an epoch roster. See the type docs for the invariants.
+    pub fn new(
+        allocations: &[(u32, Vec<u32>)],
+        threshold: u32,
+    ) -> Result<Self, WeightedError> {
+        if threshold < 2 {
+            // threshold 0 is meaningless and threshold 1 makes the W-3
+            // invariant (weight >= 1 and weight < threshold) unsatisfiable.
+            return Err(WeightedError::ThresholdTooSmall(threshold));
+        }
+        if allocations.is_empty() {
+            return Err(WeightedError::EmptyRoster);
+        }
+
+        let mut seen_validators: Vec<u32> = Vec::with_capacity(allocations.len());
+        let mut seen_shares: Vec<u32> = Vec::new();
+        let mut total: u64 = 0;
+        let mut owned: Vec<(u32, Vec<u32>)> = Vec::with_capacity(allocations.len());
+
+        for (validator_index, share_indices) in allocations {
+            if *validator_index == 0 {
+                return Err(WeightedError::ZeroIndex);
+            }
+            if seen_validators.contains(validator_index) {
+                return Err(WeightedError::DuplicateValidator(*validator_index));
+            }
+            seen_validators.push(*validator_index);
+
+            if share_indices.is_empty() {
+                return Err(WeightedError::ZeroWeight(*validator_index));
+            }
+            let mut bundle = share_indices.clone();
+            bundle.sort_unstable();
+            for idx in &bundle {
+                if *idx == 0 {
+                    return Err(WeightedError::ZeroIndex);
+                }
+                if seen_shares.contains(idx) {
+                    return Err(WeightedError::DuplicateShareIndex(*idx));
+                }
+                seen_shares.push(*idx);
+            }
+
+            let weight = bundle.len() as u32;
+            if weight >= threshold {
+                return Err(WeightedError::WeightReachesThreshold {
+                    validator_index: *validator_index,
+                    weight,
+                    threshold,
+                });
+            }
+            total = total
+                .checked_add(weight as u64)
+                .ok_or(WeightedError::WeightOverflow)?;
+
+            owned.push((*validator_index, bundle));
+        }
+
+        if total < threshold as u64 {
+            return Err(WeightedError::RosterBelowThreshold { total, threshold });
+        }
+
+        owned.sort_unstable_by_key(|(v, _)| *v);
+        Ok(Self {
+            allocations: owned,
+            threshold,
+        })
+    }
+
+    /// The number of active share indices a signature needs.
+    pub fn threshold(&self) -> u32 {
+        self.threshold
+    }
+
+    /// Every (validator index, share indices) pair, sorted by validator index.
+    pub fn allocations(&self) -> &[(u32, Vec<u32>)] {
+        &self.allocations
+    }
+
+    /// The share indices allocated to one validator.
+    pub fn share_indices(&self, validator_index: u32) -> Result<&[u32], WeightedError> {
+        self.allocations
+            .iter()
+            .find(|(v, _)| *v == validator_index)
+            .map(|(_, idxs)| idxs.as_slice())
+            .ok_or(WeightedError::UnknownValidator(validator_index))
+    }
+
+    /// One validator's rostered weight.
+    pub fn weight(&self, validator_index: u32) -> Result<u32, WeightedError> {
+        Ok(self.share_indices(validator_index)?.len() as u32)
+    }
+
+    /// The roster's total weight (checked at construction, so no overflow).
+    pub fn total_weight(&self) -> u64 {
+        self.allocations.iter().map(|(_, i)| i.len() as u64).sum()
+    }
+
+    /// The largest single weight. Always `< threshold()` (W-3).
+    pub fn max_weight(&self) -> u32 {
+        self.allocations
+            .iter()
+            .map(|(_, i)| i.len() as u32)
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// **The W-2 fix.** Given the participating validator set, return the
+    /// active share indices the roster allocates to it — after checking the
+    /// combined weight reaches the threshold.
+    ///
+    /// This return value, not anything a validator asserts, is what the
+    /// coordinator puts in the [`NestedSigningRequest`], and every signer
+    /// recomputes it for itself before signing.
+    ///
+    /// # Errors
+    ///
+    /// [`WeightedError::EmptyParticipants`],
+    /// [`WeightedError::DuplicateValidator`],
+    /// [`WeightedError::UnknownValidator`],
+    /// [`WeightedError::WeightOverflow`],
+    /// [`WeightedError::InsufficientWeight`].
+    pub fn active_share_indices(
+        &self,
+        participants: &[u32],
+    ) -> Result<Vec<u32>, WeightedError> {
+        if participants.is_empty() {
+            return Err(WeightedError::EmptyParticipants);
+        }
+        let mut seen: Vec<u32> = Vec::with_capacity(participants.len());
+        let mut active: Vec<u32> = Vec::new();
+        let mut total: u64 = 0;
+        for v in participants {
+            if seen.contains(v) {
+                return Err(WeightedError::DuplicateValidator(*v));
+            }
+            seen.push(*v);
+            let idxs = self.share_indices(*v)?;
+            total = total
+                .checked_add(idxs.len() as u64)
+                .ok_or(WeightedError::WeightOverflow)?;
+            active.extend_from_slice(idxs);
+        }
+        if total < self.threshold as u64 {
+            return Err(WeightedError::InsufficientWeight {
+                got: total,
+                need: self.threshold,
+            });
+        }
+        active.sort_unstable();
+        Ok(active)
+    }
+
+    /// Whether the participating validator set carries enough rostered stake.
+    ///
+    /// Replaces the old `frostito_threshold_met(&[FrostitoCommitment], t)`,
+    /// which summed weights the validators asserted about themselves (W-2) in
+    /// `u32` (W-4).
+    pub fn threshold_met(&self, participants: &[u32]) -> bool {
+        self.active_share_indices(participants).is_ok()
+    }
+}
+
+// ── a validator's share bundle ──────────────────────────────────────────────
+
+/// One validator's bundle of Shamir shares, checked against the roster.
 pub struct ValidatorShares {
-    /// validator's physical index (used for commitment binding)
-    pub validator_index: u32,
-    /// the Shamir shares this validator holds (indices are share-level, not validator-level)
-    pub shares: Vec<SecretShare<Scalar>>,
+    validator_index: u32,
+    shares: Vec<SecretShare<Scalar>>,
+}
+
+impl core::fmt::Debug for ValidatorShares {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ValidatorShares")
+            .field("validator_index", &self.validator_index)
+            .field("share_indices", &self.share_indices())
+            .field("shares", &"[REDACTED]")
+            .finish()
+    }
 }
 
 impl ValidatorShares {
-    pub fn new(validator_index: u32, shares: Vec<SecretShare<Scalar>>) -> Self {
-        Self {
+    /// Bind a share bundle to its roster entry.
+    ///
+    /// The bundle's share indices must be exactly the set the roster allocates
+    /// to `validator_index`; the W-3 invariant is re-checked here, so a bundle
+    /// that was somehow assembled against a different roster cannot be used.
+    pub fn from_roster(
+        roster: &WeightedRoster,
+        validator_index: u32,
+        shares: Vec<SecretShare<Scalar>>,
+    ) -> Result<Self, WeightedError> {
+        let rostered = roster.share_indices(validator_index)?;
+
+        let mut mine: Vec<u32> = shares.iter().map(|s| s.index).collect();
+        mine.sort_unstable();
+        if mine != rostered {
+            return Err(WeightedError::ShareSetMismatch(validator_index));
+        }
+        // W-3, at the second site: a bundle is never allowed to reach quorum
+        // on its own, whatever the roster was built from.
+        let weight = mine.len() as u32;
+        if weight >= roster.threshold() {
+            return Err(WeightedError::WeightReachesThreshold {
+                validator_index,
+                weight,
+                threshold: roster.threshold(),
+            });
+        }
+
+        Ok(Self {
             validator_index,
             shares,
-        }
+        })
     }
 
-    /// total share count (stake weight)
+    pub fn validator_index(&self) -> u32 {
+        self.validator_index
+    }
+
+    /// Stake weight = number of shares held.
     pub fn weight(&self) -> u32 {
         self.shares.len() as u32
     }
 
-    /// all share indices held by this validator
+    /// All share indices held by this validator.
     pub fn share_indices(&self) -> Vec<u32> {
         self.shares.iter().map(|s| s.index).collect()
     }
 
-    /// compute effective share: Σ λ_j * share_j over this validator's shares
-    /// where λ_j are Lagrange coefficients for the FULL active share set
-    pub fn effective_share(&self, all_active_indices: &[u32]) -> Result<Scalar, osst::OsstError> {
+    /// `effective = Σ_j λ_j · s_j` over this validator's shares, where λ_j are
+    /// the Lagrange coefficients for the FULL active share set.
+    pub fn effective_share(&self, all_active_indices: &[u32]) -> Result<Scalar, WeightedError> {
         let all_lambda = compute_lagrange_coefficients::<Scalar>(all_active_indices)?;
 
         let mut effective = Scalar::ZERO;
@@ -82,70 +460,90 @@ impl ValidatorShares {
         }
         Ok(effective)
     }
+
+    /// The public counterpart of [`Self::effective_share`]:
+    /// `Σ_j λ_j · P_j` over this validator's shares, from the public
+    /// verification shares. This is what [`frostito_verify_response`] checks
+    /// a response against, and it is derivable from the DKG commitments by
+    /// anybody.
+    pub fn effective_pubkey(
+        share_indices: &[u32],
+        public_shares: &[(u32, Point)],
+        all_active_indices: &[u32],
+    ) -> Result<Point, WeightedError> {
+        let all_lambda = compute_lagrange_coefficients::<Scalar>(all_active_indices)?;
+        let mut acc = Point::identity();
+        for idx in share_indices {
+            let pos = all_active_indices
+                .iter()
+                .position(|i| i == idx)
+                .ok_or(osst::OsstError::InvalidIndex)?;
+            let p = public_shares
+                .iter()
+                .find(|(i, _)| i == idx)
+                .map(|(_, p)| p)
+                .ok_or(osst::OsstError::InvalidIndex)?;
+            acc = acc.add(&p.mul_scalar(&all_lambda[pos]));
+        }
+        Ok(acc)
+    }
 }
 
-/// frostito nonce: ONE nonce per physical validator
-pub struct FrostitoNonce {
+// ── round 1: one nonce per physical validator ───────────────────────────────
+
+/// A validator's nonce pair for one weighted round.
+///
+/// Local rather than `osst::nested::InnerNonces` only because that type's
+/// scalars are `pub(crate)`; the shape, the session binding and the zeroizing
+/// `Drop` are the same. See the module header.
+pub struct WeightedNonce {
+    /// The validator's index — the `holder_index` of the published
+    /// [`InnerCommitments`].
     pub validator_index: u32,
-    pub(crate) hiding: Scalar,
-    pub(crate) binding: Scalar,
+    /// The inner round this pair was committed for.
+    pub session_id: [u8; 32],
+    hiding: Scalar,
+    binding: Scalar,
 }
 
-impl Drop for FrostitoNonce {
+impl Drop for WeightedNonce {
     fn drop(&mut self) {
-        use osst::curve::OsstScalar;
         self.hiding.zeroize();
         self.binding.zeroize();
     }
 }
 
-/// frostito commitment: ONE per physical validator (broadcast)
-#[derive(Clone, Debug)]
-pub struct FrostitoCommitment {
-    pub validator_index: u32,
-    pub hiding: Point,
-    pub binding: Point,
-    /// total shares this validator represents (for threshold counting)
-    pub weight: u32,
-}
-
-/// frostito signing params (from outer protocol)
-#[derive(Clone)]
-pub struct FrostitoSigningParams {
-    /// outer challenge: c = H(R_outer, Y, msg)
-    pub outer_challenge: Scalar,
-    /// outer Lagrange coefficient for the nested position
-    pub outer_lambda: Scalar,
-    /// all active share indices across all participating validators
-    /// (needed to compute Lagrange coefficients for effective share)
-    pub active_share_indices: Vec<u32>,
-}
-
-/// frostito response: ONE per physical validator
-pub struct FrostitoResponse {
-    pub validator_index: u32,
-    pub response: Scalar,
-    pub weight: u32,
-}
-
-// ── frostito protocol ──
-
-/// round 1: validator generates ONE nonce commitment
-pub fn frostito_commit(validator_index: u32, weight: u32) -> (FrostitoNonce, FrostitoCommitment) {
+/// Round 1: a validator generates ONE nonce pair, whatever its weight.
+///
+/// `session_id` names the inner round; it is public, must be agreed before
+/// round 1, and is carried into the precommitment and checked at signing
+/// time, exactly as in `osst::nested` (N-2).
+///
+/// The published commitment is an `osst::nested::InnerCommitments`, so
+/// `inner_precommit`, `verify_inner_precommit`,
+/// `aggregate_inner_commitment_pair` and `verify_nested_commitment` all apply
+/// unchanged. Note it carries no weight field: weight comes from the roster
+/// (W-2), so there is no self-asserted claim left to bind into the
+/// precommitment.
+pub fn frostito_commit(
+    validator_index: u32,
+    session_id: [u8; 32],
+) -> (WeightedNonce, InnerCommitments<Point>) {
     let mut rng = rand_core::OsRng;
     let hiding = rand_scalar(&mut rng);
     let binding = rand_scalar(&mut rng);
 
-    let commitment = FrostitoCommitment {
-        validator_index,
+    let commitment = InnerCommitments {
+        holder_index: validator_index,
+        session_id,
         hiding: Point::generator().mul_scalar(&hiding),
         binding: Point::generator().mul_scalar(&binding),
-        weight,
     };
 
     (
-        FrostitoNonce {
+        WeightedNonce {
             validator_index,
+            session_id,
             hiding,
             binding,
         },
@@ -153,128 +551,258 @@ pub fn frostito_commit(validator_index: u32, weight: u32) -> (FrostitoNonce, Fro
     )
 }
 
-/// # ⚠️ INSECURE — superseded by [`frostito_aggregate_commitment_pair`] (v2)
+/// Coordinator: the PAIR `(Σ D_k, Σ E_k)` the outer protocol consumes as the
+/// nested position's `SigningCommitments`.
 ///
-/// Pre-binds each validator's nonce with a LOCAL binding factor over only
-/// (validator_index, message, validator commitments) and hands the outer
-/// protocol a single point. The nested position's effective nonce is therefore
-/// fixed by this round and cannot be moved by anything the outer adversary
-/// does — which severs the coupling FROST's binding factor exists to create
-/// and is the ROS setting (Benhamouda et al. 2020): an outer signer holding
-/// ~log2(q) sessions open while sweeping challenges can forge in polynomial
-/// time. See osst's SECURITY-nested-frost.md.
+/// Straight through to osst, which rejects an empty set, a duplicate validator
+/// and a commitment from another session.
 ///
-/// Retained so existing callers compile during migration. DO NOT use.
-///
-/// coordinator: aggregate commitments into R_nested with binding factors
-pub fn frostito_aggregate_commitments(commitments: &[FrostitoCommitment], message: &[u8]) -> Point {
-    use sha2::{Digest, Sha512};
+/// Callers MUST have verified every precommitment ([`verify_inner_precommit`])
+/// first.
+pub fn frostito_aggregate_commitment_pair(
+    session_id: &[u8; 32],
+    commitments: &[InnerCommitments<Point>],
+) -> Result<(Point, Point), WeightedError> {
+    Ok(aggregate_inner_commitment_pair::<Point>(
+        session_id,
+        commitments,
+    )?)
+}
 
-    let mut r_agg = Point::identity();
-    for c in commitments {
-        // binding factor per validator (mirrors FROST binding)
-        let rho = {
-            let mut h = Sha512::new();
-            h.update(b"frostito-bind-v1");
-            h.update(c.validator_index.to_le_bytes());
-            h.update((message.len() as u64).to_le_bytes());
-            h.update(message);
-            for ci in commitments {
-                h.update(ci.validator_index.to_le_bytes());
-                h.update(OsstPoint::compress(&ci.hiding));
-                h.update(OsstPoint::compress(&ci.binding));
-            }
-            Scalar::from_bytes_wide(&h.finalize().into())
-        };
-        // R_k = D_k + ρ_k * E_k
-        let r_k = c.hiding.add(&c.binding.mul_scalar(&rho));
-        r_agg = r_agg.add(&r_k);
+// ── round 2: one response per physical validator ────────────────────────────
+
+/// Round 2: a validator's single response, bound to the outer context it
+/// derives for itself.
+///
+///   `z_k = d_k + ρ·e_k + (λ_out · c) · effective_k`
+///
+/// **W-1.** The outer binding factor, challenge and Lagrange coefficient are
+/// obtained *only* from [`InnerSigningParamsV2::from_outer`] over the outer
+/// package and group key the validator holds. Nothing here recomputes a
+/// binding factor locally and no coordinator can supply one: the type has no
+/// public fields.
+///
+/// Before producing a share this refuses unless:
+///
+/// 1. `approved_message` is byte-for-byte the outer package's message (N-1/W-1)
+///    — so the validator signs the payload it approved and an application
+///    policy check on those bytes is possible before the call;
+/// 2. the nonce pair belongs to `request.session_id`, and the published
+///    round-1 set contains this validator's own commitment for that session,
+///    matching these nonces (N-2);
+/// 3. the outer package's entry for the nested position is exactly
+///    `(Σ D_k, Σ E_k)` over that set (N-2);
+/// 4. the bundle's weight is the roster's and is `< threshold` (W-3, second
+///    site);
+/// 5. `request.active_indices` is exactly what the roster derives for the
+///    validator set that published round-1 commitments (W-2) — the signer
+///    does not take the coordinator's word for which shares are active, since
+///    that set drives every λ_j.
+///
+/// `nonce` is taken BY VALUE: it is consumed and zeroized on drop, so a
+/// validator cannot produce two responses from one commitment round without
+/// deliberately cloning. Callers persisting state across restarts must
+/// additionally record `(session_id, validator_index)` as spent.
+pub fn frostito_sign_v2(
+    nonce: WeightedNonce,
+    bundle: &ValidatorShares,
+    approved_message: &[u8],
+    request: &NestedSigningRequest<'_, Point>,
+    roster: &WeightedRoster,
+) -> Result<InnerSignatureShare<Scalar>, WeightedError> {
+    // (1) the validator signs a message it holds, not one a coordinator asserts.
+    if request.package.message() != approved_message {
+        return Err(osst::OsstError::MessageMismatch.into());
     }
-    r_agg
-}
 
-/// coordinator: check if collected commitments meet stake threshold
-pub fn frostito_threshold_met(commitments: &[FrostitoCommitment], threshold: u32) -> bool {
-    let total: u32 = commitments.iter().map(|c| c.weight).sum();
-    total >= threshold
-}
+    // (2) this round is the round the nonces were committed to ...
+    if nonce.session_id != request.session_id {
+        return Err(osst::OsstError::SessionMismatch.into());
+    }
+    // ... and the published set really contains our own round-1 commitment.
+    let mine = request
+        .inner_commitments
+        .iter()
+        .find(|c| c.holder_index == nonce.validator_index)
+        .ok_or(osst::OsstError::UnexpectedCommitment)?;
+    if mine.session_id != request.session_id
+        || mine.hiding != Point::generator().mul_scalar(&nonce.hiding)
+        || mine.binding != Point::generator().mul_scalar(&nonce.binding)
+    {
+        return Err(osst::OsstError::UnexpectedCommitment.into());
+    }
 
-/// round 2: validator produces ONE response using all their shares
-pub fn frostito_sign(
-    nonce: FrostitoNonce,
-    validator_shares: &ValidatorShares,
-    params: &FrostitoSigningParams,
-    commitments: &[FrostitoCommitment],
-    message: &[u8],
-) -> Result<FrostitoResponse, osst::OsstError> {
-    use sha2::{Digest, Sha512};
+    // (3) the nested position's outer commitment is this round's aggregate.
+    verify_nested_commitment::<Point>(
+        request.package,
+        request.nested_index,
+        &request.session_id,
+        request.inner_commitments,
+    )?;
 
-    // recompute binding factor for this validator (same as in aggregate_commitments)
-    let rho = {
-        let mut h = Sha512::new();
-        h.update(b"frostito-bind-v1");
-        h.update(nonce.validator_index.to_le_bytes());
-        h.update((message.len() as u64).to_le_bytes());
-        h.update(message);
-        for ci in commitments {
-            h.update(ci.validator_index.to_le_bytes());
-            h.update(OsstPoint::compress(&ci.hiding));
-            h.update(OsstPoint::compress(&ci.binding));
-        }
-        Scalar::from_bytes_wide(&h.finalize().into())
-    };
+    // (4) W-3 at signing time.
+    let rostered_weight = roster.weight(bundle.validator_index)?;
+    if rostered_weight != bundle.weight() {
+        return Err(WeightedError::ShareSetMismatch(bundle.validator_index));
+    }
+    if rostered_weight >= roster.threshold() {
+        return Err(WeightedError::WeightReachesThreshold {
+            validator_index: bundle.validator_index,
+            weight: rostered_weight,
+            threshold: roster.threshold(),
+        });
+    }
 
-    // compute effective share: Σ λ_j * share_j
-    let effective = validator_shares.effective_share(&params.active_share_indices)?;
+    // (5) W-2: the active share set is the roster's, over the validators that
+    // actually published round-1 commitments — not a list the coordinator
+    // asserts.
+    let participants: Vec<u32> = request
+        .inner_commitments
+        .iter()
+        .map(|c| c.holder_index)
+        .collect();
+    let derived = roster.active_share_indices(&participants)?;
+    let mut supplied = request.active_indices.to_vec();
+    supplied.sort_unstable();
+    if supplied != derived {
+        return Err(WeightedError::ActiveIndicesMismatch);
+    }
 
-    // response: r + ρ*e + (λ_outer * c) * effective_share
-    let nonce_part = nonce.hiding + rho * nonce.binding;
-    let secret_part = params.outer_lambda * params.outer_challenge * effective;
+    // W-1: the only derivation of the outer context.
+    let params = InnerSigningParamsV2::from_outer::<Point>(
+        request.package,
+        request.group_pubkey,
+        request.nested_index,
+    )?;
+
+    let mut effective = bundle.effective_share(&derived)?;
+    let nonce_part = nonce.hiding + *params.outer_binding() * nonce.binding;
+    let secret_part = *params.outer_lambda() * *params.outer_challenge() * effective;
     let response = nonce_part + secret_part;
+    // W-4: `effective` is a linear combination of secrets.
+    effective.zeroize();
 
-    Ok(FrostitoResponse {
-        validator_index: nonce.validator_index,
+    Ok(InnerSignatureShare {
+        holder_index: nonce.validator_index,
         response,
-        weight: validator_shares.weight(),
     })
 }
 
-/// coordinator: aggregate responses into z_nested
-pub fn frostito_aggregate_responses(responses: &[FrostitoResponse]) -> Scalar {
+/// Verify one validator's response before aggregating:
+///
+///   `z_k·G  ==  (D_k + ρ·E_k) + (λ_out·c)·EffectivePub_k`
+///
+/// This is `osst::nested::verify_inner_share` with `μ_k = 1`: the weighted
+/// validator's Lagrange coefficients are already inside `EffectivePub_k`
+/// (see [`ValidatorShares::effective_pubkey`]), where the unweighted holder's
+/// sit outside its single public share. Same equation, same code.
+pub fn frostito_verify_response(
+    response: &InnerSignatureShare<Scalar>,
+    commitment: &InnerCommitments<Point>,
+    effective_pubkey: &Point,
+    params: &InnerSigningParamsV2<Scalar>,
+) -> bool {
+    verify_inner_share::<Point>(
+        response,
+        commitment,
+        effective_pubkey,
+        params,
+        &Scalar::ONE,
+    )
+}
+
+/// Coordinator: verify every validator response, then aggregate into
+/// `z_nested`.
+///
+/// `Err(indices)` names the validators at fault so they can be evicted and the
+/// round retried, instead of emitting a signature that simply fails to verify
+/// with no attribution. Mirroring osst's N-3, the multiset of
+/// `holder_index` must equal `participants` exactly: a validator that produced
+/// no response, and one that produced two, are both named (W-4 — the old
+/// version resolved commitments with `find` and so verified and added a
+/// duplicate twice).
+pub fn frostito_aggregate_responses_verified(
+    responses: &[InnerSignatureShare<Scalar>],
+    commitments: &[InnerCommitments<Point>],
+    effective_pubkeys: &[(u32, Point)],
+    params: &InnerSigningParamsV2<Scalar>,
+    participants: &[u32],
+) -> Result<Scalar, Vec<u32>> {
+    let mut bad: Vec<u32> = Vec::new();
+
+    // quorum coverage: every participant exactly once, nothing else.
+    let mut seen: Vec<u32> = Vec::with_capacity(responses.len());
+    for r in responses {
+        if (!participants.contains(&r.holder_index) || seen.contains(&r.holder_index))
+            && !bad.contains(&r.holder_index)
+        {
+            bad.push(r.holder_index);
+        }
+        seen.push(r.holder_index);
+    }
+    for &k in participants {
+        if !seen.contains(&k) && !bad.contains(&k) {
+            bad.push(k);
+        }
+    }
+
     let mut z = Scalar::ZERO;
     for r in responses {
-        z += r.response;
+        let k = r.holder_index;
+        let commitment = commitments.iter().find(|c| c.holder_index == k);
+        let pubkey = effective_pubkeys
+            .iter()
+            .find(|(i, _)| *i == k)
+            .map(|(_, p)| p);
+        match (commitment, pubkey) {
+            (Some(commitment), Some(pubkey)) => {
+                if frostito_verify_response(r, commitment, pubkey, params) {
+                    z += r.response;
+                } else if !bad.contains(&k) {
+                    bad.push(k);
+                }
+            }
+            _ => {
+                if !bad.contains(&k) {
+                    bad.push(k);
+                }
+            }
+        }
     }
-    z
+
+    if bad.is_empty() {
+        Ok(z)
+    } else {
+        bad.sort_unstable();
+        Err(bad)
+    }
 }
 
-// ── v2 wrappers (one share per participant) ──
+// ── unweighted (one share per validator) passthroughs ───────────────────────
+//
+// For a nested position whose holders each own exactly one share, osst's own
+// v2 is used directly; these wrappers exist only to keep the Pallas type
+// parameter off call sites.
 
-pub use osst::nested::{
-    aggregate_inner_commitment_pair, aggregate_inner_shares_verified, inner_precommit,
-    inner_sign_v2, verify_inner_precommit, verify_inner_share, InnerSigningParamsV2,
-};
-
-/// v2: aggregate validator commitments into the PAIR the outer protocol
-/// consumes, so the outer binding factor applies to the nested position.
-pub fn aggregate_validator_commitment_pair(
-    inner_commitments: &[InnerCommitments<Point>],
-) -> (Point, Point) {
-    aggregate_inner_commitment_pair::<Point>(inner_commitments)
+/// Round 1 for an unweighted inner holder.
+pub fn validator_commit(
+    holder_index: u32,
+    session_id: [u8; 32],
+) -> (InnerNonces<Scalar>, InnerCommitments<Point>) {
+    nested::inner_commit::<Point, _>(holder_index, session_id, &mut rand_core::OsRng)
 }
 
-/// v2: validator response bound to the OUTER context.
+/// Round 2 for an unweighted inner holder: `osst::nested::inner_sign_v2`.
 pub fn validator_sign_v2(
     nonces: InnerNonces<Scalar>,
     share: &SecretShare<Scalar>,
-    params: &InnerSigningParamsV2<Scalar>,
-    active_indices: &[u32],
+    approved_message: &[u8],
+    request: &NestedSigningRequest<'_, Point>,
 ) -> Result<InnerSignatureShare<Scalar>, osst::OsstError> {
-    inner_sign_v2::<Point>(nonces, share, params, active_indices)
+    nested::inner_sign_v2::<Point>(nonces, share, approved_message, request)
 }
 
-/// v2: verify every validator share, then aggregate. `Err` names the faulty
-/// holders rather than emitting an unverifiable signature.
+/// Verify-then-aggregate for the unweighted path.
 pub fn aggregate_validator_shares_verified(
     sigs: &[InnerSignatureShare<Scalar>],
     commitments: &[InnerCommitments<Point>],
@@ -282,7 +810,7 @@ pub fn aggregate_validator_shares_verified(
     params: &InnerSigningParamsV2<Scalar>,
     active_indices: &[u32],
 ) -> Result<Scalar, Vec<u32>> {
-    aggregate_inner_shares_verified::<Point>(
+    nested::aggregate_inner_shares_verified::<Point>(
         sigs,
         commitments,
         public_shares,
@@ -291,79 +819,21 @@ pub fn aggregate_validator_shares_verified(
     )
 }
 
-// ── legacy wrappers (one share per participant) ──
-//
-// ⚠️ These call osst::nested v1, which pre-binds the inner nonces and hands the
-// outer protocol a single point with an identity binding commitment — see the
-// warning on `frostito_aggregate_commitments` and osst's
-// SECURITY-nested-frost.md. Use the v2 wrappers above.
-
-pub fn validator_commit(holder_index: u32) -> (InnerNonces<Scalar>, InnerCommitments<Point>) {
-    nested::inner_commit::<Point, _>(holder_index, &mut rand_core::OsRng)
-}
-
-pub fn aggregate_validator_commitments(
-    inner_commitments: &[InnerCommitments<Point>],
-    sighash: &[u8],
-) -> Point {
-    nested::aggregate_inner_commitments(inner_commitments, sighash)
-}
-
-pub fn validator_sign(
-    nonces: InnerNonces<Scalar>,
-    share: &SecretShare<Scalar>,
-    params: &InnerSigningParams<Scalar>,
-    inner_commitments: &[InnerCommitments<Point>],
-    active_indices: &[u32],
-    sighash: &[u8],
-) -> Result<InnerSignatureShare<Scalar>, osst::OsstError> {
-    nested::inner_sign::<Point>(
-        nonces,
-        share,
-        params,
-        inner_commitments,
-        active_indices,
-        sighash,
-    )
-}
-
-pub fn aggregate_validator_shares(shares: &[InnerSignatureShare<Scalar>]) -> Scalar {
-    nested::aggregate_inner_shares(shares)
-}
-
 // ── tests ──
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use osst::dkg;
-    use osst::nested::interleaved_dkg;
+    use osst::frost as osst_frost;
 
-    /// v2 equivalence: the stake-weighted nested position produces exactly what
-    /// a FLAT FROST signer holding the reconstructed group secret would.
-    ///
-    /// This is the property that makes v2 reviewable — if the outer protocol
-    /// cannot distinguish the nested position from a flat signer, security
-    /// reduces to FROST's own proof instead of a novel composition argument.
-    #[test]
-    fn frostito_v2_equals_flat_frost_signer() {
-        let mut rng = rand_core::OsRng;
-        let inner_total_shares = 10u32;
-        let inner_threshold = 7u32;
+    const SESSION: [u8; 32] = [7u8; 32];
 
-        let stake_allocation = vec![
-            (1u32, vec![1u32, 2, 3, 4]),
-            (2u32, vec![5u32, 6, 7]),
-            (3u32, vec![8u32, 9, 10]),
-        ];
-
-        // group secret split into stake-weighted Shamir shares
-        let group_secret = rand_scalar(&mut rng);
-        let mut coeffs = vec![group_secret];
-        for _ in 1..inner_threshold {
-            coeffs.push(rand_scalar(&mut rng));
+    fn shamir(secret: Scalar, n: u32, t: u32, rng: &mut rand_core::OsRng) -> Vec<SecretShare<Scalar>> {
+        let mut coeffs = vec![secret];
+        for _ in 1..t {
+            coeffs.push(rand_scalar(rng));
         }
-        let all_shares: Vec<SecretShare<Scalar>> = (1..=inner_total_shares)
+        (1..=n)
             .map(|i| {
                 let x = Scalar::from(i as u64);
                 let mut y = Scalar::ZERO;
@@ -372,630 +842,671 @@ mod tests {
                     y += c * x_pow;
                     x_pow *= x;
                 }
-                SecretShare::new(i, y)
+                SecretShare::new(i, y).expect("1-indexed by construction")
+            })
+            .collect()
+    }
+
+    /// The standard fixture: a 3-validator, 10-share, threshold-7 nested
+    /// position sitting in a 2-of-2 outer FROST group alongside a flat signer.
+    struct Fixture {
+        roster: WeightedRoster,
+        bundles: Vec<ValidatorShares>,
+        public_shares: Vec<(u32, Point)>,
+        nested_secret: Scalar,
+        position_a_share: SecretShare<Scalar>,
+        group_key: Point,
+    }
+
+    const NESTED_INDEX: u32 = 2;
+
+    fn fixture(rng: &mut rand_core::OsRng) -> Fixture {
+        let allocation = vec![
+            (1u32, vec![1u32, 2, 3, 4]),
+            (2u32, vec![5u32, 6, 7]),
+            (3u32, vec![8u32, 9, 10]),
+        ];
+        let roster = WeightedRoster::new(&allocation, 7).unwrap();
+
+        // outer 2-of-2: a degree-1 polynomial, position 1 flat, position 2 nested.
+        let outer_secret = rand_scalar(rng);
+        let outer_shares = shamir(outer_secret, 2, 2, rng);
+        let group_key = Point::generator().mul_scalar(&outer_secret);
+        let position_a_share = outer_shares[0].clone();
+        let nested_secret = *outer_shares[1].scalar();
+
+        // the nested position's secret, split 7-of-10 among the share indices
+        let inner = shamir(nested_secret, 10, 7, rng);
+        let public_shares: Vec<(u32, Point)> = inner
+            .iter()
+            .map(|s| (s.index, Point::generator().mul_scalar(s.scalar())))
+            .collect();
+
+        let bundles = allocation
+            .iter()
+            .map(|(v, idxs)| {
+                let shares = idxs.iter().map(|i| inner[(*i - 1) as usize].clone()).collect();
+                ValidatorShares::from_roster(&roster, *v, shares).unwrap()
             })
             .collect();
 
-        let mut bundles: Vec<ValidatorShares> = Vec::new();
-        for (vid, idxs) in &stake_allocation {
-            let shares = idxs
-                .iter()
-                .map(|i| all_shares[(*i - 1) as usize].clone())
-                .collect();
-            bundles.push(ValidatorShares::new(*vid, shares));
+        Fixture {
+            roster,
+            bundles,
+            public_shares,
+            nested_secret,
+            position_a_share,
+            group_key,
         }
-        let active: Vec<u32> = stake_allocation
-            .iter()
-            .flat_map(|(_, idxs)| idxs.clone())
-            .collect();
+    }
+
+    /// W-1's regression test: the outer context is derived from a REAL outer
+    /// signing package, and the weighted nested position produces exactly what
+    /// a flat FROST signer holding the nested secret would — so the whole
+    /// 2-of-2 signature verifies end to end.
+    ///
+    /// The old version of this test handed the signer three uniformly random
+    /// scalars as its "outer context", which is precisely the defect W-1
+    /// names: `frostito_sign_v2` can no longer be called that way.
+    #[test]
+    fn frostito_v2_equals_flat_frost_signer() {
+        let mut rng = rand_core::OsRng;
+        let f = fixture(&mut rng);
+        let message = b"weighted nested spend authorization";
+        let participants: Vec<u32> = vec![1, 2, 3];
+        let active = f.roster.active_share_indices(&participants).unwrap();
 
         // ── round 0/1: commit–reveal ───────────────────────────────────────
         let mut nonces = Vec::new();
         let mut commitments = Vec::new();
         let mut precommits = Vec::new();
-        for b in &bundles {
-            let (n, c) = frostito_commit(b.validator_index, b.weight());
-            precommits.push(frostito_precommit(&c));
+        for b in &f.bundles {
+            let (n, c) = frostito_commit(b.validator_index(), SESSION);
+            precommits.push(inner_precommit(&c));
             nonces.push(n);
             commitments.push(c);
         }
         for (pre, revealed) in precommits.iter().zip(commitments.iter()) {
-            assert!(frostito_verify_precommit(pre, revealed));
+            assert!(verify_inner_precommit(pre, revealed));
         }
-        // tampering with a reveal is caught
         {
             let mut bad = commitments[0].clone();
             bad.hiding = bad.hiding.add(&Point::generator());
-            assert!(!frostito_verify_precommit(&precommits[0], &bad));
+            assert!(!verify_inner_precommit(&precommits[0], &bad));
         }
 
-        // aggregate nonce scalars, for driving the equivalent flat signer
-        let d_sum = nonces.iter().fold(Scalar::ZERO, |a, n| a + n.hiding);
-        let e_sum = nonces.iter().fold(Scalar::ZERO, |a, n| a + n.binding);
+        let (d_nested, e_nested) =
+            frostito_aggregate_commitment_pair(&SESSION, &commitments).unwrap();
 
-        let (d_nested, e_nested) = frostito_aggregate_commitment_pair(&commitments);
-        assert_eq!(d_nested, Point::generator().mul_scalar(&d_sum));
-        assert_eq!(e_nested, Point::generator().mul_scalar(&e_sum));
+        // ── a real outer package ───────────────────────────────────────────
+        let (a_nonces, a_commits) = osst_frost::commit::<Point, _>(1, &mut rng).unwrap();
+        let nested_commits = osst_frost::SigningCommitments {
+            index: NESTED_INDEX,
+            hiding: d_nested,
+            binding: e_nested,
+        };
+        let package =
+            osst_frost::SigningPackage::new(message.to_vec(), vec![a_commits, nested_commits])
+                .unwrap();
 
-        // ── outer context (values the outer protocol would supply) ─────────
-        let params = FrostitoSigningParamsV2 {
-            outer_binding: rand_scalar(&mut rng),
-            outer_challenge: rand_scalar(&mut rng),
-            outer_lambda: rand_scalar(&mut rng),
-            active_share_indices: active.clone(),
+        let request = NestedSigningRequest {
+            package: &package,
+            group_pubkey: &f.group_key,
+            nested_index: NESTED_INDEX,
+            session_id: SESSION,
+            inner_commitments: &commitments,
+            active_indices: &active,
         };
 
         // ── validators sign; every response is verified ────────────────────
-        let effective_pubkeys: Vec<(u32, Point)> = bundles
+        let effective_pubkeys: Vec<(u32, Point)> = f
+            .bundles
             .iter()
             .map(|b| {
-                let eff = b.effective_share(&active).unwrap();
-                (b.validator_index, Point::generator().mul_scalar(&eff))
+                (
+                    b.validator_index(),
+                    ValidatorShares::effective_pubkey(
+                        &b.share_indices(),
+                        &f.public_shares,
+                        &active,
+                    )
+                    .unwrap(),
+                )
             })
             .collect();
 
         let mut responses = Vec::new();
-        for (n, b) in nonces.into_iter().zip(bundles.iter()) {
-            responses.push(frostito_sign_v2(n, b, &params).unwrap());
+        for (n, b) in nonces.into_iter().zip(f.bundles.iter()) {
+            responses.push(frostito_sign_v2(n, b, message, &request, &f.roster).unwrap());
         }
 
+        let params =
+            InnerSigningParamsV2::from_outer::<Point>(&package, &f.group_key, NESTED_INDEX)
+                .unwrap();
         let z_nested = frostito_aggregate_responses_verified(
             &responses,
             &commitments,
             &effective_pubkeys,
             &params,
+            &participants,
         )
         .expect("all validator responses must verify");
 
-        // ── what a flat FROST signer holding group_secret would produce ────
-        //   z_flat = d + ρ·e + λ·c·s
-        let z_flat = d_sum
-            + params.outer_binding * e_sum
-            + params.outer_lambda * params.outer_challenge * group_secret;
+        // ── equivalence: a flat signer holding the nested secret ───────────
+        // z_flat = λ·c·σ + d + ρ·e, with (d, e) the nested position's nonces —
+        // check it through osst's own verification of the nested position as
+        // an ordinary signer.
+        let nested_public = Point::generator().mul_scalar(&f.nested_secret);
+        assert!(
+            verify_inner_share::<Point>(
+                &InnerSignatureShare {
+                    holder_index: NESTED_INDEX,
+                    response: z_nested,
+                },
+                &InnerCommitments {
+                    holder_index: NESTED_INDEX,
+                    session_id: SESSION,
+                    hiding: d_nested,
+                    binding: e_nested,
+                },
+                &nested_public,
+                &params,
+                &Scalar::ONE,
+            ),
+            "the weighted nested response must be a flat signer's response"
+        );
 
-        assert_eq!(
-            z_nested, z_flat,
-            "stake-weighted nested response must equal the flat FROST response"
+        // ── and the whole outer signature verifies ─────────────────────────
+        let a_sig = osst_frost::sign::<Point>(
+            &package,
+            a_nonces,
+            &f.position_a_share,
+            &f.group_key,
+        )
+        .unwrap();
+        let nested_sig = osst_frost::SignatureShare {
+            index: NESTED_INDEX,
+            response: z_nested,
+        };
+        let signature =
+            osst_frost::aggregate::<Point>(&package, &[a_sig, nested_sig], &f.group_key, None)
+                .unwrap();
+        assert!(
+            osst_frost::verify_signature(&f.group_key, message, &signature),
+            "2-of-2 outer × weighted 7-of-10 inner must verify"
         );
     }
 
-    /// A validator that tampers with its response is NAMED, not silently
-    /// folded into an unverifiable aggregate.
+    /// W-1: a coordinator cannot get a signature over a payload the validators
+    /// never approved.
     #[test]
-    fn frostito_v2_names_the_faulty_validator() {
+    fn frostito_v2_rejects_a_message_the_validator_did_not_approve() {
         let mut rng = rand_core::OsRng;
-        let secret = rand_scalar(&mut rng);
-        let mut coeffs = vec![secret];
-        for _ in 1..3 {
-            coeffs.push(rand_scalar(&mut rng));
-        }
-        let all_shares: Vec<SecretShare<Scalar>> = (1..=4u32)
-            .map(|i| {
-                let x = Scalar::from(i as u64);
-                let mut y = Scalar::ZERO;
-                let mut x_pow = Scalar::ONE;
-                for c in &coeffs {
-                    y += c * x_pow;
-                    x_pow *= x;
-                }
-                SecretShare::new(i, y)
-            })
-            .collect();
-
-        let bundles = vec![
-            ValidatorShares::new(1, vec![all_shares[0].clone(), all_shares[1].clone()]),
-            ValidatorShares::new(2, vec![all_shares[2].clone(), all_shares[3].clone()]),
-        ];
-        let active = vec![1u32, 2, 3, 4];
+        let f = fixture(&mut rng);
+        let participants: Vec<u32> = vec![1, 2, 3];
+        let active = f.roster.active_share_indices(&participants).unwrap();
 
         let mut nonces = Vec::new();
         let mut commitments = Vec::new();
-        for b in &bundles {
-            let (n, c) = frostito_commit(b.validator_index, b.weight());
+        for b in &f.bundles {
+            let (n, c) = frostito_commit(b.validator_index(), SESSION);
             nonces.push(n);
             commitments.push(c);
         }
-        let params = FrostitoSigningParamsV2 {
-            outer_binding: rand_scalar(&mut rng),
-            outer_challenge: rand_scalar(&mut rng),
-            outer_lambda: rand_scalar(&mut rng),
-            active_share_indices: active.clone(),
+        let (d, e) = frostito_aggregate_commitment_pair(&SESSION, &commitments).unwrap();
+        let (_, a_commits) = osst_frost::commit::<Point, _>(1, &mut rng).unwrap();
+        let package = osst_frost::SigningPackage::new(
+            b"coordinator's own payload".to_vec(),
+            vec![
+                a_commits,
+                osst_frost::SigningCommitments {
+                    index: NESTED_INDEX,
+                    hiding: d,
+                    binding: e,
+                },
+            ],
+        )
+        .unwrap();
+        let request = NestedSigningRequest {
+            package: &package,
+            group_pubkey: &f.group_key,
+            nested_index: NESTED_INDEX,
+            session_id: SESSION,
+            inner_commitments: &commitments,
+            active_indices: &active,
         };
-        let effective_pubkeys: Vec<(u32, Point)> = bundles
+
+        let err = frostito_sign_v2(
+            nonces.remove(0),
+            &f.bundles[0],
+            b"what the validator approved",
+            &request,
+            &f.roster,
+        )
+        .expect_err("a mismatched message must be refused");
+        assert_eq!(err, WeightedError::Osst(osst::OsstError::MessageMismatch));
+    }
+
+    /// N-2/W-2: the signer refuses a coordinator-chosen active share set, and
+    /// refuses nonces from another session.
+    #[test]
+    fn frostito_v2_rejects_a_tampered_request() {
+        let mut rng = rand_core::OsRng;
+        let f = fixture(&mut rng);
+        let message = b"spend";
+        let participants: Vec<u32> = vec![1, 2, 3];
+        let active = f.roster.active_share_indices(&participants).unwrap();
+
+        let mut nonces = Vec::new();
+        let mut commitments = Vec::new();
+        for b in &f.bundles {
+            let (n, c) = frostito_commit(b.validator_index(), SESSION);
+            nonces.push(n);
+            commitments.push(c);
+        }
+        let (d, e) = frostito_aggregate_commitment_pair(&SESSION, &commitments).unwrap();
+        let (_, a_commits) = osst_frost::commit::<Point, _>(1, &mut rng).unwrap();
+        let package = osst_frost::SigningPackage::new(
+            message.to_vec(),
+            vec![
+                a_commits,
+                osst_frost::SigningCommitments {
+                    index: NESTED_INDEX,
+                    hiding: d,
+                    binding: e,
+                },
+            ],
+        )
+        .unwrap();
+
+        // W-2: the coordinator drops validator 3's shares from the active set,
+        // which would change every λ_j.
+        let mut shrunk = active.clone();
+        shrunk.retain(|i| *i <= 7);
+        let bad_request = NestedSigningRequest {
+            package: &package,
+            group_pubkey: &f.group_key,
+            nested_index: NESTED_INDEX,
+            session_id: SESSION,
+            inner_commitments: &commitments,
+            active_indices: &shrunk,
+        };
+        let err = frostito_sign_v2(
+            nonces.remove(0),
+            &f.bundles[0],
+            message,
+            &bad_request,
+            &f.roster,
+        )
+        .expect_err("a coordinator-chosen active set must be refused");
+        assert_eq!(err, WeightedError::ActiveIndicesMismatch);
+
+        // N-2: nonces from another session.
+        let (other_nonce, _) = frostito_commit(2, [9u8; 32]);
+        let request = NestedSigningRequest {
+            package: &package,
+            group_pubkey: &f.group_key,
+            nested_index: NESTED_INDEX,
+            session_id: SESSION,
+            inner_commitments: &commitments,
+            active_indices: &active,
+        };
+        let err =
+            frostito_sign_v2(other_nonce, &f.bundles[1], message, &request, &f.roster)
+                .expect_err("nonces from another session must be refused");
+        assert_eq!(err, WeightedError::Osst(osst::OsstError::SessionMismatch));
+    }
+
+    /// A validator that tampers with its response is NAMED, and so is one that
+    /// answers twice or not at all (W-4).
+    #[test]
+    fn frostito_v2_names_the_faulty_validator() {
+        let mut rng = rand_core::OsRng;
+        let f = fixture(&mut rng);
+        let message = b"spend";
+        let participants: Vec<u32> = vec![1, 2, 3];
+        let active = f.roster.active_share_indices(&participants).unwrap();
+
+        let mut nonces = Vec::new();
+        let mut commitments = Vec::new();
+        for b in &f.bundles {
+            let (n, c) = frostito_commit(b.validator_index(), SESSION);
+            nonces.push(n);
+            commitments.push(c);
+        }
+        let (d, e) = frostito_aggregate_commitment_pair(&SESSION, &commitments).unwrap();
+        let (_, a_commits) = osst_frost::commit::<Point, _>(1, &mut rng).unwrap();
+        let package = osst_frost::SigningPackage::new(
+            message.to_vec(),
+            vec![
+                a_commits,
+                osst_frost::SigningCommitments {
+                    index: NESTED_INDEX,
+                    hiding: d,
+                    binding: e,
+                },
+            ],
+        )
+        .unwrap();
+        let request = NestedSigningRequest {
+            package: &package,
+            group_pubkey: &f.group_key,
+            nested_index: NESTED_INDEX,
+            session_id: SESSION,
+            inner_commitments: &commitments,
+            active_indices: &active,
+        };
+        let params =
+            InnerSigningParamsV2::from_outer::<Point>(&package, &f.group_key, NESTED_INDEX)
+                .unwrap();
+        let effective_pubkeys: Vec<(u32, Point)> = f
+            .bundles
             .iter()
             .map(|b| {
-                let eff = b.effective_share(&active).unwrap();
-                (b.validator_index, Point::generator().mul_scalar(&eff))
+                (
+                    b.validator_index(),
+                    ValidatorShares::effective_pubkey(
+                        &b.share_indices(),
+                        &f.public_shares,
+                        &active,
+                    )
+                    .unwrap(),
+                )
             })
             .collect();
 
         let mut responses = Vec::new();
-        for (n, b) in nonces.into_iter().zip(bundles.iter()) {
-            responses.push(frostito_sign_v2(n, b, &params).unwrap());
+        for (n, b) in nonces.into_iter().zip(f.bundles.iter()) {
+            responses.push(frostito_sign_v2(n, b, message, &request, &f.roster).unwrap());
         }
+
         // validator 2 goes rogue
         responses[1].response += Scalar::ONE;
-
         let err = frostito_aggregate_responses_verified(
             &responses,
             &commitments,
             &effective_pubkeys,
             &params,
+            &participants,
         )
-        .expect_err("tampered response must be rejected");
-        assert_eq!(err, vec![2], "the faulty validator must be named");
-    }
+        .expect_err("a tampered response must be rejected");
+        assert_eq!(err, vec![2]);
+        responses[1].response -= Scalar::ONE;
 
-    /// frostito: stake-weighted nested signing
-    /// 5 physical validators holding varying shares (total 200, threshold 134)
-    /// produces a valid outer partial signature
-    #[test]
-    fn test_frostito_stake_weighted_signing() {
-        let mut rng = rand_core::OsRng;
-
-        let outer_t = 2u32;
-        let nested_position = 2u32;
-        let inner_total_shares = 10u32; // simplified: 10 shares instead of 200
-        let inner_threshold = 7u32; // 2/3+1
-
-        // 3 validators with different stake weights
-        let stake_allocation = vec![
-            (1u32, vec![1u32, 2, 3, 4]), // validator 1: 4 shares (40%)
-            (2u32, vec![5u32, 6, 7]),    // validator 2: 3 shares (30%)
-            (3u32, vec![8u32, 9, 10]),   // validator 3: 3 shares (30%)
-        ];
-
-        // generate a group secret and split into shares
-        let group_secret = rand_scalar(&mut rng);
-        let group_key = Point::generator().mul_scalar(&group_secret);
-
-        // create Shamir shares for each share index
-        // polynomial: f(x) = group_secret + a1*x + a2*x² + ... (degree = threshold-1)
-        let mut coeffs = vec![group_secret];
-        for _ in 1..inner_threshold {
-            coeffs.push(rand_scalar(&mut rng));
-        }
-
-        let all_shares: Vec<SecretShare<Scalar>> = (1..=inner_total_shares)
-            .map(|i| {
-                let x = Scalar::from(i as u64);
-                let mut y = Scalar::ZERO;
-                let mut x_pow = Scalar::ONE;
-                for c in &coeffs {
-                    y += c * x_pow;
-                    x_pow *= x;
-                }
-                SecretShare::new(i, y)
+        // a duplicated response is named rather than counted twice
+        let dup = InnerSignatureShare {
+            holder_index: responses[0].holder_index,
+            response: responses[0].response,
+        };
+        let mut with_dup: Vec<InnerSignatureShare<Scalar>> = responses
+            .iter()
+            .map(|r| InnerSignatureShare {
+                holder_index: r.holder_index,
+                response: r.response,
             })
             .collect();
+        with_dup.push(dup);
+        let err = frostito_aggregate_responses_verified(
+            &with_dup,
+            &commitments,
+            &effective_pubkeys,
+            &params,
+            &participants,
+        )
+        .expect_err("a duplicated response must be rejected");
+        assert_eq!(err, vec![1]);
 
-        // distribute shares to validators
-        let mut validator_bundles: Vec<ValidatorShares> = Vec::new();
-        for (vid, share_indices) in &stake_allocation {
-            let shares: Vec<SecretShare<Scalar>> = share_indices
-                .iter()
-                .map(|&idx| all_shares[(idx - 1) as usize].clone())
-                .collect();
-            validator_bundles.push(ValidatorShares::new(*vid, shares));
-        }
-
-        // also need position A for the outer 2-of-2
-        let dealer_a = dkg::Dealer::<Point>::new(1, outer_t, &mut rng);
-        let position_a_secret = *dealer_a.generate_subshare(1).value();
-        let position_a_share = SecretShare::new(1, position_a_secret);
-
-        // outer group key = position A key + position B key (nested position)
-        // for simplicity, use additive: outer_group = g^{s_a} + g^{s_b}
-        // but actually we need a proper outer FROST setup...
-        // let's test frostito in isolation first: just the inner protocol
-
-        let message = b"frostito stake-weighted test";
-
-        // === FROSTITO SIGNING ===
-
-        // round 1: each validator commits ONE nonce
-        let mut all_nonces = Vec::new();
-        let mut all_commits = Vec::new();
-        for vs in &validator_bundles {
-            let (nonce, commit) = frostito_commit(vs.validator_index, vs.weight());
-            all_nonces.push(nonce);
-            all_commits.push(commit);
-        }
-
-        // check threshold
-        assert!(frostito_threshold_met(&all_commits, inner_threshold));
-        eprintln!(
-            "  threshold met: {} shares from {} validators",
-            all_commits.iter().map(|c| c.weight).sum::<u32>(),
-            all_commits.len(),
-        );
-
-        // aggregate commitments
-        let r_nested = frostito_aggregate_commitments(&all_commits, message);
-
-        // simulate outer challenge (in real flow, computed from outer signing package)
-        let outer_challenge = {
-            use sha2::{Digest, Sha512};
-            let mut h = Sha512::new();
-            h.update(b"frost-challenge-v1");
-            h.update(OsstPoint::compress(&r_nested));
-            h.update(OsstPoint::compress(&group_key));
-            h.update(message);
-            Scalar::from_bytes_wide(&h.finalize().into())
-        };
-        let outer_lambda = Scalar::ONE; // simplified: no outer Lagrange for standalone test
-
-        // collect all active share indices
-        let active_share_indices: Vec<u32> = validator_bundles
+        // a missing response is named too
+        let short: Vec<InnerSignatureShare<Scalar>> = responses
             .iter()
-            .flat_map(|vs| vs.share_indices())
+            .take(2)
+            .map(|r| InnerSignatureShare {
+                holder_index: r.holder_index,
+                response: r.response,
+            })
             .collect();
-
-        let params = FrostitoSigningParams {
-            outer_challenge,
-            outer_lambda,
-            active_share_indices,
-        };
-
-        // round 2: each validator signs with ONE response
-        let mut all_responses = Vec::new();
-        for (nonce, vs) in all_nonces.into_iter().zip(validator_bundles.iter()) {
-            let response = frostito_sign(nonce, vs, &params, &all_commits, message).unwrap();
-            all_responses.push(response);
-        }
-
-        // aggregate
-        let z_nested = frostito_aggregate_responses(&all_responses);
-
-        // verify: g^z_nested == R_nested + (λ * c) * group_key
-        let lhs = Point::generator().mul_scalar(&z_nested);
-        let rhs = r_nested.add(&group_key.mul_scalar(&(outer_lambda * outer_challenge)));
-        assert_eq!(lhs, rhs, "frostito signature equation must hold");
-
-        eprintln!("  frostito stake-weighted signing: VERIFIED ✓");
-        eprintln!("  3 validators, 10 shares, threshold 7, 3 messages per round");
+        let err = frostito_aggregate_responses_verified(
+            &short,
+            &commitments,
+            &effective_pubkeys,
+            &params,
+            &participants,
+        )
+        .expect_err("a missing response must be rejected");
+        assert_eq!(err, vec![3]);
     }
 
-    /// test that insufficient stake is rejected
+    // ── roster invariants (W-2/W-3/W-4) ─────────────────────────────────────
+
+    /// **W-3.** An allocation that hands one validator the threshold is
+    /// rejected at construction: it would hold `t` points on a degree-`t−1`
+    /// polynomial and could reconstruct the nested secret alone.
     #[test]
-    fn test_frostito_insufficient_stake() {
-        let commit1 = FrostitoCommitment {
-            validator_index: 1,
-            hiding: Point::identity(),
-            binding: Point::identity(),
-            weight: 50,
-        };
-        let commit2 = FrostitoCommitment {
-            validator_index: 2,
-            hiding: Point::identity(),
-            binding: Point::identity(),
-            weight: 50,
-        };
-
-        // 100 out of 134 — not enough
-        assert!(!frostito_threshold_met(&[commit1, commit2], 134));
-    }
-
-    /// legacy test: inner validators with one share each (osst::nested)
-    #[test]
-    fn test_nested_validator_sign_3of5() {
-        let mut rng = rand_core::OsRng;
-
-        let inner_n = 5u32;
-        let inner_t = 3u32;
-        let outer_t = 2u32;
-        let nested_position = 2u32;
-
-        let dealer_a = dkg::Dealer::<Point>::new(1, outer_t, &mut rng);
-
-        let (inner_shares, coeff_commitments) =
-            interleaved_dkg::<Point, _>(inner_n, inner_t, outer_t, &mut rng).unwrap();
-
-        let eval_active: Vec<u32> = (1..=inner_t).collect();
-        let eval_lambda = compute_lagrange_coefficients::<Scalar>(&eval_active).unwrap();
-        let mut fp_at_1 = Scalar::ZERO;
-        for (i, &k) in eval_active.iter().enumerate() {
-            fp_at_1 += eval_lambda[i] * inner_shares[(k - 1) as usize].eval_at(1);
-        }
-
-        let fa_at_p = dealer_a.generate_subshare(nested_position);
-        let (fa_pieces, _) = osst::nested::split_evaluation_for_inner::<Point, _>(
-            fa_at_p.value(),
-            inner_n,
-            inner_t,
-            &mut rng,
+    fn roster_rejects_a_validator_that_can_reconstruct_alone() {
+        let err = WeightedRoster::new(
+            &[(1u32, vec![1u32, 2, 3, 4, 5, 6, 7]), (2u32, vec![8u32, 9, 10])],
+            7,
+        )
+        .expect_err("weight >= threshold must be rejected");
+        assert_eq!(
+            err,
+            WeightedError::WeightReachesThreshold {
+                validator_index: 1,
+                weight: 7,
+                threshold: 7,
+            }
         );
 
-        let mut validator_shares_legacy: Vec<SecretShare<Scalar>> = Vec::new();
-        for k in 0..inner_n as usize {
-            let sigma = osst::nested::combine_shares(
-                &inner_shares[k],
-                nested_position,
-                &[(1, fa_pieces[k].1)],
-            );
-            validator_shares_legacy.push(SecretShare::new((k + 1) as u32, sigma));
+        // the boundary is exact: t-1 is fine.
+        let ok = WeightedRoster::new(
+            &[(1u32, vec![1u32, 2, 3, 4, 5, 6]), (2u32, vec![7u32, 8, 9, 10])],
+            7,
+        )
+        .unwrap();
+        assert_eq!(ok.max_weight(), 6);
+        assert!(ok.max_weight() < ok.threshold());
+    }
+
+    /// **W-4.** Weight 0, duplicate identifiers, overlapping bundles, zero
+    /// indices and unreachable thresholds are all rejected.
+    #[test]
+    fn roster_rejects_malformed_allocations() {
+        assert_eq!(
+            WeightedRoster::new(&[(1u32, vec![]), (2u32, vec![1u32, 2, 3])], 3).unwrap_err(),
+            WeightedError::ZeroWeight(1)
+        );
+        assert_eq!(
+            WeightedRoster::new(&[(1u32, vec![1u32, 2]), (1u32, vec![3u32, 4])], 5).unwrap_err(),
+            WeightedError::DuplicateValidator(1)
+        );
+        // overlap between two validators double-counts λ_j·s_j
+        assert_eq!(
+            WeightedRoster::new(&[(1u32, vec![1u32, 2]), (2u32, vec![2u32, 3])], 4).unwrap_err(),
+            WeightedError::DuplicateShareIndex(2)
+        );
+        // and a repeat inside one bundle does the same
+        assert_eq!(
+            WeightedRoster::new(&[(1u32, vec![1u32, 1]), (2u32, vec![2u32, 3])], 4).unwrap_err(),
+            WeightedError::DuplicateShareIndex(1)
+        );
+        assert_eq!(
+            WeightedRoster::new(&[(0u32, vec![1u32, 2])], 3).unwrap_err(),
+            WeightedError::ZeroIndex
+        );
+        assert_eq!(
+            WeightedRoster::new(&[(1u32, vec![0u32, 2])], 3).unwrap_err(),
+            WeightedError::ZeroIndex
+        );
+        assert_eq!(
+            WeightedRoster::new(&[(1u32, vec![1u32]), (2u32, vec![2u32])], 5).unwrap_err(),
+            WeightedError::RosterBelowThreshold {
+                total: 2,
+                threshold: 5
+            }
+        );
+        assert_eq!(
+            WeightedRoster::new(&[(1u32, vec![1u32])], 1).unwrap_err(),
+            WeightedError::ThresholdTooSmall(1)
+        );
+        assert_eq!(
+            WeightedRoster::new(&[], 3).unwrap_err(),
+            WeightedError::EmptyRoster
+        );
+    }
+
+    /// **W-2.** Stake is counted off the roster, never off a claim in a
+    /// validator's own message, and the sum is checked.
+    #[test]
+    fn threshold_is_counted_from_the_roster() {
+        let roster = WeightedRoster::new(
+            &[(1u32, vec![1u32, 2, 3, 4]), (2u32, vec![5u32, 6, 7]), (3u32, vec![8u32, 9, 10])],
+            7,
+        )
+        .unwrap();
+        assert_eq!(roster.total_weight(), 10);
+
+        // 1+2 = 7 shares, exactly the threshold
+        assert!(roster.threshold_met(&[1, 2]));
+        assert_eq!(
+            roster.active_share_indices(&[1, 2]).unwrap(),
+            vec![1, 2, 3, 4, 5, 6, 7]
+        );
+        // 2+3 = 6 shares, below it
+        assert!(!roster.threshold_met(&[2, 3]));
+        assert_eq!(
+            roster.active_share_indices(&[2, 3]).unwrap_err(),
+            WeightedError::InsufficientWeight { got: 6, need: 7 }
+        );
+        // a validator claiming to be two validators gains nothing
+        assert_eq!(
+            roster.active_share_indices(&[1, 1, 1]).unwrap_err(),
+            WeightedError::DuplicateValidator(1)
+        );
+        // an off-roster validator is not counted at all
+        assert_eq!(
+            roster.active_share_indices(&[1, 2, 9]).unwrap_err(),
+            WeightedError::UnknownValidator(9)
+        );
+        assert_eq!(
+            roster.active_share_indices(&[]).unwrap_err(),
+            WeightedError::EmptyParticipants
+        );
+    }
+
+    /// A share bundle must be the roster's bundle.
+    #[test]
+    fn validator_shares_must_match_the_roster() {
+        let mut rng = rand_core::OsRng;
+        let roster = WeightedRoster::new(
+            &[(1u32, vec![1u32, 2, 3, 4]), (2u32, vec![5u32, 6, 7]), (3u32, vec![8u32, 9, 10])],
+            7,
+        )
+        .unwrap();
+        let shares = shamir(rand_scalar(&mut rng), 10, 7, &mut rng);
+
+        // validator 2 helps itself to one of validator 1's shares
+        let greedy = vec![
+            shares[4].clone(),
+            shares[5].clone(),
+            shares[6].clone(),
+            shares[0].clone(),
+        ];
+        assert_eq!(
+            ValidatorShares::from_roster(&roster, 2, greedy).unwrap_err(),
+            WeightedError::ShareSetMismatch(2)
+        );
+        assert_eq!(
+            ValidatorShares::from_roster(&roster, 9, vec![shares[0].clone()]).unwrap_err(),
+            WeightedError::UnknownValidator(9)
+        );
+    }
+
+    /// The unweighted path still works: osst's own v2, one share per holder,
+    /// inside a 2-of-2 outer group.
+    #[test]
+    fn unweighted_nested_v2_still_verifies() {
+        let mut rng = rand_core::OsRng;
+        let message = b"unweighted nested spend";
+
+        let outer_secret = rand_scalar(&mut rng);
+        let outer_shares = shamir(outer_secret, 2, 2, &mut rng);
+        let group_key = Point::generator().mul_scalar(&outer_secret);
+        let nested_secret = *outer_shares[1].scalar();
+        let inner = shamir(nested_secret, 5, 3, &mut rng);
+        let active: Vec<u32> = vec![1, 3, 5];
+
+        let mut nonces = Vec::new();
+        let mut commitments = Vec::new();
+        for &k in &active {
+            let (n, c) = validator_commit(k, SESSION);
+            nonces.push(n);
+            commitments.push(c);
         }
+        let (d, e) = aggregate_inner_commitment_pair::<Point>(&SESSION, &commitments).unwrap();
 
-        let s1 = *dealer_a.generate_subshare(1).value() + fp_at_1;
-        let position_a_share = SecretShare::new(1, s1);
-
-        let group_key = dealer_a
-            .commitment()
-            .share_commitment()
-            .add(&coeff_commitments[0]);
-
-        let sighash = b"bridge spend authorization test";
-        let active_validators = vec![1u32, 3, 5];
-
-        let mut all_nonces = Vec::new();
-        let mut all_commits = Vec::new();
-        for &k in &active_validators {
-            let (nonces, commits) = validator_commit(k);
-            all_nonces.push(nonces);
-            all_commits.push(commits);
-        }
-
-        let r_nested = aggregate_validator_commitments(&all_commits, sighash);
-
-        let (a_nonces, a_commits) = osst::frost::commit::<Point, _>(1, &mut rng);
-
-        let nested_commits = osst::frost::SigningCommitments {
-            index: nested_position,
-            hiding: r_nested,
-            binding: Point::identity(),
+        let (a_nonces, a_commits) = osst_frost::commit::<Point, _>(1, &mut rng).unwrap();
+        let package = osst_frost::SigningPackage::new(
+            message.to_vec(),
+            vec![
+                a_commits,
+                osst_frost::SigningCommitments {
+                    index: NESTED_INDEX,
+                    hiding: d,
+                    binding: e,
+                },
+            ],
+        )
+        .unwrap();
+        let request = NestedSigningRequest {
+            package: &package,
+            group_pubkey: &group_key,
+            nested_index: NESTED_INDEX,
+            session_id: SESSION,
+            inner_commitments: &commitments,
+            active_indices: &active,
         };
-        let package =
-            osst::frost::SigningPackage::new(sighash.to_vec(), vec![a_commits, nested_commits])
-                .unwrap();
+
+        let mut sigs = Vec::new();
+        for (n, &k) in nonces.into_iter().zip(active.iter()) {
+            sigs.push(
+                validator_sign_v2(n, &inner[(k - 1) as usize], message, &request).unwrap(),
+            );
+        }
+        let public_shares: Vec<(u32, Point)> = active
+            .iter()
+            .map(|&k| {
+                (
+                    k,
+                    Point::generator().mul_scalar(inner[(k - 1) as usize].scalar()),
+                )
+            })
+            .collect();
+        let params =
+            InnerSigningParamsV2::from_outer::<Point>(&package, &group_key, NESTED_INDEX).unwrap();
+        let z_nested = aggregate_validator_shares_verified(
+            &sigs,
+            &commitments,
+            &public_shares,
+            &params,
+            &active,
+        )
+        .unwrap();
 
         let a_sig =
-            osst::frost::sign::<Point>(&package, a_nonces, &position_a_share, &group_key).unwrap();
-
-        let outer_indices = package.signer_indices();
-        let outer_lambda = compute_lagrange_coefficients::<Scalar>(&outer_indices).unwrap();
-        let nested_pos = outer_indices
-            .iter()
-            .position(|&i| i == nested_position)
-            .unwrap();
-
-        let outer_gc = {
-            use sha2::{Digest, Sha512};
-            let mut r = Point::identity();
-            for &idx in &outer_indices {
-                let c = package.get_commitments(idx).unwrap();
-                let mut encoded = Vec::new();
-                for si in package.signer_indices() {
-                    let sc = package.get_commitments(si).unwrap();
-                    encoded.extend_from_slice(&sc.index.to_le_bytes());
-                    encoded.extend_from_slice(&sc.hiding.compress());
-                    encoded.extend_from_slice(&sc.binding.compress());
-                }
-                let rho = {
-                    use sha2::{Digest, Sha512};
-                    let mut h = Sha512::new();
-                    h.update(b"frost-binding-v1");
-                    h.update(idx.to_le_bytes());
-                    h.update((sighash.len() as u64).to_le_bytes());
-                    h.update(sighash);
-                    h.update(&encoded);
-                    Scalar::from_bytes_wide(&h.finalize().into())
-                };
-                r = r.add(&c.hiding).add(&c.binding.mul_scalar(&rho));
-            }
-            r
-        };
-
-        let outer_challenge = {
-            use sha2::{Digest, Sha512};
-            let mut h = Sha512::new();
-            h.update(b"frost-challenge-v1");
-            h.update(OsstPoint::compress(&outer_gc));
-            h.update(OsstPoint::compress(&group_key));
-            h.update(sighash);
-            Scalar::from_bytes_wide(&h.finalize().into())
-        };
-
-        let params = InnerSigningParams {
-            outer_challenge,
-            outer_lambda: outer_lambda[nested_pos],
-        };
-
-        let mut inner_sigs = Vec::new();
-        for (nonces, &k) in all_nonces.into_iter().zip(active_validators.iter()) {
-            let sig = validator_sign(
-                nonces,
-                &validator_shares_legacy[(k - 1) as usize],
-                &params,
-                &all_commits,
-                &active_validators,
-                sighash,
-            )
-            .unwrap();
-            inner_sigs.push(sig);
-        }
-
-        let z_nested = aggregate_validator_shares(&inner_sigs);
-
-        let nested_sig = osst::frost::SignatureShare {
-            index: nested_position,
-            response: z_nested,
-        };
-
-        let signature =
-            osst::frost::aggregate::<Point>(&package, &[a_sig, nested_sig], &group_key, None)
-                .unwrap();
-
-        assert!(
-            osst::frost::verify_signature(&group_key, sighash, &signature),
-            "nested 2-of-2 with 3-of-5 inner must verify"
-        );
-        eprintln!("bridge nested FROST: 2-of-2 outer × 3-of-5 inner = valid signature");
-    }
-}
-
-
-// ── frostito v2: outer-bound, commit–reveal, verifiable ──
-//
-// v1 pre-bound each validator's nonce locally and presented ONE point to the
-// outer protocol with an identity binding commitment, so the outer binding
-// factor never applied to the nested position (see the warning on
-// `frostito_aggregate_commitments`).
-//
-// v2 presents the aggregate as an ordinary FROST commitment PAIR:
-//
-//   D_nested = Σ_k D_k        E_nested = Σ_k E_k
-//
-// The outer protocol computes ρ = H(index, m, B) over the FULL outer
-// commitment list exactly as for any other signer, and every validator signs
-// with that same ρ:
-//
-//   z_k = d_k + ρ·e_k + (λ_out·c)·effective_k
-//
-// Summing over the participating validators, with d = Σd_k, e = Σe_k and
-// Σ effective_k = σ_out (stake-weighted Lagrange interpolation over the active
-// share set):
-//
-//   z_nested = d + ρ·e + λ_out·c·σ_out
-//
-// which is exactly what a single flat FROST signer holding σ_out with nonces
-// (d, e) produces — so the nested position is indistinguishable from a flat
-// signer and security reduces to FROST's own proof.
-//
-// Removing the per-validator binding factor reopens adaptive commitment
-// selection INSIDE the validator set, so v2 adds an explicit commit–reveal
-// round (`frostito_precommit` / `frostito_verify_precommit`).
-
-/// Round-0 hash commitment to a validator's nonce commitment.
-pub fn frostito_precommit(c: &FrostitoCommitment) -> [u8; 32] {
-    use sha2::{Digest, Sha512};
-    let mut h = Sha512::new();
-    h.update(b"frostito-precommit-v2");
-    h.update(c.validator_index.to_le_bytes());
-    h.update(c.weight.to_le_bytes());
-    h.update(OsstPoint::compress(&c.hiding));
-    h.update(OsstPoint::compress(&c.binding));
-    let full: [u8; 64] = h.finalize().into();
-    let mut out = [0u8; 32];
-    out.copy_from_slice(&full[..32]);
-    out
-}
-
-/// Verify a revealed commitment against its round-0 precommitment.
-///
-/// Every validator MUST verify every other validator's reveal before the
-/// aggregate is formed; otherwise a validator revealing last can choose its
-/// commitment to steer D_nested.
-pub fn frostito_verify_precommit(precommit: &[u8; 32], revealed: &FrostitoCommitment) -> bool {
-    let computed = frostito_precommit(revealed);
-    let mut diff = 0u8;
-    for (a, b) in computed.iter().zip(precommit.iter()) {
-        diff |= a ^ b;
-    }
-    diff == 0
-}
-
-/// coordinator: aggregate validator commitments into the PAIR the outer
-/// protocol consumes. Feed these as the nested position's `hiding` and
-/// `binding` so the outer binding factor actually applies.
-///
-/// Callers MUST have verified every precommitment first.
-pub fn frostito_aggregate_commitment_pair(commitments: &[FrostitoCommitment]) -> (Point, Point) {
-    let mut d = Point::identity();
-    let mut e = Point::identity();
-    for c in commitments {
-        d = d.add(&c.hiding);
-        e = e.add(&c.binding);
-    }
-    (d, e)
-}
-
-/// frostito v2 signing params. `outer_binding` is the outer protocol's binding
-/// factor for the nested position — obtainable from the outer
-/// `SigningPackage::binding_factor(index)`, and independently recomputable by
-/// each validator from public outer data.
-#[derive(Clone)]
-pub struct FrostitoSigningParamsV2 {
-    /// outer binding factor for the nested position: ρ = H(index, m, B)
-    pub outer_binding: Scalar,
-    /// outer challenge: c = H(R_outer, Y, msg)
-    pub outer_challenge: Scalar,
-    /// outer Lagrange coefficient for the nested position
-    pub outer_lambda: Scalar,
-    /// all active share indices across all participating validators
-    pub active_share_indices: Vec<u32>,
-}
-
-/// round 2 (v2): validator produces ONE response bound to the OUTER context.
-///
-///   z_k = d_k + ρ·e_k + (λ_out·c)·effective_k
-pub fn frostito_sign_v2(
-    nonce: FrostitoNonce,
-    validator_shares: &ValidatorShares,
-    params: &FrostitoSigningParamsV2,
-) -> Result<FrostitoResponse, osst::OsstError> {
-    let effective = validator_shares.effective_share(&params.active_share_indices)?;
-    let nonce_part = nonce.hiding + params.outer_binding * nonce.binding;
-    let secret_part = params.outer_lambda * params.outer_challenge * effective;
-
-    Ok(FrostitoResponse {
-        validator_index: nonce.validator_index,
-        response: nonce_part + secret_part,
-        weight: validator_shares.weight(),
-    })
-}
-
-/// Verify one validator's response before aggregating:
-///
-///   z_k·G  ==  (D_k + ρ·E_k) + (λ_out·c)·EffectivePub_k
-///
-/// where `EffectivePub_k = Σ_j λ_j·P_j` over the validator's own shares — the
-/// public counterpart of `effective_share`, derivable from the DKG commitments.
-pub fn frostito_verify_response(
-    response: &FrostitoResponse,
-    commitment: &FrostitoCommitment,
-    effective_pubkey: &Point,
-    params: &FrostitoSigningParamsV2,
-) -> bool {
-    let lhs = Point::generator().mul_scalar(&response.response);
-    let weight = params.outer_lambda * params.outer_challenge;
-    let rhs = commitment
-        .hiding
-        .add(&commitment.binding.mul_scalar(&params.outer_binding))
-        .add(&effective_pubkey.mul_scalar(&weight));
-    lhs == rhs
-}
-
-/// Verify every validator response, then aggregate into z_nested.
-///
-/// `Err(indices)` names the validators whose responses failed so they can be
-/// evicted and the round retried, instead of emitting a signature that simply
-/// fails to verify with no attribution.
-pub fn frostito_aggregate_responses_verified(
-    responses: &[FrostitoResponse],
-    commitments: &[FrostitoCommitment],
-    effective_pubkeys: &[(u32, Point)],
-    params: &FrostitoSigningParamsV2,
-) -> Result<Scalar, Vec<u32>> {
-    let mut bad = Vec::new();
-    let mut z = Scalar::ZERO;
-    for r in responses {
-        let k = r.validator_index;
-        let commitment = commitments.iter().find(|c| c.validator_index == k);
-        let pubkey = effective_pubkeys.iter().find(|(i, _)| *i == k).map(|(_, p)| p);
-        match (commitment, pubkey) {
-            (Some(commitment), Some(pubkey)) => {
-                if frostito_verify_response(r, commitment, pubkey, params) {
-                    z += r.response;
-                } else {
-                    bad.push(k);
-                }
-            }
-            _ => bad.push(k),
-        }
-    }
-    if bad.is_empty() {
-        Ok(z)
-    } else {
-        Err(bad)
+            osst_frost::sign::<Point>(&package, a_nonces, &outer_shares[0], &group_key).unwrap();
+        let signature = osst_frost::aggregate::<Point>(
+            &package,
+            &[
+                a_sig,
+                osst_frost::SignatureShare {
+                    index: NESTED_INDEX,
+                    response: z_nested,
+                },
+            ],
+            &group_key,
+            None,
+        )
+        .unwrap();
+        assert!(osst_frost::verify_signature(&group_key, message, &signature));
     }
 }

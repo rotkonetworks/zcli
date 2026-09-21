@@ -19,7 +19,15 @@ tokio-stream = "0.1"
 # frostito (nested FROST + OSST), canonical upstream penumbrafi/frostito
 # pinned in [workspace.dependencies]. osst 0.2.0 is on zakura-pasta-curves
 # 1.0, the same pasta as poker's own pallas types.
-osst = { workspace = true, features = ["std", "pallas"] }
+# `legacy-v1` is the nested FROST v1 construction, which osst 0.4.0 moved
+# behind an off-by-default feature as INSECURE (finding R-1 of
+# SECURITY-REVIEW-2026-09: the outer binding factor multiplies the identity and
+# vanishes, admitting a ROS-style forgery). This demo's `dispute` path is the
+# "existing deployment compiling while it migrates" case the feature exists
+# for — it is a single-process TUI with no value at stake. Do NOT copy this
+# line into anything that signs for real; migrate to the v2 nested position
+# (see crates/frost-spend/src/nested.rs) instead.
+osst = { workspace = true, features = ["std", "pallas", "legacy-v1"] }
 
 # crypto
 rand = "0.8"
