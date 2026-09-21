@@ -1,4 +1,4 @@
-// nested.rs — stake-weighted nested FROST v2 (osst 0.4)
+// nested.rs — stake-weighted nested FROST v2 (osst 0.5)
 //
 // One physical validator holds N Shamir shares of the nested position's secret,
 // N proportional to its stake. Rather than running FROST with one identifier
@@ -34,6 +34,13 @@
 // `InnerSigningParamsV2::from_outer` and `verify_inner_share`. Nothing about
 // the binding factor or the challenge is recomputed locally; `from_outer` is
 // the only derivation, so a coordinator cannot assert an outer context (W-1).
+//
+// osst 0.5 moves the outer group key `Y` out of `NestedSigningRequest` (M-4)
+// and into the binding factor (M-24, RFC 9591 §4.4), so `frostito_sign_v2`
+// takes `Y` as a parameter from local key material, and the commit–reveal
+// round is enforced by osst rather than documented (M-20): the round-0
+// precommitments travel in the request and every reveal is checked against
+// one.
 //
 // It cannot call `osst::nested::inner_sign_v2` itself for two reasons:
 //
@@ -133,6 +140,11 @@ pub enum WeightedError {
     ActiveIndicesMismatch,
     /// No participants were supplied.
     EmptyParticipants,
+    /// **M-14.** `NestedSigningRequest::inner_threshold` is not the roster's
+    /// threshold. osst documents the field as caller-anchored; on the weighted
+    /// path the roster *is* the anchor, so a coordinator's number is refused
+    /// rather than trusted.
+    ThresholdMismatch { supplied: u32, roster: u32 },
 }
 
 impl core::fmt::Display for WeightedError {
@@ -174,6 +186,11 @@ impl core::fmt::Display for WeightedError {
                 "active share indices do not match the roster's for this participant set"
             ),
             Self::EmptyParticipants => write!(f, "no participating validators"),
+            Self::ThresholdMismatch { supplied, roster } => write!(
+                f,
+                "request inner threshold {} is not the roster's {}",
+                supplied, roster
+            ),
         }
     }
 }
@@ -557,14 +574,19 @@ pub fn frostito_commit(
 /// Straight through to osst, which rejects an empty set, a duplicate validator
 /// and a commitment from another session.
 ///
-/// Callers MUST have verified every precommitment ([`verify_inner_precommit`])
-/// first.
+/// **M-20.** The commit–reveal round is no longer caller convention: osst 0.5
+/// takes the round-0 precommitments and verifies every reveal against one,
+/// returning `PrecommitMismatch(holder)`. `precommits` is
+/// `(holder_index, precommit)`; entries for validators that did not reveal are
+/// ignored, a reveal without a matching precommitment is rejected.
 pub fn frostito_aggregate_commitment_pair(
     session_id: &[u8; 32],
+    precommits: &[(u32, [u8; 32])],
     commitments: &[InnerCommitments<Point>],
 ) -> Result<(Point, Point), WeightedError> {
     Ok(aggregate_inner_commitment_pair::<Point>(
         session_id,
+        precommits,
         commitments,
     )?)
 }
@@ -576,11 +598,18 @@ pub fn frostito_aggregate_commitment_pair(
 ///
 ///   `z_k = d_k + ρ·e_k + (λ_out · c) · effective_k`
 ///
-/// **W-1.** The outer binding factor, challenge and Lagrange coefficient are
-/// obtained *only* from [`InnerSigningParamsV2::from_outer`] over the outer
-/// package and group key the validator holds. Nothing here recomputes a
+/// **W-1 / M-4.** The outer binding factor, challenge and Lagrange coefficient
+/// are obtained *only* from [`InnerSigningParamsV2::from_outer`] over the outer
+/// package and the group key the validator holds. Nothing here recomputes a
 /// binding factor locally and no coordinator can supply one: the type has no
 /// public fields.
+///
+/// `local_group_pubkey` is `Y`, and it is a parameter rather than a field of
+/// `request` because osst 0.5 removed `NestedSigningRequest::group_pubkey`
+/// (M-4): with the binding factor now covering `Y` (M-24, RFC 9591 §4.4), a
+/// coordinator-asserted `Y'` would give free choice of ρ and c over a fixed
+/// message. Pass the key from this validator's own key material — never
+/// anything that arrived with the request.
 ///
 /// Before producing a share this refuses unless:
 ///
@@ -591,10 +620,13 @@ pub fn frostito_aggregate_commitment_pair(
 ///    round-1 set contains this validator's own commitment for that session,
 ///    matching these nonces (N-2);
 /// 3. the outer package's entry for the nested position is exactly
-///    `(Σ D_k, Σ E_k)` over that set (N-2);
-/// 4. the bundle's weight is the roster's and is `< threshold` (W-3, second
+///    `(Σ D_k, Σ E_k)` over that set, every member of which matches its
+///    round-0 precommitment (N-2, M-20);
+/// 4. `request.inner_threshold` is the roster's threshold (M-14) — on this
+///    path the roster is the local anchor for `t_in`;
+/// 5. the bundle's weight is the roster's and is `< threshold` (W-3, second
 ///    site);
-/// 5. `request.active_indices` is exactly what the roster derives for the
+/// 6. `request.active_indices` is exactly what the roster derives for the
 ///    validator set that published round-1 commitments (W-2) — the signer
 ///    does not take the coordinator's word for which shares are active, since
 ///    that set drives every λ_j.
@@ -606,6 +638,7 @@ pub fn frostito_aggregate_commitment_pair(
 pub fn frostito_sign_v2(
     nonce: WeightedNonce,
     bundle: &ValidatorShares,
+    local_group_pubkey: &Point,
     approved_message: &[u8],
     request: &NestedSigningRequest<'_, Point>,
     roster: &WeightedRoster,
@@ -632,15 +665,26 @@ pub fn frostito_sign_v2(
         return Err(osst::OsstError::UnexpectedCommitment.into());
     }
 
-    // (3) the nested position's outer commitment is this round's aggregate.
+    // (3) the nested position's outer commitment is this round's aggregate,
+    // over a commitment set every member of which matches its round-0
+    // precommitment (M-20 — verified inside osst now, not by convention).
     verify_nested_commitment::<Point>(
         request.package,
         request.nested_index,
         &request.session_id,
+        request.inner_precommits,
         request.inner_commitments,
     )?;
 
-    // (4) W-3 at signing time.
+    // (4) M-14: t_in is the roster's, never the request's.
+    if request.inner_threshold != roster.threshold() {
+        return Err(WeightedError::ThresholdMismatch {
+            supplied: request.inner_threshold,
+            roster: roster.threshold(),
+        });
+    }
+
+    // (5) W-3 at signing time.
     let rostered_weight = roster.weight(bundle.validator_index)?;
     if rostered_weight != bundle.weight() {
         return Err(WeightedError::ShareSetMismatch(bundle.validator_index));
@@ -653,7 +697,7 @@ pub fn frostito_sign_v2(
         });
     }
 
-    // (5) W-2: the active share set is the roster's, over the validators that
+    // (6) W-2: the active share set is the roster's, over the validators that
     // actually published round-1 commitments — not a list the coordinator
     // asserts.
     let participants: Vec<u32> = request
@@ -668,10 +712,11 @@ pub fn frostito_sign_v2(
         return Err(WeightedError::ActiveIndicesMismatch);
     }
 
-    // W-1: the only derivation of the outer context.
+    // W-1/M-4: the only derivation of the outer context, over the group key
+    // this validator holds locally.
     let params = InnerSigningParamsV2::from_outer::<Point>(
         request.package,
-        request.group_pubkey,
+        local_group_pubkey,
         request.nested_index,
     )?;
 
@@ -793,13 +838,24 @@ pub fn validator_commit(
 }
 
 /// Round 2 for an unweighted inner holder: `osst::nested::inner_sign_v2`.
+///
+/// `local_group_pubkey` is the outer group key `Y`, taken from the holder's own
+/// key material: osst 0.5 removed it from `NestedSigningRequest` (M-4) because
+/// the binding factor now covers it (M-24).
 pub fn validator_sign_v2(
     nonces: InnerNonces<Scalar>,
     share: &SecretShare<Scalar>,
+    local_group_pubkey: &Point,
     approved_message: &[u8],
     request: &NestedSigningRequest<'_, Point>,
 ) -> Result<InnerSignatureShare<Scalar>, osst::OsstError> {
-    nested::inner_sign_v2::<Point>(nonces, share, approved_message, request)
+    nested::inner_sign_v2::<Point>(
+        nonces,
+        share,
+        local_group_pubkey,
+        approved_message,
+        request,
+    )
 }
 
 /// Verify-then-aggregate for the unweighted path.
@@ -922,21 +978,32 @@ mod tests {
         let mut precommits = Vec::new();
         for b in &f.bundles {
             let (n, c) = frostito_commit(b.validator_index(), SESSION);
-            precommits.push(inner_precommit(&c));
+            precommits.push((c.holder_index, inner_precommit(&c)));
             nonces.push(n);
             commitments.push(c);
         }
-        for (pre, revealed) in precommits.iter().zip(commitments.iter()) {
+        for ((_, pre), revealed) in precommits.iter().zip(commitments.iter()) {
             assert!(verify_inner_precommit(pre, revealed));
         }
         {
             let mut bad = commitments[0].clone();
             bad.hiding = bad.hiding.add(&Point::generator());
-            assert!(!verify_inner_precommit(&precommits[0], &bad));
+            assert!(!verify_inner_precommit(&precommits[0].1, &bad));
         }
 
+        // M-20: osst now verifies the reveals against the precommitments here,
+        // so a substituted reveal is refused by the aggregate itself rather
+        // than only by the caller's own convention.
         let (d_nested, e_nested) =
-            frostito_aggregate_commitment_pair(&SESSION, &commitments).unwrap();
+            frostito_aggregate_commitment_pair(&SESSION, &precommits, &commitments).unwrap();
+        {
+            let mut tampered = commitments.clone();
+            tampered[0].hiding = tampered[0].hiding.add(&Point::generator());
+            assert!(matches!(
+                frostito_aggregate_commitment_pair(&SESSION, &precommits, &tampered),
+                Err(WeightedError::Osst(osst::OsstError::PrecommitMismatch(1)))
+            ));
+        }
 
         // ── a real outer package ───────────────────────────────────────────
         let (a_nonces, a_commits) = osst_frost::commit::<Point, _>(1, &mut rng).unwrap();
@@ -951,11 +1018,12 @@ mod tests {
 
         let request = NestedSigningRequest {
             package: &package,
-            group_pubkey: &f.group_key,
             nested_index: NESTED_INDEX,
             session_id: SESSION,
+            inner_precommits: &precommits,
             inner_commitments: &commitments,
             active_indices: &active,
+            inner_threshold: f.roster.threshold(),
         };
 
         // ── validators sign; every response is verified ────────────────────
@@ -977,7 +1045,7 @@ mod tests {
 
         let mut responses = Vec::new();
         for (n, b) in nonces.into_iter().zip(f.bundles.iter()) {
-            responses.push(frostito_sign_v2(n, b, message, &request, &f.roster).unwrap());
+            responses.push(frostito_sign_v2(n, b, &f.group_key, message, &request, &f.roster).unwrap());
         }
 
         let params =
@@ -1053,7 +1121,12 @@ mod tests {
             nonces.push(n);
             commitments.push(c);
         }
-        let (d, e) = frostito_aggregate_commitment_pair(&SESSION, &commitments).unwrap();
+        let precommits: Vec<(u32, [u8; 32])> = commitments
+            .iter()
+            .map(|c| (c.holder_index, inner_precommit(c)))
+            .collect();
+        let (d, e) =
+            frostito_aggregate_commitment_pair(&SESSION, &precommits, &commitments).unwrap();
         let (_, a_commits) = osst_frost::commit::<Point, _>(1, &mut rng).unwrap();
         let package = osst_frost::SigningPackage::new(
             b"coordinator's own payload".to_vec(),
@@ -1069,16 +1142,18 @@ mod tests {
         .unwrap();
         let request = NestedSigningRequest {
             package: &package,
-            group_pubkey: &f.group_key,
             nested_index: NESTED_INDEX,
             session_id: SESSION,
+            inner_precommits: &precommits,
             inner_commitments: &commitments,
             active_indices: &active,
+            inner_threshold: f.roster.threshold(),
         };
 
         let err = frostito_sign_v2(
             nonces.remove(0),
             &f.bundles[0],
+            &f.group_key,
             b"what the validator approved",
             &request,
             &f.roster,
@@ -1104,7 +1179,12 @@ mod tests {
             nonces.push(n);
             commitments.push(c);
         }
-        let (d, e) = frostito_aggregate_commitment_pair(&SESSION, &commitments).unwrap();
+        let precommits: Vec<(u32, [u8; 32])> = commitments
+            .iter()
+            .map(|c| (c.holder_index, inner_precommit(c)))
+            .collect();
+        let (d, e) =
+            frostito_aggregate_commitment_pair(&SESSION, &precommits, &commitments).unwrap();
         let (_, a_commits) = osst_frost::commit::<Point, _>(1, &mut rng).unwrap();
         let package = osst_frost::SigningPackage::new(
             message.to_vec(),
@@ -1125,15 +1205,17 @@ mod tests {
         shrunk.retain(|i| *i <= 7);
         let bad_request = NestedSigningRequest {
             package: &package,
-            group_pubkey: &f.group_key,
             nested_index: NESTED_INDEX,
             session_id: SESSION,
+            inner_precommits: &precommits,
             inner_commitments: &commitments,
             active_indices: &shrunk,
+            inner_threshold: f.roster.threshold(),
         };
         let err = frostito_sign_v2(
             nonces.remove(0),
             &f.bundles[0],
+            &f.group_key,
             message,
             &bad_request,
             &f.roster,
@@ -1145,14 +1227,22 @@ mod tests {
         let (other_nonce, _) = frostito_commit(2, [9u8; 32]);
         let request = NestedSigningRequest {
             package: &package,
-            group_pubkey: &f.group_key,
             nested_index: NESTED_INDEX,
             session_id: SESSION,
+            inner_precommits: &precommits,
             inner_commitments: &commitments,
             active_indices: &active,
+            inner_threshold: f.roster.threshold(),
         };
         let err =
-            frostito_sign_v2(other_nonce, &f.bundles[1], message, &request, &f.roster)
+            frostito_sign_v2(
+                other_nonce,
+                &f.bundles[1],
+                &f.group_key,
+                message,
+                &request,
+                &f.roster,
+            )
                 .expect_err("nonces from another session must be refused");
         assert_eq!(err, WeightedError::Osst(osst::OsstError::SessionMismatch));
     }
@@ -1174,7 +1264,12 @@ mod tests {
             nonces.push(n);
             commitments.push(c);
         }
-        let (d, e) = frostito_aggregate_commitment_pair(&SESSION, &commitments).unwrap();
+        let precommits: Vec<(u32, [u8; 32])> = commitments
+            .iter()
+            .map(|c| (c.holder_index, inner_precommit(c)))
+            .collect();
+        let (d, e) =
+            frostito_aggregate_commitment_pair(&SESSION, &precommits, &commitments).unwrap();
         let (_, a_commits) = osst_frost::commit::<Point, _>(1, &mut rng).unwrap();
         let package = osst_frost::SigningPackage::new(
             message.to_vec(),
@@ -1190,11 +1285,12 @@ mod tests {
         .unwrap();
         let request = NestedSigningRequest {
             package: &package,
-            group_pubkey: &f.group_key,
             nested_index: NESTED_INDEX,
             session_id: SESSION,
+            inner_precommits: &precommits,
             inner_commitments: &commitments,
             active_indices: &active,
+            inner_threshold: f.roster.threshold(),
         };
         let params =
             InnerSigningParamsV2::from_outer::<Point>(&package, &f.group_key, NESTED_INDEX)
@@ -1217,7 +1313,7 @@ mod tests {
 
         let mut responses = Vec::new();
         for (n, b) in nonces.into_iter().zip(f.bundles.iter()) {
-            responses.push(frostito_sign_v2(n, b, message, &request, &f.roster).unwrap());
+            responses.push(frostito_sign_v2(n, b, &f.group_key, message, &request, &f.roster).unwrap());
         }
 
         // validator 2 goes rogue
@@ -1442,7 +1538,12 @@ mod tests {
             nonces.push(n);
             commitments.push(c);
         }
-        let (d, e) = aggregate_inner_commitment_pair::<Point>(&SESSION, &commitments).unwrap();
+        let precommits: Vec<(u32, [u8; 32])> = commitments
+            .iter()
+            .map(|c| (c.holder_index, inner_precommit(c)))
+            .collect();
+        let (d, e) =
+            aggregate_inner_commitment_pair::<Point>(&SESSION, &precommits, &commitments).unwrap();
 
         let (a_nonces, a_commits) = osst_frost::commit::<Point, _>(1, &mut rng).unwrap();
         let package = osst_frost::SigningPackage::new(
@@ -1459,17 +1560,18 @@ mod tests {
         .unwrap();
         let request = NestedSigningRequest {
             package: &package,
-            group_pubkey: &group_key,
             nested_index: NESTED_INDEX,
             session_id: SESSION,
+            inner_precommits: &precommits,
             inner_commitments: &commitments,
             active_indices: &active,
+            inner_threshold: 3,
         };
 
         let mut sigs = Vec::new();
         for (n, &k) in nonces.into_iter().zip(active.iter()) {
             sigs.push(
-                validator_sign_v2(n, &inner[(k - 1) as usize], message, &request).unwrap(),
+                validator_sign_v2(n, &inner[(k - 1) as usize], &group_key, message, &request).unwrap(),
             );
         }
         let public_shares: Vec<(u32, Point)> = active

@@ -10,7 +10,7 @@ use frost_spend::hierarchical::{
     bridge_sign_round1, bridge_sign_round2,
 };
 
-/// The inner round's id. osst 0.4 carries it through round 1 into
+/// The inner round's id. osst 0.5 carries it through round 1 into
 /// `inner_sign_v2`, which refuses to answer a round the holder did not commit
 /// to (finding N-2). A deployment derives it from the epoch, the nested
 /// position and a round counter; a test just needs it stable.
@@ -169,13 +169,18 @@ fn test_bridge_nested_3of5_inner() {
     }
     // v2 commit–reveal: no validator sees another's commitment before fixing
     // its own, so none can steer the aggregate.
-    let precommits: Vec<[u8; 32]> = all_commits.iter().map(inner_precommit::<Point>).collect();
-    for (pre, revealed) in precommits.iter().zip(all_commits.iter()) {
+    // osst 0.5 (M-20): the precommitments are an argument now, and the
+    // aggregate itself refuses a reveal that does not match one.
+    let precommits: Vec<(u32, [u8; 32])> = all_commits
+        .iter()
+        .map(|c| (c.holder_index, inner_precommit::<Point>(c)))
+        .collect();
+    for ((_, pre), revealed) in precommits.iter().zip(all_commits.iter()) {
         assert!(verify_inner_precommit::<Point>(pre, revealed), "reveal must match precommit");
     }
     // v2: present the PAIR so the outer binding factor applies to position B
     let (d_nested, e_nested) =
-        aggregate_inner_commitment_pair::<Point>(&SESSION, &all_commits).unwrap();
+        aggregate_inner_commitment_pair::<Point>(&SESSION, &precommits, &all_commits).unwrap();
     eprintln!("  inner round1: 3 validators committed (commit–reveal verified)");
 
     // position A commits
@@ -201,19 +206,24 @@ fn test_bridge_nested_3of5_inner() {
         InnerSigningParamsV2::from_outer::<Point>(&package, &group_key, nested_position).unwrap();
 
     // inner validators sign, each against the message it approved
+    // osst 0.5: `Y` is no longer a request field (M-4) — each holder passes the
+    // group key from its own key material — and `inner_threshold` is the inner
+    // DKG's own t_in (M-14).
     let request = NestedSigningRequest {
         package: &package,
-        group_pubkey: &group_key,
         nested_index: nested_position,
         session_id: SESSION,
+        inner_precommits: &precommits,
         inner_commitments: &all_commits,
         active_indices: &active_validators,
+        inner_threshold: inner_t,
     };
     let mut inner_sigs = Vec::new();
     for (nonces, &k) in all_nonces.into_iter().zip(active_validators.iter()) {
         let sig = validator_sign_v2(
             nonces,
             &validator_shares[(k - 1) as usize],
+            &group_key,
             sighash,
             &request,
         )
@@ -329,13 +339,15 @@ fn test_bridge_nested_different_subsets() {
             commits_vec.push(c);
         }
 
-        let precommits: Vec<[u8; 32]> =
-            commits_vec.iter().map(inner_precommit::<Point>).collect();
-        for (pre, revealed) in precommits.iter().zip(commits_vec.iter()) {
+        let precommits: Vec<(u32, [u8; 32])> = commits_vec
+            .iter()
+            .map(|c| (c.holder_index, inner_precommit::<Point>(c)))
+            .collect();
+        for ((_, pre), revealed) in precommits.iter().zip(commits_vec.iter()) {
             assert!(verify_inner_precommit::<Point>(pre, revealed));
         }
         let (d_nested, e_nested) =
-            aggregate_inner_commitment_pair::<Point>(&SESSION, &commits_vec).unwrap();
+            aggregate_inner_commitment_pair::<Point>(&SESSION, &precommits, &commits_vec).unwrap();
         let (a_nonces, a_commits) = osst_frost::commit::<Point, _>(1, &mut rng).unwrap();
 
         let nested_commits = osst_frost::SigningCommitments {
@@ -356,11 +368,12 @@ fn test_bridge_nested_different_subsets() {
 
         let request = NestedSigningRequest {
             package: &package,
-            group_pubkey: &group_key,
             nested_index: nested_position,
             session_id: SESSION,
+            inner_precommits: &precommits,
             inner_commitments: &commits_vec,
             active_indices: subset,
+            inner_threshold: inner_t,
         };
         let mut inner_sigs = Vec::new();
         for (nonces, &k) in nonces_vec.into_iter().zip(subset.iter()) {
@@ -368,6 +381,7 @@ fn test_bridge_nested_different_subsets() {
                 validator_sign_v2(
                     nonces,
                     &validator_shares[(k - 1) as usize],
+                    &group_key,
                     sighash,
                     &request,
                 )
