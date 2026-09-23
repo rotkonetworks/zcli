@@ -3,9 +3,22 @@ Description=zclid — background wallet daemon for zcli
 After=network-online.target
 Wants=network-online.target
 
+# A USER unit — install to /etc/systemd/user (or /usr/lib/systemd/user from a
+# package) and start with `systemctl --user enable --now zclid`, as
+# deploy/README says. It is not a system unit and must not be one:
+#
+#   - %h is "the home directory of the user running the service manager"; in a
+#     SYSTEM unit that is /root regardless of User= (systemd.unit(5)). Every
+#     wallet path below would then point into root's home.
+#   - User= cannot switch identity in a user manager anyway; for a non-root
+#     user the only permitted value is the user itself (systemd.exec(5)).
+#   - %i is empty outside a templated unit, and this is zclid.service, not
+#     zclid@.service. `User=%i` therefore parsed as an empty user.
+#
+# zclid holds a spending key and works entirely in per-user paths, so there is
+# no reason for root to be involved at all.
 [Service]
 Type=simple
-User=%i
 ExecStart=/usr/local/bin/zclid \
     --endpoint https://zcash.rotko.net \
     --listen 127.0.0.1:9067 \

@@ -26,12 +26,23 @@
 
 ## zclid (wallet daemon)
 
-    # start daemon
+    # start daemon — unix socket at ~/.zcli/zclid.sock, no auth (the
+    # filesystem already answers who you are)
     zclid --endpoint https://zcash.rotko.net
 
-    # zcli connects automatically to 127.0.0.1:9067
-    zcli balance    # instant, no sync
-    zcli notes      # shows pending mempool activity
+    # add a TCP listener for remote callers (zafu, agents). Off unless asked
+    # for; when on it requires `authorization: bearer <token>` against the
+    # 256-bit token generated at ~/.zcli/zclid.token on first run.
+    zclid --endpoint https://zcash.rotko.net --listen 127.0.0.1:9067
+
+Clients speak the `WalletDaemon` gRPC service in bin/zclid/proto/zclid.proto:
+GetBalance, GetNotes, GetStatus, GetAddress, GetHistory, GetPendingActivity,
+GetCustodyMode, PrepareTransaction, SignAndSend, SubmitSigned,
+SendRawTransaction.
+
+NOTE: `zcli` itself does not talk to zclid yet — there is no client for it in
+bin/zcli. `zcli view balance` still syncs on its own. zclid is consumed over
+gRPC by zafu and by agents; wiring the CLI through it is not done.
 
 ## systemd
 
