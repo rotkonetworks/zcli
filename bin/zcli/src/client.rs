@@ -67,6 +67,15 @@ pub mod lightwalletd_proto {
     tonic::include_proto!("cash.z.wallet.sdk.rpc");
 }
 
+/// Hex-encoded commitment-tree frontiers at one height, all pools.
+#[derive(Debug, Clone, Default)]
+pub struct TreeStates {
+    pub height: u32,
+    pub sapling_tree: String,
+    pub orchard_tree: String,
+    pub ironwood_tree: String,
+}
+
 /// NU6.2 consensus branch id. A NAMED CONSTANT for tests and for recognising
 /// historical transactions — deliberately NOT a fallback for tx construction.
 /// The value bound into a transaction always comes from the live node via
@@ -572,6 +581,28 @@ impl ZidecarClient {
                 }
             })
             .collect())
+    }
+
+    /// Every commitment-tree frontier the server knows at a height, in one
+    /// round-trip. Trees are hex-encoded; a pool the server does not track
+    /// (or that has not activated) comes back as an empty string, which the
+    /// frontier parsers read as an empty tree.
+    pub async fn get_tree_states(&self, height: u32) -> Result<TreeStates, Error> {
+        let state: zidecar_proto::TreeState = self
+            .call_unary(
+                "zidecar.v1.Zidecar/GetTreeState",
+                &zidecar_proto::BlockId {
+                    height,
+                    hash: vec![],
+                },
+            )
+            .await?;
+        Ok(TreeStates {
+            height: state.height,
+            sapling_tree: state.sapling_tree,
+            orchard_tree: state.orchard_tree,
+            ironwood_tree: state.ironwood_tree,
+        })
     }
 
     pub async fn get_tree_state(&self, height: u32) -> Result<(String, u32), Error> {

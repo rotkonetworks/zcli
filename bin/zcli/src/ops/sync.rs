@@ -27,6 +27,148 @@ const BATCH_QUICK_SECS: u64 = 20;
 const BATCH_SIZE_MAX: u32 = 2_000; // reduced from 5k — zidecar chokes on dense blocks
 const BATCH_ACTIONS_TARGET: usize = 20_000; // reduced from 50k
 
+/// Progress is measured in work units, not blocks. A block-count bar sits
+/// still for minutes on dense ranges and then sprints through empty ones,
+/// so its ETA is noise. One unit per shielded output (orchard action,
+/// ironwood action, sapling output) plus `WORK_PER_BLOCK` per block: the
+/// output terms track trial-decryption and wire cost, the block term keeps
+/// the bar moving through ranges the server is slow to serve for other
+/// reasons (the sapling-sandblast blocks are 500 KB with zero orchard
+/// actions). The constant is a heuristic; nothing depends on its exact value.
+const WORK_PER_BLOCK: u64 = 2;
+/// Sapling outputs are not in the compact stream zidecar serves, so their
+/// progress is interpolated between tree sizes sampled at this many
+/// bucket boundaries (one `GetTreeState` each, up front).
+const WORK_BUCKETS: u32 = 32;
+/// Below this many blocks the bucket sampling is not worth the round-trips;
+/// endpoints only.
+const WORK_BUCKET_MIN_BLOCKS: u32 = 4_000;
+
+/// Output-weighted progress model for one scan range.
+///
+/// Orchard and ironwood progress is exact: the scan keeps the global tree
+/// position of every action it has processed, and the tree size at the tip
+/// is the target. Sapling progress is interpolated from tree sizes sampled at
+/// bucket boundaries. Standard lightwalletd exposes the same tree states, so
+/// this needs no server extension.
+struct WorkModel {
+    start: u32,
+    tip: u32,
+    orchard_start: u64,
+    ironwood_start: u64,
+    /// `(height, sapling tree size at height)` ascending; first is `start - 1`
+    /// (or 0 when `start` is 0), last is `tip`.
+    sapling_samples: Vec<(u32, u64)>,
+    total: u64,
+}
+
+impl WorkModel {
+    /// Sample tree states for `start..=tip`. `orchard_start` / `ironwood_start`
+    /// are the tree sizes at `start - 1`, which the scan already holds as its
+    /// seeded position counters.
+    async fn build(
+        client: &ZidecarClient,
+        start: u32,
+        tip: u32,
+        orchard_start: u64,
+        ironwood_start: u64,
+    ) -> Result<Self, Error> {
+        let blocks = tip - start + 1;
+        let buckets = if blocks >= WORK_BUCKET_MIN_BLOCKS {
+            WORK_BUCKETS
+        } else {
+            1
+        };
+        let base = start.saturating_sub(1);
+        let mut heights: Vec<u32> = (0..buckets)
+            .map(|i| base + (blocks as u64 * i as u64 / buckets as u64) as u32)
+            .collect();
+        heights.push(tip);
+        heights.dedup();
+
+        let mut sapling_samples = Vec::with_capacity(heights.len());
+        let mut tip_state = None;
+        for h in heights {
+            let st = client.get_tree_states(h).await?;
+            let sapling = hex::decode(&st.sapling_tree)
+                .map_err(|e| Error::Other(format!("invalid sapling tree hex: {e}")))?;
+            sapling_samples.push((h, crate::witness::frontier_leaf_count(&sapling)?));
+            if h == tip {
+                tip_state = Some(st);
+            }
+        }
+        let tip_state = tip_state.ok_or_else(|| Error::Other("no tip tree state".into()))?;
+        let size = |hex_tree: &str| -> Result<u64, Error> {
+            let bytes = hex::decode(hex_tree)
+                .map_err(|e| Error::Other(format!("invalid tree hex: {e}")))?;
+            crate::witness::frontier_leaf_count(&bytes)
+        };
+        let orchard_tip = size(&tip_state.orchard_tree)?;
+        let ironwood_tip = size(&tip_state.ironwood_tree)?;
+        let sapling_total = Self::sapling_span(&sapling_samples);
+
+        let total = orchard_tip.saturating_sub(orchard_start)
+            + ironwood_tip.saturating_sub(ironwood_start)
+            + sapling_total
+            + WORK_PER_BLOCK * blocks as u64;
+        Ok(Self {
+            start,
+            tip,
+            orchard_start,
+            ironwood_start,
+            sapling_samples,
+            total,
+        })
+    }
+
+    fn sapling_span(samples: &[(u32, u64)]) -> u64 {
+        let first = samples.first().map(|(_, s)| *s).unwrap_or(0);
+        let last = samples.last().map(|(_, s)| *s).unwrap_or(0);
+        last.saturating_sub(first)
+    }
+
+    /// Sapling outputs from `start` through `height` inclusive, interpolated
+    /// linearly inside the bucket that contains `height`.
+    fn sapling_done(&self, height: u32) -> u64 {
+        let base = self.sapling_samples.first().map(|(_, s)| *s).unwrap_or(0);
+        let mut prev = self.sapling_samples[0];
+        for &(h, size) in &self.sapling_samples[1..] {
+            if height >= h {
+                prev = (h, size);
+                continue;
+            }
+            let span = (h - prev.0) as u64;
+            let into = (height - prev.0) as u64;
+            let delta = size.saturating_sub(prev.1);
+            return prev.1.saturating_sub(base) + delta * into / span;
+        }
+        prev.1.saturating_sub(base)
+    }
+
+    /// Work units completed once every block through `last_done` (inclusive)
+    /// has been scanned and the position counters have advanced past it.
+    fn done(&self, last_done: u32, orchard_pos: u64, ironwood_pos: u64) -> u64 {
+        let blocks = (last_done + 1).saturating_sub(self.start) as u64;
+        let units = orchard_pos
+            .saturating_sub(self.orchard_start)
+            .saturating_add(ironwood_pos.saturating_sub(self.ironwood_start))
+            .saturating_add(self.sapling_done(last_done))
+            .saturating_add(WORK_PER_BLOCK * blocks);
+        units.min(self.total)
+    }
+
+    fn describe(&self) -> String {
+        let blocks = (self.tip - self.start + 1) as u64;
+        let outputs = self.total - WORK_PER_BLOCK * blocks;
+        format!(
+            "{} shielded outputs to scan ({} sapling) over {} blocks",
+            outputs,
+            Self::sapling_span(&self.sapling_samples),
+            blocks
+        )
+    }
+}
+
 use zync_core::{
     ACTIVATION_HASH_MAINNET, ORCHARD_ACTIVATION_HEIGHT as ORCHARD_ACTIVATION_MAINNET,
     ORCHARD_ACTIVATION_HEIGHT_TESTNET as ORCHARD_ACTIVATION_TESTNET,
@@ -205,23 +347,11 @@ async fn sync_inner(
             "scanning blocks from {} to {} ({} blocks)",
             start,
             tip,
-            tip - start
+            tip - start + 1
         );
     }
 
-    let total_blocks = tip - start;
-    let pb = if !json && is_terminal::is_terminal(std::io::stderr()) {
-        let pb = ProgressBar::new(total_blocks as u64);
-        pb.set_style(
-            ProgressStyle::default_bar()
-                .template("[{elapsed}] {bar:50.cyan/blue} {pos:>7}/{len:7} {per_sec} ETA: {eta}")
-                .unwrap()
-                .progress_chars("#>-"),
-        );
-        Some(pb)
-    } else {
-        None
-    };
+    let want_bar = !json && is_terminal::is_terminal(std::io::stderr());
 
     let mut found_total = 0u32;
     let mut current = start;
@@ -298,6 +428,42 @@ async fn sync_inner(
         } else {
             stored
         }
+    };
+
+    // Output-weighted progress. Falls back to a plain block bar if the tree
+    // states cannot be fetched: a progress bar must never fail a sync.
+    let total_blocks = (tip - start + 1) as u64;
+    let work = if want_bar {
+        match WorkModel::build(&client, start, tip, position_counter, ironwood_position).await {
+            Ok(w) => {
+                eprintln!("{}", w.describe());
+                Some(w)
+            }
+            Err(e) => {
+                eprintln!("warning: tree states unavailable for progress ({e}); counting blocks");
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let pb = if want_bar {
+        let len = work.as_ref().map(|w| w.total).unwrap_or(total_blocks);
+        let pb = ProgressBar::new(len.max(1));
+        let template = if work.is_some() {
+            "[{elapsed}] {bar:40.cyan/blue} {percent:>3}% {msg} ETA: {eta}"
+        } else {
+            "[{elapsed}] {bar:40.cyan/blue} {pos:>7}/{len:7} blocks {per_sec} ETA: {eta}"
+        };
+        pb.set_style(
+            ProgressStyle::default_bar()
+                .template(template)
+                .unwrap()
+                .progress_chars("#>-"),
+        );
+        Some(pb)
+    } else {
+        None
     };
 
     // collect new notes that need memo fetching
@@ -534,7 +700,13 @@ async fn sync_inner(
         current = end + 1;
 
         if let Some(ref pb) = pb {
-            pb.set_position((current - start) as u64);
+            match work {
+                Some(ref w) => {
+                    pb.set_position(w.done(end, position_counter, ironwood_position));
+                    pb.set_message(format!("height {}/{}", end, tip));
+                }
+                None => pb.set_position((current - start) as u64),
+            }
         }
     }
 
@@ -1239,5 +1411,74 @@ fn extract_note_data(fvk: &FullViewingKey, note: &orchard::Note, is_change: bool
         recipient: note.recipient().to_raw_address_bytes().to_vec(),
         rho: note.rho().to_bytes(),
         rseed: *note.rseed().as_bytes(),
+    }
+}
+
+#[cfg(test)]
+mod work_model_tests {
+    use super::*;
+
+    fn model() -> WorkModel {
+        // 1000 blocks from 101..=1100; sapling sizes sampled at 100, 600, 1100:
+        // 400 outputs in the first half, 100 in the second.
+        WorkModel {
+            start: 101,
+            tip: 1100,
+            orchard_start: 50,
+            ironwood_start: 0,
+            sapling_samples: vec![(100, 1_000), (600, 1_400), (1_100, 1_500)],
+            total: 200 + 0 + 500 + WORK_PER_BLOCK * 1000,
+        }
+    }
+
+    #[test]
+    fn sapling_interpolates_within_bucket_and_is_exact_at_boundaries() {
+        let m = model();
+        assert_eq!(m.sapling_done(100), 0);
+        assert_eq!(m.sapling_done(350), 200);
+        assert_eq!(m.sapling_done(600), 400);
+        assert_eq!(m.sapling_done(850), 450);
+        assert_eq!(m.sapling_done(1_100), 500);
+        // past the last sample: clamp
+        assert_eq!(m.sapling_done(5_000), 500);
+    }
+
+    #[test]
+    fn done_reaches_total_at_tip_and_never_exceeds_it() {
+        let m = model();
+        assert_eq!(m.done(1_100, 250, 0), m.total);
+        // over-advanced counters (e.g. tip moved) still clamp to the bar length
+        assert_eq!(m.done(1_100, 900, 7), m.total);
+        // nothing scanned yet
+        assert_eq!(m.done(100, 50, 0), 0);
+        // halfway: 500 blocks, 100 orchard, 400 sapling
+        assert_eq!(m.done(600, 150, 0), 100 + 400 + WORK_PER_BLOCK * 500);
+    }
+
+    /// Live: build the model over the sapling-sandblast region against the
+    /// public zidecar. Run with `cargo test -p zecli --lib -- --ignored live_`.
+    #[tokio::test]
+    #[ignore]
+    async fn live_work_model_over_sandblast_region() {
+        let endpoint =
+            std::env::var("ZCLI_ENDPOINT").unwrap_or_else(|_| "https://zcash.rotko.net".into());
+        let client = ZidecarClient::connect(&endpoint).await.unwrap();
+        let start = 1_700_000u32;
+        let tip = 1_780_000u32;
+        let seed = client.get_tree_states(start.saturating_sub(1)).await.unwrap();
+        let size = |h: &str| crate::witness::frontier_leaf_count(&hex::decode(h).unwrap()).unwrap();
+        let (o0, i0) = (size(&seed.orchard_tree), size(&seed.ironwood_tree));
+        let m = WorkModel::build(&client, start, tip, o0, i0).await.unwrap();
+        eprintln!("{}", m.describe());
+        for &(h, s) in &m.sapling_samples {
+            eprintln!("  sapling size @{h} = {s}");
+        }
+        let blocks = (tip - start + 1) as u64;
+        assert!(m.total > WORK_PER_BLOCK * blocks, "no shielded outputs counted");
+        assert!(
+            WorkModel::sapling_span(&m.sapling_samples) > 0,
+            "sapling sandblast region must contribute sapling outputs"
+        );
+        assert_eq!(m.done(tip, u64::MAX, u64::MAX), m.total);
     }
 }

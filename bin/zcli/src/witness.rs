@@ -210,6 +210,52 @@ pub fn frontier_tree_size(data: &[u8]) -> Result<u64, Error> {
     Ok(tree.size() as u64)
 }
 
+/// Leaf count of a serialized `CommitmentTree` frontier without interpreting
+/// the node bytes. `frontier_tree_size` decodes every node as a Pallas point,
+/// so it rejects a Sapling (Jubjub) frontier; progress accounting only needs
+/// the count, and the count depends solely on which nodes are present:
+/// `left` and `right` are one leaf each, and the parent at index `i` (level
+/// `i + 1`) stands for `2^(i + 1)` leaves. Empty input is an empty tree.
+pub fn frontier_leaf_count(data: &[u8]) -> Result<u64, Error> {
+    if data.is_empty() {
+        return Ok(0);
+    }
+    let mut pos = 0usize;
+    let read_present = |pos: &mut usize| -> Result<bool, Error> {
+        match data.get(*pos) {
+            None => Err(Error::Other("frontier truncated reading option tag".into())),
+            Some(0x01) => {
+                if *pos + 33 > data.len() {
+                    return Err(Error::Other("frontier truncated reading hash".into()));
+                }
+                *pos += 33;
+                Ok(true)
+            }
+            Some(_) => {
+                *pos += 1;
+                Ok(false)
+            }
+        }
+    };
+    let mut count = 0u64;
+    if read_present(&mut pos)? {
+        count += 1;
+    }
+    if read_present(&mut pos)? {
+        count += 1;
+    }
+    if pos >= data.len() {
+        return Ok(count);
+    }
+    let parent_count = read_compact_size(data, &mut pos)?;
+    for i in 0..parent_count {
+        if read_present(&mut pos)? {
+            count += 1u64 << (i + 1);
+        }
+    }
+    Ok(count)
+}
+
 /// A note's own pool tag must agree with the tree we are about to walk.
 ///
 /// Positions are per-tree, so replaying an ironwood note against the orchard
@@ -699,6 +745,21 @@ mod tests {
         let notes = vec![wallet_note(Pool::Ironwood, 4_000, 900_000)];
         assert!(!cached_frontier_usable("", &notes));
         assert!(!cached_frontier_usable("zzzz", &notes), "undecodable hex");
+    }
+
+    #[test]
+    fn frontier_leaf_count_matches_typed_size() {
+        // sizes that exercise left-only, left+right, and several parent levels
+        for n in [0usize, 1, 2, 3, 4, 7, 8, 13, 64, 100, 257] {
+            let mut tree: CommitmentTree<MerkleHashOrchard, 32> = CommitmentTree::empty();
+            for i in 0..n {
+                tree.append(test_hash((i % 10) as u8 + 1)).unwrap();
+            }
+            let bytes = zafu_wasm::witness::serialize_tree(&tree);
+            assert_eq!(frontier_leaf_count(&bytes).unwrap(), n as u64, "n={n}");
+            assert_eq!(frontier_tree_size(&bytes).unwrap(), n as u64, "n={n}");
+        }
+        assert_eq!(frontier_leaf_count(&[]).unwrap(), 0);
     }
 
     #[test]
