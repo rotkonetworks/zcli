@@ -1,0 +1,60 @@
+[Unit]
+Description=relay — dumb room relay (chat / FROST / poker), opaque bytes
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=relay
+Group=relay
+# gRPC (+ gRPC-web) on 50052, browser WebSocket (/ws, /metrics) on 50053.
+# In-memory only: no database, no zebrad dependency, nothing to drain on stop.
+ExecStart=/usr/local/bin/relay \
+    --listen 0.0.0.0:50052 \
+    --ws-listen 0.0.0.0:50053
+Restart=on-failure
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=10
+
+# filesystem — the relay never writes anything
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectProc=invisible
+ProcSubset=pid
+
+# network — inbound grpc + ws only, no outbound needed
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+IPAddressDeny=any
+IPAddressAllow=localhost
+IPAddressAllow=0.0.0.0/0
+
+# capabilities — none needed, runs as unprivileged user
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# syscall filter
+SystemCallFilter=@system-service
+SystemCallFilter=~@mount @reboot @swap @clock @cpu-emulation @debug @obsolete @raw-io @privileged
+SystemCallArchitectures=native
+
+# memory
+MemoryDenyWriteExecute=true
+LockPersonality=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+RemoveIPC=true
+
+# resource limits — WS connections dominate the fd budget
+LimitNOFILE=65536
+LimitCORE=0
+
+[Install]
+WantedBy=multi-user.target

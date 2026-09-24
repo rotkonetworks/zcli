@@ -152,13 +152,64 @@ impl Metrics {
 pub(crate) struct RoomManager {
     rooms: RwLock<HashMap<String, Arc<Room>>>,
     pub(crate) metrics: Metrics,
+    /// When set, every relayed message is appended (JSONL) to
+    /// `<log_dir>/<room>.jsonl`. This is the durable, IRC-style channel
+    /// history a server admin can read to catch up on anything missed.
+    /// Only PUBLIC-room traffic is meaningful here: DMs are Noise-E2EE and
+    /// never traverse this relay in the clear, so they are never logged.
+    log_dir: Option<std::path::PathBuf>,
 }
 
 impl RoomManager {
-    fn new() -> Self {
+    fn new(log_dir: Option<std::path::PathBuf>) -> Self {
         Self {
             rooms: RwLock::new(HashMap::new()),
             metrics: Metrics::default(),
+            log_dir,
+        }
+    }
+
+    /// Append one message to the per-channel history log, if logging is on.
+    /// Best-effort: a logging failure must never drop or delay a live
+    /// message, so errors are only traced. Public-room payloads are
+    /// `"nick\0text"`; we split that for readability and also keep the raw.
+    fn log_message(&self, code: &str, msg: &StoredMessage) {
+        let Some(dir) = &self.log_dir else {
+            return;
+        };
+        // Sanitize the room code into a safe filename - room codes can be
+        // arbitrary (a client may create a fixed code), so never let one
+        // escape the log dir via path separators or traversal.
+        let safe: String = code
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+            .collect();
+        if safe.is_empty() {
+            return;
+        }
+        let payload = String::from_utf8_lossy(&msg.payload);
+        let (nick, text) = match payload.split_once('\0') {
+            Some((n, t)) => (Some(n), t),
+            None => (None, payload.as_ref()),
+        };
+        let line = serde_json::json!({
+            "ts": msg.timestamp_ms,
+            "seq": msg.sequence,
+            "room": code,
+            "sender": hex::encode(&msg.sender_id),
+            "nick": nick,
+            "text": text,
+        })
+        .to_string();
+        let path = dir.join(format!("{safe}.jsonl"));
+        use std::io::Write as _;
+        match std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+            Ok(mut f) => {
+                if let Err(e) = writeln!(f, "{line}") {
+                    tracing::warn!("history log write failed for #{}: {}", code, e);
+                }
+            }
+            Err(e) => tracing::warn!("history log open failed for #{}: {}", code, e),
         }
     }
 
@@ -437,6 +488,8 @@ impl RoomManager {
         };
         messages.push(msg.clone());
         drop(messages);
+        // durable per-channel history (IRC-style admin log), if enabled
+        self.log_message(code, &msg);
         self.metrics.messages.fetch_add(1, Ordering::Relaxed);
         self.metrics
             .message_bytes
@@ -726,6 +779,27 @@ struct Args {
     /// WebSocket listen address (for browser clients)
     #[arg(long, default_value = "0.0.0.0:50053", env = "RELAY_WS_LISTEN")]
     ws_listen: std::net::SocketAddr,
+    /// Well-known public channels seeded as persistent rooms at startup
+    /// (comma-separated). Without these, the first visitor joining a
+    /// default channel (e.g. #zitadel) gets "room not found" because
+    /// creating a room is gated (zafu-pro, client-side) - so nobody can
+    /// bootstrap the lobby. Seeding them here makes the public channels
+    /// joinable by anyone; ad-hoc/private room creation stays gated.
+    /// Keep in sync with the client's DEFAULT_CHANNELS
+    /// (apps/extension/src/zitadel/main.tsx).
+    #[arg(
+        long,
+        default_value = "zitadel,dev,support",
+        env = "RELAY_DEFAULT_CHANNELS"
+    )]
+    default_channels: String,
+    /// Directory for durable per-channel history logs (JSONL, one file per
+    /// room). When set, every relayed PUBLIC-room message is appended so a
+    /// server admin has the full "everything ever said" backlog and misses
+    /// nothing across restarts. Unset = no on-disk history (in-memory only).
+    /// DMs are E2EE and never logged.
+    #[arg(long, env = "RELAY_LOG_DIR")]
+    log_dir: Option<std::path::PathBuf>,
 }
 
 #[tokio::main]
@@ -740,7 +814,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
     // shared room manager
-    let manager = Arc::new(RoomManager::new());
+    if let Some(dir) = &args.log_dir {
+        if let Err(e) = std::fs::create_dir_all(dir) {
+            eprintln!("error: cannot create --log-dir {}: {}", dir.display(), e);
+            std::process::exit(1);
+        }
+        info!("history logging on -> {}", dir.display());
+    }
+    let manager = Arc::new(RoomManager::new(args.log_dir.clone()));
+
+    // Seed the well-known public channels as persistent (ttl=0) rooms so any
+    // visitor can join them. create_room_with_code is idempotent on a fixed
+    // code, so this is a no-op on restart if a room already exists.
+    for name in args
+        .default_channels
+        .split(',')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+    {
+        match manager
+            .create_room_with_code(Some(name.to_string()), 0, 0)
+            .await
+        {
+            Ok((code, _)) => info!("seeded default channel #{}", code),
+            Err(e) => info!("could not seed channel #{}: {}", name, e),
+        }
+    }
 
     // background cleanup
     let manager_bg = manager.clone();
