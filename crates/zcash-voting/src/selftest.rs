@@ -22,7 +22,6 @@ use orchard::{
     NOTE_COMMITMENT_TREE_DEPTH as TEST_TREE_DEPTH,
 };
 use pasta_curves::pallas;
-use rand::rngs::OsRng;
 use voting_circuits::delegation::{ImtProofData, ImtProvider, SpacedLeafImtProvider};
 use zcash_keys::keys::UnifiedSpendingKey;
 use zcash_protocol::consensus::MAIN_NETWORK;
@@ -124,8 +123,8 @@ pub fn run_selftest_delegation_proof() -> Result<DelegationProofResult, VotingEr
         auth_path_hashes[0] = leaves[i ^ 1];
         auth_path_hashes[1] = l1[(i >> 1) ^ 1];
         auth_path_hashes[2] = l2[(i >> 2) ^ 1];
-        for level in 3..TEST_TREE_DEPTH {
-            auth_path_hashes[level] = MerkleHashOrchard::empty_root(Level::from(level as u8));
+        for (level, slot) in auth_path_hashes.iter_mut().enumerate().skip(3) {
+            *slot = MerkleHashOrchard::empty_root(Level::from(level as u8));
         }
 
         let cmx = ExtractedNoteCommitment::from(note.commitment());

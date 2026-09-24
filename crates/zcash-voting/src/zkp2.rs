@@ -152,7 +152,7 @@ pub fn build_vote_commitment(
     // Generate spend-auth randomizer for the voting key.
     // The caller will need alpha_v to sign the TX2 sighash with rsk_v = ask_v.randomize(&alpha_v).
     let alpha_v = pallas::Scalar::random(&mut crate::OsRng10);
-    let sk_for_proof = sk.clone();
+    let sk_for_proof = sk;
     // Circuit synthesis + MockProver + proof generation can overflow a default
     // thread stack, so native runs it on a dedicated 64 MiB-stack thread. wasm32
     // has no `std::thread`; wasm-bindgen-rayon supplies halo2's parallelism, so

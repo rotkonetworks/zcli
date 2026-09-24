@@ -8,25 +8,6 @@ use std::error::Error;
 use base64::Engine;
 
 // HTTP helpers
-fn post_json(url: &str, body: &serde_json::Value) -> Result<(u16, serde_json::Value), Box<dyn Error>> {
-    let client = reqwest::blocking::Client::new();
-    let resp = client
-        .post(url)
-        .header("Content-Type", "application/json")
-        .json(body)
-        .send()?;
-    let status = resp.status().as_u16();
-    let text = resp.text()?;
-
-    if text.is_empty() {
-        return Ok((status, serde_json::json!({})));
-    }
-
-    let json: serde_json::Value = serde_json::from_str(&text)
-        .map_err(|e| Box::from(format!("Failed to parse response: {}: {}", e, text)) as Box<dyn Error>)?;
-    Ok((status, json))
-}
-
 fn get_json(url: &str) -> Result<(u16, serde_json::Value), Box<dyn Error>> {
     let client = reqwest::blocking::Client::new();
     let resp = client.get(url).send()?;
@@ -55,11 +36,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     let create_payload = serde_json::json!({
         "creator": "sv199gzrfjw5crp5jvfp4x3ua477aktgshswgh3fh",
         "snapshot_height": 42000,
-        "snapshot_blockhash": base64::engine::general_purpose::STANDARD.encode(&[0xAAu8; 32]),
-        "proposals_hash": base64::engine::general_purpose::STANDARD.encode(&[0xBBu8; 32]),
+        "snapshot_blockhash": base64::engine::general_purpose::STANDARD.encode([0xAAu8; 32]),
+        "proposals_hash": base64::engine::general_purpose::STANDARD.encode([0xBBu8; 32]),
         "vote_end_time": vote_end_time,
-        "nullifier_imt_root": base64::engine::general_purpose::STANDARD.encode(&[0x01; 32]),
-        "nc_root": base64::engine::general_purpose::STANDARD.encode(&[0x02; 32]),
+        "nullifier_imt_root": base64::engine::general_purpose::STANDARD.encode([0x01; 32]),
+        "nc_root": base64::engine::general_purpose::STANDARD.encode([0x02; 32]),
         "proposals": [{
             "id": 1,
             "title": "zafu v09 integration",
@@ -78,7 +59,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // Write file inside container using docker exec with tee
     let mut child = std::process::Command::new("docker")
-        .args(&["exec", "-i", "val1", "tee", payload_file])
+        .args(["exec", "-i", "val1", "tee", payload_file])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .spawn()?;
@@ -93,7 +74,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     println!("[+] Creating voting session via docker exec (vote_end_time={})", vote_end_time);
     let output = std::process::Command::new("docker")
-        .args(&[
+        .args([
             "exec", "val1", "svoted",
             "tx", "vote", "create-voting-session", payload_file,
             "--from", "vote-manager-1",

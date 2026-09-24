@@ -1076,6 +1076,7 @@ fn truncate_utf8_prefix(value: &str, max_bytes: usize) -> &str {
     &value[..end]
 }
 
+#[cfg(feature = "native")]
 fn array32(label: &str, value: Vec<u8>) -> Result<[u8; 32], VotingError> {
     value
         .try_into()
@@ -1084,6 +1085,7 @@ fn array32(label: &str, value: Vec<u8>) -> Result<[u8; 32], VotingError> {
         })
 }
 
+#[cfg(feature = "native")]
 fn array64(label: &str, value: Vec<u8>) -> Result<[u8; 64], VotingError> {
     value
         .try_into()
@@ -1092,6 +1094,7 @@ fn array64(label: &str, value: Vec<u8>) -> Result<[u8; 64], VotingError> {
         })
 }
 
+#[cfg(feature = "native")]
 fn array32x_bundle_note_slots(
     label: &str,
     values: Vec<Vec<u8>>,

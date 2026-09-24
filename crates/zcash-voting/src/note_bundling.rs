@@ -337,7 +337,7 @@ fn bundle_addition_would_exceed_threshold(
     match threshold {
         Some(threshold) => current_total
             .checked_add(note_value)
-            .map_or(true, |total| total > threshold),
+            .is_none_or(|total| total > threshold),
         None => false,
     }
 }

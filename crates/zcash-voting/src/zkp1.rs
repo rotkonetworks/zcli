@@ -16,7 +16,6 @@ use orchard::{
     NOTE_COMMITMENT_TREE_DEPTH,
 };
 use pasta_curves::{pallas, vesta};
-use rand::rngs::OsRng;
 use voting_circuits::delegation::{
     build_delegation_bundle, delegation_cached_keys, ImtError, ImtProofData, ImtProvider,
     PrecomputedRandomness, RealNoteInput,

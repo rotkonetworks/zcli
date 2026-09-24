@@ -2434,7 +2434,6 @@ pub fn build_unsigned_transaction(
     use orchard::note::{RandomSeed, Rho};
     use orchard::tree::{Anchor, MerkleHashOrchard, MerklePath as OrchardMerklePath};
     use orchard::value::NoteValue;
-    use rand::rngs::OsRng;
     use zcash_keys::keys::UnifiedFullViewingKey;
     use zcash_protocol::consensus::{MainNetwork, TestNetwork};
     use zcash_protocol::value::ZatBalance;
@@ -3439,7 +3438,6 @@ pub fn build_unsigned_pczt(
 ) -> Result<JsValue, JsError> {
     use ::zcash_transparent as transparent;
     use orchard::tree::Anchor;
-    use rand::rngs::OsRng;
     use zcash_keys::encoding::AddressCodec;
     use zcash_keys::keys::UnifiedFullViewingKey;
     use zcash_primitives::transaction::builder::{BuildConfig, Builder, BundlePadding};
@@ -3964,7 +3962,6 @@ where
     P: zcash_protocol::consensus::Parameters,
 {
     use orchard::circuit::OrchardCircuitVersion;
-    use rand::rngs::OsRng;
     use zcash_primitives::transaction::builder::{BuildConfig, Builder, BundlePadding};
     use zcash_primitives::transaction::fees::fixed::FeeRule as FixedFeeRule;
     use zcash_primitives::transaction::TxVersion;
@@ -4188,7 +4185,6 @@ pub fn build_signed_turnstile_migration_core<P>(
 where
     P: zcash_protocol::consensus::Parameters,
 {
-    use rand_core::OsRng;
 
     let (pczt, _migrated) = build_turnstile_migration_pczt_proven(
         params,
@@ -4738,6 +4734,7 @@ pub struct IronwoodPcztWithFrost {
     pub spend_indices: Vec<u32>,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn build_ironwood_send_pczt_proven<P>(
     params: P,
     fvk: &orchard::keys::FullViewingKey,
@@ -4754,7 +4751,6 @@ where
     P: zcash_protocol::consensus::Parameters,
 {
     use orchard::circuit::OrchardCircuitVersion;
-    use rand::rngs::OsRng;
     use zcash_primitives::transaction::builder::{BuildConfig, Builder, BundlePadding};
     use zcash_primitives::transaction::fees::fixed::FeeRule as FixedFeeRule;
     use zcash_primitives::transaction::TxVersion;
@@ -4979,7 +4975,6 @@ pub fn build_signed_ironwood_send_core<P>(
 where
     P: zcash_protocol::consensus::Parameters,
 {
-    use rand_core::OsRng;
 
     let IronwoodPcztWithFrost { pczt, .. } = build_ironwood_send_pczt_proven(
         params,
@@ -6583,7 +6578,6 @@ pub fn build_signed_spend_transaction(
     use orchard::note::{RandomSeed, Rho};
     use orchard::tree::{Anchor, MerkleHashOrchard, MerklePath as OrchardMerklePath};
     use orchard::value::NoteValue;
-    use rand::rngs::OsRng;
     use zcash_protocol::value::ZatBalance;
 
     // FAIL-CLOSED, BEFORE any proving: see build_unsigned_transaction.
@@ -7343,7 +7337,6 @@ pub fn build_shielding_transaction(
     use orchard::builder::{Builder, BundleType};
     use orchard::tree::Anchor;
     use orchard::value::NoteValue;
-    use rand::rngs::OsRng;
     use zcash_protocol::value::ZatBalance;
 
     // FAIL CLOSED: never build an orchard shielding tx at/after NU6.3.
@@ -7819,7 +7812,6 @@ where
     P: zcash_protocol::consensus::Parameters,
 {
     use orchard::circuit::OrchardCircuitVersion;
-    use rand::rngs::OsRng;
     use zcash_primitives::transaction::builder::{BuildConfig, Builder, BundlePadding};
     use zcash_primitives::transaction::fees::fixed::FeeRule as FixedFeeRule;
     use zcash_primitives::transaction::TxVersion;
@@ -8494,7 +8486,6 @@ pub fn build_unsigned_shielding_transaction(
     use orchard::builder::{Builder, BundleType};
     use orchard::tree::Anchor;
     use orchard::value::NoteValue;
-    use rand::rngs::OsRng;
     use zcash_protocol::value::ZatBalance;
 
     // FAIL CLOSED: never build an orchard shielding tx at/after NU6.3.

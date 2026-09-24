@@ -2430,7 +2430,7 @@ async fn cmd_multisig(cli: &Cli, action: &MultisigAction) -> Result<(), Error> {
     match action {
         MultisigAction::RelayKeygen => {
             let (private, public) = frost_spend::relay_cipher::generate_keypair()
-                .map_err(|e| Error::Other(e))?;
+                .map_err(Error::Other)?;
             if cli.json {
                 println!(
                     "{}",
@@ -2784,7 +2784,6 @@ async fn cmd_multisig(cli: &Cli, action: &MultisigAction) -> Result<(), Error> {
 ///
 /// The coordinator omits --session, creates one and prints its id; the others
 /// pass that id. Everything after that is symmetric.
-#[allow(clippy::too_many_arguments)]
 #[allow(clippy::too_many_arguments)]
 async fn cmd_relay_dkg(
     cli: &Cli,

@@ -12,7 +12,7 @@ use orchard::note::{NoteVersion, RandomSeed, Rho};
 use orchard::pczt::Zip32Derivation;
 use orchard::tree::{MerkleHashOrchard, MerklePath};
 use orchard::value::NoteValue;
-use orchard::{Address, Anchor};
+use orchard::Address;
 use voting_circuits::delegation::synthetic_padding_note_parts;
 use zcash_primitives::transaction::builder::PcztParts;
 use zcash_primitives::transaction::TxVersion;
@@ -135,11 +135,14 @@ fn random_rseed(rng: &mut impl RngCore, rho: &Rho) -> (RandomSeed, [u8; 32]) {
     }
 }
 
+/// `(rho, rseed)` byte pair for one synthetic padding note.
+pub(crate) type PaddedNoteSecret = (Vec<u8>, Vec<u8>);
+
 /// Sample the synthetic padding-note secrets used to fill delegation's fixed
 /// five-note circuit arity.
 pub(crate) fn sample_padded_note_secrets(
     notes_len: usize,
-) -> Result<Vec<(Vec<u8>, Vec<u8>)>, VotingError> {
+) -> Result<Vec<PaddedNoteSecret>, VotingError> {
     if notes_len == 0 || notes_len > BUNDLE_NOTE_SLOTS {
         return Err(VotingError::InvalidInput {
             message: format!("expected 1-{BUNDLE_NOTE_SLOTS} notes, got {notes_len}"),
@@ -281,6 +284,7 @@ fn validate_consensus_branch_id(
 /// - `seed_fingerprint`: 32-byte ZIP-32 seed fingerprint (Keystone needs this to
 ///   identify which seed to derive the spending key from)
 /// - `account_index`: ZIP-32 account index (typically 0)
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn build_governance_pczt(
     notes: &[NoteInfo],
     params: &VotingRoundParams,
@@ -492,8 +496,7 @@ pub(crate) fn build_governance_pczt(
     let dummy_merkle_path = MerklePath::from_parts(0u32, dummy_auth_path);
     let anchor = {
         let cm = signed_note.commitment();
-        let root = dummy_merkle_path.root(cm.into());
-        Anchor::from(root)
+        dummy_merkle_path.root(cm.into())
     };
 
     // Add output to hotkey address. The circuit commits to a zero-value output
@@ -523,18 +526,13 @@ pub(crate) fn build_governance_pczt(
 
         // Add the governance signed note as a spend.
         builder
-            .add_spend(fvk.clone(), signed_note.clone(), dummy_merkle_path.clone())
+            .add_spend(fvk.clone(), signed_note, dummy_merkle_path.clone())
             .map_err(|e| VotingError::Internal {
                 message: format!("Builder::add_spend failed: {:?}", e),
             })?;
 
         builder
-            .add_output(
-                Some(ovk.clone()),
-                hotkey_addr.clone(),
-                NoteValue::ZERO,
-                memo,
-            )
+            .add_output(Some(ovk.clone()), hotkey_addr, NoteValue::ZERO, memo)
             .map_err(|e| VotingError::Internal {
                 message: format!("Builder::add_output failed: {:?}", e),
             })?;

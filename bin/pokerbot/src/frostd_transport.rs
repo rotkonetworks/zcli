@@ -53,7 +53,6 @@ pub struct FrostdTransport {
     client: Client,
     cipher: Cipher,
     session_id: Option<uuid::Uuid>,
-    peers: Vec<PublicKey>,
 }
 
 impl FrostdTransport {
@@ -90,7 +89,7 @@ impl FrostdTransport {
             .challenge;
 
         let signature = private_key
-            .sign(challenge.as_bytes(), &mut rand::rngs::OsRng)
+            .sign(challenge.as_bytes(), rand::rngs::OsRng)
             .map_err(|e| TransportError::Cipher(e.to_string()))?;
 
         client
@@ -106,7 +105,6 @@ impl FrostdTransport {
             client,
             cipher,
             session_id: None,
-            peers,
         })
     }
 

@@ -1121,7 +1121,7 @@ impl FrostRelayCipher {
             .map_err(|e| JsError::new(&format!("peers json: {e}")))?;
         let peers = peers
             .iter()
-            .map(|p| hex::decode(p))
+            .map(hex::decode)
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| JsError::new(&format!("peer key hex: {e}")))?;
 

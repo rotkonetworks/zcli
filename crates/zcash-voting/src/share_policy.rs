@@ -108,7 +108,7 @@ pub fn last_moment_buffer_seconds(
     }
     let numerator = u128::from(duration) * u128::from(LAST_MOMENT_BUFFER_FRACTION_NUMERATOR);
     let denominator = u128::from(LAST_MOMENT_BUFFER_FRACTION_DENOMINATOR);
-    let buffer = (numerator + denominator - 1) / denominator;
+    let buffer = numerator.div_ceil(denominator);
     let capped = buffer.min(u128::from(LAST_MOMENT_BUFFER_MAX_SECONDS));
     Some(capped as u64)
 }
@@ -583,6 +583,7 @@ pub fn plan_share_submission(
 /// cannot accidentally reuse one `submit_at` or helper target order for every
 /// share. Use `share_submission_random_bytes_required` to size the two entropy
 /// inputs.
+#[allow(clippy::too_many_arguments)]
 pub fn plan_share_submissions(
     share_count: usize,
     server_urls: &[String],

@@ -76,6 +76,7 @@ pub fn build_share_payloads(
 ///             vote_authority_note_new || vote_commitment ||
 ///             proposal_id(4 LE, padded 32) || anchor_height(8 LE, padded 32))
 /// ```
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn sign_cast_vote(
     hotkey_seed: &[u8],
     network: Network,
@@ -130,8 +131,7 @@ pub(crate) fn sign_cast_vote(
     )?;
 
     // Sign
-    let mut rng = crate::OsRng10;
-    let sig = rsk_v.sign(&mut rng, &sighash);
+    let sig = rsk_v.sign(crate::OsRng10, &sighash);
     let sig_bytes: [u8; 64] = (&sig).into();
 
     Ok(CastVoteSignature {

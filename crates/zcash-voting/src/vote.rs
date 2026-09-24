@@ -12,10 +12,11 @@ use rusqlite::{named_params, OptionalExtension};
 #[cfg(feature = "native")]
 use crate::round::VotingDb;
 use crate::types::{
-    validate_proposal_id, validate_vote_decision, CastVoteSignature, EncryptedShare, Network,
-    ProgressReporter, SharePayload, VoteCommitmentBundle, VotingError, VotingHotkey,
-    WireEncryptedShare,
+    validate_proposal_id, validate_vote_decision, EncryptedShare, SharePayload,
+    VoteCommitmentBundle, VotingError, VotingHotkey, WireEncryptedShare,
 };
+#[cfg(feature = "native")]
+use crate::types::{CastVoteSignature, Network, ProgressReporter};
 
 /// Number of siblings in a vote-authority-note witness.
 pub const VAN_AUTH_PATH_LEN: usize = 24;
@@ -160,6 +161,7 @@ pub struct SignedVoteCommitments {
 /// This wraps the signed commitment payload with the round and bundle keys used
 /// to recover chain submission fields, track helper shares, and record
 /// confirmation state.
+#[cfg(feature = "native")]
 #[derive(Clone, Debug)]
 pub struct CommittedVote {
     round_id: String,
@@ -449,6 +451,7 @@ impl<'a> VoteSigner<'a> {
     }
 }
 
+#[cfg(feature = "native")]
 struct CastVoteSigningFields<'a> {
     vote_round_id: &'a str,
     r_vpk_bytes: &'a [u8],
@@ -460,12 +463,14 @@ struct CastVoteSigningFields<'a> {
     alpha_v: &'a [u8],
 }
 
+#[cfg(feature = "native")]
 fn signer_secret_and_network<'a>(signer: VoteSigner<'a>) -> (&'a [u8], Network) {
     match signer {
         VoteSigner::Hotkey { hotkey } => (hotkey.stored_secret(), hotkey.network()),
     }
 }
 
+#[cfg(feature = "native")]
 fn sign_cast_vote_with_signer(
     signer: VoteSigner<'_>,
     fields: CastVoteSigningFields<'_>,
@@ -668,12 +673,14 @@ pub fn commit(
     })
 }
 
+#[cfg(feature = "native")]
 struct VoteProofProgressReporter<'a> {
     proposal_id: u32,
     bundle_index: u32,
     stages: &'a dyn crate::types::VoteCommitStageReporter,
 }
 
+#[cfg(feature = "native")]
 impl ProgressReporter for VoteProofProgressReporter<'_> {
     fn on_progress(&self, progress: f64) {
         self.stages.on_stage(VoteCommitStage::ProofProgress {
@@ -954,6 +961,7 @@ fn store_recovery_json_for_vote(
     Ok(())
 }
 
+#[cfg(feature = "native")]
 fn vote_not_found_error(round_id: &str, bundle_index: u32, proposal_id: u32) -> VotingError {
     VotingError::InvalidInput {
         message: format!(
@@ -962,6 +970,7 @@ fn vote_not_found_error(round_id: &str, bundle_index: u32, proposal_id: u32) -> 
     }
 }
 
+#[cfg(feature = "native")]
 fn vc_position_already_recorded_error(
     round_id: &str,
     bundle_index: u32,
@@ -974,12 +983,14 @@ fn vc_position_already_recorded_error(
     }
 }
 
+#[cfg(feature = "native")]
 fn invalid_stored_vc_position_error(stored_position: i64) -> VotingError {
     VotingError::Internal {
         message: format!("stored vc_tree_position must be non-negative, got {stored_position}"),
     }
 }
 
+#[cfg(feature = "native")]
 fn vote_identity_changed_error(
     round_id: &str,
     bundle_index: u32,
@@ -993,6 +1004,7 @@ fn vote_identity_changed_error(
     }
 }
 
+#[cfg(feature = "native")]
 fn vote_recovery_identity_mismatch_error(
     round_id: &str,
     bundle_index: u32,
@@ -1006,12 +1018,14 @@ fn vote_recovery_identity_mismatch_error(
     }
 }
 
+#[cfg(feature = "native")]
 fn invalid_stored_choice_error(stored_choice: i64) -> VotingError {
     VotingError::Internal {
         message: format!("stored vote choice must be non-negative, got {stored_choice}"),
     }
 }
 
+#[cfg(feature = "native")]
 fn validate_recovery_matches_stored_vote(
     recovery: &VoteRecoveryBundle,
     round_id: &str,
@@ -1322,6 +1336,7 @@ fn commit_from_recovery(bundle: &VoteRecoveryBundle) -> Result<VoteCommit, Votin
     })
 }
 
+#[cfg(feature = "native")]
 fn stored_vote_commitment_bytes(bundle: &VoteRecoveryBundle) -> Result<Vec<u8>, VotingError> {
     serde_json::to_vec(&serde_json::json!({
         "van_nullifier": hex::encode(bundle.van_nullifier),
@@ -1334,6 +1349,7 @@ fn stored_vote_commitment_bytes(bundle: &VoteRecoveryBundle) -> Result<Vec<u8>, 
     })
 }
 
+#[cfg(feature = "native")]
 fn recovery_matches_draft(bundle: &VoteRecoveryBundle, draft: &DraftVote) -> bool {
     bundle.vote_decision == draft.choice
         && bundle.num_options == draft.num_options

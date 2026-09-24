@@ -1,6 +1,8 @@
 use orchard::bundle::BundleVersion;
 use orchard::note::NoteVersion;
-use zcash_protocol::consensus::{BlockHeight, BranchId, Parameters};
+use zcash_protocol::consensus::BranchId;
+#[cfg(feature = "native")]
+use zcash_protocol::consensus::{BlockHeight, Parameters};
 
 use crate::types::VotingError;
 
@@ -21,6 +23,7 @@ impl VotingShieldedProtocol {
         })
     }
 
+    #[cfg(feature = "native")]
     pub(crate) fn for_height<P: Parameters>(
         params: &P,
         height: BlockHeight,
@@ -40,6 +43,7 @@ impl VotingShieldedProtocol {
         }
     }
 
+    #[cfg(feature = "native")]
     pub(crate) fn pool(self) -> &'static str {
         match self {
             Self::Ironwood => "ironwood",
