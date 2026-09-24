@@ -399,10 +399,12 @@ async fn shutdown_signal() {
 }
 
 // generated proto modules
+#[allow(clippy::result_large_err, clippy::double_must_use)]
 pub mod zidecar {
     tonic::include_proto!("zidecar.v1");
 }
 
+#[allow(clippy::result_large_err, clippy::double_must_use)]
 pub mod lightwalletd {
     tonic::include_proto!("cash.z.wallet.sdk.rpc");
 }

@@ -103,6 +103,8 @@ pub enum RelayError {
 /// The relay ops the DKG joiner protocol needs, so it runs over either the old
 /// WS relay (`FrostRelayClient`) or frostd (`FrostdDkg`) without forking the
 /// protocol - mirrors poker-escrow's `frost_dkg::DkgTransport`.
+// async_trait expands `Result`-returning methods with an extra #[must_use].
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub(crate) trait DkgTransport: Send {
     async fn dkg_send(&mut self, payload: &[u8]) -> Result<(), RelayError>;

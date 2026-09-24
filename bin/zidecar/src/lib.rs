@@ -22,10 +22,12 @@ pub mod witness;
 pub mod zebrad;
 
 // proto modules (same names as main.rs uses)
+#[allow(clippy::result_large_err, clippy::double_must_use)]
 pub mod zidecar {
     tonic::include_proto!("zidecar.v1");
 }
 
+#[allow(clippy::result_large_err, clippy::double_must_use)]
 pub mod lightwalletd {
     tonic::include_proto!("cash.z.wallet.sdk.rpc");
 }

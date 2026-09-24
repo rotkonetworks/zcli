@@ -28,6 +28,7 @@ use tokio_stream::wrappers::BroadcastStream;
 use tonic::{Request, Response, Status};
 use tracing::info;
 
+#[allow(clippy::result_large_err, clippy::double_must_use)]
 mod proto {
     tonic::include_proto!("relay.v1");
 }

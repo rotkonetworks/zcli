@@ -59,10 +59,12 @@ impl NullifierProof {
     }
 }
 
+#[allow(clippy::result_large_err, clippy::double_must_use)]
 pub mod zidecar_proto {
     tonic::include_proto!("zidecar.v1");
 }
 
+#[allow(clippy::result_large_err, clippy::double_must_use)]
 pub mod lightwalletd_proto {
     tonic::include_proto!("cash.z.wallet.sdk.rpc");
 }

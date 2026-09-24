@@ -97,6 +97,7 @@ fn validate_intent(intent: &proto::TransactionIntent) -> Result<(), Status> {
 
 /// common path: open wallet, select notes, build witnesses, return everything
 /// needed to construct a transaction
+#[allow(clippy::result_large_err)] // tonic::Status is the idiomatic error; worth the size
 async fn prepare_spend(
     wallet_path: &str,
     endpoint: &str,

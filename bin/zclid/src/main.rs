@@ -8,6 +8,7 @@ mod auth;
 mod service;
 mod syncer;
 
+#[allow(clippy::result_large_err, clippy::double_must_use)]
 pub mod proto {
     tonic::include_proto!("zclid.v1");
 }

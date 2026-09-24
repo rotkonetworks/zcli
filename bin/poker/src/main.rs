@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use tokio_stream::StreamExt;
 use tonic::transport::Channel;
 
+#[allow(clippy::result_large_err, clippy::double_must_use)]
 mod proto {
     tonic::include_proto!("relay.v1");
 }
