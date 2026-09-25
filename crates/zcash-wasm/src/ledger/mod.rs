@@ -24,6 +24,7 @@
 pub(crate) mod apdu;
 mod parse;
 mod serializer;
+mod stamp;
 
 use std::collections::HashSet;
 
@@ -677,6 +678,75 @@ pub fn ledger_finalize_pczt_signing(
 ) -> Result<Vec<u8>, JsError> {
     let responses = responses_from_js(&responses)?;
     finalize_pczt_signing(pczt, &responses).map_err(js_err)
+}
+
+/// Stamps the Ledger account's derivations onto a zafu-built PCZT so the
+/// signing plan can serialize it. `transparent_paths` is an array of
+/// `{ input_index, scope, address_index, pubkey: Uint8Array(33) }`, one per
+/// transparent input. Idempotent; refuses to overwrite a different derivation.
+#[wasm_bindgen]
+pub fn ledger_stamp_derivations(
+    pczt: &[u8],
+    seed_fingerprint: &[u8],
+    account_index: u32,
+    transparent_paths: JsValue,
+) -> Result<Vec<u8>, JsError> {
+    let seed_fingerprint: [u8; 32] = seed_fingerprint
+        .try_into()
+        .map_err(|_| JsError::new("protocol_error: seed fingerprint must be 32 bytes"))?;
+    let paths = transparent_paths_from_js(&transparent_paths)?;
+    stamp::stamp_derivations(pczt, &seed_fingerprint, account_index, &paths).map_err(js_err)
+}
+
+fn transparent_paths_from_js(value: &JsValue) -> Result<Vec<stamp::TransparentPath>, JsError> {
+    if value.is_undefined() || value.is_null() {
+        return Ok(Vec::new());
+    }
+    let array = value
+        .dyn_ref::<js_sys::Array>()
+        .ok_or_else(|| JsError::new("protocol_error: transparent_paths must be an array"))?;
+    array
+        .iter()
+        .enumerate()
+        .map(|(n, entry)| {
+            let field = |key: &str| {
+                js_sys::Reflect::get(&entry, &JsValue::from_str(key)).map_err(|_| {
+                    JsError::new(&format!(
+                        "protocol_error: transparent_paths[{n}] is not an object"
+                    ))
+                })
+            };
+            let number = |key: &str| -> Result<u32, JsError> {
+                let value = field(key)?.as_f64().ok_or_else(|| {
+                    JsError::new(&format!(
+                        "protocol_error: transparent_paths[{n}].{key} must be a number"
+                    ))
+                })?;
+                if value.fract() != 0.0 || !(0.0..=u32::MAX as f64).contains(&value) {
+                    return Err(JsError::new(&format!(
+                        "protocol_error: transparent_paths[{n}].{key} must be a u32"
+                    )));
+                }
+                Ok(value as u32)
+            };
+            let pubkey: [u8; 33] = field("pubkey")?
+                .dyn_into::<js_sys::Uint8Array>()
+                .map(|bytes| bytes.to_vec())
+                .ok()
+                .and_then(|bytes| bytes.try_into().ok())
+                .ok_or_else(|| {
+                    JsError::new(&format!(
+                        "protocol_error: transparent_paths[{n}].pubkey must be a 33-byte Uint8Array"
+                    ))
+                })?;
+            Ok(stamp::TransparentPath {
+                input_index: number("input_index")?,
+                scope: number("scope")?,
+                address_index: number("address_index")?,
+                pubkey,
+            })
+        })
+        .collect()
 }
 
 #[cfg(test)]

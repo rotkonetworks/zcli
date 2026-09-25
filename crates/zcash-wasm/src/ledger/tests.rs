@@ -69,8 +69,13 @@ fn secp_key() -> (secp256k1::SecretKey, secp256k1::PublicKey) {
 /// A transparent-only PCZT with `inputs` P2PKH inputs and `outputs` outputs,
 /// each input carrying exactly one BIP-32 derivation (as zafu must stamp).
 fn transparent_pczt_n(inputs: usize, outputs: usize) -> Vec<u8> {
+    let pczt = transparent_pczt_unstamped(inputs, outputs);
+    stamp_transparent_fixture(&pczt, inputs)
+}
+
+/// The same transparent PCZT as zafu would hand over: no derivations.
+fn transparent_pczt_unstamped(inputs: usize, outputs: usize) -> Vec<u8> {
     let (_, pubkey) = secp_key();
-    let pubkey_bytes = pubkey.serialize();
     let address = TransparentAddress::from_pubkey(&pubkey);
 
     let mut builder = Builder::new(
@@ -109,10 +114,17 @@ fn transparent_pczt_n(inputs: usize, outputs: usize) -> Vec<u8> {
     let PcztResult { pczt_parts, .. } = builder
         .build_for_pczt(crate::OsRng10, &zip317::FeeRule::standard())
         .unwrap();
-    let pczt = IoFinalizer::new(Creator::build_from_parts(pczt_parts).unwrap())
+    IoFinalizer::new(Creator::build_from_parts(pczt_parts).unwrap())
         .finalize_io()
-        .unwrap();
+        .unwrap()
+        .serialize()
+        .unwrap()
+}
 
+fn stamp_transparent_fixture(pczt: &[u8], inputs: usize) -> Vec<u8> {
+    let (_, pubkey) = secp_key();
+    let pubkey_bytes = pubkey.serialize();
+    let pczt = pczt::Pczt::parse(pczt).unwrap();
     let derivation = || {
         transparent::pczt::Bip32Derivation::parse(
             [0x22; 32],
@@ -156,6 +168,16 @@ fn shielded_bundle(
     sk: &SpendingKey,
     spend: bool,
     outputs: &[u64],
+) -> orchard::pczt::Bundle {
+    shielded_bundle_opts(version, sk, spend, outputs, true)
+}
+
+fn shielded_bundle_opts(
+    version: BundleVersion,
+    sk: &SpendingKey,
+    spend: bool,
+    outputs: &[u64],
+    derive: bool,
 ) -> orchard::pczt::Bundle {
     let fvk = FullViewingKey::from(sk);
     let rho = Rho::from_bytes(&[1; 32]).into_option().unwrap();
@@ -205,7 +227,7 @@ fn shielded_bundle(
         }
     }
     let (mut bundle, metadata) = builder.build_for_pczt(crate::OsRng10).unwrap();
-    if spend {
+    if spend && derive {
         bundle
             .update_with(|mut bundle| {
                 bundle.update_action_with(metadata.spend_action_index(0).unwrap(), |mut action| {
@@ -785,4 +807,356 @@ fn account_fingerprint_is_stable_and_account_scoped() {
     assert_eq!(first, account_fingerprint("uview-test", 0));
     assert_ne!(first, account_fingerprint("uview-test", 1));
     assert_ne!(first, account_fingerprint("uview-other", 0));
+}
+
+// ---------------------------------------------------------------------------
+// derivation stamping (zafu's builders record none)
+// ---------------------------------------------------------------------------
+
+const FP: [u8; 32] = [0x22; 32];
+
+fn our_path(input_index: u32) -> stamp::TransparentPath {
+    stamp::TransparentPath {
+        input_index,
+        scope: 0,
+        address_index: 0,
+        pubkey: secp_key().1.serialize(),
+    }
+}
+
+fn assert_idempotent(stamped: &[u8], paths: &[stamp::TransparentPath]) {
+    assert_eq!(
+        stamp::stamp_derivations(stamped, &FP, 0, paths).unwrap(),
+        stamped,
+        "stamping twice must give the same bytes"
+    );
+}
+
+#[test]
+fn stamping_makes_a_transparent_pczt_signable() {
+    let raw = transparent_pczt_unstamped(2, 1);
+    assert!(pczt_signing_plan(&raw, true)
+        .unwrap_err()
+        .contains("exactly one BIP-32 derivation"));
+
+    let paths = [our_path(0), our_path(1)];
+    let stamped = stamp::stamp_derivations(&raw, &FP, 0, &paths).unwrap();
+    assert_idempotent(&stamped, &paths);
+    let plan = pczt_signing_plan(&stamped, true).unwrap();
+    let signed = finalize_pczt_signing(
+        &stamped,
+        &device_responses(&stamped, &plan, &spending_key(1)),
+    )
+    .unwrap();
+    assert!(!signed.is_empty());
+
+    // The derivation is the Ledger account path with coin type 133.
+    let parsed = parse::parse_pczt(&stamped).unwrap();
+    assert_eq!(
+        parsed.transparent_inputs[1].derivation.signing_path,
+        vec![0x8000_002c, 0x8000_0085, 0x8000_0000, 0, 0]
+    );
+}
+
+#[test]
+fn transparent_stamping_refuses_bad_host_input() {
+    let raw = transparent_pczt_unstamped(2, 1);
+    assert_eq!(
+        stamp::stamp_derivations(&raw, &FP, 0, &[our_path(0)]).unwrap_err(),
+        "protocol_error: missing transparent path for input 1"
+    );
+    assert!(
+        stamp::stamp_derivations(&raw, &FP, 0, &[our_path(0), our_path(0)])
+            .unwrap_err()
+            .contains("duplicate")
+    );
+    assert!(
+        stamp::stamp_derivations(&raw, &FP, 0, &[our_path(0), our_path(1), our_path(2)])
+            .unwrap_err()
+            .contains("has 2 input(s)")
+    );
+    // A pubkey the input's script does not pay.
+    let mut stranger = our_path(1);
+    stranger.pubkey = secp256k1::SecretKey::from_slice(&[9; 32])
+        .unwrap()
+        .public_key(&secp256k1::Secp256k1::new())
+        .serialize();
+    assert!(
+        stamp::stamp_derivations(&raw, &FP, 0, &[our_path(0), stranger])
+            .unwrap_err()
+            .contains("not a P2PKH output paying the supplied pubkey")
+    );
+    let mut bad_scope = our_path(1);
+    bad_scope.scope = 3;
+    assert!(
+        stamp::stamp_derivations(&raw, &FP, 0, &[our_path(0), bad_scope])
+            .unwrap_err()
+            .contains("scope")
+    );
+
+    // An existing, different derivation is never overwritten.
+    let stamped = stamp::stamp_derivations(&raw, &FP, 0, &[our_path(0), our_path(1)]).unwrap();
+    assert!(
+        stamp::stamp_derivations(&stamped, &FP, 1, &[our_path(0), our_path(1)])
+            .unwrap_err()
+            .contains("refusing to overwrite the different BIP-32 derivation")
+    );
+    assert!(
+        stamp::stamp_derivations(&stamped, &[0x23; 32], 0, &[our_path(0), our_path(1)])
+            .unwrap_err()
+            .contains("refusing to overwrite")
+    );
+}
+
+#[test]
+fn stamping_covers_orchard_spends_and_post_nu6_3_change_pairs() {
+    let sk = spending_key(0x43);
+    for (branch, version, outputs) in [
+        (
+            BranchId::Nu6_2,
+            BundleVersion::orchard_v2(),
+            &[90_000u64][..],
+        ),
+        // Orchard v3 pairs the change with a zero-value wallet spend.
+        (
+            BranchId::Nu6_3,
+            BundleVersion::orchard_v3(),
+            &[90_000u64][..],
+        ),
+    ] {
+        let raw = shielded_pczt(
+            branch,
+            Some(shielded_bundle_opts(version, &sk, true, outputs, false)),
+            None,
+        );
+        let error = pczt_signing_plan(&raw, true).unwrap_err();
+        assert!(error.contains("derivation"), "{error}");
+        let stamped = stamp::stamp_derivations(&raw, &FP, 0, &[]).unwrap();
+        assert_idempotent(&stamped, &[]);
+        let plan = pczt_signing_plan(&stamped, true).unwrap();
+        finalize_pczt_signing(&stamped, &device_responses(&stamped, &plan, &sk)).unwrap();
+
+        // Every non-dummy spend now carries the account path; dummies do not.
+        let pczt = pczt::Pczt::parse(&stamped).unwrap();
+        let mut stamped_count = 0;
+        Verifier::new(pczt)
+            .with_orchard::<String, _>(|bundle| {
+                for action in bundle.actions() {
+                    let spend = action.spend();
+                    assert_eq!(
+                        spend.zip32_derivation().is_some(),
+                        spend.dummy_sk().is_none()
+                    );
+                    if let Some(d) = spend.zip32_derivation() {
+                        stamped_count += 1;
+                        assert_eq!(d.seed_fingerprint(), &FP);
+                        assert_eq!(
+                            d.derivation_path()
+                                .iter()
+                                .map(|c| c.index())
+                                .collect::<Vec<_>>(),
+                            vec![0x8000_0020, 0x8000_0085, 0x8000_0000]
+                        );
+                    }
+                }
+                Ok(())
+            })
+            .unwrap();
+        let expected = if version == BundleVersion::orchard_v3() {
+            2
+        } else {
+            1
+        };
+        assert_eq!(stamped_count, expected, "{version:?}");
+    }
+}
+
+#[test]
+fn shielded_stamping_refuses_to_overwrite_a_different_derivation() {
+    // The fixture's own derivation is [32', 133', 0'] with FP; ask for account 1.
+    let pczt = orchard_send_pczt(&[90_000]);
+    assert!(stamp::stamp_derivations(&pczt, &FP, 1, &[])
+        .unwrap_err()
+        .contains("refusing to overwrite the different ZIP-32 derivation on Orchard action"));
+    // The matching one is a no-op.
+    assert_eq!(stamp::stamp_derivations(&pczt, &FP, 0, &[]).unwrap(), pczt);
+}
+
+// Real zafu builders (proven PCZTs; slow in debug builds).
+
+#[derive(Clone, Copy, Debug)]
+struct Nu63TestNet;
+
+impl Parameters for Nu63TestNet {
+    fn network_type(&self) -> NetworkType {
+        NetworkType::Test
+    }
+    fn activation_height(&self, nu: NetworkUpgrade) -> Option<BlockHeight> {
+        match nu {
+            NetworkUpgrade::Nu6_3 => Some(BlockHeight::from_u32(10)),
+            _ => MainNetwork.activation_height(nu),
+        }
+    }
+}
+
+const ZAFU_TARGET_HEIGHT: u32 = 10_000_000;
+
+fn owned_note(
+    fvk: &FullViewingKey,
+    value: u64,
+    version: orchard::note::NoteVersion,
+) -> (Note, MerklePath, orchard::tree::Anchor) {
+    let rho = Rho::from_bytes(&[1; 32]).into_option().unwrap();
+    let rseed = (0u8..=255)
+        .find_map(|byte| RandomSeed::from_bytes([byte; 32], &rho).into_option())
+        .unwrap();
+    let note = Note::from_parts(
+        fvk.address_at(0u32, Scope::External),
+        NoteValue::from_raw(value),
+        rho,
+        rseed,
+        version,
+    )
+    .into_option()
+    .unwrap();
+    let path = MerklePath::from_parts(0, [MerkleHashOrchard::from_bytes(&[0; 32]).unwrap(); 32]);
+    let anchor = path.root(note.commitment().into());
+    (note, path, anchor)
+}
+
+#[test]
+fn zafu_ironwood_send_is_signable_after_stamping() {
+    let sk = spending_key(0x43);
+    let fvk = FullViewingKey::from(&sk);
+    let (note, path, anchor) = owned_note(&fvk, 1_000_000, orchard::note::NoteVersion::V3);
+    let recipient = FullViewingKey::from(&spending_key(0x55)).address_at(0u32, Scope::External);
+    let built = crate::build_ironwood_send_pczt_proven(
+        Nu63TestNet,
+        &fvk,
+        vec![(note, path)],
+        crate::IronwoodRecipient::Shielded(recipient),
+        600_000,
+        10_000,
+        anchor,
+        ZAFU_TARGET_HEIGHT,
+        crate::NU6_3_BRANCH_ID,
+        zcash_protocol::memo::MemoBytes::empty(),
+    )
+    .unwrap();
+    let raw = built.pczt.serialize().unwrap();
+    assert!(
+        pczt_signing_plan(&raw, true).is_err(),
+        "unstamped zafu PCZT"
+    );
+
+    let stamped = stamp::stamp_derivations(&raw, &FP, 0, &[]).unwrap();
+    assert_idempotent(&stamped, &[]);
+    let plan = pczt_signing_plan(&stamped, true).unwrap();
+    assert!(plan.iter().any(|c| c.ins == 0x59));
+    let signed = finalize_pczt_signing(&stamped, &device_responses(&stamped, &plan, &sk)).unwrap();
+    let pczt = pczt::Pczt::parse(&signed).unwrap();
+    assert!(pczt
+        .ironwood()
+        .actions()
+        .iter()
+        .all(|action| action.spend().spend_auth_sig().is_some()));
+}
+
+#[test]
+fn zafu_shielding_transparent_in_ironwood_out_round_trips() {
+    let (_, pubkey) = secp_key();
+    let script: transparent::address::Script =
+        TransparentAddress::from_pubkey(&pubkey).script().into();
+    let inputs = vec![
+        (
+            OutPoint::new([0xa1; 32], 0),
+            TxOut::new(Zatoshis::const_from_u64(200_000), script.clone()),
+        ),
+        (
+            OutPoint::new([0xa2; 32], 1),
+            TxOut::new(Zatoshis::const_from_u64(50_000), script),
+        ),
+    ];
+    let recipient = FullViewingKey::from(&spending_key(3)).address_at(0u32, Scope::External);
+    let raw = crate::build_shielding_pczt_proven(
+        Nu63TestNet,
+        &pubkey,
+        &inputs,
+        recipient,
+        crate::zip317_shielding_fee(inputs.len()),
+        ZAFU_TARGET_HEIGHT,
+        crate::NU6_3_BRANCH_ID,
+        zcash_protocol::memo::MemoBytes::empty(),
+    )
+    .unwrap()
+    .serialize()
+    .unwrap();
+
+    let paths = [our_path(0), our_path(1)];
+    let stamped = stamp::stamp_derivations(&raw, &FP, 0, &paths).unwrap();
+    assert_idempotent(&stamped, &paths);
+    let plan = pczt_signing_plan(&stamped, true).unwrap();
+    let ins: Vec<u8> = plan.iter().map(|c| c.ins).collect();
+    assert!(ins.contains(&0x58), "v6 streams the Ironwood bundle");
+    assert_eq!(ins.iter().filter(|i| **i == 0x55).count(), 2);
+    assert!(
+        !ins.contains(&0x57) && !ins.contains(&0x59),
+        "Ironwood dummies are pre-signed"
+    );
+
+    let signed = finalize_pczt_signing(
+        &stamped,
+        &device_responses(&stamped, &plan, &spending_key(1)),
+    )
+    .unwrap();
+    let mut signatures = 0;
+    Verifier::new(pczt::Pczt::parse(&signed).unwrap())
+        .with_transparent::<String, _>(|bundle| {
+            signatures = bundle
+                .inputs()
+                .iter()
+                .filter(|input| input.partial_signatures().contains_key(&pubkey.serialize()))
+                .count();
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(signatures, 2);
+}
+
+#[test]
+fn zafu_orchard_migration_is_stamped_but_hits_the_legacy_gate() {
+    // Post-NU6.3 zafu spends Orchard only through the turnstile migration
+    // (Orchard -> own Ironwood), exactly the shape the current app cannot sign.
+    let sk = spending_key(0x43);
+    let fvk = FullViewingKey::from(&sk);
+    let (note, path, anchor) = owned_note(&fvk, 1_000_000, orchard::note::NoteVersion::V2);
+    let (pczt, _) = crate::build_turnstile_migration_pczt_proven(
+        Nu63TestNet,
+        &fvk,
+        vec![(note, path)],
+        10_000,
+        anchor,
+        ZAFU_TARGET_HEIGHT,
+        crate::NU6_3_BRANCH_ID,
+        zcash_protocol::memo::MemoBytes::empty(),
+    )
+    .unwrap();
+    let raw = pczt.serialize().unwrap();
+    let stamped = stamp::stamp_derivations(&raw, &FP, 0, &[]).unwrap();
+    assert_idempotent(&stamped, &[]);
+    assert!(pczt_signing_plan(&stamped, true)
+        .unwrap_err()
+        .starts_with("unsupported_transaction: ledger_legacy_orchard_recovery_unsupported: "));
+    // Everything below the release gate accepts it: once an app fixes the
+    // defect, only the gate needs to go.
+    let (plan, _) = build_signing_plan(&stamped, true).unwrap();
+    finalize_signing_ungated(&stamped, &plan, &sk);
+}
+
+fn finalize_signing_ungated(pczt_bytes: &[u8], plan: &[ApduCommand], sk: &SpendingKey) {
+    let parsed = parse::parse_pczt(pczt_bytes).unwrap();
+    let (_, requests) = build_signing_plan(pczt_bytes, true).unwrap();
+    let responses = device_responses(pczt_bytes, plan, sk);
+    let (transparent, shielded) = decode_signing_responses(plan, &requests, &responses).unwrap();
+    apply_signatures(pczt_bytes, &parsed, &transparent, &shielded).unwrap();
 }
