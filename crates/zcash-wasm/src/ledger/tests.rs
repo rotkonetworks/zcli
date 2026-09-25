@@ -1087,6 +1087,7 @@ fn zafu_shielding_transparent_in_ironwood_out_round_trips() {
         ZAFU_TARGET_HEIGHT,
         crate::NU6_3_BRANCH_ID,
         zcash_protocol::memo::MemoBytes::empty(),
+        None,
     )
     .unwrap()
     .serialize()

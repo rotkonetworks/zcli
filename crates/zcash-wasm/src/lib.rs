@@ -7025,6 +7025,7 @@ where
         target_height,
         expected_branch_id,
         memo,
+        None,
     )?;
 
     // --- sign every transparent input ---------------------------------------
@@ -7083,6 +7084,11 @@ pub fn build_shielding_pczt_proven<P>(
     target_height: u32,
     expected_branch_id: u32,
     memo: zcash_protocol::memo::MemoBytes,
+    // `Some` only for a Ledger account: the Ledger Zcash app decrypts every
+    // output it reviews with its internal IVK or its EXTERNAL OVK only (app-zcash
+    // src/parser/pczt/orchard.rs:641-690), so a shielding output to our own
+    // external address with no ovk is undecryptable to it and refused (0x6a80).
+    ovk: Option<orchard::keys::OutgoingViewingKey>,
 ) -> Result<pczt::Pczt, String>
 where
     P: zcash_protocol::consensus::Parameters,
@@ -7214,11 +7220,12 @@ where
     }
     let shielded_zat =
         Zatoshis::from_u64(shielded_value).map_err(|_| "invalid shielded amount".to_string())?;
-    // No ovk: shielding is a transparent→shielded move, and the sender's own
-    // outgoing-view recovery of it adds nothing (the source is public anyway),
-    // while an ovk-encrypted output ciphertext is one more thing to leak.
+    // No ovk by default: shielding is a transparent→shielded move, and the
+    // sender's own outgoing-view recovery of it adds nothing (the source is
+    // public anyway), while an ovk-encrypted output ciphertext is one more thing
+    // to leak. A Ledger account passes its external ovk (see the param doc).
     builder
-        .add_ironwood_output::<FeError>(None, recipient, shielded_zat, memo)
+        .add_ironwood_output::<FeError>(ovk, recipient, shielded_zat, memo)
         .map_err(|e| format!("add_ironwood_output: {:?}", e))?;
 
     let fee_zat = Zatoshis::from_u64(fee).map_err(|_| "invalid fee amount".to_string())?;
@@ -7385,6 +7392,7 @@ pub fn build_unsigned_shielding_pczt_ironwood_core<P>(
     target_height: u32,
     expected_branch_id: u32,
     memo: zcash_protocol::memo::MemoBytes,
+    ovk: Option<orchard::keys::OutgoingViewingKey>,
 ) -> Result<(Vec<[u8; 32]>, Vec<u8>), String>
 where
     P: zcash_protocol::consensus::Parameters,
@@ -7399,6 +7407,7 @@ where
         target_height,
         expected_branch_id,
         memo,
+        ovk,
     )?;
 
     // Record the pubkey as the hash160 preimage on every transparent input. The
@@ -7439,6 +7448,28 @@ where
     Ok((sighashes, pczt_bytes))
 }
 
+/// The orchard EXTERNAL outgoing viewing key of a UFVK (ironwood outputs use the
+/// same orchard key types).
+fn external_ovk_from_ufvk(
+    ufvk_str: &str,
+    mainnet: bool,
+) -> Result<orchard::keys::OutgoingViewingKey, String> {
+    use zcash_keys::keys::UnifiedFullViewingKey;
+    use zcash_protocol::consensus::{MainNetwork, TestNetwork};
+    let ufvk = if mainnet {
+        UnifiedFullViewingKey::decode(&MainNetwork, ufvk_str)
+    } else {
+        UnifiedFullViewingKey::decode(&TestNetwork, ufvk_str)
+    }
+    .map_err(|e| format!("invalid UFVK: {e}"))?;
+    let fvk = ufvk
+        .orchard()
+        .ok_or_else(|| "UFVK has no orchard component".to_string())?;
+    let fvk = orchard::keys::FullViewingKey::from_bytes(&fvk.to_bytes())
+        .ok_or_else(|| "invalid orchard FVK in UFVK".to_string())?;
+    Ok(fvk.to_ovk(orchard::keys::Scope::External))
+}
+
 /// Build an UNSIGNED transparent→IRONWOOD shielding transaction (NU6.3 / V6) for
 /// cold-wallet / watch-only / zigner signing.
 ///
@@ -7477,9 +7508,18 @@ pub fn build_unsigned_shielding_transaction_ironwood(
     expected_branch_id: u32,
     mainnet: bool,
     memo_hex: Option<String>,
+    // Ledger accounts only: the account's UFVK, whose orchard EXTERNAL ovk is
+    // set on the output so the Ledger app can decrypt and review it. Omit it
+    // (undefined) everywhere else - existing callers are unchanged.
+    ovk_from_ufvk: Option<String>,
 ) -> Result<String, JsError> {
     use zcash_protocol::consensus::{BlockHeight, MainNetwork, TestNetwork};
     use zcash_protocol::memo::MemoBytes;
+
+    let ovk = match ovk_from_ufvk.as_deref() {
+        Some(ufvk) => Some(external_ovk_from_ufvk(ufvk, mainnet).map_err(|e| JsError::new(&e))?),
+        None => None,
+    };
 
     // --- recipient (orchard-format receiver = ironwood recipient) ---
     let recipient_addr = parse_orchard_address(recipient, mainnet)
@@ -7515,6 +7555,7 @@ pub fn build_unsigned_shielding_transaction_ironwood(
             target_height,
             expected_branch_id,
             memo,
+            ovk.clone(),
         )
     } else {
         build_unsigned_shielding_pczt_ironwood_core(
@@ -7529,6 +7570,7 @@ pub fn build_unsigned_shielding_transaction_ironwood(
             target_height,
             expected_branch_id,
             memo,
+            ovk,
         )
     }
     .map_err(|e| JsError::new(&e))?;

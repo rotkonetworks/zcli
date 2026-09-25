@@ -751,3 +751,5 @@ fn transparent_paths_from_js(value: &JsValue) -> Result<Vec<stamp::TransparentPa
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod speculos_tests;
