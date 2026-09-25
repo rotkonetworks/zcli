@@ -102,6 +102,9 @@ k256 = { version = "0.13", features = ["ecdsa-core", "ecdsa", "sha256"] }
 hmac = "0.12"
 sha2 = "0.10"
 ripemd = "0.1"
+# Ledger PCZT serializer reads transparent script bytes via `Evaluable`; same
+# 0.4 line zcash_transparent already pulls in (no new crate in the graph).
+zcash_script = { version = "0.4", default-features = false }
 blake2b_simd = "1.0"
 
 # wasm bindings

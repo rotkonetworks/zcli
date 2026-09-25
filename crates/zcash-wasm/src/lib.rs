@@ -14,6 +14,8 @@ mod transparent_send;
 pub use frost::inspect_pczt_outputs_core;
 /// Hot signing inside the zcash worker, split from proving.
 mod hot_sign;
+/// Ledger Zcash app protocol: APDU plans + response validation (pure, no I/O).
+pub mod ledger;
 /// HOT shielded-voting vote-casting bindings (casting slice only).
 #[cfg(feature = "voting")]
 mod voting;
