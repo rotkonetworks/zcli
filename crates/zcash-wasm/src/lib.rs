@@ -1620,37 +1620,32 @@ fn parse_orchard_actions_from_tx(tx_bytes: &[u8]) -> Result<Vec<FullOrchardActio
     let tx = Transaction::read(&mut cursor, BranchId::Nu5)
         .map_err(|e| format!("Failed to parse transaction: {:?}", e))?;
 
-    // Get Orchard bundle if present
-    let orchard_bundle = match tx.orchard_bundle() {
-        Some(bundle) => bundle,
-        None => return Ok(vec![]), // No Orchard actions in this tx
-    };
-
-    // Extract actions with full ciphertext
+    // Collect actions from BOTH shielded bundles. After NU6.3 a v6 transaction carries its outputs in
+    // the ironwood bundle; walking only the orchard bundle silently drops every ironwood note (and memo).
+    // The decryptors below already try both the Orchard (V2) and Ironwood (V3) domains per action.
     let mut actions = Vec::new();
+    if let Some(bundle) = tx.orchard_bundle() {
+        collect_full_actions(bundle, &mut actions);
+    }
+    if let Some(bundle) = tx.ironwood_bundle() {
+        collect_full_actions(bundle, &mut actions);
+    }
+    Ok(actions)
+}
 
-    for action in orchard_bundle.actions() {
-        // Get action components
-        let nullifier_bytes = action.nullifier().to_bytes();
-        let cmx_bytes = action.cmx().to_bytes();
-        let epk_bytes = action.encrypted_note().epk_bytes;
-
-        // Get full encrypted ciphertext (580 bytes)
-        let enc_ciphertext = action.encrypted_note().enc_ciphertext;
-
-        // Get out_ciphertext for potential outgoing decryption
-        let out_ciphertext = action.encrypted_note().out_ciphertext;
-
-        actions.push(FullOrchardAction {
-            nullifier: nullifier_bytes,
-            cmx: cmx_bytes,
-            epk: epk_bytes,
-            enc_ciphertext,
-            out_ciphertext,
+fn collect_full_actions<A: orchard::bundle::Authorization, V>(
+    bundle: &orchard::Bundle<A, V>,
+    out: &mut Vec<FullOrchardAction>,
+) {
+    for action in bundle.actions() {
+        out.push(FullOrchardAction {
+            nullifier: action.nullifier().to_bytes(),
+            cmx: action.cmx().to_bytes(),
+            epk: action.encrypted_note().epk_bytes,
+            enc_ciphertext: action.encrypted_note().enc_ciphertext,
+            out_ciphertext: action.encrypted_note().out_ciphertext,
         });
     }
-
-    Ok(actions)
 }
 
 #[wasm_bindgen]
