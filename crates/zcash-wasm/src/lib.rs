@@ -923,6 +923,30 @@ fn hex_encode(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{:02x}", b)).collect()
 }
 
+/// Parse an 11-byte orchard diversifier index from 22 hex chars.
+///
+/// This is the full index space, not the u32 slice the `*_at(u32)` exports
+/// reach: a wallet that picks each receive address at random (as penumbra does
+/// with its address randomizer) needs all 88 bits, so no two senders ever get
+/// the same address and nothing has to be remembered to avoid it. Bytes are
+/// little-endian, the same order `From<u32>`/`From<u64>` fill, so the hex of a
+/// small number names the same address as the number itself.
+///
+/// Orchard-only: a unified address with a transparent receiver is limited to
+/// a 31-bit index, so this must never feed a UA-with-transparent builder.
+fn parse_diversifier_index(index_hex: &str) -> Result<zip32::DiversifierIndex, String> {
+    let bytes = hex_decode(index_hex)
+        .filter(|b| b.len() == 11)
+        .ok_or_else(|| {
+            format!(
+                "diversifier index must be 22 hex chars, got {:?}",
+                index_hex
+            )
+        })?;
+    let j: [u8; 11] = bytes.try_into().expect("length checked");
+    Ok(zip32::DiversifierIndex::from(j))
+}
+
 fn hex_decode(s: &str) -> Option<Vec<u8>> {
     if !s.len().is_multiple_of(2) {
         return None;
@@ -1147,6 +1171,14 @@ impl WatchOnlyWallet {
         encode_orchard_address(&addr, self.mainnet)
     }
 
+    /// Get address at a full 11-byte diversifier index (22 hex chars, LE)
+    #[wasm_bindgen]
+    pub fn get_address_at_index(&self, index_hex: &str) -> Result<String, JsError> {
+        let j = parse_diversifier_index(index_hex).map_err(|e| JsError::new(&e))?;
+        let addr = self.fvk.to_ivk(Scope::External).address_at(j);
+        Ok(encode_orchard_address(&addr, self.mainnet))
+    }
+
     /// Export FVK as hex bytes (for backup)
     #[wasm_bindgen]
     pub fn export_fvk_hex(&self) -> String {
@@ -1250,6 +1282,18 @@ impl WalletKeys {
             .to_ivk(Scope::External)
             .address_at(diversifier_index as u64);
         encode_orchard_address(&addr, mainnet)
+    }
+
+    /// Get receiving address at a full 11-byte diversifier index (22 hex chars, LE)
+    #[wasm_bindgen]
+    pub fn get_receiving_address_at_index(
+        &self,
+        index_hex: &str,
+        mainnet: bool,
+    ) -> Result<String, JsError> {
+        let j = parse_diversifier_index(index_hex).map_err(|e| JsError::new(&e))?;
+        let addr = self.fvk.to_ivk(Scope::External).address_at(j);
+        Ok(encode_orchard_address(&addr, mainnet))
     }
 }
 
@@ -1796,6 +1840,86 @@ fn parse_memo_bytes(memo: &[u8; 512]) -> (String, bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const ABANDON_ART: &str = "abandon abandon abandon abandon abandon abandon abandon abandon \
+abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon \
+abandon abandon abandon art";
+
+    fn le_index_hex(n: u32) -> String {
+        let mut j = [0u8; 11];
+        j[..4].copy_from_slice(&n.to_le_bytes());
+        hex_encode(&j)
+    }
+
+    /// A small number and its 11-byte LE hex name the same address, so a wallet
+    /// moving from the u32 exports to the full-index ones keeps every address it
+    /// already handed out.
+    #[test]
+    fn full_index_matches_u32_index() {
+        let keys = WalletKeys::from_seed_phrase(ABANDON_ART).unwrap();
+        let fvk_bytes = keys.fvk.to_bytes();
+        let watch = WatchOnlyWallet::from_fvk_bytes(&fvk_bytes, 0, true).unwrap();
+        for n in [0u32, 1, 1000, u32::MAX] {
+            let hex = le_index_hex(n);
+            assert_eq!(
+                keys.get_receiving_address_at_index(&hex, true).unwrap(),
+                keys.get_receiving_address_at(n, true),
+                "seed path, index {n}"
+            );
+            assert_eq!(
+                watch.get_address_at_index(&hex).unwrap(),
+                watch.get_address_at(n),
+                "fvk path, index {n}"
+            );
+        }
+    }
+
+    /// The bytes past the u32 range are real address space, not ignored.
+    #[test]
+    fn high_index_bytes_change_the_address() {
+        let keys = WalletKeys::from_seed_phrase(ABANDON_ART).unwrap();
+        let low = le_index_hex(7);
+        let mut high = hex_decode(&low).unwrap();
+        high[10] = 0x80;
+        let high = hex_encode(&high);
+        assert_ne!(
+            keys.get_receiving_address_at_index(&high, true).unwrap(),
+            keys.get_receiving_address_at_index(&low, true).unwrap()
+        );
+    }
+
+    /// Seed, UFVK string and bare orchard FVK bytes are the three ways zafu holds
+    /// a wallet (hot, watch-only/multisig/ledger, zigner). One random index must
+    /// give one address through all of them.
+    #[test]
+    fn full_index_agrees_across_seed_ufvk_and_fvk() {
+        use zcash_keys::keys::UnifiedSpendingKey;
+        use zcash_protocol::consensus::MainNetwork;
+
+        let keys = WalletKeys::from_seed_phrase(ABANDON_ART).unwrap();
+        let seed = bip39::Mnemonic::parse(ABANDON_ART).unwrap().to_seed("");
+        let ufvk = UnifiedSpendingKey::from_seed(&MainNetwork, &seed, zip32::AccountId::ZERO)
+            .unwrap()
+            .to_unified_full_viewing_key()
+            .encode(&MainNetwork);
+        let watch = WatchOnlyWallet::from_fvk_bytes(&keys.fvk.to_bytes(), 0, true).unwrap();
+
+        let hex = "a1b2c3d4e5f60718293a4b";
+        let from_seed = keys.get_receiving_address_at_index(hex, true).unwrap();
+        assert_eq!(
+            ufvk_orchard_address(&ufvk, parse_diversifier_index(hex).unwrap()).unwrap(),
+            from_seed
+        );
+        assert_eq!(watch.get_address_at_index(hex).unwrap(), from_seed);
+    }
+
+    #[test]
+    fn diversifier_index_hex_must_be_eleven_bytes() {
+        assert!(parse_diversifier_index("00").is_err());
+        assert!(parse_diversifier_index(&"00".repeat(12)).is_err());
+        assert!(parse_diversifier_index(&"zz".repeat(11)).is_err());
+        assert!(parse_diversifier_index(&"00".repeat(11)).is_ok());
+    }
 
     /// Round-trip a note of `version` through the *production* compact-scan
     /// path (`try_decrypt_compact_action`) and return what the scanner saw.
@@ -4185,7 +4309,6 @@ pub fn build_signed_turnstile_migration_core<P>(
 where
     P: zcash_protocol::consensus::Parameters,
 {
-
     let (pczt, _migrated) = build_turnstile_migration_pczt_proven(
         params,
         fvk,
@@ -4975,7 +5098,6 @@ pub fn build_signed_ironwood_send_core<P>(
 where
     P: zcash_protocol::consensus::Parameters,
 {
-
     let IronwoodPcztWithFrost { pczt, .. } = build_ironwood_send_pczt_proven(
         params,
         fvk,
@@ -5617,8 +5739,7 @@ pub fn apply_signature_contributions_inner(
     use orchard::primitives::redpallas;
 
     let bytes = hex_decode(pczt_hex).ok_or_else(|| "invalid pczt hex".to_string())?;
-    let pczt =
-        pczt::Pczt::parse(&bytes).map_err(|e| format!("pczt parse failed: {:?}", e))?;
+    let pczt = pczt::Pczt::parse(&bytes).map_err(|e| format!("pczt parse failed: {:?}", e))?;
 
     let contributions: Vec<serde_json::Value> = serde_json::from_str(contributions_json)
         .map_err(|e| format!("failed to parse contributions JSON: {}", e))?;
@@ -6403,6 +6524,19 @@ pub fn validate_ufvk(ufvk_str: &str) -> bool {
 /// Derive an Orchard receiving address from a UFVK string (uview1.../uviewtest1...)
 #[wasm_bindgen]
 pub fn address_from_ufvk(ufvk_str: &str, diversifier_index: u32) -> Result<String, JsError> {
+    ufvk_orchard_address(ufvk_str, zip32::DiversifierIndex::from(diversifier_index))
+        .map_err(|e| JsError::new(&e))
+}
+
+/// Derive an Orchard receiving address from a UFVK string at a full 11-byte
+/// diversifier index (22 hex chars, LE).
+#[wasm_bindgen]
+pub fn address_from_ufvk_at_index(ufvk_str: &str, index_hex: &str) -> Result<String, JsError> {
+    let j = parse_diversifier_index(index_hex).map_err(|e| JsError::new(&e))?;
+    ufvk_orchard_address(ufvk_str, j).map_err(|e| JsError::new(&e))
+}
+
+fn ufvk_orchard_address(ufvk_str: &str, j: zip32::DiversifierIndex) -> Result<String, String> {
     use zcash_keys::keys::UnifiedFullViewingKey;
     use zcash_protocol::consensus::{MainNetwork, TestNetwork};
 
@@ -6411,23 +6545,22 @@ pub fn address_from_ufvk(ufvk_str: &str, diversifier_index: u32) -> Result<Strin
     } else {
         UnifiedFullViewingKey::decode(&TestNetwork, ufvk_str)
     }
-    .map_err(|e| JsError::new(&format!("invalid UFVK: {}", e)))?;
+    .map_err(|e| format!("invalid UFVK: {}", e))?;
 
     let mainnet = ufvk_str.starts_with("uview1") && !ufvk_str.starts_with("uviewtest");
 
     // get the orchard FVK from the UFVK
     let orchard_fvk_old = ufvk
         .orchard()
-        .ok_or_else(|| JsError::new("UFVK has no orchard component"))?;
+        .ok_or_else(|| "UFVK has no orchard component".to_string())?;
 
     // derive address at diversifier index
-    let addr_old =
-        orchard_fvk_old.address_at(diversifier_index as u64, orchard::keys::Scope::External);
+    let addr_old = orchard_fvk_old.address_at(j, orchard::keys::Scope::External);
     let raw = addr_old.to_raw_address_bytes();
 
     // encode as unified address string
     let addr = Option::from(orchard::Address::from_raw_address_bytes(&raw))
-        .ok_or_else(|| JsError::new("invalid orchard address bytes"))?;
+        .ok_or_else(|| "invalid orchard address bytes".to_string())?;
 
     Ok(encode_orchard_address(&addr, mainnet))
 }
@@ -8247,10 +8380,9 @@ where
 
     // Re-parse the exact bytes we return and take the sighashes from that copy,
     // so the sighashes provably correspond to the carrier.
-    let reparsed =
-        pczt::Pczt::parse(&pczt_bytes).map_err(|e| format!("pczt re-parse: {:?}", e))?;
-    let signer = pczt::roles::signer::Signer::new(reparsed)
-        .map_err(|e| format!("signer init: {:?}", e))?;
+    let reparsed = pczt::Pczt::parse(&pczt_bytes).map_err(|e| format!("pczt re-parse: {:?}", e))?;
+    let signer =
+        pczt::roles::signer::Signer::new(reparsed).map_err(|e| format!("signer init: {:?}", e))?;
     let mut sighashes: Vec<[u8; 32]> = Vec::with_capacity(n_inputs);
     for i in 0..n_inputs {
         let sh = signer
@@ -8310,7 +8442,9 @@ pub fn build_unsigned_shielding_transaction_ironwood(
     // --- transparent pubkey (no secret key on the cold path) ---
     let pubkey_bytes = hex_decode(pubkey_hex).ok_or_else(|| JsError::new("invalid pubkey hex"))?;
     if pubkey_bytes.len() != 33 {
-        return Err(JsError::new("pubkey must be a 33-byte compressed secp256k1 key"));
+        return Err(JsError::new(
+            "pubkey must be a 33-byte compressed secp256k1 key",
+        ));
     }
     let pubkey = secp256k1::PublicKey::from_slice(&pubkey_bytes)
         .map_err(|e| JsError::new(&format!("invalid pubkey: {}", e)))?;
@@ -8878,8 +9012,8 @@ pub fn complete_shielding_pczt_bytes(
     pczt_bytes: &[u8],
     sigs: &[Vec<u8>],
 ) -> Result<Vec<u8>, String> {
-    let pczt = pczt::Pczt::parse(pczt_bytes)
-        .map_err(|e| format!("invalid shielding pczt: {:?}", e))?;
+    let pczt =
+        pczt::Pczt::parse(pczt_bytes).map_err(|e| format!("invalid shielding pczt: {:?}", e))?;
 
     let n_inputs = pczt.transparent().inputs().len();
     if sigs.len() != n_inputs {
@@ -8937,10 +9071,7 @@ pub fn complete_shielding_pczt_bytes(
 /// so a caller that always routes ironwood completions here (or one that reuses
 /// `complete_shielding_transaction`, which sniffs the PCZT magic) is unchanged.
 #[wasm_bindgen]
-pub fn complete_shielding_pczt(
-    pczt_hex: &str,
-    signatures_json: &str,
-) -> Result<String, JsError> {
+pub fn complete_shielding_pczt(pczt_hex: &str, signatures_json: &str) -> Result<String, JsError> {
     let pczt_bytes = hex_decode(pczt_hex).ok_or_else(|| JsError::new("invalid pczt hex"))?;
     let input_sigs: Vec<ShieldingInputSig> = serde_json::from_str(signatures_json)
         .map_err(|e| JsError::new(&format!("invalid signatures json: {}", e)))?;
