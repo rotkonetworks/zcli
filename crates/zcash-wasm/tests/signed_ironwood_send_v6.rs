@@ -270,6 +270,13 @@ fn signed_ironwood_send_spends_real_v3_note_verifies() {
     //     proofs + all signatures verified once. Parse the emitted tx and run an
     //     INDEPENDENT re-verification below. ===
     let tx = Transaction::read(&tx_bytes[..], BranchId::Nu6_3).expect("tx parses");
+    // The hot send's expiry is unchanged by the explicit-expiry work: it still
+    // carries the legacy target + 40, now passed explicitly.
+    assert_eq!(
+        u32::from(tx.expiry_height()),
+        target_height + zafu_wasm::LEGACY_PCZT_EXPIRY_DELTA,
+        "hot ironwood send keeps expiry = target + 40"
+    );
 
     // (3a) valid V6 with an ironwood bundle carrying the real spend + outputs.
     assert_eq!(tx.version(), TxVersion::V6, "must be a V6 transaction");

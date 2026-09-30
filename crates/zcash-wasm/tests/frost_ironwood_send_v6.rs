@@ -27,7 +27,8 @@
 //!   cargo test --release --test frost_ironwood_send_v6
 
 use zafu_wasm::{
-    build_ironwood_send_pczt_proven, complete_ironwood_pczt_core, IronwoodRecipient,
+    build_ironwood_send_pczt_proven, complete_ironwood_pczt_core, inspect_pczt_outputs_core,
+    redact_pczt_for_signer, IronwoodRecipient, LEGACY_PCZT_EXPIRY_DELTA, MAX_PCZT_EXPIRY_DELTA,
 };
 
 use zcash_protocol::consensus::{
@@ -82,6 +83,46 @@ fn owned_note_with_witness(
     let cmx: orchard::note::ExtractedNoteCommitment = note.commitment().into();
     let anchor = witness.root(cmx);
     (note, witness, anchor)
+}
+
+/// Non-default expiry used by the proving test (anchor + 100 is what the legacy
+/// and shielding paths use; any value != 40 would do).
+const EXPLICIT_EXPIRY_DELTA: u32 = 100;
+
+/// Invalid expiry deltas are refused by the ironwood build core BEFORE any
+/// building or proving (cheap: no proving key is built).
+#[test]
+fn ironwood_send_core_rejects_invalid_expiry_before_proving() {
+    let other = frost_spend::orchestrate::dealer_keygen(2, 2).expect("keygen");
+    let pubkeys: frost_spend::frost_keys::PublicKeyPackage =
+        frost_spend::orchestrate::from_hex(&other.public_key_package_hex).expect("pubkeys");
+    let fvk = frost_spend::keys::derive_fvk_from_sk([9u8; 32], &pubkeys).expect("fvk");
+    let recipient = fvk.address_at(0u32, orchard::keys::Scope::External);
+
+    for bad in [0u32, 3, MAX_PCZT_EXPIRY_DELTA + 1, u32::MAX] {
+        let (note, witness, anchor) = owned_note_with_witness(&fvk, 1_000_000);
+        let res = build_ironwood_send_pczt_proven(
+            Nu63TestNet,
+            &fvk,
+            vec![(note, witness)],
+            IronwoodRecipient::Shielded(recipient),
+            600_000,
+            10_000,
+            anchor,
+            10_000_000,
+            NU6_3_BRANCH_ID,
+            MemoBytes::empty(),
+            bad,
+        );
+        let err = match res {
+            Ok(_) => panic!("expiry delta {bad} must be refused"),
+            Err(e) => e,
+        };
+        assert!(
+            err.contains("expiry"),
+            "delta {bad}: unexpected error {err}"
+        );
+    }
 }
 
 #[test]
@@ -160,8 +201,22 @@ fn frost_2_of_3_signs_and_extracts_an_ironwood_send() {
         target_height,
         NU6_3_BRANCH_ID,
         MemoBytes::empty(),
+        // A NON-default expiry, so this test proves the explicit parameter
+        // reaches the PCZT (and the tx extracted from it) rather than the
+        // builder's implicit target + 40.
+        EXPLICIT_EXPIRY_DELTA,
     )
     .expect("build + prove ironwood send");
+
+    // The PCZT carries exactly the requested expiry. `nExpiryHeight` is part of
+    // the ZIP-244 header digest, so the sighash below (and the FROST signature
+    // over it) commits to this value.
+    assert_ne!(EXPLICIT_EXPIRY_DELTA, LEGACY_PCZT_EXPIRY_DELTA);
+    assert_eq!(
+        *built.pczt.global().expiry_height(),
+        target_height + EXPLICIT_EXPIRY_DELTA,
+        "PCZT must carry target + the explicit expiry delta"
+    );
 
     // THE regression this whole change exists for: before it, both of these
     // were empty and a FROST caller ran zero signing rounds.
@@ -175,6 +230,98 @@ fn frost_2_of_3_signs_and_extracts_an_ironwood_send() {
         built.alphas.len(),
         "alphas and spend indices must correspond"
     );
+
+    // ── (3b) joiner-side inspection exposes what an intent verifier needs ───
+    // Inspect the REDACTED copy (what a joiner receives), with the group UFVK.
+    let group_uview = {
+        use zcash_address::unified::{Encoding, Fvk, Ufvk};
+        Ufvk::try_from_items(vec![Fvk::Orchard(fvk.to_bytes())])
+            .expect("ufvk")
+            .encode(&NetworkType::Test)
+    };
+    let redacted_bytes = redact_pczt_for_signer(built.pczt.clone())
+        .serialize()
+        .expect("serialize redacted");
+    let inspected =
+        inspect_pczt_outputs_core(&redacted_bytes, &group_uview).expect("inspect redacted pczt");
+    assert_eq!(
+        inspected["committed_outputs_error"],
+        serde_json::Value::Null
+    );
+    assert_eq!(
+        inspected["expiry_height"].as_u64(),
+        Some((target_height + EXPLICIT_EXPIRY_DELTA) as u64),
+        "inspection reports the PCZT's expiry"
+    );
+    assert_eq!(
+        inspected["fee_zat"].as_u64(),
+        Some(fee),
+        "fee = net value leaving the pools"
+    );
+    assert_eq!(
+        inspected["value_balance_zat"]["ironwood"].as_i64(),
+        Some(fee as i64)
+    );
+    assert_eq!(inspected["value_balance_zat"]["orchard"].as_i64(), Some(0));
+    assert_eq!(inspected["sapling_present"], serde_json::json!(false));
+    assert_eq!(inspected["transparent_outputs"], serde_json::json!([]));
+    let actions = inspected["actions"].as_array().expect("actions");
+    let recip_hex = hex::encode(recipient_addr.to_raw_address_bytes());
+    let to_recipient: Vec<_> = actions
+        .iter()
+        .filter(|a| a["committed_recipient_raw_hex"].as_str() == Some(recip_hex.as_str()))
+        .collect();
+    assert_eq!(to_recipient.len(), 1, "exactly one output to the recipient");
+    assert_eq!(
+        to_recipient[0]["committed_value_zat"].as_u64(),
+        Some(amount)
+    );
+    assert_eq!(
+        to_recipient[0]["recipient_scope"],
+        serde_json::Value::Null,
+        "foreign address"
+    );
+    let change: Vec<_> = actions
+        .iter()
+        .filter(|a| a["recipient_scope"].as_str() == Some("internal"))
+        .collect();
+    assert_eq!(
+        change.len(),
+        1,
+        "exactly one change output, to the group's internal scope"
+    );
+    assert_eq!(
+        change[0]["committed_value_zat"].as_u64(),
+        Some(note_value - amount - fee)
+    );
+    // Every action's output is cmx-verified, so no output value is hidden.
+    let committed_sum: u64 = actions
+        .iter()
+        .map(|a| {
+            assert_eq!(a["cmx_verified"], serde_json::json!(true), "action {a}");
+            a["committed_value_zat"].as_u64().expect("verified value")
+        })
+        .sum();
+    assert_eq!(committed_sum + fee, note_value, "outputs + fee == inputs");
+
+    // Stripping an output's value makes that output unverifiable: the committed
+    // view must go null/false (fail closed), not fall back to zero.
+    {
+        let stripped = pczt::roles::redactor::Redactor::new(
+            pczt::Pczt::parse(&redacted_bytes).expect("reparse"),
+        )
+        .redact_ironwood_with(|mut b| {
+            b.redact_actions(|mut a| a.clear_output_value());
+        })
+        .finish()
+        .serialize()
+        .expect("serialize stripped");
+        let v = inspect_pczt_outputs_core(&stripped, &group_uview).expect("inspect stripped");
+        for a in v["actions"].as_array().expect("actions") {
+            assert_eq!(a["cmx_verified"], serde_json::json!(false));
+            assert_eq!(a["committed_value_zat"], serde_json::Value::Null);
+        }
+    }
 
     // ── (4) the sighash the signers commit to ───────────────────────────────
     let sighash = pczt::roles::signer::Signer::new(built.pczt.clone())
@@ -239,6 +386,15 @@ fn frost_2_of_3_signs_and_extracts_an_ironwood_send() {
     let tx_bytes = complete_ironwood_pczt_core(&pczt_bytes, &sigs, &built.spend_indices)
         .expect("complete ironwood pczt with aggregated FROST signatures");
     assert!(!tx_bytes.is_empty(), "extracted transaction must be non-empty");
+    {
+        let tx = zcash_primitives::transaction::Transaction::read(&tx_bytes[..], BranchId::Nu6_3)
+            .expect("extracted tx parses");
+        assert_eq!(
+            u32::from(tx.expiry_height()),
+            target_height + EXPLICIT_EXPIRY_DELTA,
+            "the broadcast tx must carry the explicit expiry, not the builder default"
+        );
+    }
 
     // ── (7) NEGATIVE: an empty signature set must be refused ───────────────
     // This is exactly what the wallet used to produce post-NU6.3, and what the

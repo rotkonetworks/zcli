@@ -9,6 +9,7 @@
 //! ```
 
 mod frost;
+pub use frost::inspect_pczt_outputs_core;
 /// HOT shielded-voting vote-casting bindings (casting slice only).
 #[cfg(feature = "voting")]
 mod voting;
@@ -1841,6 +1842,77 @@ fn parse_memo_bytes(memo: &[u8; 512]) -> (String, bool) {
 mod tests {
     use super::*;
 
+    // ── explicit PCZT expiry ───────────────────────────────────────────────
+
+    #[test]
+    fn legacy_expiry_delta_matches_the_upstream_builder_default() {
+        // If a library bump ever changes Builder::new's implicit default, this
+        // fails instead of our "unchanged" callers silently changing expiry.
+        assert_eq!(
+            LEGACY_PCZT_EXPIRY_DELTA,
+            zcash_primitives::transaction::builder::DEFAULT_TX_EXPIRY_DELTA
+        );
+    }
+
+    #[test]
+    fn expiry_omitted_is_target_plus_legacy_delta() {
+        assert_eq!(
+            resolve_pczt_expiry_height(3_000_000, None),
+            Ok(3_000_000 + LEGACY_PCZT_EXPIRY_DELTA)
+        );
+    }
+
+    #[test]
+    fn expiry_explicit_delta_is_applied() {
+        assert_eq!(
+            resolve_pczt_expiry_height(3_000_000, Some(100)),
+            Ok(3_000_100)
+        );
+        assert_eq!(
+            resolve_pczt_expiry_height(3_000_000, Some(MIN_PCZT_EXPIRY_DELTA)),
+            Ok(3_000_000 + MIN_PCZT_EXPIRY_DELTA)
+        );
+        assert_eq!(
+            resolve_pczt_expiry_height(3_000_000, Some(MAX_PCZT_EXPIRY_DELTA)),
+            Ok(3_000_000 + MAX_PCZT_EXPIRY_DELTA)
+        );
+    }
+
+    #[test]
+    fn expiry_zero_is_rejected() {
+        // 0 would disable expiry altogether.
+        assert!(resolve_pczt_expiry_height(3_000_000, Some(0)).is_err());
+    }
+
+    #[test]
+    fn expiry_too_short_is_rejected() {
+        for d in 1..MIN_PCZT_EXPIRY_DELTA {
+            assert!(
+                resolve_pczt_expiry_height(3_000_000, Some(d)).is_err(),
+                "delta {d}"
+            );
+        }
+    }
+
+    #[test]
+    fn expiry_too_long_is_rejected() {
+        assert!(resolve_pczt_expiry_height(3_000_000, Some(MAX_PCZT_EXPIRY_DELTA + 1)).is_err());
+        assert!(resolve_pczt_expiry_height(3_000_000, Some(u32::MAX)).is_err());
+    }
+
+    #[test]
+    fn expiry_respects_the_consensus_threshold() {
+        // Largest valid expiry is THRESHOLD - 1.
+        let t = TX_EXPIRY_HEIGHT_THRESHOLD - 1 - LEGACY_PCZT_EXPIRY_DELTA;
+        assert_eq!(
+            resolve_pczt_expiry_height(t, None),
+            Ok(TX_EXPIRY_HEIGHT_THRESHOLD - 1)
+        );
+        assert!(resolve_pczt_expiry_height(t + 1, None).is_err());
+        // Overflow of target + delta is an error, not a wrap.
+        assert!(resolve_pczt_expiry_height(u32::MAX - 1, Some(MIN_PCZT_EXPIRY_DELTA)).is_err());
+    }
+
     const ABANDON_ART: &str = "abandon abandon abandon abandon abandon abandon abandon abandon \
 abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon \
 abandon abandon abandon art";
@@ -3537,13 +3609,87 @@ fn prepare_orchard_spends(
     Ok(prepared)
 }
 
+/// Expiry delta (blocks after `target_height`) that the PCZT builders used
+/// IMPLICITLY before the delta became an explicit parameter: it is
+/// `zcash_primitives::transaction::builder::DEFAULT_TX_EXPIRY_DELTA`, which
+/// `Builder::new` applies when nothing overrides it. Callers that do not pass a
+/// delta get exactly this value, so their transactions (and their sighashes,
+/// which commit to `nExpiryHeight`) are byte-for-byte what they were before.
+/// Kept as a local constant, and pinned against the upstream one by a test, so
+/// a library bump that changes the upstream default cannot silently change ours.
+pub const LEGACY_PCZT_EXPIRY_DELTA: u32 = 40;
+
+/// Largest accepted expiry delta. About 7 days of 75-second blocks. This is an
+/// absurdity guard, not a policy: a signed-but-unbroadcast transaction stays
+/// valid (and broadcastable by anyone holding it) until it expires, so an
+/// unbounded delta turns a stale approval into a long-lived liability.
+pub const MAX_PCZT_EXPIRY_DELTA: u32 = 8_064;
+
+/// Smallest accepted expiry delta. Nodes drop a transaction from the mempool
+/// when it expires within `TX_EXPIRING_SOON_THRESHOLD` (3) blocks of the tip,
+/// so anything shorter could never be relayed.
+pub const MIN_PCZT_EXPIRY_DELTA: u32 = 4;
+
+/// Consensus: `nExpiryHeight` MUST be below 500,000,000 (ZIP 203).
+pub const TX_EXPIRY_HEIGHT_THRESHOLD: u32 = 500_000_000;
+
+/// Resolve and validate the expiry height for a PCZT built at `target_height`.
+///
+/// `expiry_delta` is the number of blocks after `target_height` at which the
+/// transaction expires. `None` means "the legacy default"
+/// ([`LEGACY_PCZT_EXPIRY_DELTA`]), which is what every builder used before the
+/// parameter existed. `Some(0)` is rejected: an expiry height of 0 disables
+/// expiry entirely, which a money-moving multisig path must never do by
+/// accident.
+///
+/// A delta (rather than an absolute height) because every builder already
+/// takes `target_height`, the validation bounds are naturally relative to it,
+/// and a caller cannot hand in an absolute height that is already in the past.
+pub fn resolve_pczt_expiry_height(
+    target_height: u32,
+    expiry_delta: Option<u32>,
+) -> Result<u32, String> {
+    let delta = expiry_delta.unwrap_or(LEGACY_PCZT_EXPIRY_DELTA);
+    if delta == 0 {
+        return Err("expiry delta must not be 0 (that would disable expiry)".into());
+    }
+    if delta < MIN_PCZT_EXPIRY_DELTA {
+        return Err(format!(
+            "expiry delta {} is below the minimum of {} blocks (nodes refuse transactions that expire this soon)",
+            delta, MIN_PCZT_EXPIRY_DELTA
+        ));
+    }
+    if delta > MAX_PCZT_EXPIRY_DELTA {
+        return Err(format!(
+            "expiry delta {} exceeds the maximum of {} blocks",
+            delta, MAX_PCZT_EXPIRY_DELTA
+        ));
+    }
+    let expiry = target_height
+        .checked_add(delta)
+        .ok_or_else(|| "target height + expiry delta overflows".to_string())?;
+    if expiry >= TX_EXPIRY_HEIGHT_THRESHOLD {
+        return Err(format!(
+            "expiry height {} must be below the consensus limit of {}",
+            expiry, TX_EXPIRY_HEIGHT_THRESHOLD
+        ));
+    }
+    Ok(expiry)
+}
+
 /// Build a PCZT for cold-wallet signing via QR.
 ///
 /// `target_height` selects the consensus branch; pass any height ≥ NU6.1
 /// activation for current mainnet operations. The tx version is derived from
 /// network upgrade rules (currently V5).
 ///
-/// Returns JSON: `{ pczt_hex, summary, action_count }`.
+/// `expiry_delta` (optional, last argument): blocks after `target_height` at
+/// which the transaction expires. Omitted means the legacy default of
+/// [`LEGACY_PCZT_EXPIRY_DELTA`] (40), exactly what this builder produced before
+/// the argument existed. Validated by [`resolve_pczt_expiry_height`].
+///
+/// Returns JSON: `{ pczt_hex, summary, action_count, sighash, alphas,
+/// spend_indices, expiry_height }`.
 /// The TS layer wraps `pczt_hex` in CBOR `{1: bytes}` and UR-encodes as
 /// `zcash-pczt` for animated QR transport.
 #[wasm_bindgen]
@@ -3559,6 +3705,7 @@ pub fn build_unsigned_pczt(
     target_height: u32,
     mainnet: bool,
     memo_hex: Option<String>,
+    expiry_delta: Option<u32>,
 ) -> Result<JsValue, JsError> {
     use ::zcash_transparent as transparent;
     use orchard::tree::Anchor;
@@ -3596,6 +3743,11 @@ pub fn build_unsigned_pczt(
             ));
         }
     }
+
+    // ── expiry (explicit; omitted = the legacy target + 40) ───────────────
+    // Resolved before any key decoding or proving so a bad value costs nothing.
+    let expiry_height =
+        resolve_pczt_expiry_height(target_height, expiry_delta).map_err(|e| JsError::new(&e))?;
 
     // ── decode FVK from UFVK ───────────────────────────────────────────────
     // zcash_keys 5333c01b uses the same orchard 0.12 we do, so no byte
@@ -3703,7 +3855,8 @@ pub fn build_unsigned_pczt(
     macro_rules! build_pczt_for {
         ($params:expr) => {{
             let params = $params;
-            let mut builder = Builder::new(params, target, build_config);
+            let mut builder = Builder::new(params, target, build_config)
+                .with_expiry_height(BlockHeight::from(expiry_height));
             for (note, mp) in &prepared {
                 builder
                     .add_orchard_spend::<<FixedFeeRule as zcash_primitives::transaction::fees::FeeRule>::Error>(
@@ -3845,6 +3998,7 @@ pub fn build_unsigned_pczt(
         sighash: String,
         alphas: Vec<String>,
         spend_indices: Vec<u32>,
+        expiry_height: u32,
     }
     serde_wasm_bindgen::to_value(&Out {
         pczt_hex: hex_encode(&pczt_bytes),
@@ -3853,6 +4007,7 @@ pub fn build_unsigned_pczt(
         sighash: hex_encode(&sighash),
         alphas,
         spend_indices,
+        expiry_height,
     })
     .map_err(|e| JsError::new(&format!("serialization failed: {}", e)))
 }
@@ -4857,6 +5012,11 @@ pub struct IronwoodPcztWithFrost {
     pub spend_indices: Vec<u32>,
 }
 
+///
+/// `expiry_delta` is REQUIRED here (no default at the Rust layer): the
+/// transaction's `nExpiryHeight` is `target_height + expiry_delta`, validated by
+/// [`resolve_pczt_expiry_height`]. Pass [`LEGACY_PCZT_EXPIRY_DELTA`] for the
+/// behavior this function had before the parameter existed.
 #[allow(clippy::too_many_arguments)]
 pub fn build_ironwood_send_pczt_proven<P>(
     params: P,
@@ -4869,6 +5029,7 @@ pub fn build_ironwood_send_pczt_proven<P>(
     target_height: u32,
     expected_branch_id: u32,
     memo: zcash_protocol::memo::MemoBytes,
+    expiry_delta: u32,
 ) -> Result<IronwoodPcztWithFrost, String>
 where
     P: zcash_protocol::consensus::Parameters,
@@ -4928,6 +5089,10 @@ where
         ));
     }
 
+    // Explicit expiry (see resolve_pczt_expiry_height). Resolved before any
+    // building so a bad value never reaches the prover.
+    let expiry_height = resolve_pczt_expiry_height(target_height, Some(expiry_delta))?;
+
     if prepared.is_empty() {
         return Err("ironwood send requires at least one ironwood note".into());
     }
@@ -4962,7 +5127,8 @@ where
             orchard_padding: BundlePadding::DEFAULT,
             ironwood_padding: BundlePadding::DEFAULT,
         },
-    );
+    )
+    .with_expiry_height(BlockHeight::from(expiry_height));
     builder
         .propose_version::<FeError>(TxVersion::V6)
         .map_err(|e| format!("propose_version(V6): {:?}", e))?;
@@ -5109,6 +5275,8 @@ where
         target_height,
         expected_branch_id,
         memo,
+        // The hot send keeps the expiry it always had (target + 40), now stated.
+        LEGACY_PCZT_EXPIRY_DELTA,
     )?;
 
     // Shielded sighash is a pure function of tx effects; compute once and reuse
@@ -5198,6 +5366,12 @@ where
 /// `build_ironwood_send_pczt_proven` - the tx binds branch id 0x37a5165b, the
 /// caller MUST pass that real id as `expected_branch_id`, and the 0xffff_ffff
 /// placeholder is refused. No value or recipient appears in any error.
+///
+/// `expiry_delta` (optional, last argument): blocks after `target_height` at
+/// which the transaction expires. Omitted means [`LEGACY_PCZT_EXPIRY_DELTA`]
+/// (40), exactly what this builder produced before the argument existed.
+/// Validated by [`resolve_pczt_expiry_height`]. The resolved height is returned
+/// as `expiry_height`.
 #[wasm_bindgen]
 #[allow(clippy::too_many_arguments)]
 pub fn build_ironwood_send_pczt(
@@ -5213,12 +5387,20 @@ pub fn build_ironwood_send_pczt(
     expected_branch_id: u32,
     mainnet: bool,
     memo_hex: Option<String>,
+    expiry_delta: Option<u32>,
 ) -> Result<JsValue, JsError> {
     use zcash_keys::keys::UnifiedFullViewingKey;
     use zcash_protocol::consensus::{BlockHeight, MainNetwork, TestNetwork};
     use zcash_protocol::memo::MemoBytes;
 
     let _ = account_index; // UFVK is already account-scoped; kept for parity.
+
+    // Omitted = the legacy target + 40 this builder always used. Resolved (and
+    // validated) up front so a bad value is refused before any proving; the
+    // core re-validates the same delta.
+    let expiry_delta = expiry_delta.unwrap_or(LEGACY_PCZT_EXPIRY_DELTA);
+    let expiry_height = resolve_pczt_expiry_height(target_height, Some(expiry_delta))
+        .map_err(|e| JsError::new(&e))?;
 
     // Ironwood shares the orchard key hierarchy: derive the orchard FVK from the
     // UFVK and use it for recipient/change scoping + nullifier verification.
@@ -5279,6 +5461,7 @@ pub fn build_ironwood_send_pczt(
             target_height,
             expected_branch_id,
             memo,
+            expiry_delta,
         )
     } else {
         build_ironwood_send_pczt_proven(
@@ -5295,6 +5478,7 @@ pub fn build_ironwood_send_pczt(
             target_height,
             expected_branch_id,
             memo,
+            expiry_delta,
         )
     }
     .map_err(|e| JsError::new(&e))?;
@@ -5355,6 +5539,8 @@ pub fn build_ironwood_send_pczt(
         alphas: Vec<String>,
         /// Action indices those alphas correspond to.
         spend_indices: Vec<u32>,
+        /// `nExpiryHeight` the transaction carries (target + expiry delta).
+        expiry_height: u32,
     }
     serde_wasm_bindgen::to_value(&Out {
         pczt_hex: hex_encode(
@@ -5368,6 +5554,7 @@ pub fn build_ironwood_send_pczt(
         sighash: hex_encode(&shielded_sighash),
         alphas,
         spend_indices,
+        expiry_height,
     })
     .map_err(|e| JsError::new(&format!("serialization failed: {}", e)))
 }
