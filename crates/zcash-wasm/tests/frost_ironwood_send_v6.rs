@@ -457,3 +457,71 @@ fn frost_2_of_3_signs_and_extracts_an_ironwood_send() {
     complete_ironwood_pczt_core(&pczt_bytes, &[bad_sig], &built.spend_indices)
         .expect_err("a signature over a different sighash must not complete");
 }
+
+/// No-change send: the whole note minus the fee goes to the recipient, so the
+/// padded bundle carries a builder DUMMY output. The intent verifier requires
+/// every action's output to verify against its cmx, so dummies must carry
+/// verifiable (zero-value) plaintext in the redacted PCZT, or every no-change
+/// send would be refused.
+#[test]
+fn inspection_verifies_dummy_outputs_in_a_no_change_send() {
+    let dealer = frost_spend::orchestrate::dealer_keygen(2, 3).expect("keygen");
+    let pubkeys: frost_spend::frost_keys::PublicKeyPackage =
+        frost_spend::orchestrate::from_hex(&dealer.public_key_package_hex).expect("pubkeys");
+    let fvk = frost_spend::keys::derive_fvk_from_sk([9u8; 32], &pubkeys).expect("fvk");
+    let other = frost_spend::orchestrate::dealer_keygen(2, 2).expect("recipient keygen");
+    let other_pubkeys: frost_spend::frost_keys::PublicKeyPackage =
+        frost_spend::orchestrate::from_hex(&other.public_key_package_hex).expect("pubkeys");
+    let recip_fvk =
+        frost_spend::keys::derive_fvk_from_sk([11u8; 32], &other_pubkeys).expect("recip fvk");
+    let recipient_addr = recip_fvk.address_at(0u32, orchard::keys::Scope::External);
+
+    let note_value = 1_000_000u64;
+    let fee = 10_000u64;
+    let amount = note_value - fee;
+    let (note, witness, anchor) = owned_note_with_witness(&fvk, note_value);
+    let built = build_ironwood_send_pczt_proven(
+        Nu63TestNet,
+        &fvk,
+        vec![(note, witness)],
+        IronwoodRecipient::Shielded(recipient_addr),
+        amount,
+        fee,
+        anchor,
+        10_000_000,
+        NU6_3_BRANCH_ID,
+        MemoBytes::empty(),
+        LEGACY_PCZT_EXPIRY_DELTA,
+    )
+    .expect("build + prove no-change ironwood send");
+
+    let group_uview = {
+        use zcash_address::unified::{Encoding, Fvk, Ufvk};
+        Ufvk::try_from_items(vec![Fvk::Orchard(fvk.to_bytes())])
+            .expect("ufvk")
+            .encode(&NetworkType::Test)
+    };
+    let redacted = redact_pczt_for_signer(built.pczt)
+        .serialize()
+        .expect("serialize redacted");
+    let v = inspect_pczt_outputs_core(&redacted, &group_uview).expect("inspect");
+    assert_eq!(v["committed_outputs_error"], serde_json::Value::Null);
+    assert_eq!(v["fee_zat"].as_u64(), Some(fee));
+    assert_eq!(v["expiry_height"].as_u64(), Some(10_000_040));
+    let actions = v["actions"].as_array().expect("actions");
+    assert!(actions.len() >= 2, "bundle is padded, so it carries a dummy output");
+    let mut non_zero = 0;
+    for a in actions {
+        assert_eq!(a["cmx_verified"], serde_json::json!(true), "action {a}");
+        let value = a["committed_value_zat"].as_u64().expect("verified value");
+        if value > 0 {
+            non_zero += 1;
+            assert_eq!(value, amount);
+            assert_eq!(
+                a["committed_recipient_raw_hex"].as_str(),
+                Some(hex::encode(recipient_addr.to_raw_address_bytes()).as_str())
+            );
+        }
+    }
+    assert_eq!(non_zero, 1, "exactly one value-carrying output");
+}
