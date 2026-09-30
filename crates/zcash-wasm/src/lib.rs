@@ -262,6 +262,13 @@ impl WalletKeys {
     /// Derive wallet keys from a 24-word BIP39 seed phrase
     #[wasm_bindgen(constructor)]
     pub fn from_seed_phrase(seed_phrase: &str) -> Result<WalletKeys, JsError> {
+        Self::from_seed_phrase_account(seed_phrase, 0)
+    }
+
+    /// Derive wallet keys for ZIP 32 account `account` (m/32'/133'/account').
+    /// Account 0 is identical to the constructor. Used by zafu "pockets".
+    #[wasm_bindgen]
+    pub fn from_seed_phrase_account(seed_phrase: &str, account: u32) -> Result<WalletKeys, JsError> {
         let mnemonic = bip39::Mnemonic::parse(seed_phrase)
             .map_err(|e| JsError::new(&format!("Invalid seed phrase: {}", e)))?;
 
@@ -269,7 +276,7 @@ impl WalletKeys {
         let seed = mnemonic.to_seed("");
 
         // Use real Orchard key derivation - get FVK and BOTH External and Internal IVKs
-        let (fvk, ivk_external, ivk_internal) = derive_orchard_keys(&seed)
+        let (fvk, ivk_external, ivk_internal) = derive_orchard_keys(&seed, account)
             .map_err(|e| JsError::new(&format!("Key derivation failed: {}", e)))?;
 
         // Create address identifier from External IVK (for display only)
@@ -857,6 +864,7 @@ pub struct ScanResult {
 /// Derive real Orchard keys (FVK, External IVK, Internal IVK) from seed using proper ZIP-32 derivation
 fn derive_orchard_keys(
     seed: &[u8],
+    account: u32,
 ) -> Result<
     (
         orchard::keys::FullViewingKey,
@@ -870,8 +878,10 @@ fn derive_orchard_keys(
         return Err(format!("Invalid seed length: {} (expected 64)", seed.len()));
     }
 
-    // Derive spending key using ZIP-32 for mainnet (coin_type=133), account 0
-    let sk = SpendingKey::from_zip32_seed(seed, 133, zip32::AccountId::ZERO)
+    // Derive spending key using ZIP-32 for mainnet (coin_type=133) at `account`
+    let account_id =
+        zip32::AccountId::try_from(account).map_err(|_| "Invalid ZIP-32 account index")?;
+    let sk = SpendingKey::from_zip32_seed(seed, 133, account_id)
         .map_err(|_| "Failed to derive spending key from seed")?;
 
     // Get Full Viewing Key from Spending Key
@@ -1944,6 +1954,24 @@ abandon abandon abandon art";
                 "fvk path, index {n}"
             );
         }
+    }
+
+    /// Account 0 is the legacy constructor byte for byte; account N is the
+    /// ZIP-32 key m/32'/133'/N' - the same key the hot spend builders use.
+    #[test]
+    fn per_account_keys_match_zip32() {
+        let legacy = WalletKeys::from_seed_phrase(ABANDON_ART).unwrap();
+        let zero = WalletKeys::from_seed_phrase_account(ABANDON_ART, 0).unwrap();
+        assert_eq!(legacy.fvk.to_bytes(), zero.fvk.to_bytes());
+        let seed = bip39::Mnemonic::parse(ABANDON_ART).unwrap().to_seed("");
+        for n in [1u32, 2, 7] {
+            let keys = WalletKeys::from_seed_phrase_account(ABANDON_ART, n).unwrap();
+            let sk = SpendingKey::from_zip32_seed(&seed, 133, zip32::AccountId::try_from(n).unwrap())
+                .unwrap();
+            assert_eq!(keys.fvk.to_bytes(), orchard::keys::FullViewingKey::from(&sk).to_bytes());
+            assert_ne!(keys.fvk.to_bytes(), legacy.fvk.to_bytes());
+        }
+        assert!(derive_orchard_keys(&seed, 1 << 31).is_err());
     }
 
     /// The bytes past the u32 range are real address space, not ignored.
