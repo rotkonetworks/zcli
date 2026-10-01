@@ -84,7 +84,8 @@ pczt = { package = "zakura-pczt", version = "=0.1.0-rc2", default-features = fal
 sapling = { package = "zakura-sapling-crypto", version = "=1.0.0", default-features = false, features = ["circuit"] }
 
 # key derivation
-bip39 = { version = "2.0", features = ["rand"] }
+bip39 = { version = "2.0", features = ["rand", "zeroize"] }
+zeroize = "1"
 blake2 = "0.10"
 chacha20poly1305 = "0.10"
 

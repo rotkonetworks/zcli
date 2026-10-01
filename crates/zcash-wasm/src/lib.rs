@@ -10,6 +10,8 @@
 
 mod frost;
 pub use frost::inspect_pczt_outputs_core;
+/// Hot signing inside the zcash worker, split from proving.
+mod hot_sign;
 /// HOT shielded-voting vote-casting bindings (casting slice only).
 #[cfg(feature = "voting")]
 mod voting;
@@ -28,6 +30,7 @@ mod voting_pir;
 /// pool-aware witness builder, and the regtest end-to-end tests. Duplicating it
 /// per pool is how you end up with a witness against the wrong tree.
 pub mod witness;
+pub use hot_sign::{sign_pczt_spends, sign_transparent_sighash, SpendKeys};
 
 use blake2::{Blake2b512, Digest};
 use serde::{Deserialize, Serialize};
@@ -151,9 +154,9 @@ fn guard_orchard_spend_allowed(branch_id: u32) -> Result<(), String> {
         return Err(format!(
             "orchard spends are disabled at NU6.3 (live consensus branch id \
              {:#010x}): an orchard bundle built now is rejected by the network. \
-             Spend from the ironwood pool instead (build_signed_ironwood_send / \
-             build_ironwood_send_pczt); orchard funds must first cross the \
-             one-way turnstile (build_signed_turnstile_migration).",
+             Spend from the ironwood pool instead (build_ironwood_send_pczt); \
+             orchard funds must first cross the one-way turnstile \
+             (build_turnstile_migration_pczt).",
             branch_id
         ));
     }
@@ -2757,7 +2760,7 @@ pub fn build_unsigned_transaction(
     )
     .expect("flags are representable under this bundle version");
 
-    // add spends (same note reconstruction as build_signed_spend_transaction)
+    // add spends
     for (i, note_info) in notes.iter().enumerate() {
         let rho_bytes = hex_decode(&note_info.rho_hex)
             .ok_or_else(|| JsError::new(&format!("invalid rho hex for note {}", i)))?;
@@ -3767,7 +3770,7 @@ pub fn build_unsigned_pczt(
                  orchard pool is spend/migrate-only; no new orchard outputs) - \
                  use the ironwood builder (build_ironwood_send_pczt); orchard \
                  funds must first cross the one-way turnstile \
-                 (build_signed_turnstile_migration)",
+                 (build_turnstile_migration_pczt)",
             ));
         }
     }
@@ -4503,75 +4506,13 @@ where
         memo,
     )?;
 
-    // The shielded sighash is a pure function of the tx effects (independent of
-    // any spend-auth signature), so compute it once from the proven PCZT and
-    // reuse it for every real orchard spend. This is the same value IoFinalizer
-    // used to sign the dummy spends, and it binds the guarded NU6.3 branch id.
-    let shielded_sighash = pczt::roles::signer::Signer::new(pczt.clone())
-        .map_err(|e| format!("signer init: {:?}", e))?
-        .shielded_sighash();
-
-    // Sign the wallet's real orchard spends via the low-level Signer role,
-    // supplying the reconstructed fvk to verify_nullifier ourselves (mirrors the
-    // zigner cold signer, which must do this because its redacted PCZT strips the
-    // fvk; we keep the same code path for a byte-identical signing model).
-    let signed_real: usize;
-    {
-        let counter = core::cell::Cell::new(0usize);
-        let low = pczt::roles::low_level_signer::Signer::new(pczt);
-        let low = low
-            .sign_orchard_with(
-                |_pczt,
-                 bundle,
-                 _tx_modifiable|
-                 -> Result<(), pczt::roles::low_level_signer::OrchardParseError> {
-                    for action in bundle.actions_mut().iter_mut() {
-                        match action.spend().verify_nullifier(Some(fvk)) {
-                            Ok(())
-                            | Err(
-                                orchard::pczt::VerifyError::MissingRecipient
-                                | orchard::pczt::VerifyError::MissingValue
-                                | orchard::pczt::VerifyError::MissingRho
-                                | orchard::pczt::VerifyError::MissingRandomSeed,
-                            ) => {}
-                            // A real mismatch on a spend we do not own (dummy /
-                            // foreign): skip it, do not abort the batch.
-                            Err(_) => continue,
-                        }
-                        if action.sign(shielded_sighash, ask, OsRng10).is_ok() {
-                            counter.set(counter.get() + 1);
-                        }
-                    }
-                    Ok(())
-                },
-            )
-            .map_err(|e| format!("orchard spend-auth signing: {:?}", e))?;
-        // Ironwood is output-only: its dummy spends were signed by IoFinalizer,
-        // so there is nothing here for the hot wallet to sign. (We deliberately
-        // do NOT run sign_ironwood_with - the reconstructed-fvk nullifier check
-        // does not apply to the fabricated ironwood dummy spends, and signing is
-        // already complete for that bundle.)
-        signed_real = counter.get();
-        let pczt = low.finish();
-
-        if signed_real == 0 {
-            return Err(
-                "no orchard spend accepted the seed-derived spend authorizing key: the seed \
-                 does not own the supplied notes (nullifier/rk mismatch)"
-                    .to_string(),
-            );
-        }
-
-        // Extract the broadcast-ready V6 tx. This creates the orchard + ironwood
-        // binding signatures and VERIFIES both proofs and every spend-auth +
-        // binding signature against the sighash; a failure here means the signed
-        // PCZT is not a valid transaction.
-        extract_signed_tx_from_pczt_bytes(
-            &pczt
-                .serialize()
-                .map_err(|e| format!("pczt serialize: {e:?}"))?,
-        )
-    }
+    sign_pczt_spends(
+        &pczt
+            .serialize()
+            .map_err(|e| format!("pczt serialize: {e:?}"))?,
+        fvk,
+        ask,
+    )
 }
 
 /// Build the one-way turnstile migration PCZT: spend the supplied orchard
@@ -4677,113 +4618,6 @@ pub fn build_turnstile_migration_pczt(
         action_count: built.action_count,
     })
     .map_err(|e| JsError::new(&format!("serialization failed: {}", e)))
-}
-
-/// HOT-WALLET sibling of `build_turnstile_migration_pczt`: build the one-way
-/// turnstile migration (spend the supplied orchard notes into the wallet's OWN
-/// ironwood address in a single V6 transaction), sign the wallet-owned orchard
-/// spends LOCALLY with a seed-derived key, and return the hex-encoded, signed,
-/// broadcast-ready V6 transaction.
-///
-/// Same parameter shape as `build_turnstile_migration_pczt`, except:
-///  - `seed_phrase` is PREPENDED. The orchard `FullViewingKey` (for the
-///    self-migration ironwood recipient) AND the `SpendAuthorizingKey` (for
-///    local signing) are BOTH derived from it via ZIP-32
-///    (`SpendingKey::from_zip32_seed(seed, coin_type, account_index)` - the
-///    exact key `UnifiedSpendingKey::from_seed(...).orchard()` and
-///    `build_signed_spend_transaction` derive), so there is no `ufvk_str`
-///    parameter: the seed fully determines the account and cannot disagree with
-///    a separately supplied viewing key.
-///  - `account_index` selects the ZIP-32 account (it IS used here, unlike the
-///    cold builder where the UFVK is already account-scoped).
-///  - Returns the signed transaction hex `String`, not a redacted PCZT.
-///
-/// The FAIL-CLOSED NU6.3 branch-id guard is inherited unchanged from the shared
-/// build core: the tx binds consensus branch id `expected_branch_id`, the
-/// caller MUST pass the real 0x37a5165b (never the 0xffff_ffff placeholder).
-#[wasm_bindgen]
-#[allow(clippy::too_many_arguments)]
-pub fn build_signed_turnstile_migration(
-    seed_phrase: &str,
-    orchard_notes_json: &str,
-    fee: u64,
-    orchard_anchor_hex: &str,
-    orchard_merkle_paths_json: &str,
-    account_index: u32,
-    target_height: u32,
-    expected_branch_id: u32,
-    mainnet: bool,
-    memo_hex: Option<String>,
-) -> Result<String, JsError> {
-    use orchard::keys::SpendAuthorizingKey;
-    use zcash_protocol::consensus::{BlockHeight, MainNetwork, TestNetwork};
-    use zcash_protocol::memo::MemoBytes;
-
-    // --- derive keys from mnemonic (same ZIP-32 path as
-    //     build_signed_spend_transaction and UnifiedSpendingKey::from_seed) ---
-    let mnemonic = bip39::Mnemonic::parse(seed_phrase)
-        .map_err(|e| JsError::new(&format!("invalid mnemonic: {}", e)))?;
-    let seed = mnemonic.to_seed("");
-    let coin_type = if mainnet { 133 } else { 1 };
-    let account_id = zip32::AccountId::try_from(account_index)
-        .map_err(|_| JsError::new("invalid account index"))?;
-    let sk = SpendingKey::from_zip32_seed(&seed, coin_type, account_id)
-        .map_err(|e| JsError::new(&format!("spending key derivation failed: {:?}", e)))?;
-    let fvk = orchard::keys::FullViewingKey::from(&sk);
-    let ask = SpendAuthorizingKey::from(&sk);
-
-    let notes: Vec<SpendableNote> = serde_json::from_str(orchard_notes_json)
-        .map_err(|e| JsError::new(&format!("invalid orchard_notes_json: {}", e)))?;
-    let merkle_paths: Vec<MerklePathInfo> = serde_json::from_str(orchard_merkle_paths_json)
-        .map_err(|e| JsError::new(&format!("invalid orchard_merkle_paths_json: {}", e)))?;
-    let prepared = prepare_orchard_spends(&fvk, &notes, &merkle_paths)?;
-
-    let anchor_bytes =
-        hex_decode(orchard_anchor_hex).ok_or_else(|| JsError::new("invalid anchor hex"))?;
-    let anchor_arr: [u8; 32] = anchor_bytes
-        .try_into()
-        .map_err(|_| JsError::new("anchor must be 32 bytes"))?;
-    let orchard_anchor = Option::from(orchard::tree::Anchor::from_bytes(anchor_arr))
-        .ok_or_else(|| JsError::new("invalid anchor"))?;
-
-    let memo_arr = decode_memo_hex(memo_hex.as_deref())?;
-    let memo =
-        MemoBytes::from_bytes(&memo_arr).map_err(|e| JsError::new(&format!("memo: {:?}", e)))?;
-
-    let tx_bytes = if mainnet {
-        build_signed_turnstile_migration_core(
-            Nu63Activated {
-                inner: MainNetwork,
-                nu6_3_from: BlockHeight::from(target_height),
-            },
-            &fvk,
-            &ask,
-            prepared,
-            fee,
-            orchard_anchor,
-            target_height,
-            expected_branch_id,
-            memo,
-        )
-    } else {
-        build_signed_turnstile_migration_core(
-            Nu63Activated {
-                inner: TestNetwork,
-                nu6_3_from: BlockHeight::from(target_height),
-            },
-            &fvk,
-            &ask,
-            prepared,
-            fee,
-            orchard_anchor,
-            target_height,
-            expected_branch_id,
-            memo,
-        )
-    }
-    .map_err(|e| JsError::new(&e))?;
-
-    Ok(hex_encode(&tx_bytes))
 }
 
 // ============================================================================
@@ -5307,71 +5141,17 @@ where
         LEGACY_PCZT_EXPIRY_DELTA,
     )?;
 
-    // Shielded sighash is a pure function of tx effects; compute once and reuse
-    // for every real ironwood spend. It binds the guarded NU6.3 branch id and
-    // is the same value IoFinalizer used to sign the dummy spends.
-    let shielded_sighash = pczt::roles::signer::Signer::new(pczt.clone())
-        .map_err(|e| format!("signer init: {:?}", e))?
-        .shielded_sighash();
-
-    // Sign the wallet's real IRONWOOD spends via the low-level Signer role,
-    // supplying the reconstructed fvk to verify_nullifier ourselves ("sign what
-    // is yours"): dummy/foreign spends surface Missing*/Wrong and are skipped.
-    let signed_real: usize;
-    {
-        let counter = core::cell::Cell::new(0usize);
-        let low = pczt::roles::low_level_signer::Signer::new(pczt);
-        let low = low
-            .sign_ironwood_with(
-                |_pczt,
-                 bundle,
-                 _tx_modifiable|
-                 -> Result<(), pczt::roles::low_level_signer::OrchardParseError> {
-                    for action in bundle.actions_mut().iter_mut() {
-                        match action.spend().verify_nullifier(Some(fvk)) {
-                            Ok(())
-                            | Err(
-                                orchard::pczt::VerifyError::MissingRecipient
-                                | orchard::pczt::VerifyError::MissingValue
-                                | orchard::pczt::VerifyError::MissingRho
-                                | orchard::pczt::VerifyError::MissingRandomSeed,
-                            ) => {}
-                            // A real mismatch on a spend we do not own (dummy /
-                            // foreign): skip it, do not abort the batch.
-                            Err(_) => continue,
-                        }
-                        if action.sign(shielded_sighash, ask, OsRng10).is_ok() {
-                            counter.set(counter.get() + 1);
-                        }
-                    }
-                    Ok(())
-                },
-            )
-            .map_err(|e| format!("ironwood spend-auth signing: {:?}", e))?;
-        signed_real = counter.get();
-        let pczt = low.finish();
-
-        if signed_real == 0 {
-            return Err(
-                "no ironwood spend accepted the seed-derived spend authorizing key: the seed \
-                 does not own the supplied notes (nullifier/rk mismatch)"
-                    .to_string(),
-            );
-        }
-
-        // Extract the broadcast-ready V6 tx. This creates the ironwood binding
-        // signature and VERIFIES the proof and every spend-auth + binding
-        // signature against the sighash; a failure means the signed PCZT is not
-        // a valid transaction.
-        extract_signed_tx_from_pczt_bytes(
-            &pczt
-                .serialize()
-                .map_err(|e| format!("pczt serialize: {e:?}"))?,
-        )
-    }
+    sign_pczt_spends(
+        &pczt
+            .serialize()
+            .map_err(|e| format!("pczt serialize: {e:?}"))?,
+        fvk,
+        ask,
+    )
 }
 
-/// COLD (zigner / watch-only) sibling of `build_signed_ironwood_send`: build the
+/// Seed-free general ironwood send builder (zigner, watch-only and, signed in the
+/// worker by [`SpendKeys`], hot wallets): build the
 /// general ironwood send PCZT - spend the wallet's REAL ironwood notes to an
 /// ARBITRARY `recipient` (plus change back to self) in a single V6 transaction -
 /// and return a redacted-for-signer PCZT (same redaction contract as
@@ -5585,126 +5365,6 @@ pub fn build_ironwood_send_pczt(
         expiry_height,
     })
     .map_err(|e| JsError::new(&format!("serialization failed: {}", e)))
-}
-
-/// HOT-WALLET general ironwood send: spend the wallet's REAL ironwood notes to
-/// an ARBITRARY `recipient` (plus change back to self) in a single V6
-/// transaction, sign the ironwood spends LOCALLY with a seed-derived key, and
-/// return the hex-encoded, signed, broadcast-ready V6 transaction.
-///
-/// This is the ironwood analogue of a normal orchard send and the sibling of
-/// `build_signed_turnstile_migration`. Parameters mirror that function's shape,
-/// with `recipient`/`amount` added and the anchor/notes/paths being the
-/// ironwood tree's:
-///  - `seed_phrase` derives BOTH the orchard `FullViewingKey` (recipient/change
-///    scoping + nullifier verification) AND the `SpendAuthorizingKey` (local
-///    signing) via the exact ZIP-32 path `SpendingKey::from_zip32_seed`.
-///  - `recipient` is a unified address; its orchard-format receiver is used as
-///    the ironwood recipient (the ironwood pool shares the orchard address
-///    format - the note VERSION, not the address, selects the pool).
-///  - `ironwood_anchor_hex` is the REAL ironwood tree anchor;
-///    `ironwood_merkle_paths_json` are ironwood-tree paths from
-///    `build_merkle_paths_ironwood`.
-///
-/// FAIL-CLOSED: inherits the hardened NU6.3 branch-id guard from the build core
-/// - the tx binds branch id 0x37a5165b, the caller MUST pass that real id as
-/// `expected_branch_id`, and the 0xffff_ffff placeholder is refused. No value
-/// or recipient appears in any error.
-#[wasm_bindgen]
-#[allow(clippy::too_many_arguments)]
-pub fn build_signed_ironwood_send(
-    seed_phrase: &str,
-    ironwood_notes_json: &str,
-    recipient: &str,
-    amount: u64,
-    fee: u64,
-    ironwood_anchor_hex: &str,
-    ironwood_merkle_paths_json: &str,
-    account_index: u32,
-    target_height: u32,
-    expected_branch_id: u32,
-    mainnet: bool,
-    memo_hex: Option<String>,
-) -> Result<String, JsError> {
-    use orchard::keys::SpendAuthorizingKey;
-    use zcash_protocol::consensus::{BlockHeight, MainNetwork, TestNetwork};
-    use zcash_protocol::memo::MemoBytes;
-
-    // --- derive keys from mnemonic (same ZIP-32 path as
-    //     build_signed_turnstile_migration / UnifiedSpendingKey::from_seed) ---
-    let mnemonic = bip39::Mnemonic::parse(seed_phrase)
-        .map_err(|e| JsError::new(&format!("invalid mnemonic: {}", e)))?;
-    let seed = mnemonic.to_seed("");
-    let coin_type = if mainnet { 133 } else { 1 };
-    let account_id = zip32::AccountId::try_from(account_index)
-        .map_err(|_| JsError::new("invalid account index"))?;
-    let sk = SpendingKey::from_zip32_seed(&seed, coin_type, account_id)
-        .map_err(|e| JsError::new(&format!("spending key derivation failed: {:?}", e)))?;
-    let fvk = orchard::keys::FullViewingKey::from(&sk);
-    let ask = SpendAuthorizingKey::from(&sk);
-
-    // Recipient: a unified/orchard address (value stays in the ironwood pool)
-    // OR a transparent address (z->t withdrawal, e.g. to an exchange), decided
-    // by the address encoding. Error is address-free.
-    let recipient_addr =
-        parse_ironwood_recipient(recipient, mainnet).map_err(|e| JsError::new(&e))?;
-
-    let notes: Vec<SpendableNote> = serde_json::from_str(ironwood_notes_json)
-        .map_err(|e| JsError::new(&format!("invalid ironwood_notes_json: {}", e)))?;
-    let merkle_paths: Vec<MerklePathInfo> = serde_json::from_str(ironwood_merkle_paths_json)
-        .map_err(|e| JsError::new(&format!("invalid ironwood_merkle_paths_json: {}", e)))?;
-    let prepared = prepare_ironwood_spends(&fvk, &notes, &merkle_paths)?;
-
-    let anchor_bytes =
-        hex_decode(ironwood_anchor_hex).ok_or_else(|| JsError::new("invalid anchor hex"))?;
-    let anchor_arr: [u8; 32] = anchor_bytes
-        .try_into()
-        .map_err(|_| JsError::new("anchor must be 32 bytes"))?;
-    let ironwood_anchor = Option::from(orchard::tree::Anchor::from_bytes(anchor_arr))
-        .ok_or_else(|| JsError::new("invalid anchor"))?;
-
-    let memo_arr = decode_memo_hex(memo_hex.as_deref())?;
-    let memo =
-        MemoBytes::from_bytes(&memo_arr).map_err(|e| JsError::new(&format!("memo: {:?}", e)))?;
-
-    let tx_bytes = if mainnet {
-        build_signed_ironwood_send_core(
-            Nu63Activated {
-                inner: MainNetwork,
-                nu6_3_from: BlockHeight::from(target_height),
-            },
-            &fvk,
-            &ask,
-            prepared,
-            recipient_addr,
-            amount,
-            fee,
-            ironwood_anchor,
-            target_height,
-            expected_branch_id,
-            memo,
-        )
-    } else {
-        build_signed_ironwood_send_core(
-            Nu63Activated {
-                inner: TestNetwork,
-                nu6_3_from: BlockHeight::from(target_height),
-            },
-            &fvk,
-            &ask,
-            prepared,
-            recipient_addr,
-            amount,
-            fee,
-            ironwood_anchor,
-            target_height,
-            expected_branch_id,
-            memo,
-        )
-    }
-    .map_err(|e| JsError::new(&e))?;
-
-    Ok(hex_encode(&tx_bytes))
 }
 
 /// Complete an orchard-only FROST multisig PCZT: inject the externally-aggregated
@@ -6884,418 +6544,6 @@ struct SpendableNote {
     recipient_hex: String,
 }
 
-/// Build a fully signed orchard spend transaction from a mnemonic wallet.
-///
-/// Unlike `build_unsigned_transaction` (for cold signing), this function
-/// derives the spending key from the mnemonic, constructs the full orchard
-/// bundle with Halo 2 proofs, and returns a broadcast-ready transaction.
-///
-/// # Arguments
-/// * `seed_phrase` - BIP39 mnemonic for key derivation
-/// * `notes_json` - JSON array of spendable notes with rseed/rho
-/// * `recipient` - unified address string (u1... or utest1...)
-/// * `amount` - zatoshis to send
-/// * `fee` - transaction fee in zatoshis
-/// * `anchor_hex` - merkle tree anchor (hex, 32 bytes)
-/// * `merkle_paths_json` - JSON array of merkle paths from witness building
-/// * `account_index` - ZIP-32 account index
-/// * `mainnet` - true for mainnet, false for testnet
-///
-/// # Returns
-/// Hex-encoded signed v5 transaction bytes ready for broadcast
-#[allow(clippy::too_many_arguments)]
-#[wasm_bindgen]
-pub fn build_signed_spend_transaction(
-    seed_phrase: &str,
-    notes_json: JsValue,
-    recipient: &str,
-    amount: u64,
-    fee: u64,
-    anchor_hex: &str,
-    merkle_paths_json: JsValue,
-    account_index: u32,
-    mainnet: bool,
-    memo_hex: Option<String>,
-    // Live consensus branch id from GetLightdInfo.consensusBranchId, e.g.
-    // "5437f330" (NU6.2) or "37a5165b" (NU6.3). Pass verbatim. REQUIRED: a
-    // missing/unparseable value is a hard error, never a silent default.
-    branch_id_hex: Option<String>,
-) -> Result<String, JsError> {
-    use orchard::builder::{Builder, BundleType};
-    use orchard::keys::SpendAuthorizingKey;
-    use orchard::note::{RandomSeed, Rho};
-    use orchard::tree::{Anchor, MerkleHashOrchard, MerklePath as OrchardMerklePath};
-    use orchard::value::NoteValue;
-    use zcash_protocol::value::ZatBalance;
-
-    // FAIL-CLOSED, BEFORE any proving: see build_unsigned_transaction.
-    let branch_id: u32 =
-        resolve_branch_id(branch_id_hex.as_deref()).map_err(|e| JsError::new(&e))?;
-    guard_orchard_spend_allowed(branch_id).map_err(|e| JsError::new(&e))?;
-
-    // --- derive keys from mnemonic ---
-    let mnemonic = bip39::Mnemonic::parse(seed_phrase)
-        .map_err(|e| JsError::new(&format!("invalid mnemonic: {}", e)))?;
-    let seed = mnemonic.to_seed("");
-
-    let coin_type = if mainnet { 133 } else { 1 };
-    let account_id = zip32::AccountId::try_from(account_index)
-        .map_err(|_| JsError::new("invalid account index"))?;
-
-    let sk = SpendingKey::from_zip32_seed(&seed, coin_type, account_id)
-        .map_err(|e| JsError::new(&format!("spending key derivation failed: {:?}", e)))?;
-    let fvk = orchard::keys::FullViewingKey::from(&sk);
-    let ask = SpendAuthorizingKey::from(&sk);
-
-    // derive change address (internal scope, diversifier 0)
-    let change_addr = fvk.to_ivk(Scope::Internal).address_at(0u64);
-
-    // --- parse recipient (orchard or transparent) ---
-    let is_transparent = recipient.starts_with("t1") || recipient.starts_with("tm");
-    let recipient_addr = if is_transparent {
-        None // transparent recipient — no orchard output for the recipient
-    } else {
-        Some(
-            parse_orchard_address(recipient, mainnet)
-                .map_err(|e| JsError::new(&format!("invalid recipient: {}", e)))?,
-        )
-    };
-    let t_output_script = if is_transparent {
-        Some(
-            decode_t_address_script(recipient, mainnet)
-                .map_err(|e| JsError::new(&format!("invalid transparent address: {}", e)))?,
-        )
-    } else {
-        None
-    };
-
-    // --- parse anchor ---
-    let anchor_bytes = hex_decode(anchor_hex).ok_or_else(|| JsError::new("invalid anchor hex"))?;
-    if anchor_bytes.len() != 32 {
-        return Err(JsError::new("anchor must be 32 bytes"));
-    }
-    let mut anchor_arr = [0u8; 32];
-    anchor_arr.copy_from_slice(&anchor_bytes);
-    let anchor = Option::from(Anchor::from_bytes(anchor_arr))
-        .ok_or_else(|| JsError::new("invalid anchor"))?;
-
-    // --- parse notes and merkle paths ---
-    let notes: Vec<SpendableNote> = serde_wasm_bindgen::from_value(notes_json)
-        .map_err(|e| JsError::new(&format!("invalid notes: {}", e)))?;
-    let merkle_paths: Vec<MerklePathInfo> = serde_wasm_bindgen::from_value(merkle_paths_json)
-        .map_err(|e| JsError::new(&format!("invalid merkle paths: {}", e)))?;
-
-    if notes.len() != merkle_paths.len() {
-        return Err(JsError::new("notes and merkle paths count mismatch"));
-    }
-
-    // --- calculate totals ---
-    let total_input: u64 = notes.iter().map(|n| n.value).sum();
-    if total_input < amount + fee {
-        return Err(JsError::new(&format!(
-            "insufficient funds: {} < {} + {}",
-            total_input, amount, fee
-        )));
-    }
-    let change = total_input - amount - fee;
-
-    // --- build orchard bundle ---
-    // NU6.1-branch V5 tx: legacy orchard pool, pre-NU6.2 (historical) circuit.
-    let bundle_type = BundleType::Transactional {
-        bundle_required: true,
-        pad_to_minimum: None,
-    };
-    let mut builder = Builder::new(
-        bundle_type,
-        orchard::bundle::BundleVersion::orchard_insecure_v1(),
-        orchard::bundle::Flags::ENABLED,
-        anchor,
-    )
-    .expect("flags are representable under this bundle version");
-
-    // add spends
-    for (i, note_info) in notes.iter().enumerate() {
-        // reconstruct the orchard::Note from stored rseed + rho + value + address
-        let rho_bytes = hex_decode(&note_info.rho_hex)
-            .ok_or_else(|| JsError::new(&format!("invalid rho hex for note {}", i)))?;
-        if rho_bytes.len() != 32 {
-            return Err(JsError::new(&format!(
-                "rho must be 32 bytes for note {}",
-                i
-            )));
-        }
-        let mut rho_arr = [0u8; 32];
-        rho_arr.copy_from_slice(&rho_bytes);
-        let rho = Option::from(Rho::from_bytes(&rho_arr))
-            .ok_or_else(|| JsError::new(&format!("invalid rho for note {}", i)))?;
-
-        let rseed_bytes = hex_decode(&note_info.rseed_hex)
-            .ok_or_else(|| JsError::new(&format!("invalid rseed hex for note {}", i)))?;
-        if rseed_bytes.len() != 32 {
-            return Err(JsError::new(&format!(
-                "rseed must be 32 bytes for note {}",
-                i
-            )));
-        }
-        let mut rseed_arr = [0u8; 32];
-        rseed_arr.copy_from_slice(&rseed_bytes);
-        let rseed = Option::from(RandomSeed::from_bytes(rseed_arr, &rho))
-            .ok_or_else(|| JsError::new(&format!("invalid rseed for note {}", i)))?;
-
-        let note_value = NoteValue::from_raw(note_info.value);
-
-        // use stored recipient address from scan (handles diversified addresses correctly)
-        let note: orchard::Note = if !note_info.recipient_hex.is_empty() {
-            let addr_bytes = hex_decode(&note_info.recipient_hex)
-                .ok_or_else(|| JsError::new(&format!("invalid recipient hex for note {}", i)))?;
-            let addr_arr: [u8; 43] = addr_bytes
-                .try_into()
-                .map_err(|_| JsError::new(&format!("recipient must be 43 bytes for note {}", i)))?;
-            let addr = Option::from(orchard::Address::from_raw_address_bytes(&addr_arr))
-                .ok_or_else(|| JsError::new(&format!("invalid orchard address for note {}", i)))?;
-            Option::from(orchard::Note::from_parts(
-                addr,
-                note_value,
-                rho,
-                rseed,
-                orchard::note::NoteVersion::V2,
-            ))
-            .ok_or_else(|| {
-                JsError::new(&format!(
-                    "failed to reconstruct note {} from stored address",
-                    i
-                ))
-            })?
-        } else {
-            // fallback: try default addresses (legacy notes without stored recipient)
-            let ext_addr = fvk.to_ivk(Scope::External).address_at(0u64);
-            let int_addr = fvk.to_ivk(Scope::Internal).address_at(0u64);
-            Option::from(orchard::Note::from_parts(
-                ext_addr,
-                note_value,
-                rho,
-                rseed,
-                orchard::note::NoteVersion::V2,
-            ))
-            .or_else(|| {
-                Option::from(orchard::Note::from_parts(
-                    int_addr,
-                    note_value,
-                    rho,
-                    rseed,
-                    orchard::note::NoteVersion::V2,
-                ))
-            })
-            .ok_or_else(|| {
-                JsError::new(&format!(
-                    "failed to reconstruct note {} — rseed/rho/value mismatch",
-                    i
-                ))
-            })?
-        };
-
-        // verify the reconstructed note matches the expected cmx
-        let expected_cmx = hex_decode(&note_info.cmx)
-            .ok_or_else(|| JsError::new(&format!("invalid cmx hex for note {}", i)))?;
-        let reconstructed_cmx = orchard::note::ExtractedNoteCommitment::from(note.commitment());
-        if hex_encode(&reconstructed_cmx.to_bytes()) != hex_encode(&expected_cmx) {
-            return Err(JsError::new(&format!(
-                "cmx mismatch for note {}: reconstructed={} expected={}",
-                i,
-                hex_encode(&reconstructed_cmx.to_bytes()),
-                hex_encode(&expected_cmx)
-            )));
-        }
-
-        // parse merkle path
-        let mp = &merkle_paths[i];
-        if mp.path.len() != 32 {
-            return Err(JsError::new(&format!(
-                "merkle path must have 32 elements, got {} for note {}",
-                mp.path.len(),
-                i
-            )));
-        }
-
-        let mut auth_path = [[0u8; 32]; 32];
-        for (j, hash_hex) in mp.path.iter().enumerate() {
-            let hash_bytes = hex_decode(hash_hex)
-                .ok_or_else(|| JsError::new(&format!("invalid merkle path hash at {}/{}", i, j)))?;
-            if hash_bytes.len() != 32 {
-                return Err(JsError::new(&format!(
-                    "merkle path hash must be 32 bytes at {}/{}",
-                    i, j
-                )));
-            }
-            auth_path[j].copy_from_slice(&hash_bytes);
-        }
-
-        // Positional decode with a precise per-sibling error. See the
-        // matching comment at the other call site for the rationale (lossy
-        // filter_map collapse erased which sibling failed, undiagnosable on
-        // hardware; a wrong path is still caught downstream by orchard's
-        // has_matching_anchor).
-        let mut merkle_hashes_arr: [MerkleHashOrchard; 32] =
-            [MerkleHashOrchard::from_bytes(&[0u8; 32]).unwrap(); 32];
-        for (j, bytes) in auth_path.iter().enumerate() {
-            merkle_hashes_arr[j] =
-                Option::from(MerkleHashOrchard::from_bytes(bytes)).ok_or_else(|| {
-                    JsError::new(&format!(
-                        "merkle sibling {}/{} is not a canonical Pallas base element: {}",
-                        i,
-                        j,
-                        hex_encode(bytes),
-                    ))
-                })?;
-        }
-        let merkle_hashes: Vec<MerkleHashOrchard> = merkle_hashes_arr.to_vec();
-
-        let merkle_path = OrchardMerklePath::from_parts(
-            u32::try_from(mp.position).map_err(|_| {
-                JsError::new(&format!("tree position {} exceeds u32 max", mp.position))
-            })?,
-            merkle_hashes
-                .try_into()
-                .map_err(|_| JsError::new("merkle path conversion"))?,
-        );
-
-        builder
-            .add_spend(fvk.clone(), note, merkle_path)
-            .map_err(|e| JsError::new(&format!("add_spend for note {}: {:?}", i, e)))?;
-    }
-
-    // decode memo — recipient gets the memo, change output stays empty.
-    let recipient_memo = decode_memo_hex(memo_hex.as_deref())?;
-
-    // OVK for outputs: bind out_ciphertext to the wallet's OVK so the FVK
-    // holder can recover (recipient, amount) — outgoing-tx history without
-    // re-querying the chain. Network privacy unchanged.
-    let ovk_external = fvk.to_ovk(Scope::External);
-    let ovk_internal = fvk.to_ovk(Scope::Internal);
-
-    // add recipient output (orchard only — transparent outputs are added to the tx directly)
-    if let Some(ref addr) = recipient_addr {
-        builder
-            .add_output(
-                Some(ovk_external.clone()),
-                *addr,
-                NoteValue::from_raw(amount),
-                recipient_memo,
-            )
-            .map_err(|e| JsError::new(&format!("add_output (recipient): {:?}", e)))?;
-    }
-
-    // add change output if needed (for z→t, all orchard value minus amount+fee goes to change)
-    if change > 0 {
-        builder
-            .add_output(
-                Some(ovk_internal.clone()),
-                change_addr,
-                NoteValue::from_raw(change),
-                // canonical ZIP-302 no-memo, not 512 zero bytes (see ZIP302_NO_MEMO)
-                ZIP302_NO_MEMO,
-            )
-            .map_err(|e| JsError::new(&format!("add_output (change): {:?}", e)))?;
-    }
-
-    // --- build, prove, sign ---
-    let mut rng = OsRng10;
-    let (unauthorized_bundle, _meta) = builder
-        .build::<ZatBalance>(&mut rng)
-        .map_err(|e| JsError::new(&format!("bundle build: {:?}", e)))?
-        .ok_or_else(|| JsError::new("builder produced no bundle"))?;
-
-    // Halo 2 proof generation (expensive)
-    let proven_bundle = with_proving_key(|pk| unauthorized_bundle.create_proof(pk, &mut rng))
-        .map_err(|e| JsError::new(&format!("create_proof: {:?}", e)))?;
-
-    // --- compute ZIP-244 sighash (branch id resolved+gated at entry) ---
-    let expiry_height: u32 = 0; // no expiry for orchard-only
-
-    let header_data = {
-        let mut d = Vec::new();
-        d.extend_from_slice(&(5u32 | (1u32 << 31)).to_le_bytes());
-        d.extend_from_slice(&0x26A7270Au32.to_le_bytes());
-        d.extend_from_slice(&branch_id.to_le_bytes());
-        d.extend_from_slice(&0u32.to_le_bytes()); // nLockTime
-        d.extend_from_slice(&expiry_height.to_le_bytes());
-        d
-    };
-    let header_digest = blake2b_256_personal(b"ZTxIdHeadersHash", &header_data);
-
-    // transparent digest (includes outputs for z→t)
-    let transparent_digest = if let Some(ref script) = t_output_script {
-        let prevouts_digest = blake2b_256_personal(b"ZTxIdPrevoutHash", &[]);
-        let sequence_digest = blake2b_256_personal(b"ZTxIdSequencHash", &[]);
-        let mut outputs_data = Vec::new();
-        outputs_data.extend_from_slice(&amount.to_le_bytes());
-        outputs_data.extend_from_slice(&compact_size(script.len() as u64));
-        outputs_data.extend_from_slice(script);
-        let outputs_digest = blake2b_256_personal(b"ZTxIdOutputsHash", &outputs_data);
-        let mut d = Vec::new();
-        d.extend_from_slice(&prevouts_digest);
-        d.extend_from_slice(&sequence_digest);
-        d.extend_from_slice(&outputs_digest);
-        blake2b_256_personal(b"ZTxIdTranspaHash", &d)
-    } else {
-        blake2b_256_personal(b"ZTxIdTranspaHash", &[])
-    };
-    let sapling_digest = blake2b_256_personal(b"ZTxIdSaplingHash", &[]);
-
-    let orchard_digest = compute_orchard_digest(&proven_bundle)?;
-
-    let sighash_personal = {
-        let mut p = [0u8; 16];
-        p[..12].copy_from_slice(b"ZcashTxHash_");
-        p[12..16].copy_from_slice(&branch_id.to_le_bytes());
-        p
-    };
-
-    let mut sighash_input = Vec::new();
-    sighash_input.extend_from_slice(&header_digest);
-    sighash_input.extend_from_slice(&transparent_digest);
-    sighash_input.extend_from_slice(&sapling_digest);
-    sighash_input.extend_from_slice(&orchard_digest);
-
-    let sighash = blake2b_256_personal(&sighash_personal, &sighash_input);
-
-    // apply spend auth signatures + binding signature
-    let authorized_bundle = proven_bundle
-        .apply_signatures(rng, sighash, &[ask])
-        .map_err(|e| JsError::new(&format!("apply_signatures: {:?}", e)))?;
-
-    // --- serialize v5 transaction ---
-    let mut tx_bytes = Vec::new();
-
-    // header
-    tx_bytes.extend_from_slice(&(5u32 | (1u32 << 31)).to_le_bytes());
-    tx_bytes.extend_from_slice(&0x26A7270Au32.to_le_bytes());
-    tx_bytes.extend_from_slice(&branch_id.to_le_bytes());
-    tx_bytes.extend_from_slice(&0u32.to_le_bytes()); // nLockTime
-    tx_bytes.extend_from_slice(&expiry_height.to_le_bytes());
-
-    // transparent inputs (none)
-    tx_bytes.extend_from_slice(&compact_size(0)); // vin
-                                                  // transparent outputs
-    if let Some(ref script) = t_output_script {
-        tx_bytes.extend_from_slice(&compact_size(1)); // 1 vout
-        tx_bytes.extend_from_slice(&amount.to_le_bytes());
-        tx_bytes.extend_from_slice(&compact_size(script.len() as u64));
-        tx_bytes.extend_from_slice(script);
-    } else {
-        tx_bytes.extend_from_slice(&compact_size(0)); // 0 vout
-    }
-
-    // sapling (none)
-    tx_bytes.extend_from_slice(&compact_size(0)); // spends
-    tx_bytes.extend_from_slice(&compact_size(0)); // outputs
-
-    // orchard bundle
-    serialize_orchard_bundle(&authorized_bundle, &mut tx_bytes)?;
-
-    Ok(hex_encode(&tx_bytes))
-}
-
 #[test]
 fn test_user_seed_with_real_action() {
     let seed_phrase = "master bid journey tank since conduct fire picture medal toward dish trend army true cushion ramp yellow high once jealous van occur swamp liberty";
@@ -7389,6 +6637,14 @@ struct Bip32Key {
     chain_code: [u8; 32],
 }
 
+impl Drop for Bip32Key {
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+        self.key.zeroize();
+        self.chain_code.zeroize();
+    }
+}
+
 /// Derive BIP32 master key from seed using HMAC-SHA512 with key "Bitcoin seed"
 fn bip32_master_key(seed: &[u8]) -> Bip32Key {
     use hmac::{Hmac, Mac};
@@ -7467,36 +6723,24 @@ fn bip32_derive_child(parent: &Bip32Key, index: u32, hardened: bool) -> Result<B
     Ok(Bip32Key { key, chain_code })
 }
 
-/// Derive transparent private key from mnemonic using BIP44 path m/44'/133'/account'/0/index
-///
-/// Returns hex-encoded 32-byte secp256k1 private key for signing transparent inputs.
-/// Path components: purpose=44' (BIP44), coin_type=133' (ZEC), account', change=0, index
-#[wasm_bindgen]
-pub fn derive_transparent_privkey(
-    seed_phrase: &str,
+/// Secret key of transparent address m/44'/133'/account'/0/index. Coin type is
+/// 133 on every network, as the hot shielding path always derived it.
+pub(crate) fn transparent_secret_key(
+    seed: &[u8],
     account: u32,
     index: u32,
-) -> Result<String, JsError> {
-    let mnemonic = bip39::Mnemonic::parse(seed_phrase)
-        .map_err(|e| JsError::new(&format!("invalid mnemonic: {}", e)))?;
-
-    let seed = mnemonic.to_seed("");
-
-    // BIP32 derivation: m/44'/133'/account'/0/index
-    let master = bip32_master_key(&seed);
-
-    let child_44h = bip32_derive_child(&master, 44, true)
-        .map_err(|e| JsError::new(&format!("derivation failed at 44': {}", e)))?;
-    let child_133h = bip32_derive_child(&child_44h, 133, true)
-        .map_err(|e| JsError::new(&format!("derivation failed at 133': {}", e)))?;
-    let child_account = bip32_derive_child(&child_133h, account, true)
-        .map_err(|e| JsError::new(&format!("derivation failed at account': {}", e)))?;
-    let child_change = bip32_derive_child(&child_account, 0, false)
-        .map_err(|e| JsError::new(&format!("derivation failed at change: {}", e)))?;
-    let child_index = bip32_derive_child(&child_change, index, false)
-        .map_err(|e| JsError::new(&format!("derivation failed at index: {}", e)))?;
-
-    Ok(hex_encode(&child_index.key))
+) -> Result<secp256k1::SecretKey, String> {
+    let mut key = bip32_master_key(seed);
+    for (i, hardened) in [
+        (44, true),
+        (133, true),
+        (account, true),
+        (0, false),
+        (index, false),
+    ] {
+        key = bip32_derive_child(&key, i, hardened)?;
+    }
+    secp256k1::SecretKey::from_slice(&key.key).map_err(|e| format!("invalid transparent key: {e}"))
 }
 
 /// Deserialize a u64 from either a JSON number or a string (for BigInt safety)
@@ -7587,8 +6831,7 @@ pub fn nu6_3_activation_height(mainnet: bool) -> u32 {
 /// `target_height`: `"ironwood"` at/after NU6.3 activation, `"orchard"` before.
 ///
 /// Callers that do not pick a pool explicitly MUST resolve it through this
-/// function (or through [`build_shielding_transaction_auto`], which calls it)
-/// rather than defaulting to orchard: from NU6.3 onwards an orchard output is
+/// function rather than defaulting to orchard: from NU6.3 onwards an orchard output is
 /// a stranded note (orchard sends are consensus-disabled, so the funds can only
 /// be moved again by a turnstile migration that costs a second fee).
 #[wasm_bindgen]
@@ -7621,8 +6864,8 @@ fn guard_orchard_shielding_allowed(
         return Err(format!(
             "orchard shielding is disabled at NU6.3 (activation height {}, target \
              height {}): an orchard output created now is unspendable and would \
-             need a turnstile migration - use build_shielding_transaction_ironwood \
-             (or build_shielding_transaction_auto, which picks the pool from the \
+             need a turnstile migration - use build_unsigned_shielding_transaction_ironwood \
+             (the wallet picks the pool from the \
              chain height) to shield into the ironwood pool instead",
             activation, anchor_height
         ));
@@ -7635,341 +6878,17 @@ fn guard_orchard_shielding_allowed(
             "orchard shielding is disabled at NU6.3: the supplied consensus branch \
              id is 0x37a5165b (Ironwood is active), so an orchard output would be \
              unspendable and would need a turnstile migration - use \
-             build_shielding_transaction_ironwood (or \
-             build_shielding_transaction_auto) to shield into the ironwood pool"
+             build_unsigned_shielding_transaction_ironwood to shield into the ironwood pool"
                 .to_string(),
         );
     }
     Ok(())
 }
 
-/// Build a shielding transaction (transparent → orchard) with real Halo 2 proofs.
-///
-/// PRE-NU6.3 ONLY. [`guard_orchard_shielding_allowed`] refuses to build at or
-/// after the NU6.3 activation height (or when the supplied consensus branch id
-/// is NU6.3), because orchard outputs are consensus-disabled from that point
-/// and the resulting notes would be stranded. Use
-/// [`build_shielding_transaction_ironwood`] there.
-///
-/// Spends transparent P2PKH UTXOs and creates an orchard output to the sender's
-/// own shielded address. Uses `orchard::builder::Builder` for proper action
-/// construction and zero-knowledge proof generation (client-side).
-///
-/// Returns hex-encoded signed v5 transaction bytes ready for broadcast.
-///
-/// # Arguments
-/// * `utxos_json` - JSON array of `{txid, vout, value, script}` objects
-/// * `privkey_hex` - hex-encoded 32-byte secp256k1 private key for transparent inputs
-/// * `recipient` - unified address string (u1... or utest1...) for orchard output
-/// * `amount` - total zatoshis to shield (all selected UTXO value minus fee)
-/// * `fee` - transaction fee in zatoshis
-/// * `anchor_height` - block height for expiry (expiry_height = anchor_height + 100)
-/// * `mainnet` - true for mainnet, false for testnet
-#[wasm_bindgen]
-// wasm-bindgen surface mirrors the TS caller's argument list
-#[allow(clippy::too_many_arguments)]
-pub fn build_shielding_transaction(
-    utxos_json: &str,
-    privkey_hex: &str,
-    recipient: &str,
-    amount: u64,
-    fee: u64,
-    anchor_height: u32,
-    mainnet: bool,
-    // Live consensus branch id from GetLightdInfo.consensusBranchId, e.g.
-    // "5437f330" (NU6.2) or "37a5165b" (NU6.3). Pass verbatim; None/empty falls
-    // back to the compiled-in NU6.2 value (wrong post-NU6.3).
-    branch_id_hex: Option<String>,
-) -> Result<String, JsError> {
-    use k256::ecdsa::{signature::hazmat::PrehashSigner, SigningKey};
-    use orchard::builder::{Builder, BundleType};
-    use orchard::tree::Anchor;
-    use orchard::value::NoteValue;
-    use zcash_protocol::value::ZatBalance;
-
-    // FAIL CLOSED: never build an orchard shielding tx at/after NU6.3.
-    guard_orchard_shielding_allowed(anchor_height, mainnet, branch_id_hex.as_deref())
-        .map_err(|e| JsError::new(&e))?;
-    // FAIL-CLOSED, BEFORE proving: the ZIP-244 sighash below binds this branch
-    // id; a missing/unparseable value is refused rather than defaulted.
-    let branch_id: u32 =
-        resolve_branch_id(branch_id_hex.as_deref()).map_err(|e| JsError::new(&e))?;
-
-    // --- parse recipient orchard address ---
-    let orchard_addr = parse_orchard_address(recipient, mainnet)
-        .map_err(|e| JsError::new(&format!("invalid recipient: {}", e)))?;
-
-    // --- parse transparent private key ---
-    let privkey_bytes =
-        hex_decode(privkey_hex).ok_or_else(|| JsError::new("invalid privkey hex"))?;
-    if privkey_bytes.len() != 32 {
-        return Err(JsError::new("privkey must be 32 bytes"));
-    }
-
-    let signing_key = SigningKey::from_slice(&privkey_bytes)
-        .map_err(|e| JsError::new(&format!("invalid signing key: {}", e)))?;
-    let pubkey = signing_key.verifying_key();
-    let compressed_pubkey = pubkey.to_encoded_point(true);
-    let pubkey_bytes = compressed_pubkey.as_bytes();
-    let pubkey_hash = hash160(pubkey_bytes);
-    let our_script_pubkey = make_p2pkh_script(&pubkey_hash);
-
-    // --- parse and select UTXOs ---
-    let mut utxos: Vec<TransparentUtxo> = serde_json::from_str(utxos_json)
-        .map_err(|e| JsError::new(&format!("invalid utxos json: {}", e)))?;
-    utxos.sort_by_key(|u| std::cmp::Reverse(u.value));
-
-    let target = amount
-        .checked_add(fee)
-        .ok_or_else(|| JsError::new("amount + fee overflow"))?;
-
-    let mut selected: Vec<TransparentUtxo> = Vec::new();
-    let mut total_in: u64 = 0;
-    for utxo in &utxos {
-        selected.push(utxo.clone());
-        total_in += utxo.value;
-        if total_in >= target {
-            break;
-        }
-    }
-    if total_in < target {
-        return Err(JsError::new(&format!(
-            "insufficient funds: have {} zat, need {} zat",
-            total_in, target
-        )));
-    }
-
-    // all value goes to orchard (no transparent change output)
-    let shielded_value = total_in - fee;
-
-    // --- build orchard bundle with real Halo 2 proofs ---
-    // NU6.1-branch V5 tx: legacy orchard pool, pre-NU6.2 (historical) circuit.
-    let bundle_type = BundleType::Transactional {
-        bundle_required: true,
-        pad_to_minimum: None,
-    };
-    let mut builder = Builder::new(
-        bundle_type,
-        orchard::bundle::BundleVersion::orchard_insecure_v1(),
-        orchard::bundle::Flags::SPENDS_DISABLED,
-        Anchor::empty_tree(),
-    )
-    .expect("flags are representable under this bundle version");
-
-    builder
-        .add_output(
-            None,
-            orchard_addr,
-            NoteValue::from_raw(shielded_value),
-            // canonical ZIP-302 no-memo, not 512 zero bytes (see ZIP302_NO_MEMO)
-            ZIP302_NO_MEMO,
-        )
-        .map_err(|e| JsError::new(&format!("add_output: {:?}", e)))?;
-
-    let mut rng = OsRng10;
-    let (unauthorized_bundle, _meta) = builder
-        .build::<ZatBalance>(&mut rng)
-        .map_err(|e| JsError::new(&format!("bundle build: {:?}", e)))?
-        .ok_or_else(|| JsError::new("builder produced no bundle"))?;
-
-    // prove (Halo 2 — this is the expensive step, ~seconds in WASM)
-    let proven_bundle = with_proving_key(|pk| unauthorized_bundle.create_proof(pk, &mut rng))
-        .map_err(|e| JsError::new(&format!("create_proof: {:?}", e)))?;
-
-    // --- compute transparent digests for ZIP-244 sighash ---
-    let n_inputs = selected.len();
-    let expiry_height = anchor_height.saturating_add(100);
-
-    let mut prevout_data = Vec::new();
-    let mut sequence_data = Vec::new();
-    let mut amounts_data = Vec::new();
-    let mut scripts_data = Vec::new();
-
-    for utxo in &selected {
-        let txid_be =
-            hex_decode(&utxo.txid).ok_or_else(|| JsError::new("invalid utxo txid hex"))?;
-        if txid_be.len() != 32 {
-            return Err(JsError::new("txid must be 32 bytes"));
-        }
-        let mut txid_le = txid_be.clone();
-        txid_le.reverse();
-
-        prevout_data.extend_from_slice(&txid_le);
-        prevout_data.extend_from_slice(&utxo.vout.to_le_bytes());
-        sequence_data.extend_from_slice(&0xffffffffu32.to_le_bytes());
-        amounts_data.extend_from_slice(&utxo.value.to_le_bytes());
-
-        let script_bytes = hex_decode(&utxo.script).unwrap_or_else(|| our_script_pubkey.clone());
-        scripts_data.extend_from_slice(&compact_size(script_bytes.len() as u64));
-        scripts_data.extend_from_slice(&script_bytes);
-    }
-
-    // ZIP-244 digests
-    let header_data = {
-        let mut d = Vec::new();
-        d.extend_from_slice(&(5u32 | (1u32 << 31)).to_le_bytes());
-        d.extend_from_slice(&0x26A7270Au32.to_le_bytes());
-        d.extend_from_slice(&branch_id.to_le_bytes());
-        d.extend_from_slice(&0u32.to_le_bytes());
-        d.extend_from_slice(&expiry_height.to_le_bytes());
-        d
-    };
-    let header_digest = blake2b_256_personal(b"ZTxIdHeadersHash", &header_data);
-
-    let prevouts_digest = blake2b_256_personal(b"ZTxIdPrevoutHash", &prevout_data);
-    let sequence_digest = blake2b_256_personal(b"ZTxIdSequencHash", &sequence_data);
-    let outputs_digest = blake2b_256_personal(b"ZTxIdOutputsHash", &[]);
-
-    let sapling_digest = blake2b_256_personal(b"ZTxIdSaplingHash", &[]);
-
-    // compute orchard_digest from the proven bundle's action data (ZIP-244)
-    let orchard_digest = compute_orchard_digest(&proven_bundle)?;
-
-    // per-input sighash needs amounts_digest and scriptpubkeys_digest
-    let amounts_digest = blake2b_256_personal(b"ZTxTrAmountsHash", &amounts_data);
-    let scriptpubkeys_digest = blake2b_256_personal(b"ZTxTrScriptsHash", &scripts_data);
-
-    let sighash_personal = {
-        let mut p = [0u8; 16];
-        p[..12].copy_from_slice(b"ZcashTxHash_");
-        p[12..16].copy_from_slice(&branch_id.to_le_bytes());
-        p
-    };
-
-    // --- sign transparent inputs ---
-    let mut signed_inputs: Vec<SignedTransparentInput> = Vec::new();
-
-    for utxo in &selected[..n_inputs] {
-        let txid_be = hex_decode(&utxo.txid).unwrap();
-        let mut txid_le = txid_be.clone();
-        txid_le.reverse();
-
-        let script_bytes = hex_decode(&utxo.script).unwrap_or_else(|| our_script_pubkey.clone());
-
-        let mut txin_data = Vec::new();
-        txin_data.extend_from_slice(&txid_le);
-        txin_data.extend_from_slice(&utxo.vout.to_le_bytes());
-        txin_data.extend_from_slice(&utxo.value.to_le_bytes());
-        txin_data.extend_from_slice(&compact_size(script_bytes.len() as u64));
-        txin_data.extend_from_slice(&script_bytes);
-        txin_data.extend_from_slice(&0xffffffffu32.to_le_bytes());
-
-        // ZIP-244 S.2g: hash per-input data separately
-        let txin_sig_digest = blake2b_256_personal(b"Zcash___TxInHash", &txin_data);
-
-        let mut sig_input = Vec::new();
-        sig_input.push(0x01); // SIGHASH_ALL
-        sig_input.extend_from_slice(&prevouts_digest);
-        sig_input.extend_from_slice(&amounts_digest);
-        sig_input.extend_from_slice(&scriptpubkeys_digest);
-        sig_input.extend_from_slice(&sequence_digest);
-        sig_input.extend_from_slice(&outputs_digest);
-        sig_input.extend_from_slice(&txin_sig_digest);
-
-        let transparent_sig_digest = blake2b_256_personal(b"ZTxIdTranspaHash", &sig_input);
-
-        let mut sighash_input = Vec::new();
-        sighash_input.extend_from_slice(&header_digest);
-        sighash_input.extend_from_slice(&transparent_sig_digest);
-        sighash_input.extend_from_slice(&sapling_digest);
-        sighash_input.extend_from_slice(&orchard_digest);
-
-        let sighash = blake2b_256_personal(&sighash_personal, &sighash_input);
-
-        let sig: k256::ecdsa::Signature = signing_key
-            .sign_prehash(&sighash)
-            .map_err(|e| JsError::new(&format!("ECDSA signing failed: {}", e)))?;
-        let sig_der = sig.to_der();
-
-        let mut script_sig = Vec::new();
-        let sig_with_hashtype_len = sig_der.as_bytes().len() + 1;
-        script_sig.push(sig_with_hashtype_len as u8);
-        script_sig.extend_from_slice(sig_der.as_bytes());
-        script_sig.push(0x01); // SIGHASH_ALL
-        script_sig.push(pubkey_bytes.len() as u8);
-        script_sig.extend_from_slice(pubkey_bytes);
-
-        signed_inputs.push(SignedTransparentInput {
-            prevout_txid: utxo.txid.clone(),
-            prevout_vout: utxo.vout,
-            script_sig: hex_encode(&script_sig),
-            sequence: 0xffffffff,
-            value: utxo.value,
-        });
-    }
-
-    // --- apply orchard binding signature ---
-    // ZIP-244 S.2: when vin is non-empty, the verifier uses transparent_sig_digest
-    // (not the txid transparent_digest) for the sighash. For the binding signature
-    // (SignableInput::Shielded), hash_type=SIGHASH_ALL, no per-input data.
-    let txin_sig_digest_empty = blake2b_256_personal(b"Zcash___TxInHash", &[]);
-    let binding_transparent_digest = {
-        let mut d = Vec::new();
-        d.push(0x01); // SIGHASH_ALL
-        d.extend_from_slice(&prevouts_digest);
-        d.extend_from_slice(&amounts_digest);
-        d.extend_from_slice(&scriptpubkeys_digest);
-        d.extend_from_slice(&sequence_digest);
-        d.extend_from_slice(&outputs_digest);
-        d.extend_from_slice(&txin_sig_digest_empty);
-        blake2b_256_personal(b"ZTxIdTranspaHash", &d)
-    };
-
-    let txid_sighash = {
-        let mut d = Vec::new();
-        d.extend_from_slice(&header_digest);
-        d.extend_from_slice(&binding_transparent_digest);
-        d.extend_from_slice(&sapling_digest);
-        d.extend_from_slice(&orchard_digest);
-        blake2b_256_personal(&sighash_personal, &d)
-    };
-
-    let authorized_bundle = proven_bundle
-        .apply_signatures(rng, txid_sighash, &[])
-        .map_err(|e| JsError::new(&format!("apply_signatures: {:?}", e)))?;
-
-    // --- serialize v5 transaction ---
-    let mut tx_bytes = Vec::new();
-
-    // header
-    tx_bytes.extend_from_slice(&(5u32 | (1u32 << 31)).to_le_bytes());
-    tx_bytes.extend_from_slice(&0x26A7270Au32.to_le_bytes());
-    tx_bytes.extend_from_slice(&branch_id.to_le_bytes());
-    tx_bytes.extend_from_slice(&0u32.to_le_bytes()); // nLockTime
-    tx_bytes.extend_from_slice(&expiry_height.to_le_bytes());
-
-    // transparent inputs
-    tx_bytes.extend_from_slice(&compact_size(n_inputs as u64));
-    for inp in &signed_inputs {
-        let txid_be = hex_decode(&inp.prevout_txid).unwrap();
-        let mut txid_le = txid_be.clone();
-        txid_le.reverse();
-        tx_bytes.extend_from_slice(&txid_le);
-        tx_bytes.extend_from_slice(&inp.prevout_vout.to_le_bytes());
-
-        let sig_bytes = hex_decode(&inp.script_sig).unwrap();
-        tx_bytes.extend_from_slice(&compact_size(sig_bytes.len() as u64));
-        tx_bytes.extend_from_slice(&sig_bytes);
-        tx_bytes.extend_from_slice(&inp.sequence.to_le_bytes());
-    }
-
-    // transparent outputs (none)
-    tx_bytes.extend_from_slice(&compact_size(0));
-
-    // sapling (none)
-    tx_bytes.extend_from_slice(&compact_size(0)); // spends
-    tx_bytes.extend_from_slice(&compact_size(0)); // outputs
-
-    // orchard bundle — serialize per ZIP-225 v5 format
-    serialize_orchard_bundle(&authorized_bundle, &mut tx_bytes)?;
-
-    Ok(hex_encode(&tx_bytes))
-}
-
 // ============================================================================
 // IRONWOOD shielding builder (transparent -> ironwood, NU6.3 / V6)
 //
-// The post-NU6.3 replacement for `build_shielding_transaction`: orchard outputs
+// The post-NU6.3 replacement for orchard shielding: orchard outputs
 // are consensus-disabled from the Ironwood activation, so this is the ONLY way
 // to shield transparent funds into a spendable shielded note on mainnet today.
 //
@@ -8348,108 +7267,11 @@ where
     Ok(pczt)
 }
 
-/// Build a signed transparent→IRONWOOD shielding transaction (NU6.3 / V6).
-///
-/// The post-NU6.3 replacement for [`build_shielding_transaction`]: it spends the
-/// selected transparent P2PKH UTXOs and creates ONE ironwood output for
-/// `total_selected - fee` to `recipient`. Returns hex-encoded raw transaction
-/// bytes, the same shape the legacy orchard builder returns, so the caller
-/// broadcasts it unchanged.
-///
-/// # Arguments
-/// * `utxos_json` - JSON array of `{txid, vout, value, script}` (same shape as
-///   the orchard builder; `txid` is display/big-endian hex, `script` is the
-///   P2PKH scriptPubKey hex)
-/// * `privkey_hex` - hex-encoded 32-byte secp256k1 private key owning every UTXO
-/// * `recipient` - unified address whose orchard-format receiver is the ironwood
-///   recipient
-/// * `amount` - UTXO-selection target (selection stops once `amount + fee` is
-///   covered); the ironwood output always carries ALL selected value minus fee
-/// * `fee` - fee in zatoshi; MUST be at least the ZIP-317 conventional fee
-///   ([`zip317_shielding_fee`]) or the build is refused
-/// * `target_height` - build height (must be at/after NU6.3 activation)
-/// * `expected_branch_id` - branch id the wallet read from GetLightdInfo; must
-///   be 0x37a5165b
-/// * `mainnet` - true for mainnet, false for testnet
-/// * `memo_hex` - optional memo (hex, ≤512 bytes); empty memo when omitted
-#[wasm_bindgen]
-#[allow(clippy::too_many_arguments)]
-pub fn build_shielding_transaction_ironwood(
-    utxos_json: &str,
-    privkey_hex: &str,
-    recipient: &str,
-    amount: u64,
-    fee: u64,
-    target_height: u32,
-    expected_branch_id: u32,
-    mainnet: bool,
-    memo_hex: Option<String>,
-) -> Result<String, JsError> {
-    use zcash_protocol::consensus::{BlockHeight, MainNetwork, TestNetwork};
-    use zcash_protocol::memo::MemoBytes;
-
-    // --- recipient (orchard-format receiver = ironwood recipient) ---
-    let recipient_addr = parse_orchard_address(recipient, mainnet)
-        .map_err(|e| JsError::new(&format!("invalid recipient: {}", e)))?;
-
-    // --- transparent signing key ---
-    let privkey_bytes =
-        hex_decode(privkey_hex).ok_or_else(|| JsError::new("invalid privkey hex"))?;
-    if privkey_bytes.len() != 32 {
-        return Err(JsError::new("privkey must be 32 bytes"));
-    }
-    let sk = secp256k1::SecretKey::from_slice(&privkey_bytes)
-        .map_err(|e| JsError::new(&format!("invalid signing key: {}", e)))?;
-    let secp = secp256k1::Secp256k1::signing_only();
-    let pubkey = sk.public_key(&secp);
-
-    // Parse + select + validate the UTXOs against the key's pubkey, identically
-    // to the unsigned cold builder (shared helper, so selection cannot drift).
-    let inputs = select_shielding_inputs(utxos_json, &pubkey, amount, fee)?;
-
-    let memo_arr = decode_memo_hex(memo_hex.as_deref())?;
-    let memo =
-        MemoBytes::from_bytes(&memo_arr).map_err(|e| JsError::new(&format!("memo: {:?}", e)))?;
-
-    let tx_bytes = if mainnet {
-        build_shielding_transaction_ironwood_core(
-            Nu63Activated {
-                inner: MainNetwork,
-                nu6_3_from: BlockHeight::from(target_height),
-            },
-            &sk,
-            &inputs,
-            recipient_addr,
-            fee,
-            target_height,
-            expected_branch_id,
-            memo,
-        )
-    } else {
-        build_shielding_transaction_ironwood_core(
-            Nu63Activated {
-                inner: TestNetwork,
-                nu6_3_from: BlockHeight::from(target_height),
-            },
-            &sk,
-            &inputs,
-            recipient_addr,
-            fee,
-            target_height,
-            expected_branch_id,
-            memo,
-        )
-    }
-    .map_err(|e| JsError::new(&e))?;
-
-    Ok(hex_encode(&tx_bytes))
-}
-
 /// Parse the `{txid, vout, value, script}` UTXO JSON, select largest-first until
 /// `amount + fee` is covered, and cross-check every selected coin's scriptPubkey
 /// against the P2PKH script derived from `pubkey`.
 ///
-/// SHARED by the signed ([`build_shielding_transaction_ironwood`]) and unsigned
+/// SHARED by the signed ([`build_shielding_transaction_ironwood_core`] callers) and unsigned
 /// ([`build_unsigned_shielding_transaction_ironwood`]) ironwood shielding
 /// wrappers so the two select and validate byte-for-byte identically. The coin's
 /// `TxOut` script is DERIVED from `pubkey`, never trusted from the JSON; the JSON
@@ -8633,7 +7455,7 @@ where
 /// * `recipient` - unified address whose orchard-format receiver is the ironwood
 ///   recipient
 /// * `amount`, `fee`, `target_height`, `expected_branch_id`, `mainnet`, `memo_hex`
-///   - identical semantics to [`build_shielding_transaction_ironwood`]
+///   - identical semantics to [`build_shielding_transaction_ironwood_core`]
 #[wasm_bindgen]
 #[allow(clippy::too_many_arguments)]
 pub fn build_unsigned_shielding_transaction_ironwood(
@@ -8720,64 +7542,6 @@ pub fn build_unsigned_shielding_transaction_ironwood(
     Ok(result.to_string())
 }
 
-/// Build a shielding transaction into whichever pool is CORRECT at
-/// `target_height`, so a caller never has to (and never can) pick the stranded
-/// one by omission.
-///
-/// At/after NU6.3 activation this is [`build_shielding_transaction_ironwood`]
-/// (and `branch_id_hex` must be the live NU6.3 branch id - there is no
-/// fallback); before it, the legacy orchard builder. Returns hex-encoded raw
-/// transaction bytes either way.
-#[wasm_bindgen]
-#[allow(clippy::too_many_arguments)]
-pub fn build_shielding_transaction_auto(
-    utxos_json: &str,
-    privkey_hex: &str,
-    recipient: &str,
-    amount: u64,
-    fee: u64,
-    target_height: u32,
-    mainnet: bool,
-    // Live consensus branch id from GetLightdInfo.consensusBranchId.
-    branch_id_hex: Option<String>,
-    memo_hex: Option<String>,
-) -> Result<String, JsError> {
-    if target_height >= nu6_3_activation_height(mainnet) {
-        // Ironwood regime: the branch id is load-bearing, so require it rather
-        // than falling back to a compiled-in default.
-        let branch_id =
-            parse_branch_id(branch_id_hex.as_deref().unwrap_or("")).ok_or_else(|| {
-                JsError::new(
-                    "ironwood shielding requires the live consensus branch id \
-                 (GetLightdInfo.consensusBranchId); none was supplied",
-                )
-            })?;
-        build_shielding_transaction_ironwood(
-            utxos_json,
-            privkey_hex,
-            recipient,
-            amount,
-            fee,
-            target_height,
-            branch_id,
-            mainnet,
-            memo_hex,
-        )
-    } else {
-        let _ = memo_hex; // the legacy orchard builder takes no memo
-        build_shielding_transaction(
-            utxos_json,
-            privkey_hex,
-            recipient,
-            amount,
-            fee,
-            target_height,
-            mainnet,
-            branch_id_hex,
-        )
-    }
-}
-
 /// Derive compressed public key from UFVK transparent component for a given address index.
 ///
 /// Uses BIP44 external path: `m/44'/133'/account'/0/<address_index>`
@@ -8813,10 +7577,9 @@ pub fn transparent_pubkey_from_ufvk(ufvk_str: &str, address_index: u32) -> Resul
 
 /// Build an unsigned shielding transaction (transparent → orchard) for cold-wallet signing.
 ///
-/// Same as `build_shielding_transaction` but does NOT sign the transparent inputs.
-/// Instead, returns the per-input sighashes so an external signer (e.g. Zigner) can sign them.
+/// Does NOT sign the transparent inputs. Returns the per-input sighashes so an external signer (e.g. Zigner) can sign them.
 ///
-/// PRE-NU6.3 ONLY - same fail-closed gate as `build_shielding_transaction`.
+/// PRE-NU6.3 ONLY - [`guard_orchard_shielding_allowed`] refuses at or after activation.
 ///
 /// Returns JSON: `{ sighashes: [hex], unsigned_tx_hex: hex, summary: string }`
 #[wasm_bindgen]
@@ -9572,15 +8335,4 @@ fn decode_t_address_script(addr: &str, mainnet: bool) -> Result<Vec<u8>, String>
     let mut pkh = [0u8; 20];
     pkh.copy_from_slice(&decoded[2..]);
     Ok(make_p2pkh_script(&pkh))
-}
-
-/// A signed transparent input for serialization
-#[derive(Debug, Clone)]
-struct SignedTransparentInput {
-    prevout_txid: String,
-    prevout_vout: u32,
-    script_sig: String,
-    sequence: u32,
-    #[allow(dead_code)]
-    value: u64,
 }
