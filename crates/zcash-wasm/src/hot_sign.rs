@@ -196,8 +196,10 @@ impl SpendKeys {
         Ok(hex_encode(&sk.public_key(&secp).serialize()))
     }
 
-    /// Sign an unsigned shielding tx (raw V5 or PCZT carrier) whose every input
-    /// is locked to transparent address `index`, and return the signed tx hex.
+    /// Sign an unsigned tx with transparent inputs (a shielding tx as raw V5 or
+    /// PCZT, or a t->t PCZT from `build_unsigned_transparent_transaction`) whose
+    /// every input is locked to transparent address `index`, and return the
+    /// signed tx hex.
     /// `sighashes_json` is the builder's `sighashes` array; the PCZT completion
     /// re-verifies each signature against the carrier's own sighash.
     pub fn sign_shielding(

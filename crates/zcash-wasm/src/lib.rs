@@ -9,6 +9,8 @@
 //! ```
 
 mod frost;
+/// THORChain deposits: unsigned t->t with an OP_RETURN, signed by `SpendKeys`.
+mod transparent_send;
 pub use frost::inspect_pczt_outputs_core;
 /// Hot signing inside the zcash worker, split from proving.
 mod hot_sign;
@@ -31,6 +33,11 @@ mod voting_pir;
 /// per pool is how you end up with a witness against the wrong tree.
 pub mod witness;
 pub use hot_sign::{sign_pczt_spends, sign_transparent_sighash, SpendKeys};
+pub use transparent_send::{
+    build_unsigned_transparent_core, null_data_tx_out_size, plan_transparent_spend,
+    zip317_transparent_fee, TransparentPlan, UnsignedTransparent, MAX_NULL_DATA_BYTES,
+    P2PKH_TX_OUT_SIZE, TRANSPARENT_CHANGE_DUST_ZAT,
+};
 
 use blake2::{Blake2b512, Digest};
 use serde::{Deserialize, Serialize};
