@@ -173,29 +173,27 @@ fn parse(tx: &[u8]) -> Transaction {
     Transaction::read(tx, BranchId::Nu6_3).expect("tx parses")
 }
 
+/// SpendKeys signs with the keys the scanner found the notes with, on every
+/// network, and the UFVK it hands the prover carries exactly that FVK.
 #[test]
-fn spend_keys_derive_the_old_hot_keys_and_ufvk() {
-    // the old in-prover builders: SpendingKey::from_zip32_seed(seed, coin, account)
-    let seed = bip39::Mnemonic::parse(SEED).unwrap().to_seed("");
-    for account in [0u32, 3] {
-        let sk = orchard::keys::SpendingKey::from_zip32_seed(
-            &seed,
-            1,
-            zip32::AccountId::try_from(account).unwrap(),
-        )
-        .unwrap();
-        let (_, fvk, _) = spend_keys(account);
-        assert_eq!(
-            fvk.to_bytes(),
-            orchard::keys::FullViewingKey::from(&sk).to_bytes()
-        );
-    }
-    // the UFVK handed to the prover carries exactly that orchard FVK
+fn spend_keys_are_the_scanners_keys() {
     use zcash_keys::keys::UnifiedFullViewingKey;
-    use zcash_protocol::consensus::TestNetwork;
-    let (keys, fvk, _) = spend_keys(2);
-    let ufvk = UnifiedFullViewingKey::decode(&TestNetwork, &keys.ufvk().unwrap()).unwrap();
-    assert_eq!(ufvk.orchard().unwrap().to_bytes(), fvk.to_bytes());
+    use zcash_protocol::consensus::{MainNetwork as Main, TestNetwork as Test};
+    let seed = bip39::Mnemonic::parse(SEED).unwrap().to_seed("");
+    for (account, mainnet) in [(0u32, true), (3, true), (0, false), (2, false)] {
+        let keys = SpendKeys::from_seed_bytes(seed, account, mainnet).unwrap();
+        let (fvk, _) = keys.orchard_keys().unwrap();
+        let scanner = zafu_wasm::WalletKeys::from_seed_phrase_account(SEED, account).unwrap();
+        assert_eq!(hex::encode(fvk.to_bytes()), scanner.get_fvk_hex());
+        let encoded = keys.ufvk().unwrap();
+        let ufvk = if mainnet {
+            UnifiedFullViewingKey::decode(&Main, &encoded)
+        } else {
+            UnifiedFullViewingKey::decode(&Test, &encoded)
+        }
+        .unwrap();
+        assert_eq!(ufvk.orchard().unwrap().to_bytes(), fvk.to_bytes());
+    }
 }
 
 /// Shielding pays into the address the scanner watches, on every network.

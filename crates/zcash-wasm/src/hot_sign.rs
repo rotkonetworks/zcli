@@ -114,8 +114,11 @@ impl SpendKeys {
         })
     }
 
-    /// The orchard/ironwood FVK and spend authorizing key, derived exactly as
-    /// the old in-prover hot builders did (coin type 133 mainnet, 1 testnet).
+    /// The orchard/ironwood FVK and spend authorizing key of the keys the
+    /// scanner found the notes with: coin type 133 on every network, as
+    /// `WalletKeys` and the transparent branch derive. (The removed in-prover
+    /// builders used coin type 1 on testnet, so a testnet hot send never owned
+    /// the notes it had scanned.)
     pub fn orchard_keys(
         &self,
     ) -> Result<
@@ -125,8 +128,7 @@ impl SpendKeys {
         ),
         String,
     > {
-        let coin_type = if self.mainnet { 133 } else { 1 };
-        let sk = orchard::keys::SpendingKey::from_zip32_seed(&*self.seed, coin_type, self.account)
+        let sk = orchard::keys::SpendingKey::from_zip32_seed(&*self.seed, 133, self.account)
             .map_err(|e| format!("spending key derivation failed: {e:?}"))?;
         Ok((
             orchard::keys::FullViewingKey::from(&sk),
@@ -152,16 +154,14 @@ impl SpendKeys {
     }
 
     /// The account's unified full viewing key: what the prover builds from.
+    /// Derived at coin type 133 like every other zafu key; `mainnet` picks
+    /// only the encoding.
     pub fn ufvk(&self) -> Result<String, JsError> {
         use zcash_keys::keys::UnifiedSpendingKey;
         use zcash_protocol::consensus::{MainNetwork, TestNetwork};
-        let usk = if self.mainnet {
-            UnifiedSpendingKey::from_seed(&MainNetwork, &*self.seed, self.account)
-        } else {
-            UnifiedSpendingKey::from_seed(&TestNetwork, &*self.seed, self.account)
-        }
-        .map_err(|e| JsError::new(&format!("account key derivation failed: {e:?}")))?;
-        let ufvk = usk.to_unified_full_viewing_key();
+        let ufvk = UnifiedSpendingKey::from_seed(&MainNetwork, &*self.seed, self.account)
+            .map_err(|e| JsError::new(&format!("account key derivation failed: {e:?}")))?
+            .to_unified_full_viewing_key();
         Ok(if self.mainnet {
             ufvk.encode(&MainNetwork)
         } else {
