@@ -198,6 +198,20 @@ fn spend_keys_derive_the_old_hot_keys_and_ufvk() {
     assert_eq!(ufvk.orchard().unwrap().to_bytes(), fvk.to_bytes());
 }
 
+/// Shielding pays into the address the scanner watches, on every network.
+#[test]
+fn receiving_address_is_the_scanners() {
+    let seed = bip39::Mnemonic::parse(SEED).unwrap().to_seed("");
+    for (account, mainnet) in [(0u32, true), (2, false)] {
+        let keys = SpendKeys::from_seed_bytes(seed, account, mainnet).unwrap();
+        let scanner = zafu_wasm::WalletKeys::from_seed_phrase_account(SEED, account).unwrap();
+        assert_eq!(
+            keys.receiving_address().unwrap(),
+            scanner.get_receiving_address(mainnet)
+        );
+    }
+}
+
 #[test]
 fn transparent_keys_match_the_ufvk_and_sign_low_s_sighash_all() {
     // mainnet: the BIP44 path m/44'/133'/a'/0/i is the UFVK's transparent branch
@@ -430,4 +444,38 @@ fn only_worker_side_exports_take_wallet_secrets() {
         ],
         "a wasm export takes a phrase, seed or private key"
     );
+}
+
+/// Prints the fixture zafu's wasm-level hot send test replays (one V3 note of
+/// the "abandon .. about" testnet account 0, its single-leaf path and anchor).
+/// It prints, never writes: copy the output by hand when the fixture changes.
+///   cargo test --release --test hot_sign_split print_wasm_send_fixture -- --ignored --nocapture
+#[test]
+#[ignore]
+fn print_wasm_send_fixture() {
+    let (_, fvk, _) = spend_keys(0);
+    let (note, witness, anchor) = owned_note(&fvk, 1_000_000, orchard::note::NoteVersion::V3, 1);
+    let cmx: orchard::note::ExtractedNoteCommitment = note.commitment().into();
+    let hex = |b: &[u8]| b.iter().map(|x| format!("{x:02x}")).collect::<String>();
+    let fixture = serde_json::json!({
+        "seed": SEED,
+        "account": 0,
+        "mainnet": false,
+        "targetHeight": TARGET,
+        "notes": [{
+            "value": 1_000_000,
+            "nullifier": hex(&note.nullifier(&fvk).to_bytes()),
+            "cmx": hex(&cmx.to_bytes()),
+            "position": 0,
+            "rseed_hex": hex(note.rseed().as_bytes()),
+            "rho_hex": hex(&note.rho().to_bytes()),
+            "recipient_hex": hex(&note.recipient().to_raw_address_bytes()),
+        }],
+        "paths": [{
+            "path": witness.auth_path().iter().map(|h| hex(&h.to_bytes())).collect::<Vec<_>>(),
+            "position": 0,
+        }],
+        "anchor": hex(&anchor.to_bytes()),
+    });
+    println!("{}", serde_json::to_string_pretty(&fixture).unwrap());
 }
