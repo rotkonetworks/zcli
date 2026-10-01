@@ -1041,6 +1041,7 @@ fn zafu_ironwood_send_is_signable_after_stamping() {
         ZAFU_TARGET_HEIGHT,
         crate::NU6_3_BRANCH_ID,
         zcash_protocol::memo::MemoBytes::empty(),
+        crate::LEGACY_PCZT_EXPIRY_DELTA,
     )
     .unwrap();
     let raw = built.pczt.serialize().unwrap();

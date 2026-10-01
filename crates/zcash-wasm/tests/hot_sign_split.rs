@@ -387,10 +387,26 @@ fn only_worker_side_exports_take_wallet_secrets() {
             .iter()
             .any(|n| p.contains(n))
     };
+    // every .rs under src/, modules in subdirectories (ledger/) included
+    let mut files = Vec::new();
+    let mut dirs = vec![std::path::PathBuf::from(dir)];
+    while let Some(d) = dirs.pop() {
+        for entry in std::fs::read_dir(&d).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                dirs.push(path);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                files.push(path);
+            }
+        }
+    }
     let mut found = Vec::new();
-    for entry in std::fs::read_dir(dir).unwrap() {
-        let path = entry.unwrap().path();
-        let file = path.file_name().unwrap().to_string_lossy().to_string();
+    for path in files {
+        let file = path
+            .strip_prefix(dir)
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
         let src = std::fs::read_to_string(&path).unwrap();
         let lines: Vec<&str> = src.lines().collect();
         let mut exported = false;
