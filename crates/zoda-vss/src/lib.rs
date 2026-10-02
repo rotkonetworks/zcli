@@ -51,6 +51,7 @@
 
 extern crate alloc;
 
+use alloc::vec;
 use alloc::vec::Vec;
 use core::ops::{Add, Mul, Sub};
 use sha2::{Digest, Sha256};
@@ -264,6 +265,12 @@ pub struct Player;
 impl Player {
     /// reconstruct secret from threshold shares using lagrange interpolation
     pub fn reconstruct(header: &Header, shares: &[Share]) -> Result<Vec<u8>, Error> {
+        // Header fields are pub and deserializable, so a threshold of 0 can
+        // arrive from a dealer. It would build empty polynomials below and
+        // index their constant term.
+        if header.threshold == 0 {
+            return Err(Error::InvalidThreshold);
+        }
         if shares.len() < header.threshold as usize {
             return Err(Error::InsufficientShares);
         }
@@ -286,37 +293,61 @@ impl Player {
             seen[share.index as usize] = true;
         }
 
-        // take exactly threshold shares
-        let shares = &shares[..header.threshold as usize];
-
-        // reconstruct each byte using lagrange interpolation at x=0
-        let mut secret = Vec::with_capacity(secret_len);
+        // interpolate full polynomials from the first t shares
+        let t = header.threshold as usize;
+        let (base, extra) = shares.split_at(t);
+        let mut coefficients: Vec<Vec<GF256>> = Vec::with_capacity(secret_len);
 
         for byte_idx in 0..secret_len {
-            let mut result = GF256::ZERO;
-
-            for (i, share_i) in shares.iter().enumerate() {
-                let x_i = GF256(share_i.index);
-                let y_i = GF256(share_i.data[byte_idx]);
-
-                // compute lagrange basis polynomial at x=0
-                let mut basis = GF256::ONE;
-                for (j, share_j) in shares.iter().enumerate() {
-                    if i != j {
-                        let x_j = GF256(share_j.index);
-                        // basis *= (0 - x_j) / (x_i - x_j)
-                        // = x_j / (x_j - x_i)  [since 0-x = x in GF(2^8)]
-                        basis = basis * x_j * (x_j - x_i).inv();
+            let mut poly = vec![GF256::ZERO; t];
+            for (i, si) in base.iter().enumerate() {
+                let xi = GF256(si.index);
+                // basis numerator prod (x + xj), denominator prod (xi + xj)
+                let mut num = vec![GF256::ONE];
+                let mut den = GF256::ONE;
+                for (j, sj) in base.iter().enumerate() {
+                    if i == j {
+                        continue;
                     }
+                    let xj = GF256(sj.index);
+                    let mut next = vec![GF256::ZERO; num.len() + 1];
+                    for (k, c) in num.iter().enumerate() {
+                        next[k] = next[k] + *c * xj;
+                        next[k + 1] = next[k + 1] + *c;
+                    }
+                    num = next;
+                    den = den * (xi - xj);
                 }
-
-                result = result + y_i * basis;
+                let scale = GF256(si.data[byte_idx]) * den.inv();
+                for (k, c) in num.iter().enumerate() {
+                    poly[k] = poly[k] + *c * scale;
+                }
             }
-
-            secret.push(result.0);
+            coefficients.push(poly);
         }
 
-        Ok(secret)
+        // recomputed polynomial must match the dealer's commitment
+        if Header::new(header.threshold, header.total, &coefficients).commitment
+            != header.commitment
+        {
+            return Err(Error::CommitmentMismatch);
+        }
+
+        // any shares beyond t must lie on the same polynomials
+        for s in extra {
+            let x = GF256(s.index);
+            for (byte_idx, poly) in coefficients.iter().enumerate() {
+                let mut y = GF256::ZERO;
+                for c in poly.iter().rev() {
+                    y = y * x + *c;
+                }
+                if y.0 != s.data[byte_idx] {
+                    return Err(Error::CommitmentMismatch);
+                }
+            }
+        }
+
+        Ok(coefficients.iter().map(|p| p[0].0).collect())
     }
 }
 
@@ -331,6 +362,10 @@ pub enum Error {
     InvalidShareIndex,
     /// duplicate share index
     DuplicateShare,
+    /// shares do not match the header commitment
+    CommitmentMismatch,
+    /// header threshold is zero
+    InvalidThreshold,
 }
 
 impl core::fmt::Display for Error {
@@ -340,6 +375,8 @@ impl core::fmt::Display for Error {
             Error::InconsistentShares => write!(f, "shares have inconsistent data lengths"),
             Error::InvalidShareIndex => write!(f, "share index out of valid range"),
             Error::DuplicateShare => write!(f, "duplicate share index"),
+            Error::CommitmentMismatch => write!(f, "shares do not match header commitment"),
+            Error::InvalidThreshold => write!(f, "header threshold must be at least 1"),
         }
     }
 }
@@ -423,6 +460,25 @@ mod tests {
     }
 
     #[test]
+    fn test_zero_threshold_header_is_rejected() {
+        // a dealer-supplied header whose commitment matches the empty
+        // polynomial set, so only the threshold check stands in the way
+        let header = Header::new(0, 3, &[Vec::new()]);
+        let share = Share {
+            index: 1,
+            data: vec![0x42],
+        };
+        assert_eq!(
+            Player::reconstruct(&header, &[share]),
+            Err(Error::InvalidThreshold)
+        );
+        assert_eq!(
+            Player::reconstruct(&header, &[]),
+            Err(Error::InvalidThreshold)
+        );
+    }
+
+    #[test]
     fn test_large_secret() {
         // test with 256-byte secret (2048 bits)
         let secret = [0xAB; 256];
@@ -433,5 +489,36 @@ mod tests {
 
         let reconstructed = Player::reconstruct(&header, &shares[0..5]).unwrap();
         assert_eq!(reconstructed, secret);
+    }
+}
+
+#[cfg(test)]
+mod commitment_tests {
+    use super::*;
+    use rand::rngs::OsRng;
+
+    #[test]
+    fn tampered_share_rejected() {
+        let (h, mut s) = Dealer::new(3, 5).share(&[7u8; 32], &mut OsRng);
+        s[1].data[0] ^= 1;
+        assert_eq!(
+            Player::reconstruct(&h, &s[0..3]),
+            Err(Error::CommitmentMismatch)
+        );
+    }
+
+    #[test]
+    fn tampered_extra_share_rejected() {
+        let (h, mut s) = Dealer::new(3, 5).share(&[7u8; 32], &mut OsRng);
+        s[4].data[5] ^= 1;
+        assert_eq!(Player::reconstruct(&h, &s), Err(Error::CommitmentMismatch));
+    }
+
+    #[test]
+    fn any_subset_still_works() {
+        let secret = [9u8; 48];
+        let (h, s) = Dealer::new(3, 5).share(&secret, &mut OsRng);
+        let pick = vec![s[4].clone(), s[0].clone(), s[2].clone()];
+        assert_eq!(Player::reconstruct(&h, &pick).unwrap(), secret);
     }
 }
