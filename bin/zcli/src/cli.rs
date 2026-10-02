@@ -210,12 +210,19 @@ pub enum TxAction {
         fee: Option<u64>,
     },
 
-    /// shield transparent funds (t→z)
-    Shield {
-        /// fee override in zatoshis (auto-computed if omitted)
-        #[arg(long)]
-        fee: Option<u64>,
-    },
+/// shield transparent funds (t->z)
+///
+/// Shields the UTXOs of one transparent address. Ironwood is the only pool
+/// (an orchard output created at/after NU6.3 is a stranded note), and the
+/// recipient is this wallet's own ironwood address.
+Shield {
+/// transparent address index to shield from, m/44'/133'/0'/0/N
+#[arg(long, default_value_t = 0)]
+source: u32,
+/// fee override in zatoshis (auto-computed if omitted)
+#[arg(long)]
+fee: Option<u64>,
+},
 
     /// NU6.3 turnstile: migrate orchard notes to your own ironwood address
     ///

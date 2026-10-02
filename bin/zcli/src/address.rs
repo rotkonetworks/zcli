@@ -127,9 +127,19 @@ fn base58check_encode(version: &[u8], payload: &[u8]) -> String {
     String::from_utf8(out).unwrap()
 }
 
-/// derive transparent private key from WalletSeed (public API for tx.rs)
+/// BIP44 coin type zcli derives transparent addresses under. Pinned at 133 for
+/// both networks: wallets from the first release derived their t-address this
+/// way (testnet included), so changing it would strand funds.
+const TRANSPARENT_COIN_TYPE: u32 = 133;
+
+/// derive transparent private key from WalletSeed (canonical index 0)
 pub fn derive_transparent_key(seed: &WalletSeed) -> Result<[u8; 32], Error> {
     derive_transparent_privkey(seed.as_bytes())
+}
+
+/// derive transparent private key from WalletSeed at m/44'/133'/0'/0/{index}
+pub fn derive_transparent_key_at(seed: &WalletSeed, index: u32) -> Result<[u8; 32], Error> {
+    derive_transparent_privkey_at(seed.as_bytes(), TRANSPARENT_COIN_TYPE, 0, index)
 }
 
 /// derive transparent private key from raw seed bytes at m/44'/133'/0'/0/0
@@ -155,18 +165,24 @@ pub fn derive_transparent_privkey_at(
 
 /// derive transparent private key from seed at m/44'/133'/0'/0/0
 fn derive_transparent_privkey(seed: &[u8]) -> Result<[u8; 32], Error> {
-    let master = bip32_master_key(seed);
-    let c44 = bip32_derive_child(&master, 44, true)?;
-    let c133 = bip32_derive_child(&c44, 133, true)?;
-    let c0 = bip32_derive_child(&c133, 0, true)?;
-    let c_change = bip32_derive_child(&c0, 0, false)?;
-    let c_index = bip32_derive_child(&c_change, 0, false)?;
-    Ok(c_index.key)
+    derive_transparent_privkey_at(seed, TRANSPARENT_COIN_TYPE, 0, 0)
 }
 
-/// derive transparent address (t1...) from seed
+/// derive transparent address (t1...) from seed (canonical index 0)
 pub fn transparent_address(seed: &WalletSeed, mainnet: bool) -> Result<String, Error> {
-    let privkey = derive_transparent_privkey(seed.as_bytes())?;
+    transparent_address_at(seed, 0, mainnet)
+}
+
+/// derive transparent address (t1...) at m/44'/133'/0'/0/{index}.
+///
+/// `index 1..` are additional transparent addresses under the same account;
+/// they are the candidates `zcli tx shield --source <index>` can fund from.
+pub fn transparent_address_at(
+    seed: &WalletSeed,
+    index: u32,
+    mainnet: bool,
+) -> Result<String, Error> {
+    let privkey = derive_transparent_key_at(seed, index)?;
     transparent_address_from_privkey(&privkey, mainnet)
 }
 
@@ -318,7 +334,6 @@ mod tests {
         let c = bip32_derive_child(&c, 0, false).unwrap();
         let c = bip32_derive_child(&c, 0, false).unwrap();
 
-        use k256::elliptic_curve::sec1::ToEncodedPoint;
         let sk = k256::ecdsa::SigningKey::from_slice(&c.key).unwrap();
         let pubkey = sk.verifying_key().to_encoded_point(true);
         let pkh = hash160(pubkey.as_bytes());

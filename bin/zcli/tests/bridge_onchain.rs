@@ -40,8 +40,10 @@ mod tests {
             &bridge_addr,
             Some("bridge e2e onchain test"),
             &endpoint(),
-            true,
-            false,
+            false, // dry_run: this test must actually fund the bridge
+            None,  // fee_override: ZIP-317 auto
+            true,  // mainnet
+            false, // json
         )
         .await
         .expect("send to bridge failed");

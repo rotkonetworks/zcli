@@ -144,8 +144,11 @@ pub async fn send_ironwood(
 
         // Fee depends on the note count and the note count depends on the fee.
         // Same fixpoint the orchard send path uses: price one spend, select
-        // against that, then re-price against what was actually selected.
-        let est_fee = compute_fee(1, n_z_outputs, n_t_outputs, true);
+        // against that, then re-price against what was actually selected. A
+        // pinned fee is the fee: select against it, or a whole-balance sweep
+        // (amount = balance - fee) would come up short by the estimate's slack.
+        let est_fee =
+            fee_override.unwrap_or_else(|| compute_fee(1, n_z_outputs, n_t_outputs, true));
         let selected = select_ironwood_notes(&notes, amount + est_fee)?;
         (selected, frontier, sh)
     }; // drop the wallet handle before the (slow) build re-opens it

@@ -577,6 +577,10 @@ pub struct PcztState {
 
 /// build PCZT bundle, prove, compute sighash, encode zigner QR
 /// accepts FVK bytes (96) directly — no spending key needed
+///
+/// Orchard spends only, and fail-closed at/after NU6.3: the bundle protocol and
+/// circuit below are pre-NU6.2, so the call is rejected up front rather than
+/// proving for minutes into a transaction the node would refuse.
 #[allow(clippy::too_many_arguments)]
 pub fn build_pczt_and_qr(
     fvk_bytes: &[u8; 96],
@@ -589,6 +593,13 @@ pub fn build_pczt_and_qr(
     branch_id: u32,
     mainnet: bool,
 ) -> Result<(Vec<u8>, PcztState), Error> {
+    // FAIL CLOSED, same gate as `tx::build_orchard_spend_tx`: this builder pins
+    // the pre-NU6.2 orchard bundle version and circuit (see the TODO below), so
+    // post-activation it would spend minutes proving and then produce a
+    // transaction the node rejects — which the automated callers (zclid
+    // spend/sweep, merchant, bridge, airgap) would retry forever.
+    tx::guard_pre_nu6_2_orchard_builder_allowed(anchor_height, branch_id, mainnet)?;
+
     let fvk: FullViewingKey = FullViewingKey::from_bytes(fvk_bytes)
         .ok_or_else(|| Error::Transaction("invalid FVK bytes".into()))?;
 
@@ -813,4 +824,57 @@ pub fn complete_pczt_tx(mut state: PcztState, orchard_sigs: &[[u8; 64]]) -> Resu
     tx::serialize_orchard_bundle(&authorized, &mut tx_bytes)?;
 
     Ok(tx_bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// FAIL CLOSED: the PCZT builder pins the pre-NU6.2 bundle protocol, so at
+    /// NU6.3 it must refuse before touching the FVK, proving key or anchor.
+    #[test]
+    fn pczt_builder_refuses_post_nu6_3() {
+        let Err(err) = build_pczt_and_qr(
+            &[0u8; 96],
+            &[],
+            &[],
+            &[],
+            0,
+            Anchor::empty_tree(),
+            tx::NU6_3_ACTIVATION_HEIGHT_MAINNET,
+            tx::NU6_3_BRANCH_ID,
+            true,
+        ) else {
+            panic!("expected the NU6.3 gate to refuse");
+        };
+        let msg = err.to_string();
+        assert!(
+            msg.contains("cannot produce a valid transaction at NU6.3"),
+            "expected the NU6.3 gate error, got: {msg}"
+        );
+    }
+
+    /// The same call one block before activation gets past the gate (and then
+    /// fails on the empty FVK), which proves the gate is height/branch driven
+    /// and not a blanket refusal.
+    #[test]
+    fn pczt_builder_gate_opens_before_nu6_3() {
+        let Err(err) = build_pczt_and_qr(
+            &[0u8; 96],
+            &[],
+            &[],
+            &[],
+            0,
+            Anchor::empty_tree(),
+            tx::NU6_3_ACTIVATION_HEIGHT_MAINNET - 1,
+            0,
+            true,
+        ) else {
+            panic!("expected the gate to open before NU6.3");
+        };
+        assert!(
+            err.to_string().contains("invalid FVK bytes"),
+            "expected FVK validation past the gate, got: {err}"
+        );
+    }
 }

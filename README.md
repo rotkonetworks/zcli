@@ -155,8 +155,14 @@ Sending:
 ```sh
 zcli tx send 0.1 u1... --memo "invoice 42" --dry-run --json
 zcli tx shield --json
+zcli tx shield --source 1 --json   # shield the UTXOs of m/44'/133'/0'/0/1
 zcli tx migrate --dry-run        # NU6.3 turnstile, orchard → your own ironwood
 ```
+
+`tx shield` shields the transparent UTXOs of one BIP32 account address and sends
+the value to this wallet's own ironwood address; `--source N` picks the address
+(default 0). UTXOs whose script is not the selected address's P2PKH script are
+refused rather than silently drained.
 
 `--dry-run` and `--fee` apply to ironwood sends (NU6.3 and later). On a
 pre-NU6.3 chain both are refused with an error rather than ignored — silently

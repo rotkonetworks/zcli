@@ -38,11 +38,12 @@ fn compute_shield_fee(n_t_inputs: usize) -> u64 {
 pub async fn shield(
     seed: &WalletSeed,
     endpoint: &str,
+    source_index: u32,
     fee_override: Option<u64>,
     mainnet: bool,
     json: bool,
 ) -> Result<(), Error> {
-    let taddr = address::transparent_address(seed, mainnet)?;
+    let taddr = address::transparent_address_at(seed, source_index, mainnet)?;
 
     let client = ZidecarClient::connect(endpoint).await?;
 
@@ -82,23 +83,31 @@ pub async fn shield(
 
     if !json {
         eprintln!(
-            "shielding {:.8} ZEC ({} UTXOs, fee {:.8} ZEC)",
+            "shielding {:.8} ZEC from transparent index {} ({}) - {} UTXOs, fee {:.8} ZEC",
             (total - fee) as f64 / 1e8,
+            source_index,
+            taddr,
             tx_utxos.len(),
             fee as f64 / 1e8,
         );
         eprintln!("building transaction (halo 2 proving, this takes a moment)...");
     }
 
-    // Route by pool. At NU6.3 the orchard builder is fail-closed (an orchard
-    // output created now is unspendable without a turnstile migration), so
-    // shielding must target ironwood. Ironwood reuses orchard addresses, so
-    // the same recipient works for both.
-    let tx_bytes = if branch_id == 0x37a5_165b {
-        tx::build_ironwood_shielding_tx(seed, &tx_utxos, &recipient, fee, tip, branch_id, mainnet)?
-    } else {
-        tx::build_shielding_tx(seed, &tx_utxos, &recipient, fee, tip, branch_id, mainnet)?
-    };
+    // Ironwood only: an orchard output created at/after NU6.3 is a stranded
+    // note - the one-way turnstile disables orchard outputs - so there is no
+    // orchard shielding path left. Ironwood reuses orchard addresses, so the
+    // same recipient works, and the builder fails closed if the chain is not
+    // yet on NU6.3.
+    let tx_bytes = tx::build_ironwood_shielding_tx(
+        seed,
+        &tx_utxos,
+        source_index,
+        &recipient,
+        fee,
+        tip,
+        branch_id,
+        mainnet,
+    )?;
 
     // broadcast
     let result = client.send_transaction(tx_bytes).await?;

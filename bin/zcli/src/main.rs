@@ -117,14 +117,14 @@ async fn run(cli: &Cli) -> Result<(), Error> {
                     .await
                 }
             }
-            TxAction::Shield { fee } => {
+            TxAction::Shield { source, fee } => {
                 if cli.watch {
                     return Err(Error::Other(
                         "watch-only wallet: shielding requires spending key".into(),
                     ));
                 }
                 let seed = load_seed(cli)?;
-                ops::shield::shield(&seed, &cli.endpoint, *fee, mainnet, cli.json).await
+                ops::shield::shield(&seed, &cli.endpoint, *source, *fee, mainnet, cli.json).await
             }
             TxAction::Migrate {
                 dry_run,
@@ -188,13 +188,23 @@ async fn run(cli: &Cli) -> Result<(), Error> {
                 full,
                 no_verify,
             } => {
-                if *full && !cli.json {
-                    eprintln!("full rescan from orchard activation...");
-                }
                 if *no_verify {
                     std::env::set_var("ZCLI_NO_VERIFY", "1");
                 }
-                cmd_sync(cli, mainnet, *from, *position).await
+                // `--from H` scans from H+1, so the activation block itself
+                // needs H = activation - 1. Starting AT activation is what makes
+                // the sync fold the commitment and both note-position counters
+                // from empty rather than resume the stored ones.
+                let activation = if mainnet {
+                    zync_core::ORCHARD_ACTIVATION_HEIGHT
+                } else {
+                    zync_core::ORCHARD_ACTIVATION_HEIGHT_TESTNET
+                };
+                let from = if *full { Some(activation - 1) } else { *from };
+                if *full && !cli.json {
+                    eprintln!("full rescan from orchard activation ({})...", activation);
+                }
+                cmd_sync(cli, mainnet, from, *position).await
             }
         },
         Command::Service { action } => match action {
@@ -2093,7 +2103,11 @@ async fn cmd_init_migrate(cli: &Cli, mainnet: bool, dry_run: bool) -> Result<(),
     let new_seed = key::load_mnemonic_seed(&phrase)?;
     let new_addr = address::orchard_address(&new_seed, mainnet)?;
 
-    // sweep covers orchard notes only; ironwood notes need a v6 transaction
+    // Past NU6.3 the sweep is an IRONWOOD spend: orchard outputs are
+    // consensus-disabled, so orchard value cannot be paid to the new wallet
+    // directly. It has to cross the turnstile first (`zcli tx migrate`, which
+    // lands it in THIS wallet's own ironwood address), and only then can it be
+    // swept here.
     let (orchard_zat, ironwood_zat, n_notes, birthday) = {
         let w = wallet::Wallet::open(&db_path)?;
         let (_, notes) = w.shielded_balance()?;
@@ -2109,22 +2123,25 @@ async fn cmd_init_migrate(cli: &Cli, mainnet: bool, dry_run: bool) -> Result<(),
             .sum();
         let n = notes
             .iter()
-            .filter(|n| n.pool == wallet::Pool::Orchard)
+            .filter(|n| n.pool == wallet::Pool::Ironwood)
             .count();
         let birthday = w.sync_height().unwrap_or(0);
         (orchard_zat, ironwood_zat, n, birthday)
     }; // wallet handle dropped before the db dir is renamed
 
-    if ironwood_zat > 0 {
-        eprintln!(
-            "warning: {:.8} ZEC in ironwood notes cannot be swept yet (needs v6 \
-             transaction support) and will stay on the legacy derivation.\n\
-             consider waiting for v6 support before migrating.",
-            ironwood_zat as f64 / 1e8
-        );
+    // Refuse rather than strand it: switching the derivation marker with
+    // orchard value still on the legacy key would leave that value behind.
+    if orchard_zat > 0 {
+        return Err(Error::Other(format!(
+            "{:.8} ZEC is still in orchard notes on the legacy derivation, and \
+             orchard value cannot be swept directly past NU6.3. run `zcli tx \
+             migrate` first to move it into this wallet's ironwood pool, wait for \
+             it to confirm and `zcli init sync`, then re-run this migration.",
+            orchard_zat as f64 / 1e8
+        )));
     }
 
-    if orchard_zat == 0 {
+    if ironwood_zat == 0 {
         eprintln!("no spendable funds on the legacy derivation — switching without a sweep");
         if dry_run {
             eprintln!("dry run — nothing changed");
@@ -2136,18 +2153,19 @@ async fn cmd_init_migrate(cli: &Cli, mainnet: bool, dry_run: bool) -> Result<(),
         return Ok(());
     }
 
+    // whole balance, one shielded output, no change
     let fee = ops::send::compute_fee(n_notes, 1, 0, false);
-    if orchard_zat <= fee {
+    if ironwood_zat <= fee {
         return Err(Error::Other(format!(
             "balance {:.8} ZEC does not cover the sweep fee {:.8} ZEC",
-            orchard_zat as f64 / 1e8,
+            ironwood_zat as f64 / 1e8,
             fee as f64 / 1e8
         )));
     }
-    let sweep_zat = orchard_zat - fee;
+    let sweep_zat = ironwood_zat - fee;
 
     eprintln!(
-        "sweeping {:.8} ZEC ({} notes, fee {:.8} ZEC) to the mnemonic-backed wallet\n  {}",
+        "sweeping {:.8} ZEC ({} ironwood notes, fee {:.8} ZEC) to the mnemonic-backed wallet\n  {}",
         sweep_zat as f64 / 1e8,
         n_notes,
         fee as f64 / 1e8,
@@ -2158,14 +2176,16 @@ async fn cmd_init_migrate(cli: &Cli, mainnet: bool, dry_run: bool) -> Result<(),
         return Ok(());
     }
 
-    ops::send::send(
+    // Pinning the fee makes `send_ironwood` select against exactly
+    // sweep + fee == the whole ironwood balance, so every note is spent.
+    ops::send_ironwood::send_ironwood(
         &legacy_seed,
-        &sweep_zat.to_string(),
+        sweep_zat,
         &new_addr,
         None,
         &cli.endpoint,
+        Some(fee),
         false,
-        None,
         mainnet,
         cli.json,
     )
