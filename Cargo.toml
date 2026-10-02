@@ -36,11 +36,18 @@ ligerito-merkle = { path = "crates/ligerito-merkle" }
 ligerito-reed-solomon = { path = "crates/ligerito-reed-solomon" }
 zync-core = { path = "crates/zync-core" }
 
-# frostito/osst: canonical upstream at github.com/penumbrafi/frostito.
-# Was vendored at crates/osst; consolidated upstream in osst 0.2.0.
-# Pinned at 0.5.0 (f4f1a1a): binding factor includes Y (RFC 9591, M-24) and the
-# liveness contribution message is v2 — signature-incompatible with 0.4.x.
-osst = { git = "https://github.com/penumbrafi/frostito", rev = "f4f1a1aecd5193c8bbb4bd36cece7b6b6caa7f80", default-features = false }
+# frostito: canonical upstream at github.com/penumbrafi/frostito. Upstream
+# deleted `osst` in 0.6.0 (`4ededc3`, "drop OSST, rename to frostito"): the
+# package was renamed, `src/redpallas.rs` and `src/types.rs` removed,
+# `legacy-v1` and the plaintext sub-share serializers pruned, and every wire
+# domain tag re-prefixed `osst/` -> `frostito/` — so a ceremony cannot span
+# the two and no `osst` release can follow. Was vendored at crates/osst;
+# consolidated upstream in 0.2.0.
+# The custody path (frost-spend, zcli) is on v0.8.0, whose nested API is
+# generic over a ZF `frost-core` ciphersuite (see crates/frost-spend/src/nested.rs).
+# `bin/poker` is the one member still naming the deleted crate: it pins the
+# last `osst` rev in its own manifest, not here.
+frostito = { git = "https://github.com/penumbrafi/frostito", tag = "v0.8.0", default-features = false }
 
 # shared deps inherited by ligerito crates
 bytemuck = { version = "1", default-features = false, features = ["extern_crate_alloc"] }

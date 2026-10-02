@@ -4,11 +4,13 @@
 // wraps the ZF's FROST libraries + conradoplg's orchard fork.
 //
 // crypto provenance:
-//   - reddsa (ZF): FROST(Pallas, BLAKE2b-512) ciphersuite
-//   - frost-core 2.2.0 (ZF): DKG, signing rounds, aggregation
-//   - frost-rerandomized 2.2.0 (ZF): rerandomized signatures
+//   - zakura-reddsa 1.0.0 (Zakura Common 1.0): FROST(Pallas, BLAKE2b-512)
+//     ciphersuite
+//   - frost-core 3.0.0 (ZF): DKG, signing rounds, aggregation
+//   - frost-rerandomized 3.0.0 (ZF): rerandomized signatures
 //   - ed25519-consensus 2 (Zebra): message authentication
-//   - orchard (conradoplg/ZF fork): from_sk_ak for FVK derivation
+//   - zakura-orchard 1.0.0 (crates.io): FVK derivation (see keys::frost_fvk)
+//   - frostito 0.8.0: nested FROST, hardened DKG, resharing
 //
 // zero custom crypto. this crate is glue.
 

@@ -37,13 +37,19 @@ orchard = { package = "zakura-orchard", version = "=1.0.0", default-features = f
 # Pallas curve
 pasta_curves = { package = "zakura-pasta-curves", version = "=1.0.0" }
 
-# OSST: nested FROST + reshare (public extract from zeratul)
-# "std" is required for osst::redpallas (rand_core::OsRng); without it the
+# frostito: nested FROST + hardened DKG + resharing on ZF frost-core
+# (public extract from zeratul, canonical upstream penumbrafi/frostito).
+# "std" is required for frostito::redpallas (rand_core::OsRng); without it the
 # package only compiles when another workspace member happens to enable the
 # feature, so `cargo build -p frost-spend` failed in isolation.
-# Canonical upstream frostito/osst (penumbrafi/frostito), pinned in
-# [workspace.dependencies]; the whole workspace is on the one rev now.
-osst = { workspace = true, features = ["pallas", "std"] }
+#
+# v0.8.0's nested API is generic over a ZF `frost-core` ciphersuite. The
+# pallas backend's element/scalar types are zakura-pasta-curves 1.0's
+# `pallas::Point`/`Scalar` — the same crate version reddsa 1.0 uses — so
+# frostito shares and commitments load straight into
+# `reddsa::frost::redpallas` with no conversion. `legacy-v1` does not exist on
+# this generation; the custody path is nested-v2 only.
+frostito = { workspace = true, features = ["pallas", "std"] }
 
 # round-2 package sealing (see sealed.rs). Noise_K, the same pattern ZF's
 # frost-client uses, so this is the ecosystem's transport rather than ours.

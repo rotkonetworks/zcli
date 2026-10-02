@@ -13,13 +13,16 @@
 // key structure:
 //   outer 2-of-2 (position 1 = OSST holder, position 2 = validator group)
 //   position 2 is a nested inner FROST: t-of-n validators collectively
-//   produce one outer partial signature via osst::nested.
+//   produce one outer partial signature via crate::nested.
 //
 // no custom crypto. composition of:
-//   - osst::dkg (Feldman DKG for initial keygen)
-//   - osst::nested (interleaved DKG + inner FROST signing)
-//   - osst::reshare (proactive rotation of position 1)
-//   - frost-spend orchestrate (FROST signing + spend authorization)
+//   - frost-spend orchestrate (reddsa / frost-core 3): keygen, rounds,
+//     aggregation
+//   - crate::nested (frostito 0.8): the inner group's signing for position 2
+//   - frost-spend keys: FVK / address derivation
+//
+// position 1's proactive resharing — weighted by stake, group key preserved —
+// is the one part of the design this crate does not implement yet.
 //
 // the bridge address is derived from the 2-of-2 group key and never
 // changes across reshares (group key is an invariant of OSST reshare).
@@ -213,7 +216,7 @@ pub fn bridge_aggregate(
 ///
 /// both positions sign and the result is aggregated.
 /// in production, position B's signing is replaced by nested inner FROST
-/// via osst::nested (the coordinator collects inner shares, aggregates them
+/// via crate::nested (the coordinator collects inner shares, aggregates them
 /// into a single outer partial signature, then aggregates with position A).
 pub fn bridge_sign_local(
     osst_pkg: &BridgeKeyPackage,

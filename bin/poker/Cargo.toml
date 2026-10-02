@@ -16,18 +16,27 @@ prost = "0.12"
 tokio = { version = "1", features = ["full"] }
 tokio-stream = "0.1"
 
-# frostito (nested FROST + OSST), canonical upstream penumbrafi/frostito
-# pinned in [workspace.dependencies]. osst 0.2.0 is on zakura-pasta-curves
-# 1.0, the same pasta as poker's own pallas types.
-# `legacy-v1` is the nested FROST v1 construction, which osst 0.4.0 moved
-# behind an off-by-default feature as INSECURE (finding R-1 of
-# SECURITY-REVIEW-2026-09: the outer binding factor multiplies the identity and
-# vanishes, admitting a ROS-style forgery). This demo's `dispute` path is the
-# "existing deployment compiling while it migrates" case the feature exists
-# for — it is a single-process TUI with no value at stake. Do NOT copy this
-# line into anything that signs for real; migrate to the v2 nested position
-# (see crates/frost-spend/src/nested.rs) instead.
-osst = { workspace = true, features = ["std", "pallas", "legacy-v1"] }
+# FROZEN on `osst` at its last rev — the crate name itself was deleted
+# upstream in 0.6.0 (`4ededc3` "drop OSST, rename to frostito"), pending
+# migration to zk.poker's escrow crate. Poker is the only workspace member
+# still naming `osst`: it uses
+# `osst::redpallas::zcash::{setup_escrow, JuryNetwork, nested_redpallas_sign,
+# derive_address_bytes}` and the nested-v1 construction, all of which 0.6.0
+# removed (`src/redpallas.rs`, `src/types.rs`, the `legacy-v1` feature) — and
+# every wire domain tag moved `osst/` -> `frostito/`, so this rev and v0.8.0
+# cannot interoperate. Hence pinned here, in its own manifest, rather than in
+# [workspace.dependencies]. Do not bump this rev without porting
+# bin/poker/src; do not reuse this line for anything else.
+#
+# `legacy-v1` is the nested FROST v1 construction, which upstream moved behind
+# an off-by-default feature as INSECURE (finding R-1 of SECURITY-REVIEW-2026-09:
+# the outer binding factor multiplies the identity and vanishes, admitting a
+# ROS-style forgery). This demo's `dispute` path is the "existing deployment
+# compiling while it migrates" case the feature exists for — it is a
+# single-process TUI with no value at stake. Do NOT copy this line into
+# anything that signs for real; migrate to the v2 nested position (see
+# crates/frost-spend/src/nested.rs) instead.
+osst = { git = "https://github.com/penumbrafi/frostito", rev = "f4f1a1aecd5193c8bbb4bd36cece7b6b6caa7f80", default-features = false, features = ["std", "pallas", "legacy-v1"] }
 
 # crypto
 rand = "0.8"

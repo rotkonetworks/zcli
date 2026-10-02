@@ -2472,10 +2472,10 @@ dependencies = [
  "blake2b_simd",
  "ed25519-consensus",
  "frost-rerandomized 3.0.0",
+ "frostito",
  "getrandom 0.2.17",
  "hex",
  "hkdf",
- "osst",
  "rand_core 0.6.4",
  "serde",
  "serde_json",
@@ -2519,6 +2519,19 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
  "xeddsa",
+ "zeroize",
+]
+
+[[package]]
+name = "frostito"
+version = "0.8.0"
+source = "git+https://github.com/penumbrafi/frostito?tag=v0.8.0#c0dad6d459059312f5e98918ea6cae1a840a66c5"
+dependencies = [
+ "blake2b_simd",
+ "frost-core 3.0.0",
+ "rand_core 0.6.4",
+ "sha2 0.10.9",
+ "zakura-pasta-curves",
  "zeroize",
 ]
 
@@ -9998,13 +10011,13 @@ dependencies = [
  "frost-client",
  "frost-spend",
  "frostd",
+ "frostito",
  "hex",
  "hmac 0.12.1",
  "incrementalmerkletree",
  "indicatif",
  "is-terminal",
  "k256",
- "osst",
  "prost 0.12.6",
  "qrcode",
  "quinn",

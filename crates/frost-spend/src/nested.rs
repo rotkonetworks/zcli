@@ -1,4 +1,4 @@
-// nested.rs — stake-weighted nested FROST v2 (osst 0.5)
+// nested.rs — stake-weighted nested FROST (frostito 0.8)
 //
 // One physical validator holds N Shamir shares of the nested position's secret,
 // N proportional to its stake. Rather than running FROST with one identifier
@@ -20,41 +20,61 @@
 //
 // Messages per round: one per physical validator, not one per share.
 //
-// ── relationship to osst::nested ────────────────────────────────────────────
+// ── relationship to frostito::nested ────────────────────────────────────────
 //
-// This module is the WEIGHTED specialization of `osst::nested`'s v2 nested
+// This module is the WEIGHTED specialization of `frostito::nested`'s nested
 // position: the unweighted inner holder contributes μ_k·σ_k, the weighted
 // validator contributes Σ_j λ_j·s_j, and everything else — commit–reveal,
 // session binding, the aggregate commitment pair, the outer context derivation,
-// per-signer share verification — is osst's and is used from osst here.
+// per-signer share verification — is frostito's and is used from frostito here.
 //
 // Concretely it reuses `InnerCommitments`, `InnerSignatureShare`,
 // `inner_precommit`/`verify_inner_precommit`, `aggregate_inner_commitment_pair`,
 // `verify_nested_commitment`, `NestedSigningRequest`,
-// `InnerSigningParamsV2::from_outer` and `verify_inner_share`. Nothing about
-// the binding factor or the challenge is recomputed locally; `from_outer` is
-// the only derivation, so a coordinator cannot assert an outer context (W-1).
+// `frostito::zf::inner_params_from_zf` and `verify_inner_share`. Nothing about
+// the binding factor or the challenge is recomputed locally;
+// `inner_params_from_zf` is the only derivation, so a coordinator cannot
+// assert an outer context (W-1).
 //
-// osst 0.5 moves the outer group key `Y` out of `NestedSigningRequest` (M-4)
-// and into the binding factor (M-24, RFC 9591 §4.4), so `frostito_sign_v2`
-// takes `Y` as a parameter from local key material, and the commit–reveal
-// round is enforced by osst rather than documented (M-20): the round-0
+// frostito requires its 0.8 nested API to be generic over a ZF `frost-core`
+// ciphersuite, so the signatures below carry `C = crate::frost::PallasBlake2b512`
+// where the point-generic helpers do not (`Element<C>` *is* `pallas::Point`
+// under the shared `zakura-pasta-curves` backend, so the weighted math stays on
+// `Point`/`Scalar`). The outer group key `Y` lives outside
+// `NestedSigningRequest` (M-4) and enters the binding factor (M-24, RFC 9591
+// §4.4), so `frostito_sign_v2` takes it as a parameter from local key material
+// — now a `frost_core::VerifyingKey<C>` — and the commit–reveal round is
+// enforced by frostito rather than documented (M-20): the round-0
 // precommitments travel in the request and every reveal is checked against
 // one.
 //
-// It cannot call `osst::nested::inner_sign_v2` itself for two reasons:
+// It cannot call `frostito::nested::inner_sign` itself for two reasons:
 //
-//   1. `inner_sign_v2` computes μ_k from `share.index` and multiplies the
-//      single share by it. A weighted validator's `effective_share` has the
-//      Lagrange coefficients applied already, so routing it through that
-//      function would apply them twice.
-//   2. `InnerNonces`' scalars are `pub(crate)` in osst, so the nonce pair
-//      cannot be consumed outside the crate.
+//   1. `inner_sign` computes μ_k from `share.index` (the Lagrange coefficient
+//      at that position in `active_indices`) and multiplies the single share by
+//      it. A weighted validator's `effective_share` has the Lagrange
+//      coefficients applied already, so routing it through that function would
+//      apply them twice.
+//   2. `InnerNonces`' scalars are still `pub(crate)` in frostito 0.8, so the
+//      nonce pair cannot be consumed outside the crate.
 //
-// Both are upstream items (see the PR description); until osst grows an
-// `inner_sign_v2` variant taking a precomputed effective scalar, the
-// N-1/N-2 precondition block is mirrored here, calling osst for every check it
-// exposes.
+// Both are upstream items (see the PR description); until frostito grows an
+// `inner_sign` variant taking a precomputed effective scalar, the N-1/N-2
+// precondition block is mirrored here, calling frostito for every check it
+// exposes — plus, since 0.8, frostito's own new quorum-shape guards, mirrored
+// below (see `frostito_sign_v2`).
+//
+// ── basepoint (ZF / Orchard spend-auth group) ────────────────────────────────
+//
+// frostito's point-generic helpers instantiate `CurvePoint` for
+// `pasta_curves::pallas::Point`, whose `generator()` is pasta's DEFAULT
+// generator — not the Orchard spend-auth basepoint the ciphersuite
+// `crate::frost` (`reddsa::frost::redpallas`) signs in. Every key this crate
+// handles lives in the spend-auth group, so the weighted path states the
+// basepoint explicitly (`spend_auth_generator`, and `verify_inner_share`
+// instantiated at `SpendAuthPoint`) rather than relying on
+// `Point::generator()`. Moving the custody keys into pasta's default group
+// instead would silently change what a valid Orchard SpendAuth signature is.
 //
 // ── weights ─────────────────────────────────────────────────────────────────
 //
@@ -65,17 +85,27 @@
 // allocations and checked `u64` weight sums (W-4). The invariant is re-checked
 // at signing time.
 
-use osst::compute_lagrange_coefficients;
-use osst::curve::{OsstPoint, OsstScalar};
-use osst::nested;
-use osst::SecretShare;
+use crate::frost::{PallasBlake2b512, VerifyingKey};
+use frostito::compute_lagrange_coefficients;
+use frostito::nested;
+use frostito::curve::pallas::SpendAuthPoint;
+use frostito::{CurvePoint, CurveScalar, SecretShare};
 use pasta_curves::group::ff::Field;
 use pasta_curves::pallas::{Point, Scalar};
+
+/// The ZF `frost-core` ciphersuite this crate's FROST types are built on.
+///
+/// `crate::frost` is `reddsa::frost::redpallas`, whose `PallasBlake2b512`
+/// ciphersuite has `Element = pallas::Point` and `Scalar = pallas::Scalar`
+/// under the `zakura-pasta-curves` backend that frostito 0.8 shares, so the
+/// suite-generic frostito helpers and the point-generic weighted math below
+/// line up without conversion.
+type Suite = PallasBlake2b512;
 
 pub use nested::{
     aggregate_inner_commitment_pair, inner_precommit, verify_inner_precommit, verify_inner_share,
     verify_nested_commitment, InnerCommitments, InnerNonces, InnerSignatureShare,
-    InnerSigningParamsV2, NestedSigningRequest,
+    InnerSigningParams, NestedSigningRequest,
 };
 
 /// Sample a uniformly random Pallas scalar from a rand_core 0.6 RNG.
@@ -95,13 +125,13 @@ fn rand_scalar<R: rand_core::RngCore + rand_core::CryptoRng>(rng: &mut R) -> Sca
 
 /// Failures specific to the weighted layer.
 ///
-/// The roster rejections have no `OsstError` analogue — osst's only "weights"
-/// are verification scalars, not integer stake — so they live here and osst
-/// errors are wrapped.
+/// The roster rejections have no `frostito::Error` analogue — frostito's only
+/// "weights" are verification scalars, not integer stake — so they live here
+/// and frostito errors are wrapped.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WeightedError {
-    /// An error from osst itself.
-    Osst(osst::OsstError),
+    /// An error from frostito itself.
+    Frostito(frostito::Error),
     /// A validator or share index was 0; both are 1-indexed.
     ZeroIndex,
     /// A threshold below 2 admits no roster: `max_weight < threshold` and
@@ -133,7 +163,9 @@ pub enum WeightedError {
     /// The share bundle handed to [`ValidatorShares::from_roster`] is not the
     /// set of indices the roster allocates to that validator.
     ShareSetMismatch(u32),
-    /// The participating validators' combined weight is below the threshold.
+    /// The participating validators' combined weight is below the threshold,
+    /// or `active_indices` names fewer share indices than `t_in` — the
+    /// weighted analogue of frostito's `InsufficientContributions`.
     InsufficientWeight { got: u64, need: u32 },
     /// The `active_indices` the coordinator supplied are not the ones the
     /// roster derives for the participating validator set (W-2).
@@ -141,16 +173,16 @@ pub enum WeightedError {
     /// No participants were supplied.
     EmptyParticipants,
     /// **M-14.** `NestedSigningRequest::inner_threshold` is not the roster's
-    /// threshold. osst documents the field as caller-anchored; on the weighted
-    /// path the roster *is* the anchor, so a coordinator's number is refused
-    /// rather than trusted.
+    /// threshold. frostito documents the field as caller-anchored; on the
+    /// weighted path the roster *is* the anchor, so a coordinator's number is
+    /// refused rather than trusted.
     ThresholdMismatch { supplied: u32, roster: u32 },
 }
 
 impl core::fmt::Display for WeightedError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Self::Osst(e) => write!(f, "{}", e),
+            Self::Frostito(e) => write!(f, "{}", e),
             Self::ZeroIndex => write!(f, "validator and share indices are 1-indexed"),
             Self::ThresholdTooSmall(t) => {
                 write!(f, "threshold {} admits no valid weight allocation", t)
@@ -197,9 +229,9 @@ impl core::fmt::Display for WeightedError {
 
 impl std::error::Error for WeightedError {}
 
-impl From<osst::OsstError> for WeightedError {
-    fn from(e: osst::OsstError) -> Self {
-        Self::Osst(e)
+impl From<frostito::Error> for WeightedError {
+    fn from(e: frostito::Error) -> Self {
+        Self::Frostito(e)
     }
 }
 
@@ -472,7 +504,7 @@ impl ValidatorShares {
             let pos = all_active_indices
                 .iter()
                 .position(|&i| i == share.index)
-                .ok_or(osst::OsstError::InvalidIndex)?;
+                .ok_or(frostito::Error::InvalidIndex)?;
             effective += all_lambda[pos] * share.scalar();
         }
         Ok(effective)
@@ -494,12 +526,12 @@ impl ValidatorShares {
             let pos = all_active_indices
                 .iter()
                 .position(|i| i == idx)
-                .ok_or(osst::OsstError::InvalidIndex)?;
+                .ok_or(frostito::Error::InvalidIndex)?;
             let p = public_shares
                 .iter()
                 .find(|(i, _)| i == idx)
                 .map(|(_, p)| p)
-                .ok_or(osst::OsstError::InvalidIndex)?;
+                .ok_or(frostito::Error::InvalidIndex)?;
             acc = acc.add(&p.mul_scalar(&all_lambda[pos]));
         }
         Ok(acc)
@@ -510,7 +542,7 @@ impl ValidatorShares {
 
 /// A validator's nonce pair for one weighted round.
 ///
-/// Local rather than `osst::nested::InnerNonces` only because that type's
+/// Local rather than `frostito::nested::InnerNonces` only because that type's
 /// scalars are `pub(crate)`; the shape, the session binding and the zeroizing
 /// `Drop` are the same. See the module header.
 pub struct WeightedNonce {
@@ -534,14 +566,27 @@ impl Drop for WeightedNonce {
 ///
 /// `session_id` names the inner round; it is public, must be agreed before
 /// round 1, and is carried into the precommitment and checked at signing
-/// time, exactly as in `osst::nested` (N-2).
+/// time, exactly as in `frostito::nested` (N-2).
 ///
-/// The published commitment is an `osst::nested::InnerCommitments`, so
+/// The published commitment is a `frostito::nested::InnerCommitments`, so
 /// `inner_precommit`, `verify_inner_precommit`,
 /// `aggregate_inner_commitment_pair` and `verify_nested_commitment` all apply
 /// unchanged. Note it carries no weight field: weight comes from the roster
 /// (W-2), so there is no self-asserted claim left to bind into the
 /// precommitment.
+/// The Orchard spend-auth basepoint, as the bare `Point` the frostito nonce
+/// and commitment types are parameterized by.
+///
+/// This is the generator of the FROST group `reddsa::frost::redpallas` signs
+/// in (`orchard::SpendAuth::basepoint()`), **not** `pasta_curves`'
+/// `Point::generator()`. frostito's point-generic helpers default to the
+/// latter, so every group operation this module performs over a scalar on the
+/// weighted path states the basepoint explicitly (see the module docs).
+#[inline]
+fn spend_auth_generator() -> Point {
+    SpendAuthPoint::basepoint().0
+}
+
 pub fn frostito_commit(
     validator_index: u32,
     session_id: [u8; 32],
@@ -553,8 +598,8 @@ pub fn frostito_commit(
     let commitment = InnerCommitments {
         holder_index: validator_index,
         session_id,
-        hiding: Point::generator().mul_scalar(&hiding),
-        binding: Point::generator().mul_scalar(&binding),
+        hiding: spend_auth_generator().mul_scalar(&hiding),
+        binding: spend_auth_generator().mul_scalar(&binding),
     };
 
     (
@@ -571,10 +616,10 @@ pub fn frostito_commit(
 /// Coordinator: the PAIR `(Σ D_k, Σ E_k)` the outer protocol consumes as the
 /// nested position's `SigningCommitments`.
 ///
-/// Straight through to osst, which rejects an empty set, a duplicate validator
-/// and a commitment from another session.
+/// Straight through to frostito, which rejects an empty set, a duplicate
+/// validator and a commitment from another session.
 ///
-/// **M-20.** The commit–reveal round is no longer caller convention: osst 0.5
+/// **M-20.** The commit–reveal round is no longer caller convention: frostito
 /// takes the round-0 precommitments and verifies every reveal against one,
 /// returning `PrecommitMismatch(holder)`. `precommits` is
 /// `(holder_index, precommit)`; entries for validators that did not reveal are
@@ -599,13 +644,13 @@ pub fn frostito_aggregate_commitment_pair(
 ///   `z_k = d_k + ρ·e_k + (λ_out · c) · effective_k`
 ///
 /// **W-1 / M-4.** The outer binding factor, challenge and Lagrange coefficient
-/// are obtained *only* from [`InnerSigningParamsV2::from_outer`] over the outer
-/// package and the group key the validator holds. Nothing here recomputes a
-/// binding factor locally and no coordinator can supply one: the type has no
+/// are obtained *only* from [`frostito::zf::inner_params_from_zf`] over the
+/// outer package and the group key the validator holds. Nothing here recomputes
+/// a binding factor locally and no coordinator can supply one: the type has no
 /// public fields.
 ///
 /// `local_group_pubkey` is `Y`, and it is a parameter rather than a field of
-/// `request` because osst 0.5 removed `NestedSigningRequest::group_pubkey`
+/// `request` because frostito removed `NestedSigningRequest::group_pubkey`
 /// (M-4): with the binding factor now covering `Y` (M-24, RFC 9591 §4.4), a
 /// coordinator-asserted `Y'` would give free choice of ρ and c over a fixed
 /// message. Pass the key from this validator's own key material — never
@@ -626,7 +671,11 @@ pub fn frostito_aggregate_commitment_pair(
 ///    path the roster is the local anchor for `t_in`;
 /// 5. the bundle's weight is the roster's and is `< threshold` (W-3, second
 ///    site);
-/// 6. `request.active_indices` is exactly what the roster derives for the
+/// 6. `request.active_indices` names at least `t_in` shares — frostito's own
+///    `InsufficientContributions` guard, mirrored below. Here
+///    `active_indices` is the list of active SHARE indices, so its length is
+///    the active weight;
+/// 7. `request.active_indices` is exactly what the roster derives for the
 ///    validator set that published round-1 commitments (W-2) — the signer
 ///    does not take the coordinator's word for which shares are active, since
 ///    that set drives every λ_j.
@@ -638,37 +687,37 @@ pub fn frostito_aggregate_commitment_pair(
 pub fn frostito_sign_v2(
     nonce: WeightedNonce,
     bundle: &ValidatorShares,
-    local_group_pubkey: &Point,
+    local_group_pubkey: &VerifyingKey,
     approved_message: &[u8],
-    request: &NestedSigningRequest<'_, Point>,
+    request: &NestedSigningRequest<'_, Suite>,
     roster: &WeightedRoster,
 ) -> Result<InnerSignatureShare<Scalar>, WeightedError> {
     // (1) the validator signs a message it holds, not one a coordinator asserts.
     if request.package.message() != approved_message {
-        return Err(osst::OsstError::MessageMismatch.into());
+        return Err(frostito::Error::MessageMismatch.into());
     }
 
     // (2) this round is the round the nonces were committed to ...
     if nonce.session_id != request.session_id {
-        return Err(osst::OsstError::SessionMismatch.into());
+        return Err(frostito::Error::SessionMismatch.into());
     }
     // ... and the published set really contains our own round-1 commitment.
     let mine = request
         .inner_commitments
         .iter()
         .find(|c| c.holder_index == nonce.validator_index)
-        .ok_or(osst::OsstError::UnexpectedCommitment)?;
+        .ok_or(frostito::Error::UnexpectedCommitment)?;
     if mine.session_id != request.session_id
-        || mine.hiding != Point::generator().mul_scalar(&nonce.hiding)
-        || mine.binding != Point::generator().mul_scalar(&nonce.binding)
+        || mine.hiding != spend_auth_generator().mul_scalar(&nonce.hiding)
+        || mine.binding != spend_auth_generator().mul_scalar(&nonce.binding)
     {
-        return Err(osst::OsstError::UnexpectedCommitment.into());
+        return Err(frostito::Error::UnexpectedCommitment.into());
     }
 
     // (3) the nested position's outer commitment is this round's aggregate,
     // over a commitment set every member of which matches its round-0
-    // precommitment (M-20 — verified inside osst now, not by convention).
-    verify_nested_commitment::<Point>(
+    // precommitment (M-20 — verified inside frostito now, not by convention).
+    verify_nested_commitment::<Suite>(
         request.package,
         request.nested_index,
         &request.session_id,
@@ -697,7 +746,27 @@ pub fn frostito_sign_v2(
         });
     }
 
-    // (6) W-2: the active share set is the roster's, over the validators that
+    // (6) frostito 0.8's `inner_sign` refuses a quorum smaller than `t_in`
+    // (`InsufficientContributions`) before it computes any Lagrange
+    // coefficient. `active_indices` here is the active SHARE set, so its
+    // length is the active weight; mirror that guard. Its per-member checks
+    // (`InvalidIndex` on k == 0, `DuplicateIndex`, and the new
+    // `UnknownQuorumMember` for a member absent from `inner_commitments`) have
+    // no literal analogue on this path: check (7) below requires
+    // `active_indices` to equal EXACTLY the roster's bundle union for the
+    // validators that published round-1 commitments — which rejects a zero
+    // index, a duplicate, and any member the roster did not allocate to a
+    // publishing validator. That is strictly stronger than checking each
+    // member is merely present in `inner_commitments`, so no weaker copy of
+    // `UnknownQuorumMember` is added.
+    if (request.active_indices.len() as u64) < roster.threshold() as u64 {
+        return Err(WeightedError::InsufficientWeight {
+            got: request.active_indices.len() as u64,
+            need: roster.threshold(),
+        });
+    }
+
+    // (7) W-2: the active share set is the roster's, over the validators that
     // actually published round-1 commitments — not a list the coordinator
     // asserts.
     let participants: Vec<u32> = request
@@ -714,7 +783,7 @@ pub fn frostito_sign_v2(
 
     // W-1/M-4: the only derivation of the outer context, over the group key
     // this validator holds locally.
-    let params = InnerSigningParamsV2::from_outer::<Point>(
+    let params = frostito::zf::inner_params_from_zf::<Suite>(
         request.package,
         local_group_pubkey,
         request.nested_index,
@@ -737,7 +806,7 @@ pub fn frostito_sign_v2(
 ///
 ///   `z_k·G  ==  (D_k + ρ·E_k) + (λ_out·c)·EffectivePub_k`
 ///
-/// This is `osst::nested::verify_inner_share` with `μ_k = 1`: the weighted
+/// This is `frostito::nested::verify_inner_share` with `μ_k = 1`: the weighted
 /// validator's Lagrange coefficients are already inside `EffectivePub_k`
 /// (see [`ValidatorShares::effective_pubkey`]), where the unweighted holder's
 /// sit outside its single public share. Same equation, same code.
@@ -745,12 +814,21 @@ pub fn frostito_verify_response(
     response: &InnerSignatureShare<Scalar>,
     commitment: &InnerCommitments<Point>,
     effective_pubkey: &Point,
-    params: &InnerSigningParamsV2<Scalar>,
+    params: &InnerSigningParams<Scalar>,
 ) -> bool {
-    verify_inner_share::<Point>(
+    // Instantiating the same function at the ZF point type is what selects
+    // the spend-auth basepoint: `verify_inner_share::<Point>` would multiply
+    // by pasta's default generator, which is not the group the outer package
+    // and every key on this path live in.
+    verify_inner_share::<SpendAuthPoint>(
         response,
-        commitment,
-        effective_pubkey,
+        &InnerCommitments {
+            holder_index: commitment.holder_index,
+            session_id: commitment.session_id,
+            hiding: SpendAuthPoint(commitment.hiding),
+            binding: SpendAuthPoint(commitment.binding),
+        },
+        &SpendAuthPoint(*effective_pubkey),
         params,
         &Scalar::ONE,
     )
@@ -761,7 +839,7 @@ pub fn frostito_verify_response(
 ///
 /// `Err(indices)` names the validators at fault so they can be evicted and the
 /// round retried, instead of emitting a signature that simply fails to verify
-/// with no attribution. Mirroring osst's N-3, the multiset of
+/// with no attribution. Mirroring frostito's N-3, the multiset of
 /// `holder_index` must equal `participants` exactly: a validator that produced
 /// no response, and one that produced two, are both named (W-4 — the old
 /// version resolved commitments with `find` and so verified and added a
@@ -770,7 +848,7 @@ pub fn frostito_aggregate_responses_verified(
     responses: &[InnerSignatureShare<Scalar>],
     commitments: &[InnerCommitments<Point>],
     effective_pubkeys: &[(u32, Point)],
-    params: &InnerSigningParamsV2<Scalar>,
+    params: &InnerSigningParams<Scalar>,
     participants: &[u32],
 ) -> Result<Scalar, Vec<u32>> {
     let mut bad: Vec<u32> = Vec::new();
@@ -825,9 +903,21 @@ pub fn frostito_aggregate_responses_verified(
 
 // ── unweighted (one share per validator) passthroughs ───────────────────────
 //
-// For a nested position whose holders each own exactly one share, osst's own
-// v2 is used directly; these wrappers exist only to keep the Pallas type
-// parameter off call sites.
+// For a nested position whose holders each own exactly one share, frostito's
+// own nested signing is used directly; these wrappers exist only to keep the
+// suite type parameter off call sites.
+//
+// CAVEAT: frostito's suite-generic path is rooted in
+// `<Element<C> as CurvePoint>::generator()` — pasta's DEFAULT generator on the
+// pallas suite — so these wrappers are consistent only with an outer FROST
+// built in that same group. They are NOT usable with the ZF custody key
+// material of [`crate::hierarchical`], whose group is the Orchard spend-auth
+// group. Use the weighted path for any weight, including one share per holder.
+//
+// Because no FROST implementation in this workspace signs in that group any
+// more (`bin/poker`'s frozen `osst` was the last one), these wrappers have no
+// end-to-end test here; the weighted path above is the tested, production
+// entry point.
 
 /// Round 1 for an unweighted inner holder.
 pub fn validator_commit(
@@ -837,19 +927,19 @@ pub fn validator_commit(
     nested::inner_commit::<Point, _>(holder_index, session_id, &mut rand_core::OsRng)
 }
 
-/// Round 2 for an unweighted inner holder: `osst::nested::inner_sign_v2`.
+/// Round 2 for an unweighted inner holder: `frostito::nested::inner_sign`.
 ///
 /// `local_group_pubkey` is the outer group key `Y`, taken from the holder's own
-/// key material: osst 0.5 removed it from `NestedSigningRequest` (M-4) because
+/// key material: frostito removed it from `NestedSigningRequest` (M-4) because
 /// the binding factor now covers it (M-24).
 pub fn validator_sign_v2(
     nonces: InnerNonces<Scalar>,
     share: &SecretShare<Scalar>,
-    local_group_pubkey: &Point,
+    local_group_pubkey: &VerifyingKey,
     approved_message: &[u8],
-    request: &NestedSigningRequest<'_, Point>,
-) -> Result<InnerSignatureShare<Scalar>, osst::OsstError> {
-    nested::inner_sign_v2::<Point>(
+    request: &NestedSigningRequest<'_, Suite>,
+) -> Result<InnerSignatureShare<Scalar>, frostito::Error> {
+    nested::inner_sign::<Suite>(
         nonces,
         share,
         local_group_pubkey,
@@ -863,7 +953,7 @@ pub fn aggregate_validator_shares_verified(
     sigs: &[InnerSignatureShare<Scalar>],
     commitments: &[InnerCommitments<Point>],
     public_shares: &[(u32, Point)],
-    params: &InnerSigningParamsV2<Scalar>,
+    params: &InnerSigningParams<Scalar>,
     active_indices: &[u32],
 ) -> Result<Scalar, Vec<u32>> {
     nested::aggregate_inner_shares_verified::<Point>(
@@ -880,9 +970,17 @@ pub fn aggregate_validator_shares_verified(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use osst::frost as osst_frost;
+    use crate::frost::{self, round1, round2, Identifier, Signature, SigningPackage};
+    use crate::frost_keys::{self, IdentifierList};
+    use pasta_curves::group::ff::PrimeField;
+    use pasta_curves::group::GroupEncoding;
+    use std::collections::BTreeMap;
 
     const SESSION: [u8; 32] = [7u8; 32];
+
+    fn id(i: u16) -> Identifier {
+        Identifier::try_from(i).expect("small identifier")
+    }
 
     fn shamir(secret: Scalar, n: u32, t: u32, rng: &mut rand_core::OsRng) -> Vec<SecretShare<Scalar>> {
         let mut coeffs = vec![secret];
@@ -910,11 +1008,85 @@ mod tests {
         bundles: Vec<ValidatorShares>,
         public_shares: Vec<(u32, Point)>,
         nested_secret: Scalar,
-        position_a_share: SecretShare<Scalar>,
-        group_key: Point,
+        key_a: frost_keys::KeyPackage,
+        pubkeys: frost_keys::PublicKeyPackage,
+        group_key: VerifyingKey,
     }
 
     const NESTED_INDEX: u32 = 2;
+
+    // ── a real outer FROST group ───────────────────────────────────────────
+    //
+    // W-1's point is that the nested position is indistinguishable from an
+    // ordinary outer signer, so the tests drive it through the SAME path a flat
+    // signer uses: a genuine `frost_keys` 2-of-2 key pair, the flat signer's
+    // `round1::commit` / `round2::sign`, and `frost::aggregate`. The nested
+    // position's secret is read out of its dealer share only to seed the inner
+    // Shamir split — nothing about the outer group is reconstructed by hand.
+
+    /// The flat signer (identifier 1) and the nested position (identifier 2).
+    struct Outer {
+        key_a: frost_keys::KeyPackage,
+        pubkeys: frost_keys::PublicKeyPackage,
+        group_key: VerifyingKey,
+        nested_secret: Scalar,
+    }
+
+    fn outer_2of2(rng: &mut rand_core::OsRng) -> Outer {
+        let (shares, pubkeys) =
+            frost_keys::generate_with_dealer(2, 2, IdentifierList::Default, rng)
+                .expect("2-of-2 dealer keygen");
+        let key_a =
+            frost_keys::KeyPackage::try_from(shares[&id(1)].clone()).expect("share 1 verifies");
+        let nested_secret = shares[&id(2)].signing_share().to_scalar();
+        let group_key = *pubkeys.verifying_key();
+        Outer {
+            key_a,
+            pubkeys,
+            group_key,
+            nested_secret,
+        }
+    }
+
+    /// The outer signing package: the flat signer's round-1 commitments plus
+    /// the nested position's aggregate commitment pair.
+    fn outer_package(
+        a_commits: round1::SigningCommitments,
+        d_nested: Point,
+        e_nested: Point,
+        message: &[u8],
+    ) -> SigningPackage {
+        let mut commits = BTreeMap::new();
+        commits.insert(id(1), a_commits);
+        commits.insert(
+            id(2),
+            round1::SigningCommitments::new(
+                round1::NonceCommitment::deserialize(&GroupEncoding::to_bytes(&d_nested))
+                    .expect("commitment"),
+                round1::NonceCommitment::deserialize(&GroupEncoding::to_bytes(&e_nested))
+                    .expect("commitment"),
+            ),
+        );
+        SigningPackage::new(commits, message)
+    }
+
+    /// Sign with the flat signer, wrap the aggregated nested response as the
+    /// nested position's share, and aggregate the outer 2-of-2 signature.
+    fn outer_sign(
+        package: &SigningPackage,
+        key_a: &frost_keys::KeyPackage,
+        a_nonces: round1::SigningNonces,
+        z_nested: Scalar,
+        pubkeys: &frost_keys::PublicKeyPackage,
+    ) -> Signature {
+        let a_sig = round2::sign(package, &a_nonces, key_a).expect("flat signer");
+        let nested_sig =
+            round2::SignatureShare::deserialize(&z_nested.to_repr()).expect("nested response");
+        let mut sigs = BTreeMap::new();
+        sigs.insert(id(1), a_sig);
+        sigs.insert(id(2), nested_sig);
+        frost::aggregate(package, &sigs, pubkeys).expect("2-of-2 aggregate")
+    }
 
     fn fixture(rng: &mut rand_core::OsRng) -> Fixture {
         let allocation = vec![
@@ -924,18 +1096,15 @@ mod tests {
         ];
         let roster = WeightedRoster::new(&allocation, 7).unwrap();
 
-        // outer 2-of-2: a degree-1 polynomial, position 1 flat, position 2 nested.
-        let outer_secret = rand_scalar(rng);
-        let outer_shares = shamir(outer_secret, 2, 2, rng);
-        let group_key = Point::generator().mul_scalar(&outer_secret);
-        let position_a_share = outer_shares[0].clone();
-        let nested_secret = *outer_shares[1].scalar();
+        // Outer 2-of-2: identifier 1 flat, identifier 2 nested, real key
+        // material from the dealer.
+        let outer = outer_2of2(rng);
 
         // the nested position's secret, split 7-of-10 among the share indices
-        let inner = shamir(nested_secret, 10, 7, rng);
+        let inner = shamir(outer.nested_secret, 10, 7, rng);
         let public_shares: Vec<(u32, Point)> = inner
             .iter()
-            .map(|s| (s.index, Point::generator().mul_scalar(s.scalar())))
+            .map(|s| (s.index, spend_auth_generator().mul_scalar(s.scalar())))
             .collect();
 
         let bundles = allocation
@@ -950,9 +1119,10 @@ mod tests {
             roster,
             bundles,
             public_shares,
-            nested_secret,
-            position_a_share,
-            group_key,
+            nested_secret: outer.nested_secret,
+            key_a: outer.key_a,
+            pubkeys: outer.pubkeys,
+            group_key: outer.group_key,
         }
     }
 
@@ -991,9 +1161,9 @@ mod tests {
             assert!(!verify_inner_precommit(&precommits[0].1, &bad));
         }
 
-        // M-20: osst now verifies the reveals against the precommitments here,
-        // so a substituted reveal is refused by the aggregate itself rather
-        // than only by the caller's own convention.
+        // M-20: frostito now verifies the reveals against the precommitments
+        // here, so a substituted reveal is refused by the aggregate itself
+        // rather than only by the caller's own convention.
         let (d_nested, e_nested) =
             frostito_aggregate_commitment_pair(&SESSION, &precommits, &commitments).unwrap();
         {
@@ -1001,20 +1171,13 @@ mod tests {
             tampered[0].hiding = tampered[0].hiding.add(&Point::generator());
             assert!(matches!(
                 frostito_aggregate_commitment_pair(&SESSION, &precommits, &tampered),
-                Err(WeightedError::Osst(osst::OsstError::PrecommitMismatch(1)))
+                Err(WeightedError::Frostito(frostito::Error::PrecommitMismatch(1)))
             ));
         }
 
         // ── a real outer package ───────────────────────────────────────────
-        let (a_nonces, a_commits) = osst_frost::commit::<Point, _>(1, &mut rng).unwrap();
-        let nested_commits = osst_frost::SigningCommitments {
-            index: NESTED_INDEX,
-            hiding: d_nested,
-            binding: e_nested,
-        };
-        let package =
-            osst_frost::SigningPackage::new(message.to_vec(), vec![a_commits, nested_commits])
-                .unwrap();
+        let (a_nonces, a_commits) = round1::commit(f.key_a.signing_share(), &mut rng);
+        let package = outer_package(a_commits, d_nested, e_nested, message);
 
         let request = NestedSigningRequest {
             package: &package,
@@ -1049,7 +1212,7 @@ mod tests {
         }
 
         let params =
-            InnerSigningParamsV2::from_outer::<Point>(&package, &f.group_key, NESTED_INDEX)
+            frostito::zf::inner_params_from_zf::<Suite>(&package, &f.group_key, NESTED_INDEX)
                 .unwrap();
         let z_nested = frostito_aggregate_responses_verified(
             &responses,
@@ -1062,11 +1225,11 @@ mod tests {
 
         // ── equivalence: a flat signer holding the nested secret ───────────
         // z_flat = λ·c·σ + d + ρ·e, with (d, e) the nested position's nonces —
-        // check it through osst's own verification of the nested position as
+        // check it through the inner-share equation of the nested position as
         // an ordinary signer.
-        let nested_public = Point::generator().mul_scalar(&f.nested_secret);
+        let nested_public = spend_auth_generator().mul_scalar(&f.nested_secret);
         assert!(
-            verify_inner_share::<Point>(
+            frostito_verify_response(
                 &InnerSignatureShare {
                     holder_index: NESTED_INDEX,
                     response: z_nested,
@@ -1079,35 +1242,19 @@ mod tests {
                 },
                 &nested_public,
                 &params,
-                &Scalar::ONE,
             ),
             "the weighted nested response must be a flat signer's response"
         );
 
         // ── and the whole outer signature verifies ─────────────────────────
-        let a_sig = osst_frost::sign::<Point>(
-            &package,
-            a_nonces,
-            &f.position_a_share,
-            &f.group_key,
-        )
-        .unwrap();
-        let nested_sig = osst_frost::SignatureShare {
-            index: NESTED_INDEX,
-            response: z_nested,
-        };
-        let signature =
-            osst_frost::aggregate::<Point>(&package, &[a_sig, nested_sig], &f.group_key, None)
-                .unwrap();
+        let signature = outer_sign(&package, &f.key_a, a_nonces, z_nested, &f.pubkeys);
         assert!(
-            osst_frost::verify_signature(&f.group_key, message, &signature),
+            f.group_key.verify(message, &signature).is_ok(),
             "2-of-2 outer × weighted 7-of-10 inner must verify"
         );
     }
 
-    /// W-1: a coordinator cannot get a signature over a payload the validators
-    /// never approved.
-    #[test]
+        #[test]
     fn frostito_v2_rejects_a_message_the_validator_did_not_approve() {
         let mut rng = rand_core::OsRng;
         let f = fixture(&mut rng);
@@ -1127,19 +1274,8 @@ mod tests {
             .collect();
         let (d, e) =
             frostito_aggregate_commitment_pair(&SESSION, &precommits, &commitments).unwrap();
-        let (_, a_commits) = osst_frost::commit::<Point, _>(1, &mut rng).unwrap();
-        let package = osst_frost::SigningPackage::new(
-            b"coordinator's own payload".to_vec(),
-            vec![
-                a_commits,
-                osst_frost::SigningCommitments {
-                    index: NESTED_INDEX,
-                    hiding: d,
-                    binding: e,
-                },
-            ],
-        )
-        .unwrap();
+        let (_, a_commits) = round1::commit(f.key_a.signing_share(), &mut rng);
+        let package = outer_package(a_commits, d, e, b"coordinator's own payload");
         let request = NestedSigningRequest {
             package: &package,
             nested_index: NESTED_INDEX,
@@ -1159,7 +1295,7 @@ mod tests {
             &f.roster,
         )
         .expect_err("a mismatched message must be refused");
-        assert_eq!(err, WeightedError::Osst(osst::OsstError::MessageMismatch));
+        assert_eq!(err, WeightedError::Frostito(frostito::Error::MessageMismatch));
     }
 
     /// N-2/W-2: the signer refuses a coordinator-chosen active share set, and
@@ -1185,19 +1321,8 @@ mod tests {
             .collect();
         let (d, e) =
             frostito_aggregate_commitment_pair(&SESSION, &precommits, &commitments).unwrap();
-        let (_, a_commits) = osst_frost::commit::<Point, _>(1, &mut rng).unwrap();
-        let package = osst_frost::SigningPackage::new(
-            message.to_vec(),
-            vec![
-                a_commits,
-                osst_frost::SigningCommitments {
-                    index: NESTED_INDEX,
-                    hiding: d,
-                    binding: e,
-                },
-            ],
-        )
-        .unwrap();
+        let (_, a_commits) = round1::commit(f.key_a.signing_share(), &mut rng);
+        let package = outer_package(a_commits, d, e, message);
 
         // W-2: the coordinator drops validator 3's shares from the active set,
         // which would change every λ_j.
@@ -1244,7 +1369,7 @@ mod tests {
                 &f.roster,
             )
                 .expect_err("nonces from another session must be refused");
-        assert_eq!(err, WeightedError::Osst(osst::OsstError::SessionMismatch));
+        assert_eq!(err, WeightedError::Frostito(frostito::Error::SessionMismatch));
     }
 
     /// A validator that tampers with its response is NAMED, and so is one that
@@ -1270,19 +1395,8 @@ mod tests {
             .collect();
         let (d, e) =
             frostito_aggregate_commitment_pair(&SESSION, &precommits, &commitments).unwrap();
-        let (_, a_commits) = osst_frost::commit::<Point, _>(1, &mut rng).unwrap();
-        let package = osst_frost::SigningPackage::new(
-            message.to_vec(),
-            vec![
-                a_commits,
-                osst_frost::SigningCommitments {
-                    index: NESTED_INDEX,
-                    hiding: d,
-                    binding: e,
-                },
-            ],
-        )
-        .unwrap();
+        let (_, a_commits) = round1::commit(f.key_a.signing_share(), &mut rng);
+        let package = outer_package(a_commits, d, e, message);
         let request = NestedSigningRequest {
             package: &package,
             nested_index: NESTED_INDEX,
@@ -1293,7 +1407,7 @@ mod tests {
             inner_threshold: f.roster.threshold(),
         };
         let params =
-            InnerSigningParamsV2::from_outer::<Point>(&package, &f.group_key, NESTED_INDEX)
+            frostito::zf::inner_params_from_zf::<Suite>(&package, &f.group_key, NESTED_INDEX)
                 .unwrap();
         let effective_pubkeys: Vec<(u32, Point)> = f
             .bundles
@@ -1515,100 +1629,5 @@ mod tests {
             ValidatorShares::from_roster(&roster, 9, vec![shares[0].clone()]).unwrap_err(),
             WeightedError::UnknownValidator(9)
         );
-    }
-
-    /// The unweighted path still works: osst's own v2, one share per holder,
-    /// inside a 2-of-2 outer group.
-    #[test]
-    fn unweighted_nested_v2_still_verifies() {
-        let mut rng = rand_core::OsRng;
-        let message = b"unweighted nested spend";
-
-        let outer_secret = rand_scalar(&mut rng);
-        let outer_shares = shamir(outer_secret, 2, 2, &mut rng);
-        let group_key = Point::generator().mul_scalar(&outer_secret);
-        let nested_secret = *outer_shares[1].scalar();
-        let inner = shamir(nested_secret, 5, 3, &mut rng);
-        let active: Vec<u32> = vec![1, 3, 5];
-
-        let mut nonces = Vec::new();
-        let mut commitments = Vec::new();
-        for &k in &active {
-            let (n, c) = validator_commit(k, SESSION);
-            nonces.push(n);
-            commitments.push(c);
-        }
-        let precommits: Vec<(u32, [u8; 32])> = commitments
-            .iter()
-            .map(|c| (c.holder_index, inner_precommit(c)))
-            .collect();
-        let (d, e) =
-            aggregate_inner_commitment_pair::<Point>(&SESSION, &precommits, &commitments).unwrap();
-
-        let (a_nonces, a_commits) = osst_frost::commit::<Point, _>(1, &mut rng).unwrap();
-        let package = osst_frost::SigningPackage::new(
-            message.to_vec(),
-            vec![
-                a_commits,
-                osst_frost::SigningCommitments {
-                    index: NESTED_INDEX,
-                    hiding: d,
-                    binding: e,
-                },
-            ],
-        )
-        .unwrap();
-        let request = NestedSigningRequest {
-            package: &package,
-            nested_index: NESTED_INDEX,
-            session_id: SESSION,
-            inner_precommits: &precommits,
-            inner_commitments: &commitments,
-            active_indices: &active,
-            inner_threshold: 3,
-        };
-
-        let mut sigs = Vec::new();
-        for (n, &k) in nonces.into_iter().zip(active.iter()) {
-            sigs.push(
-                validator_sign_v2(n, &inner[(k - 1) as usize], &group_key, message, &request).unwrap(),
-            );
-        }
-        let public_shares: Vec<(u32, Point)> = active
-            .iter()
-            .map(|&k| {
-                (
-                    k,
-                    Point::generator().mul_scalar(inner[(k - 1) as usize].scalar()),
-                )
-            })
-            .collect();
-        let params =
-            InnerSigningParamsV2::from_outer::<Point>(&package, &group_key, NESTED_INDEX).unwrap();
-        let z_nested = aggregate_validator_shares_verified(
-            &sigs,
-            &commitments,
-            &public_shares,
-            &params,
-            &active,
-        )
-        .unwrap();
-
-        let a_sig =
-            osst_frost::sign::<Point>(&package, a_nonces, &outer_shares[0], &group_key).unwrap();
-        let signature = osst_frost::aggregate::<Point>(
-            &package,
-            &[
-                a_sig,
-                osst_frost::SignatureShare {
-                    index: NESTED_INDEX,
-                    response: z_nested,
-                },
-            ],
-            &group_key,
-            None,
-        )
-        .unwrap();
-        assert!(osst_frost::verify_signature(&group_key, message, &signature));
     }
 }

@@ -88,11 +88,13 @@ frost-client = { git = "https://github.com/ZcashFoundation/frost-tools", rev = "
 # to name session ids in frostd's API
 uuid = { version = "1", features = ["v4", "serde"] }
 zoda-vss = { path = "../../crates/zoda-vss" }
-# Canonical upstream frostito/osst (penumbrafi/frostito), pinned in
-# [workspace.dependencies]. 0.2.0 folded this workspace's pasta-1.0 port
-# upstream, so there is no longer a second pasta in the native graph. "std" is
-# required for osst::redpallas / OsRng (matches frost-spend's comment).
-osst = { workspace = true, features = ["pallas", "std"] }
+# Canonical upstream frostito (penumbrafi/frostito), pinned in
+# [workspace.dependencies]; the crate was renamed from `osst` in 0.6.0 and the
+# custody path is on v0.8.0. Its nested API is generic over a ZF `frost-core`
+# ciphersuite; the pallas backend shares zakura-pasta-curves 1.0 with reddsa,
+# so no conversion is needed. "std" is required for frostito::redpallas / OsRng
+# (matches frost-spend's comment).
+frostito = { workspace = true, features = ["pallas", "std"] }
 # Zakura Common 1.0 pasta (pasta-1.0 / ff+group 0.14). zecli's own source does
 # not name pasta types, but keeping this on the upstream `pasta_curves 0.5`
 # would re-introduce a second pasta into the native graph. Switch it to the

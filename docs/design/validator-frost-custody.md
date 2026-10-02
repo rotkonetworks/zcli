@@ -50,7 +50,7 @@ any suspected share compromise.
 |---|---|---|
 | Curve / ciphersuite | Pallas, FROST(Pallas, BLAKE2b-512) via ZF `reddsa` | secp256k1, BIP340 via `schnorr_fun` (frostsnap) |
 | n / t | 5 / 3 | 11 / 7 |
-| Signing library | `frost-spend` (ZF `frost-core` 2.2) | `frostsnap_core` (`schnorr_fun` 0.13) |
+| Signing library | `frost-spend` (ZF `frost-core` 3.0, via `frostito` 0.8) | `frostsnap_core` (`schnorr_fun` 0.13) |
 | Reshare math | `frostito::reshare` (feature `pallas`) or ported | ported to `secp256kfun` types |
 | Transport | ZF `frostd` relay + Noise_K sealing (exists in `zcli`) | same relay, or WireGuard mesh |
 
@@ -328,10 +328,11 @@ state machine (commitments, distribution with share acks and complaints,
 complete) but every trigger is a stub: `should_initiate_reshare` returns
 `false` unconditionally, the submit calls are no-ops, and the example config
 sets `reshare_interval = 0`. No consumer calls `frostito::reshare` outside the
-crate's own tests. `warpito` also pins the pre-rename `zeratul/crates/osst`
-copy, so a fix in `frostito` does not reach it. This document supersedes all
-three coordination designs for the treasury use case; the jam-service shape
-(off-chain ceremony, signed completion record) is the closest to section 5.
+crate's own tests. `warpito` also pins `zeratul/crates/osst` — a vendored copy
+still under the deleted `osst` name (0.1.1) — so a fix in `frostito` does not
+reach it. This document supersedes all three coordination designs for the
+treasury use case; the jam-service shape (off-chain ceremony, signed completion
+record) is the closest to section 5.
 
 None of F1–F10 is a math error. They are missing agreement (F1, F4, F5),
 missing plumbing (F2, F3), and mismatched assumptions (F6, F7, F8).
@@ -340,7 +341,8 @@ missing plumbing (F2, F3), and mismatched assumptions (F6, F7, F8).
 
 ## 7. The audited alternative: ZF `frost-core` refresh + repair
 
-`frost-core` 2.2 (pinned by `frost-spend`) ships two primitives:
+`frost-core` 3.0 (what `frost-spend` links today, via `frostito` 0.8; the
+`frost-tools` relay side is still on 2.2) ships two primitives:
 
 - `keys::refresh::refresh_dkg_*`: every **remaining** member deals a
   zero-secret polynomial; shares are refreshed in place. `max_signers` may
