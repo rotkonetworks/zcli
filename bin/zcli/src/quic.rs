@@ -463,25 +463,13 @@ async fn handle_deposit(
         Some(label.to_string())
     };
 
-    // retry on wallet lock contention
-    for attempt in 0..10u64 {
-        let seed = WalletSeed::from_bytes(*seed_bytes);
-        match merchant::create_request(&seed, amount_zat, label_owned.as_deref(), deposit, mainnet)
-        {
-            Ok(pr) => {
-                return Ok(serde_json::json!({
-                    "id": pr.id,
-                    "address": pr.address,
-                    "status": pr.status,
-                }));
-            }
-            Err(Error::Wallet(msg)) if msg.contains("could not acquire lock") && attempt < 9 => {
-                tokio::time::sleep(std::time::Duration::from_millis(200 * (attempt + 1))).await;
-            }
-            Err(e) => return Err(e),
-        }
-    }
-    Err(Error::Wallet("wallet lock timeout".into()))
+    let seed = WalletSeed::from_bytes(*seed_bytes);
+    let pr = merchant::create_request(&seed, amount_zat, label_owned.as_deref(), deposit, mainnet)?;
+    Ok(serde_json::json!({
+        "id": pr.id,
+        "address": pr.address,
+        "status": pr.status,
+    }))
 }
 
 async fn handle_withdraw(req: &serde_json::Value) -> Result<serde_json::Value, Error> {
@@ -494,40 +482,31 @@ async fn handle_withdraw(req: &serde_json::Value) -> Result<serde_json::Value, E
         .ok_or_else(|| Error::Other("missing amount_zat".into()))?;
     let label = req["label"].as_str().map(String::from);
 
-    for attempt in 0..10u64 {
-        match Wallet::open(&Wallet::default_path()) {
-            Ok(wallet) => {
-                let id = wallet.next_withdrawal_id()?;
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_secs())
-                    .unwrap_or(0);
+    // lock contention is handled inside Wallet::open
+    let wallet = Wallet::open(&Wallet::default_path())?;
+    let id = wallet.next_withdrawal_id()?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
 
-                let wr = WithdrawalRequest {
-                    id,
-                    address: address.clone(),
-                    amount_zat,
-                    label: label.clone(),
-                    created_at: now,
-                    status: "pending".into(),
-                    txid: None,
-                    fee_zat: None,
-                    error: None,
-                };
-                wallet.insert_withdrawal_request(&wr)?;
+    let wr = WithdrawalRequest {
+        id,
+        address: address.clone(),
+        amount_zat,
+        label: label.clone(),
+        created_at: now,
+        status: "pending".into(),
+        txid: None,
+        fee_zat: None,
+        error: None,
+    };
+    wallet.insert_withdrawal_request(&wr)?;
 
-                return Ok(serde_json::json!({
-                    "id": wr.id,
-                    "status": wr.status,
-                }));
-            }
-            Err(Error::Wallet(msg)) if msg.contains("could not acquire lock") && attempt < 9 => {
-                tokio::time::sleep(std::time::Duration::from_millis(200 * (attempt + 1))).await;
-            }
-            Err(e) => return Err(e),
-        }
-    }
-    Err(Error::Wallet("wallet lock timeout".into()))
+    Ok(serde_json::json!({
+        "id": wr.id,
+        "status": wr.status,
+    }))
 }
 
 /// parse hex-encoded ed25519 pubkey from CLI arg

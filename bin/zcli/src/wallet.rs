@@ -29,6 +29,29 @@ const NEXT_WITHDRAWAL_ID_KEY: &[u8] = b"next_withdrawal_id";
 const ACTIONS_COMMITMENT_KEY: &[u8] = b"actions_commitment";
 const FVK_KEY: &[u8] = b"full_viewing_key";
 
+/// lock retry budget for `Wallet::open`: 200+400+...+2000ms ≈ 11s
+const OPEN_LOCK_ATTEMPTS: u32 = 10;
+const OPEN_LOCK_BACKOFF_MS: u64 = 200;
+
+/// Sleep between lock retries without starving an async runtime.
+///
+/// `Wallet::open` is sync but is called from async handlers (zclid gRPC, the
+/// mempool tick, quic). A bare `thread::sleep` there parks a tokio worker for
+/// the whole retry budget; a handful of those during a long catch-up sync can
+/// take every worker, stalling the very I/O the sync needs to finish and
+/// release the lock. On a multi-thread runtime `block_in_place` hands this
+/// worker's queued tasks to another thread first. (It panics on a
+/// current-thread runtime, which therefore just sleeps.)
+fn backoff_sleep(d: std::time::Duration) {
+    use tokio::runtime::{Handle, RuntimeFlavor};
+    match Handle::try_current() {
+        Ok(h) if h.runtime_flavor() == RuntimeFlavor::MultiThread => {
+            tokio::task::block_in_place(|| std::thread::sleep(d))
+        }
+        _ => std::thread::sleep(d),
+    }
+}
+
 /// global watch mode flag — set once at startup, affects default_path()
 static WATCH_MODE: OnceLock<bool> = OnceLock::new();
 
@@ -224,7 +247,34 @@ impl Wallet {
         self.db.flush().ok();
     }
 
+    /// sled holds an exclusive lock on the db directory, so only one process can
+    /// have the wallet open at a time. With `zclid` running as a daemon, a peer
+    /// holds that lock for seconds at a time (every sync interval, plus the
+    /// whole catch-up run), so wait for it instead of failing the command.
+    /// ~11s of backoff covers a peer's sync window without hiding a real
+    /// timeout — matches the retry that `quic.rs` used to do by hand.
     pub fn open(path: &str) -> Result<Self, Error> {
+        let mut last: Option<Error> = None;
+        for attempt in 0..OPEN_LOCK_ATTEMPTS {
+            match Self::try_open(path) {
+                Ok(wallet) => return Ok(wallet),
+                Err(Error::Wallet(msg)) if msg.contains("could not acquire lock") => {
+                    if attempt + 1 < OPEN_LOCK_ATTEMPTS {
+                        backoff_sleep(std::time::Duration::from_millis(
+                            OPEN_LOCK_BACKOFF_MS * (attempt as u64 + 1),
+                        ));
+                    }
+                    last = Some(Error::Wallet(msg));
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Err(last.unwrap_or_else(|| Error::Wallet("wallet lock timeout".into())))
+    }
+
+    /// single attempt — no lock retry. Callers that want to report a peer
+    /// holding the wallet immediately (or measure it) use this.
+    pub fn try_open(path: &str) -> Result<Self, Error> {
         let db = sled::open(path)
             .map_err(|e| Error::Wallet(format!("cannot open wallet db at {}: {}", path, e)))?;
         // migrate: remove stale keys from pre-0.5.3 when FVK was stored in main wallet
@@ -693,6 +743,38 @@ impl Wallet {
         Ok(())
     }
 
+    /// Persist the whole sync point — height, both tree positions and the
+    /// running commitment — in ONE sled transaction.
+    ///
+    /// These four values are a single fact: the commitment is only meaningful
+    /// as the fold UP TO that height. Written one by one (as they were), a
+    /// process killed between the inserts leaves a height beside a commitment
+    /// from another height; every later run then fails the proof check while
+    /// every block it receives is internally consistent, and the failure
+    /// reports "tampering" when the real cause was a torn write.
+    ///
+    /// Notes and nullifiers stay outside this transaction deliberately: they
+    /// are keyed by nullifier, so re-scanning a range re-inserts them
+    /// unchanged. A torn write there costs a repeated scan, not state.
+    pub fn commit_sync_point(
+        &self,
+        height: u32,
+        orchard_position: u64,
+        ironwood_position: u64,
+        commitment: &[u8; 32],
+    ) -> Result<(), Error> {
+        self.db
+            .transaction(|tx| -> sled::transaction::ConflictableTransactionResult<(), ()> {
+                tx.insert(SYNC_HEIGHT_KEY, &height.to_le_bytes())?;
+                tx.insert(ORCHARD_POSITION_KEY, &orchard_position.to_le_bytes())?;
+                tx.insert(IRONWOOD_POSITION_KEY, &ironwood_position.to_le_bytes())?;
+                tx.insert(ACTIONS_COMMITMENT_KEY, &commitment[..])?;
+                Ok(())
+            })
+            .map_err(|e| Error::Wallet(format!("commit sync point: {:?}", e)))?;
+        Ok(())
+    }
+
     // -- FVK / watch-only methods --
 
     /// store a 96-byte orchard full viewing key in the watch wallet
@@ -827,6 +909,42 @@ mod tests {
         Wallet::open(dir.path().join("wallet").to_str().unwrap()).unwrap()
     }
 
+    // sled is single-process: a daemon (zclid) holds the wallet lock for
+    // seconds at a time mid-sync. open() must wait for it, try_open() must not.
+    #[test]
+    fn test_open_waits_for_peer_lock_then_succeeds() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("wallet");
+        let path = path.to_str().unwrap().to_string();
+
+        let held = Wallet::open(&path).unwrap();
+        let peer_path = path.clone();
+        let peer = std::thread::spawn(move || Wallet::open(&peer_path));
+
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        drop(held);
+
+        let opened = peer.join().unwrap();
+        assert!(opened.is_ok(), "second open should wait: {:?}", opened.err());
+    }
+
+    #[test]
+    fn test_try_open_fails_fast_while_peer_holds_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("wallet");
+        let path = path.to_str().unwrap().to_string();
+
+        let _held = Wallet::open(&path).unwrap();
+        match Wallet::try_open(&path) {
+            Err(Error::Wallet(msg)) => assert!(
+                msg.contains("could not acquire lock"),
+                "expected a lock error, got: {}",
+                msg
+            ),
+            other => panic!("expected lock failure, got {:?}", other.map(|_| "opened")),
+        }
+    }
+
     #[test]
     fn test_actions_commitment_default_zero() {
         let w = temp_wallet();
@@ -912,5 +1030,48 @@ mod tests {
         }
 
         assert_eq!(resumed_ac, full_ac, "resumed chain must match full chain");
+    }
+}
+
+#[cfg(test)]
+mod sync_point_tests {
+    use super::*;
+
+    fn temp_wallet() -> Wallet {
+        let dir = tempfile::tempdir().unwrap();
+        Wallet::open(dir.path().join("wallet").to_str().unwrap()).unwrap()
+    }
+
+    #[test]
+    fn commit_sync_point_writes_height_positions_and_commitment() {
+        let w = temp_wallet();
+        w.commit_sync_point(4_242, 17, 23, &[7u8; 32]).unwrap();
+
+        assert_eq!(w.sync_height().unwrap(), 4_242);
+        assert_eq!(w.orchard_position().unwrap(), 17);
+        assert_eq!(w.ironwood_position().unwrap(), 23);
+        assert_eq!(w.actions_commitment().unwrap(), [7u8; 32]);
+    }
+
+    // Height and commitment are ONE fact: a transaction that dies partway must
+    // leave the stored pair untouched, not half-updated. Without the
+    // transaction the four inserts were independent, so a kill between them
+    // left a height beside a commitment folded to a different height.
+    #[test]
+    fn aborted_sync_point_transaction_leaves_the_stored_pair_untouched() {
+        let w = temp_wallet();
+        w.commit_sync_point(100, 7, 9, &[1u8; 32]).unwrap();
+
+        let res: sled::transaction::TransactionResult<(), ()> = w.db.transaction(|tx| {
+            tx.insert(SYNC_HEIGHT_KEY, &999u32.to_le_bytes())?;
+            tx.insert(ACTIONS_COMMITMENT_KEY, &[2u8; 32][..])?;
+            Err(sled::transaction::ConflictableTransactionError::Abort(()))
+        });
+        assert!(res.is_err());
+
+        assert_eq!(w.sync_height().unwrap(), 100);
+        assert_eq!(w.orchard_position().unwrap(), 7);
+        assert_eq!(w.ironwood_position().unwrap(), 9);
+        assert_eq!(w.actions_commitment().unwrap(), [1u8; 32]);
     }
 }

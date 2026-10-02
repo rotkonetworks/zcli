@@ -284,15 +284,17 @@ async fn sync_inner(
     let client = ZidecarClient::connect(endpoint).await?;
     let wallet = Wallet::open(&Wallet::default_path())?;
 
+    let stored_height = wallet.sync_height()?;
+    let stored_commitment = wallet.actions_commitment()?;
+
     let start = if let Some(h) = from {
         // --from H means "tree state is known at H", so scan from H+1
         // (the tree state at H already includes block H's actions)
         (h + 1).max(activation)
     } else {
         // sync_height is the last fully processed block, so scan from +1
-        let sh = wallet.sync_height()?;
-        if sh > 0 {
-            (sh + 1).max(activation)
+        if stored_height > 0 {
+            (stored_height + 1).max(activation)
         } else {
             // Never synced — use birth height if set, else activation
             let bh = wallet.birth_height()?;
@@ -303,6 +305,28 @@ async fn sync_inner(
             }
         }
     };
+
+    // A scan can only CONTINUE the stored commitment when it resumes at the
+    // very height that commitment was folded to. `--from` overrides that
+    // height, so a rescan from anywhere else would root the fold at one height
+    // and compare it at another, and the run would die at the end — after
+    // rescanning the whole range. Refuse here, while it is still cheap, and
+    // name the two things that do work.
+    // Under --no-verify the end-of-run comparison is skipped and the proven
+    // commitment adopted instead, so there is nothing to refuse — and that is
+    // exactly the escape hatch the error text below points at.
+    let skip_verify = std::env::var("ZCLI_NO_VERIFY").is_ok();
+    if let (Some(h), false) = (from, skip_verify) {
+        if let Some(msg) = from_rescan_error(
+            h,
+            start,
+            stored_height,
+            stored_commitment != [0u8; 32],
+            activation,
+        ) {
+            return Err(Error::Other(msg));
+        }
+    }
     let (tip, tip_hash) = client.get_tip().await?;
 
     // verify activation block hash against hardcoded anchor
@@ -361,7 +385,14 @@ async fn sync_inner(
         wallet.set_orchard_position(pos)?;
         pos
     } else {
-        let stored = wallet.orchard_position()?;
+        // A scan from activation rebuilds the tree from empty, so a stored
+        // position (from an earlier sync to a later height) would offset every
+        // note it finds. Only `start > activation` resumes a stored tree.
+        let stored = if start > activation {
+            wallet.orchard_position()?
+        } else {
+            0
+        };
         if stored == 0 && start > activation {
             // first sync from birthday — fetch tree state to get correct global position
             let (tree_hex, _) = client.get_tree_state(start - 1).await?;
@@ -386,7 +417,12 @@ async fn sync_inner(
     // 0 until NU6.3 activation; on first sync past activation, seed from the
     // ironwood tree size at start-1 (empty frontier hex → 0).
     let mut ironwood_position = {
-        let stored = wallet.ironwood_position()?;
+        // same reasoning as the orchard counter: from activation, start empty
+        let stored = if start > activation {
+            wallet.ironwood_position()?
+        } else {
+            0
+        };
         if stored == 0 {
             // Ask the chain rather than gating on an activation height. The
             // previous `start > IRONWOOD_ACTIVATION_HEIGHT` gate was wrong on
@@ -481,7 +517,7 @@ async fn sync_inner(
     // running actions commitment chain for verifying block completeness
     // when resuming a partial sync, load the commitment saved at last sync height;
     // it must chain from activation to match the proven value.
-    let saved_actions_commitment = wallet.actions_commitment()?;
+    let saved_actions_commitment = stored_commitment;
     let actions_commitment_available = start <= activation || saved_actions_commitment != [0u8; 32];
     let mut running_actions_commitment = if start > activation {
         saved_actions_commitment
@@ -507,6 +543,9 @@ async fn sync_inner(
     // The scan begins AT `start` (`current = start` below), not after it — the
     // block at `start` is the first one streamed and the first one chained.
     let mut expected_height = start;
+    // Highest block actually folded into the running commitment. Must equal
+    // `tip` before that commitment is stored beside `tip`.
+    let mut last_folded_height: Option<u32> = None;
 
     while current <= tip {
         let end = (current + batch_size - 1).min(tip);
@@ -673,6 +712,7 @@ async fn sync_inner(
                 first_height_gap = Some((expected_height, block.height));
             }
             expected_height = block.height + 1;
+            last_folded_height = Some(block.height);
 
             let actions_root = zync_core::actions::compute_actions_root(&action_tuples);
 
@@ -714,8 +754,24 @@ async fn sync_inner(
         pb.finish_and_clear();
     }
 
+    // The sync point that is about to be stored must describe the chain that
+    // was actually folded. A run whose last batch came back short folds up to
+    // some height below `tip` and would store it AS `tip` — severing the chain
+    // for every later run, with every block this client received still
+    // internally consistent. Refuse before the value can be adopted, including
+    // under ZCLI_NO_VERIFY, which skips the only other check that would notice.
+    if last_folded_height != Some(tip) {
+        return Err(Error::Other(format!(
+            "scan folded blocks up to {} but the proven tip is {}: refusing to \
+             store a sync point the commitment chain does not cover",
+            last_folded_height
+                .map(|h| h.to_string())
+                .unwrap_or_else(|| "none".to_string()),
+            tip
+        )));
+    }
+
     // verify actions commitment chain against proven value
-    let skip_verify = std::env::var("ZCLI_NO_VERIFY").is_ok();
     if skip_verify {
         // when skipping verification (e.g. resync with --from), adopt the proven commitment
         running_actions_commitment = proven_roots.actions_commitment;
@@ -768,10 +824,7 @@ async fn sync_inner(
     for nf in &seen_nullifiers {
         wallet.mark_spent(nf).ok();
     }
-    wallet.set_sync_height(tip)?;
-    wallet.set_orchard_position(position_counter)?;
-    wallet.set_ironwood_position(ironwood_position)?;
-    wallet.set_actions_commitment(&running_actions_commitment)?;
+    wallet.commit_sync_point(tip, position_counter, ironwood_position, &running_actions_commitment)?;
 
     // cache tree frontier at sync height for fast witness building (no binary search).
     // BOTH pools: the two trees are separate, and a witness for an ironwood note
@@ -1069,17 +1122,23 @@ fn explain_commitment_mismatch(
         msg.push_str(
             "\n\nEvery block the server sent is contiguous and its actions root \
              matched what this client computed from its actions. The mismatch is \
-             therefore NOT in the blocks scanned this run: the likely cause is \
-             the commitment saved at the last sync height, which chains in from \
-             before this range. `zcli init sync --full` rebuilds it from \
-             activation.",
+             therefore NOT in the blocks scanned this run: the stored commitment \
+             at the last sync height chains in from before this range and no \
+             longer matches the chain the server proves (a height/commitment pair \
+             knocked out of step by a rewind, or a server whose proof window \
+             moved). Nothing was written, so the stored pair is unchanged and \
+             every run from here fails the same way.",
         );
     }
 
     msg.push_str(
-        "\n\n`zcli init sync --no-verify` skips this check for one run. It does \
-         NOT skip per-note commitment verification, so note values still cannot \
-         be faked; what it gives up is the guarantee that no block was withheld.",
+        "\n\nThe repair is one run of `zcli init sync --no-verify`: it skips \
+         this chain check, adopts the server's proven commitment for the new \
+         tip, and stores it beside the matching height, which restores a \
+         consistent pair that later runs verify normally. It does NOT skip \
+         per-note commitment verification, so note values still cannot be faked; \
+         what it gives up is the guarantee that no block was withheld, for that \
+         one run.",
     );
     msg
 }
@@ -1204,6 +1263,60 @@ async fn verify_nullifiers(
     Ok(())
 }
 
+/// Error text when a `--from` rescan cannot continue the stored commitment
+/// chain, `None` when it can.
+///
+/// A scan continues that chain only when it resumes at the height the
+/// commitment was folded to (`stored_height + 1`) — or when there is no stored
+/// commitment (activation, or a wallet that never verified), in which case the
+/// proven value is adopted instead of chained. Any other `--from` roots the
+/// fold at one height and compares it at another: the run dies at the end,
+/// after rescanning the whole range, which is the expensive failure this check
+/// exists to make cheap.
+fn from_rescan_error(
+    from: u32,
+    start: u32,
+    stored_height: u32,
+    has_stored_commitment: bool,
+    activation: u32,
+) -> Option<String> {
+    let uses_stored = start > activation && has_stored_commitment;
+    if !uses_stored || start == stored_height + 1 {
+        return None;
+    }
+    Some(format!(
+        "--from {} starts the scan at block {} but the stored actions commitment was \
+         folded to height {}: the chain cannot be continued from a different height. \
+         Resume from {} instead (drop --from), or add --no-verify to adopt the \
+         server's proven commitment for this run.",
+        from, start, stored_height, stored_height
+    ))
+}
+
+/// Coverage check for one compact-block response.
+///
+/// A SHORT response is a failure, not a success with fewer blocks: the scan
+/// chains every block it receives and then continues from `end + 1`, so a
+/// stream that stops early folds a prefix while the height it stores claims
+/// the requested tip. Nothing downstream can tell — the gap check only
+/// compares a block against its neighbour, and a missing tail has no
+/// neighbour. Returns the received span for the error message.
+fn response_covers(
+    blocks: &[crate::client::CompactBlock],
+    start: u32,
+    end: u32,
+) -> Result<(), String> {
+    let got = match (blocks.first(), blocks.last()) {
+        (Some(f), Some(l)) => (f.height, l.height),
+        _ => return Err("no blocks".to_string()),
+    };
+    if got.0 == start && got.1 == end {
+        Ok(())
+    } else {
+        Err(format!("{}..{}", got.0, got.1))
+    }
+}
+
 /// retry compact block fetch with backoff (grpc-web streams are flaky)
 async fn retry_compact_blocks(
     client: &ZidecarClient,
@@ -1213,7 +1326,24 @@ async fn retry_compact_blocks(
     let mut attempts = 0;
     loop {
         match client.get_compact_blocks(start, end).await {
-            Ok(blocks) => return Ok(blocks),
+            Ok(blocks) => match response_covers(&blocks, start, end) {
+                Ok(()) => return Ok(blocks),
+                Err(got) => {
+                    attempts += 1;
+                    if attempts >= 3 {
+                        return Err(Error::Other(format!(
+                            "server returned blocks {} for the requested range {}..{} — \
+                             refusing to fold a partial range",
+                            got, start, end
+                        )));
+                    }
+                    eprintln!(
+                        "  retry {}/3 for {}..{}: short response, got {}",
+                        attempts, start, end, got
+                    );
+                    tokio::time::sleep(std::time::Duration::from_millis(500 * attempts)).await;
+                }
+            },
             Err(e) => {
                 attempts += 1;
                 if attempts >= 3 {
@@ -1480,5 +1610,66 @@ mod work_model_tests {
             "sapling sandblast region must contribute sapling outputs"
         );
         assert_eq!(m.done(tip, u64::MAX, u64::MAX), m.total);
+    }
+}
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+
+    fn blk(height: u32) -> crate::client::CompactBlock {
+        crate::client::CompactBlock {
+            height,
+            hash: vec![height as u8; 32],
+            actions: Vec::new(),
+            actions_root: [0u8; 32],
+            ironwood_actions: Vec::new(),
+        }
+    }
+
+    // A `--from` that cannot chain is refused here rather than after a rescan.
+    #[test]
+    fn from_rescan_is_refused_unless_it_resumes_the_stored_height() {
+        const ACT: u32 = 1_687_104;
+        const STORED: u32 = 3_500_000;
+
+        // resumes exactly where the commitment was folded to
+        assert!(from_rescan_error(STORED, STORED + 1, STORED, true, ACT).is_none());
+
+        // one block further on: the fold would start at STORED + 2 while the
+        // stored chain ends at STORED, and the run would die after the rescan
+        let msg = from_rescan_error(STORED + 1, STORED + 2, STORED, true, ACT).unwrap();
+        assert!(msg.contains("folded to height 3500000"), "{}", msg);
+        assert!(msg.contains("Resume from 3500000"), "{}", msg);
+
+        // no stored commitment to continue (fresh wallet / pre-0.5.1)
+        assert!(from_rescan_error(STORED + 1, STORED + 2, STORED, false, ACT).is_none());
+
+        // scan starts at activation: the fold is rooted at zero, not at the
+        // stored chain, so any --from below activation is folded from scratch
+        assert!(from_rescan_error(ACT - 1, ACT, STORED, true, ACT).is_none());
+    }
+
+    // A short response is a failed fetch, not a smaller success: the scan
+    // continues from the requested `end`, so a stream that stopped early folds
+    // a prefix while the stored height claims the tip.
+    #[test]
+    fn response_covers_demands_the_whole_requested_range() {
+        let full: Vec<_> = (10..=12).map(blk).collect();
+        assert!(response_covers(&full, 10, 12).is_ok());
+
+        let short_tail: Vec<_> = (10..=11).map(blk).collect();
+        assert_eq!(
+            response_covers(&short_tail, 10, 12),
+            Err("10..11".to_string())
+        );
+
+        let short_head: Vec<_> = (11..=12).map(blk).collect();
+        assert_eq!(
+            response_covers(&short_head, 10, 12),
+            Err("11..12".to_string())
+        );
+
+        assert_eq!(response_covers(&[], 10, 12), Err("no blocks".to_string()));
     }
 }

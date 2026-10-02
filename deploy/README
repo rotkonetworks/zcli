@@ -50,3 +50,18 @@ gRPC by zafu and by agents; wiring the CLI through it is not done.
     cp zclid.service /etc/systemd/user/
     systemctl enable --now zidecar
     systemctl --user enable --now zclid
+
+`zclid.service` is a USER unit and must stay one: it holds a spending key and
+everything it touches is under `%h`. The template hardcodes
+`/usr/local/bin/zclid` because that is where a package would put it; installing
+per-user instead (no root) means pointing ExecStart at the real path, e.g.
+`%h/.cargo/bin/zclid` after `cargo install --path bin/zclid`, and relaxing
+`ProtectSystem=strict` to `ReadWritePaths=%h/.zcli` — the hardening otherwise
+applies unchanged. Requirements
+for "always in sync": the user manager must run when you are logged out —
+
+    loginctl show-user "$USER" -p Linger     # want Linger=yes
+
+and the wallet is single-process (sled), so the daemon and interactive `zcli`
+contend for it; `Wallet::open` waits ~11s for a peer, and a long catch-up run
+holds the lock until it finishes (see the zclid section of ../README.md).

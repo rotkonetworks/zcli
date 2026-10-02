@@ -33,15 +33,57 @@ progress bar, a seed phrase written on paper. zcli assumes a process.
 - **`--dry-run` on the money paths.** Build, select notes, compute the ZIP-317
   fee, and prove the transaction without broadcasting it. Proving is the
   expensive and failure-prone step, so this exercises the real path.
-- **A daemon, not a cold start.** `zclid` keeps the wallet synced and answers
-  queries instantly over a unix socket or an authenticated TCP port.
+- **A daemon, not a cold start.** `zclid` keeps the wallet at the chain tip and
+  answers queries instantly over a unix socket or an authenticated TCP port.
 
 ## zclid — the daemon agents talk to
 
 `zcli` is a one-shot process: it opens the wallet, syncs what it must, does one
 thing, exits. That is the wrong shape for an agent that asks about its balance
-every few seconds. `zclid` keeps the wallet open and synced, polls the mempool,
-and serves the wallet as a gRPC service.
+every few seconds. `zclid` keeps the wallet synced, polls the mempool, and
+serves the wallet as a gRPC service.
+
+The wallet db is sled, which takes an exclusive lock on the directory: **one
+process at a time**, daemon and CLI included. `zclid` does not hold it
+permanently — it opens the wallet per sync and per request and drops it again —
+so in steady state the lock is held for a couple of seconds every
+`--sync-interval`. `Wallet::open` waits up to ~11s (200ms..2s backoff) for a
+peer to release it, so the CLI and a running daemon coexist without lock
+errors. A *catch-up* sync (wallet months behind, or a cold `--from`) holds the
+lock for the whole run, minutes at a time: CLI commands fail then. Either wait
+for the daemon to reach the tip, or stop it (`systemctl --user stop zclid`) and
+run the catch-up from the CLI.
+
+A failed sync is retried with a doubling delay (30s, 60s, … capped at ten
+minutes) instead of on the fixed `--sync-interval`. That matters because the
+expensive failures are not transient: a wallet whose stored actions commitment
+no longer matches the chain the server proves fails *after* a full rescan every
+time, so a fixed-interval retry would scan back to back and hold the wallet
+lock almost continuously. The failure log names the repair — one
+`zcli init sync --no-verify` run, which adopts the server's proven commitment
+and stores it beside the matching height; runs after that verify normally.
+
+Three checks keep that state from being corrupted in the first place, because
+each of them was a way for a wallet to end up permanently unverifiable:
+
+* a compact-block response that does not cover the requested range is treated
+  as a *failed* fetch and retried, not as a smaller success — the scan chains
+  every block it receives and then continues from the requested end, so a
+  truncated stream folds a prefix while the height stored beside it claims the
+  tip;
+* the scan refuses to store a sync point unless the last block it folded is
+  the proven tip (this also catches the truncation that slips through, and it
+  fires before `--no-verify` can adopt the value past it);
+* height, both tree positions and the commitment are written in ONE sled
+  transaction. They are one fact — the commitment is only meaningful as the
+  fold up to that height — and four separate inserts let a kill in between
+  leave a height beside a commitment from another height, which then reads as
+  server tampering on every later run.
+
+If the mismatch survives the `--no-verify` repair, the server no longer proves
+the chain *below* the stored height either — a reorganisation below it, or a
+rebuilt proof window. Adoption cannot fix that; the wallet has to be re-synced
+from a height both sides still agree on (`--from`), or rebuilt.
 
 ```sh
 zclid -i ~/.ssh/id_ed25519                       # unix socket only
