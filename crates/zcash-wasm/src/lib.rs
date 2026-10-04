@@ -153,6 +153,17 @@ fn resolve_branch_id(branch_id_hex: Option<&str>) -> Result<u32, String> {
     })
 }
 
+/// Whether `branch_id` is an upgrade with the ironwood pool: NU6.3 and NU7
+/// both run Orchard protocol revision V3. An unknown branch id is `false`
+/// (fail closed).
+pub fn ironwood_active(branch_id: u32) -> bool {
+    use zcash_protocol::consensus::{BranchId, OrchardProtocolRevision};
+    BranchId::try_from(branch_id)
+        .ok()
+        .and_then(|b| b.orchard_protocol_revision())
+        == Some(OrchardProtocolRevision::V3)
+}
+
 /// FAIL-CLOSED gate for the legacy ORCHARD *spend* builders (the z→z / z→t
 /// paths that build a V5 orchard bundle with `BundleProtocol::OrchardPreNu6_2`).
 ///
@@ -162,7 +173,7 @@ fn resolve_branch_id(branch_id_hex: Option<&str>) -> Result<u32, String> {
 /// on the live branch id, which is the only NU6.3 signal these builders receive
 /// (they take no target height).
 fn guard_orchard_spend_allowed(branch_id: u32) -> Result<(), String> {
-    if branch_id == NU6_3_BRANCH_ID {
+    if ironwood_active(branch_id) {
         return Err(format!(
             "orchard spends are disabled at NU6.3 (live consensus branch id \
              {:#010x}): an orchard bundle built now is rejected by the network. \
@@ -247,7 +258,7 @@ fn orchard_protocol_for_branch(
 ) -> orchard::bundle::BundleVersion {
     use zcash_protocol::consensus::BranchId;
     match branch {
-        BranchId::Nu6_3 => orchard::bundle::BundleVersion::orchard_v3(),
+        BranchId::Nu6_3 | BranchId::Nu7 => orchard::bundle::BundleVersion::orchard_v3(),
         BranchId::Nu6_2 => orchard::bundle::BundleVersion::orchard_v2(),
         _ => orchard::bundle::BundleVersion::orchard_insecure_v1(),
     }
@@ -3778,7 +3789,7 @@ pub fn build_unsigned_pczt(
             BranchId::for_height(&TestNetwork, BlockHeight::from(target_height))
         }
         .into();
-        if branch_id == NU6_3_BRANCH_ID {
+        if ironwood_active(branch_id) {
             return Err(JsError::new(
                 "orchard-V5 output creation is consensus-dead post-NU6.3 (the \
                  orchard pool is spend/migrate-only; no new orchard outputs) - \
@@ -4950,11 +4961,11 @@ where
             NU6_3_PLACEHOLDER_BRANCH_ID, target_height
         ));
     }
-    if bound_branch_id != NU6_3_BRANCH_ID {
+    if !ironwood_active(bound_branch_id) {
         return Err(format!(
             "refusing to build ironwood send: branch id that would bind at height \
-             {} is {:#010x} but ironwood spends require the NU6.3 branch id \
-             {:#010x} (NU6.3 not active at this height)",
+             {} is {:#010x} but ironwood spends require NU6.3 ({:#010x}) or later \
+             (no ironwood pool at this height)",
             target_height, bound_branch_id, NU6_3_BRANCH_ID
         ));
     }
@@ -6892,10 +6903,10 @@ fn guard_orchard_shielding_allowed(
     // Independent of the height the caller supplied: if the live consensus
     // branch id is already NU6.3, the chain has activated and orchard outputs
     // are disabled no matter what height was passed in.
-    if parse_branch_id(branch_id_hex.unwrap_or("")) == Some(NU6_3_BRANCH_ID) {
+    if parse_branch_id(branch_id_hex.unwrap_or("")).is_some_and(ironwood_active) {
         return Err(
-            "orchard shielding is disabled at NU6.3: the supplied consensus branch \
-             id is 0x37a5165b (Ironwood is active), so an orchard output would be \
+            "orchard shielding is disabled from NU6.3 on: the supplied consensus \
+             branch id has the ironwood pool (Ironwood is active), so an orchard output would be \
              unspendable and would need a turnstile migration - use \
              build_unsigned_shielding_transaction_ironwood to shield into the ironwood pool"
                 .to_string(),
@@ -7138,11 +7149,11 @@ where
             NU6_3_PLACEHOLDER_BRANCH_ID, target_height
         ));
     }
-    if bound_branch_id != NU6_3_BRANCH_ID {
+    if !ironwood_active(bound_branch_id) {
         return Err(format!(
             "refusing to build ironwood shielding: branch id that would bind at \
-             height {} is {:#010x} but ironwood outputs require the NU6.3 branch \
-             id {:#010x} (NU6.3 not active at this height)",
+             height {} is {:#010x} but ironwood outputs require NU6.3 ({:#010x}) \
+             or later (no ironwood pool at this height)",
             target_height, bound_branch_id, NU6_3_BRANCH_ID
         ));
     }

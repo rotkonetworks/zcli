@@ -268,7 +268,7 @@ pub(crate) fn guard_pre_nu6_2_orchard_builder_allowed(
     } else {
         NU6_3_ACTIVATION_HEIGHT_TESTNET
     };
-    if anchor_height >= activation || branch_id == NU6_3_BRANCH_ID {
+    if anchor_height >= activation || zafu_wasm::ironwood_active(branch_id) {
         return Err(Error::Transaction(format!(
             "this builder cannot produce a valid transaction at NU6.3 \
              (activation height {}, chain height {}, branch id {:#010x}): it \
@@ -322,10 +322,10 @@ pub fn build_ironwood_shielding_tx(
 
     // FAIL CLOSED before proving: a V6 ironwood tx is only a valid shape once
     // NU6.3 is live, and proving first would waste minutes to learn that.
-    if branch_id != NU6_3_BRANCH_ID {
+    if !zafu_wasm::ironwood_active(branch_id) {
         return Err(Error::Transaction(format!(
-            "ironwood shielding requires the NU6.3 consensus branch id \
-             {:#010x}, but the node reports {:#010x}",
+            "ironwood shielding requires NU6.3 ({:#010x}) or later, but the node \
+             reports {:#010x}",
             NU6_3_BRANCH_ID, branch_id
         )));
     }

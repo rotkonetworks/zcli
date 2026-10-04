@@ -185,11 +185,11 @@ pub async fn send_ironwood(
     // The shared builder re-checks this, but an ironwood spend is only a valid
     // shape once NU6.3 is actually active, so refuse early and by name.
     let branch_id = client.resolve_branch_id().await?;
-    if branch_id != NU6_3_BRANCH_ID {
+    if !zafu_wasm::ironwood_active(branch_id) {
         return Err(Error::Transaction(format!(
             "refusing to build an ironwood send: the node reports consensus branch \
-             id {:#010x}, but an ironwood spend is a V6 (NU6.3) transaction and is \
-             only valid under {:#010x}. NU6.3 is not active on the chain this node \
+             id {:#010x}, but an ironwood spend is a V6 transaction, valid from \
+             NU6.3 ({:#010x}) on. NU6.3 is not active on the chain this node \
              follows.",
             branch_id, NU6_3_BRANCH_ID
         )));

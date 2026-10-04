@@ -235,7 +235,7 @@ fn refuses_a_pre_nu6_3_target_height() {
     )
     .expect_err("must refuse to build before NU6.3 activation");
     assert!(
-        err.contains("NU6.3 not active"),
+        err.contains("no ironwood pool"),
         "unexpected pre-activation error: {err}"
     );
 }
