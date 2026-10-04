@@ -72,7 +72,8 @@ pub use crate::vote::VanWitness;
 pub struct DelegationSubmissionWire {
     pub rk: String,
     pub spend_auth_sig: String,
-    pub sighash: String,
+    /// Base64-encoded versioned Ironwood TX1 effecting data.
+    pub tx1_effects: String,
     #[serde(rename = "signed_note_nullifier")]
     pub nf_signed: String,
     pub cmx_new: String,
@@ -99,6 +100,8 @@ pub struct VoteCommitmentWire {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VoteShareWire {
+    /// Voting round ID as 32 bytes encoded in lowercase hex.
+    pub vote_round_id: String,
     pub shares_hash: String,
     pub proposal_id: u32,
     pub vote_decision: u32,
@@ -107,8 +110,6 @@ pub struct VoteShareWire {
     pub share_index: u32,
     #[serde(rename = "tree_position")]
     pub vc_tree_position: u64,
-    #[serde(rename = "all_enc_shares")]
-    pub all_encrypted_shares: Vec<WireEncryptedShare>,
     pub share_comms: Vec<String>,
     pub primary_blind: String,
     pub submit_at: u64,

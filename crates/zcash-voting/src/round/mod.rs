@@ -520,7 +520,7 @@ fn round_eligible_weight(
     Ok(total.map(|v| v as u64))
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "native"))]
 mod tests {
     use super::*;
 

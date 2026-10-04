@@ -182,7 +182,7 @@ impl ImtProofDto {
 /// Opaque context round-tripped from `build_delegation_pczt` into
 /// `finalize_delegation`. The host must NOT edit it; it carries the proof inputs
 /// (notes, alpha, van_comm_rand, padding secrets) and the PCZT-derived wire
-/// fields (rk, nf_signed, cmx_new, van, gov_nullifiers, sighash).
+/// fields (rk, nf_signed, cmx_new, van, gov_nullifiers, sighash, tx1_effects).
 #[derive(Serialize, Deserialize)]
 struct DelegationContext {
     network: String,
@@ -203,6 +203,9 @@ struct DelegationContext {
     van_hex: String,
     gov_nullifiers_hex: Vec<String>,
     pczt_sighash_hex: String,
+    /// Versioned Ironwood TX1 effecting data; the chain rebuilds the signed
+    /// digest from this, so it replaces `sighash` on the wire.
+    tx1_effects_hex: String,
     action_index: usize,
 }
 
@@ -290,10 +293,11 @@ pub fn build_delegation_pczt(
         "address_index": address_index,
         "total_note_value": artifact.total_note_value,
         "gov_comm_rand_hex": hex::encode(&g.van_comm_rand),
-        // Initial per-bundle authority: all 16 bits set (bit 0 is the dead
-        // sentinel). The host clears bit `proposal_id` for each vote it later
-        // submits in this bundle before the next cast.
-        "proposal_authority": 65535u64,
+        // Initial per-bundle authority: the delegation circuit's full mask
+        // (bit 0 reserved, bits 1..=50 usable). `cast_vote_hot_wire` returns
+        // the cleared mask for the next cast as `next_delegation_state_json`;
+        // the host stores that and never does this 51-bit arithmetic in JS.
+        "proposal_authority": zcash_voting::MAX_PROPOSAL_AUTHORITY,
         "bundle_index": bundle_index,
     });
 
@@ -314,6 +318,7 @@ pub fn build_delegation_pczt(
         van_hex: hex::encode(&g.van),
         gov_nullifiers_hex,
         pczt_sighash_hex: hex::encode(&g.pczt_sighash),
+        tx1_effects_hex: hex::encode(&g.tx1_effects),
         action_index: g.action_index,
     };
     let context_json = serde_json::to_string(&context)
@@ -368,9 +373,21 @@ pub fn finalize_delegation(
         ));
     }
     let spend_auth_sig = hx(spend_auth_sig_hex, "spend_auth_sig")?;
-    if spend_auth_sig.len() != 64 {
-        return Err(JsError::new("spend_auth_sig must be 64 bytes"));
+    let sig64: [u8; 64] = spend_auth_sig
+        .as_slice()
+        .try_into()
+        .map_err(|_| JsError::new("spend_auth_sig must be 64 bytes"))?;
+    // The chain checks this signature under `rk` against the digest it
+    // rebuilds from tx1_effects; check both here so a bad signer result fails
+    // before the minute-long proof instead of at submission.
+    let tx1_effects = hx(&ctx.tx1_effects_hex, "tx1_effects")?;
+    let tx1_sighash = zcash_voting::tx1::sighash(&tx1_effects)
+        .map_err(|e| JsError::new(&format!("tx1_effects: {e}")))?;
+    if tx1_sighash != sighash {
+        return Err(JsError::new("sighash does not match the vote chain's TX1 digest"));
     }
+    zcash_voting::wasm_delegation::verify_spend_auth_sig(&hx(&ctx.rk_hex, "rk")?, &sighash, &sig64)
+        .map_err(|e| JsError::new(&format!("spend_auth_sig: {e}")))?;
 
     let notes = ctx
         .notes
@@ -465,7 +482,7 @@ pub fn finalize_delegation(
     let wire = serde_json::json!({
         "rk": b64(&hx(&ctx.rk_hex, "rk")?),
         "spend_auth_sig": b64(&spend_auth_sig),
-        "sighash": b64(&sighash),
+        "tx1_effects": b64(&hx(&ctx.tx1_effects_hex, "tx1_effects")?),
         "signed_note_nullifier": b64(&hx(&ctx.nf_signed_hex, "nf_signed")?),
         "cmx_new": b64(&hx(&ctx.cmx_new_hex, "cmx_new")?),
         "van_cmx": b64(&hx(&ctx.van_hex, "van")?),

@@ -20,6 +20,11 @@ mod voting_delegation;
 #[cfg(target_arch = "wasm32")]
 mod voting_pir;
 
+/// Native end-to-end run of these bindings against a local vote chain
+/// (ignored by default; see the module docs).
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod local_chain_e2e;
+
 use wasm_bindgen::prelude::*;
 
 /// Rayon thread-pool bootstrap, exported as `initThreadPool` (wasm-bindgen-rayon's
