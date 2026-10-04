@@ -10220,6 +10220,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "zakura-orchard",
+ "zcash_history",
  "zync-core",
 ]
 

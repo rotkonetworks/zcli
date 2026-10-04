@@ -713,6 +713,60 @@ impl Storage {
         }
     }
 
+    // FlyClient history tree. One leaf per block ('H' + height: serialized
+    // ZIP-221 node) and the block's ZIP-244 auth data root ('D' + height),
+    // which opens its hashBlockCommitments for clients.
+
+    fn history_key(prefix: u8, height: u32) -> [u8; 5] {
+        let mut key = [prefix, 0, 0, 0, 0];
+        // big-endian so sled iterates leaves in height order
+        key[1..].copy_from_slice(&height.to_be_bytes());
+        key
+    }
+
+    pub fn store_history_leaf(&self, height: u32, node: &[u8], adr: &[u8; 32]) -> Result<()> {
+        let map = |e: sled::Error| ZidecarError::Storage(format!("sled: {}", e));
+        self.sled.insert(Self::history_key(b'H', height), node).map_err(map)?;
+        self.sled.insert(Self::history_key(b'D', height), &adr[..]).map_err(map)?;
+        Ok(())
+    }
+
+    pub fn get_history_leaf(&self, height: u32) -> Result<Option<Vec<u8>>> {
+        self.sled
+            .get(Self::history_key(b'H', height))
+            .map(|v| v.map(|b| b.to_vec()))
+            .map_err(|e| ZidecarError::Storage(format!("sled: {}", e)))
+    }
+
+    pub fn get_auth_data_root(&self, height: u32) -> Result<Option<[u8; 32]>> {
+        match self.sled.get(Self::history_key(b'D', height)) {
+            Ok(Some(b)) if b.len() == 32 => {
+                let mut out = [0u8; 32];
+                out.copy_from_slice(&b);
+                Ok(Some(out))
+            }
+            Ok(_) => Ok(None),
+            Err(e) => Err(ZidecarError::Storage(format!("sled: {}", e))),
+        }
+    }
+
+    /// Forget history leaves at and above `height` (a reorg).
+    pub fn delete_history_from(&self, height: u32) -> Result<()> {
+        let map = |e: sled::Error| ZidecarError::Storage(format!("sled: {}", e));
+        for prefix in [b'H', b'D'] {
+            let keys: Vec<_> = self
+                .sled
+                .range(Self::history_key(prefix, height)..=Self::history_key(prefix, u32::MAX))
+                .keys()
+                .collect::<std::result::Result<_, _>>()
+                .map_err(map)?;
+            for k in keys {
+                self.sled.remove(k).map_err(map)?;
+            }
+        }
+        Ok(())
+    }
+
     // ===== ACTION COUNT TRACKING =====
 
     /// increment total action count and return new total

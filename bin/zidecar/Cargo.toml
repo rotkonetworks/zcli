@@ -41,6 +41,9 @@ prost-types = "0.13"
 orchard = { package = "zakura-orchard", version = "=1.0.0", default-features = false }
 incrementalmerkletree = { version = "0.8", features = ["legacy-api"] }
 
+# ZIP-221 history tree node types for the FlyClient index (see history.rs)
+zcash_history = "0.6"
+
 # http client for zebrad RPC
 reqwest = { version = "0.11", default-features = false, features = ["json", "rustls-tls"] }
 serde_json = "1.0"

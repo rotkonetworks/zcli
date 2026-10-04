@@ -235,6 +235,17 @@ impl ZebradClient {
         serde_json::from_value(result).map_err(|e| ZidecarError::ZebradRpc(e.to_string()))
     }
 
+    /// Serialized block header (getblockheader <hash> false): the 1487 bytes
+    /// miners hashed, for FlyClient proofs and the history tree's leaves.
+    pub async fn get_block_header_raw(&self, hash: &str) -> Result<Vec<u8>> {
+        let result = self
+            .call("getblockheader", vec![json!(hash), json!(false)])
+            .await?;
+        let hex_str: String =
+            serde_json::from_value(result).map_err(|e| ZidecarError::ZebradRpc(e.to_string()))?;
+        hex::decode(hex_str).map_err(|e| ZidecarError::ZebradRpc(format!("header hex: {e}")))
+    }
+
     pub async fn get_block_header(&self, hash: &str) -> Result<BlockHeader> {
         let block = self.get_block(hash, 1).await?;
         Ok(BlockHeader {
@@ -397,6 +408,10 @@ pub struct BlockVerbose {
     pub hash: String,
     pub height: u32,
     pub tx: Vec<RawTransaction>,
+    /// Sapling note commitment tree root after this block. Zebra prints it
+    /// byte-reversed (display order).
+    #[serde(default)]
+    pub finalsaplingroot: Option<String>,
 }
 
 /// Sapling shielded spend
@@ -459,6 +474,9 @@ pub struct RawTransaction {
     /// Orchard-shaped JSON object for it, so the same struct deserializes both.
     #[serde(default)]
     pub ironwood: Option<OrchardData>,
+    /// ZIP-244 auth digest, display order; absent for pre-v5 transactions.
+    #[serde(default)]
+    pub authdigest: Option<String>,
 }
 
 /// Sapling shielded output (vShieldedOutput entry)

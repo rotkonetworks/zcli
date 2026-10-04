@@ -437,6 +437,7 @@ mod tests {
                     out_ciphertext: filler.clone(),
                 }],
             }),
+            authdigest: None,
         };
 
         let txid_bytes = vec![0xde; 32];
@@ -496,6 +497,7 @@ mod tests {
             sapling_outputs: None,
             orchard: None,
             ironwood: None,
+            authdigest: None,
         };
         let mut a = Vec::new();
         let mut s = Vec::new();

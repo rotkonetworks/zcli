@@ -15,6 +15,7 @@ mod epoch;
 mod error;
 mod grpc_service;
 mod header_chain;
+mod history;
 mod lwd_service;
 mod middleware;
 mod orchard_tree;
@@ -103,6 +104,14 @@ struct Args {
     /// chains that activate NU6.3 at a custom height.
     #[arg(long)]
     ironwood_activation: Option<u32>,
+
+    /// OPT-IN (with --zidecar-rpc): index the ZIP-221 history tree and serve
+    /// FlyClient proofs (GetFlyClientProof), anchored at the NU6.3 (`nu6.3`)
+    /// or NU5 (`nu5`) activation block. Mainnet only: the anchors are
+    /// mainnet block hashes. `nu6.3` indexes the current epoch only; `nu5`
+    /// indexes ~1.7M blocks and keeps every epoch's tree in memory.
+    #[arg(long, value_parser = ["nu6.3", "nu5"])]
+    flyclient: Option<String>,
 }
 
 #[tokio::main]
@@ -319,6 +328,28 @@ async fn main() -> Result<()> {
              + ironwood sync: running"
         );
 
+        let history = match args.flyclient.as_deref() {
+            None => None,
+            Some(_) if args.testnet => {
+                warn!("--flyclient: anchors are mainnet blocks; not starting on testnet");
+                None
+            }
+            Some(which) => {
+                use zync_core::flyclient::{Anchor, Network};
+                let anchor = if which == "nu5" {
+                    Anchor::nu5_mainnet()
+                } else {
+                    Anchor::nu6_3_mainnet()
+                };
+                let index = Arc::new(history::HistoryIndex::new(Network::Mainnet, anchor)?);
+                let (z, st, rx) = (zebrad.clone(), storage_arc.clone(), shutdown_rx.clone());
+                let runner = index.clone();
+                tokio::spawn(async move { runner.run(z, st, rx).await });
+                info!("  flyclient history index: running (anchor {})", anchor.height);
+                Some(index)
+            }
+        };
+
         let mempool_cache_ttl = std::time::Duration::from_secs(args.mempool_cache_ttl);
         if args.mempool_cache_ttl > 0 {
             info!("mempool cache: {}s TTL", args.mempool_cache_ttl);
@@ -329,6 +360,7 @@ async fn main() -> Result<()> {
             epoch_manager,
             args.start_height,
             mempool_cache_ttl,
+            history,
         );
         let zidecar_server =
             zidecar::zidecar_server::ZidecarServer::with_interceptor(service, auth.clone());

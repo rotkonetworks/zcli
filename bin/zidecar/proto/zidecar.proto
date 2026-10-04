@@ -86,6 +86,11 @@ service Zidecar {
     // Get pro subscriber ring for anonymous membership proofs (Ring VRF)
     // Rotates daily. Extension proves "I belong" without revealing identity.
     rpc GetProRing(Empty) returns (ProRing);
+
+    // FlyClient proof over the ZIP-221 chain history tree, from the anchor
+    // epoch up to the tip (see zync_core::flyclient). Opt-in on the server
+    // (--flyclient); UNIMPLEMENTED/UNAVAILABLE when it is off.
+    rpc GetFlyClientProof(FlyClientProofRequest) returns (FlyClientProofResponse);
 }
 
 // Request proof for height range
@@ -549,4 +554,39 @@ message ProRing {
     string context = 4;
     // number of keys in the ring
     uint32 ring_size = 5;
+}
+
+// ===== FLYCLIENT (ZIP-221) =====
+
+// Both sides must use the same parameters: they decide which blocks the
+// proof opens. 0 means the default (lambda 40, tail 16).
+message FlyClientProofRequest {
+    uint32 lambda = 1;
+    uint32 tail = 2;
+}
+
+// One opened block: its header, its history-tree leaf, and the siblings from
+// the leaf up to its peak.
+message FlyLeaf {
+    uint64 index = 1;
+    bytes header = 2;
+    bytes leaf = 3;
+    repeated bytes path = 4;
+}
+
+// One epoch's tree as committed by commit_header (height activation + n_leaves).
+message FlyEpoch {
+    uint32 activation = 1;
+    uint32 branch_id = 2;
+    uint64 n_leaves = 3;
+    bytes commit_header = 4;
+    bytes auth_data_root = 5;   // empty for Heartwood/Canopy epochs
+    repeated bytes peaks = 6;
+    repeated FlyLeaf leaves = 7;
+}
+
+// Epochs newest first; the last one starts at the server's anchor.
+message FlyClientProofResponse {
+    repeated FlyEpoch epochs = 1;
+    uint32 anchor_height = 2;
 }

@@ -1,6 +1,7 @@
 //! gRPC service implementation
 
 mod blocks;
+mod flyclient;
 mod nomt;
 mod proofs;
 mod sync;
@@ -13,6 +14,7 @@ use crate::{
         zidecar_server::Zidecar, BlockId, BlockRange, BlockTransactions, CommitmentProof,
         CommitmentQuery, CompactBlock as ProtoCompactBlock, Empty,
         EpochBoundary as ProtoEpochBoundary, EpochBoundaryList, EpochRangeRequest, EpochRequest,
+        FlyClientProofRequest, FlyClientProofResponse,
         FrostCheckpoint as ProtoFrostCheckpoint, GetCommitmentProofsRequest,
         GetCommitmentProofsResponse, GetNullifierProofsRequest, GetNullifierProofsResponse,
         HeaderProof, LicenseRequest, LicenseResponse, NullifierProof, NullifierQuery, ProRing,
@@ -44,6 +46,8 @@ pub struct ZidecarService {
     pub(crate) mempool_cache: Arc<RwLock<Option<MempoolCache>>>,
     pub(crate) mempool_cache_ttl: Duration,
     pub(crate) ring_vrf: Arc<RingVrfManager>,
+    /// FlyClient history index; `None` unless started with --flyclient.
+    pub(crate) history: Option<Arc<crate::history::HistoryIndex>>,
 }
 
 impl ZidecarService {
@@ -53,6 +57,7 @@ impl ZidecarService {
         epoch_manager: Arc<EpochManager>,
         start_height: u32,
         mempool_cache_ttl: Duration,
+        history: Option<Arc<crate::history::HistoryIndex>>,
     ) -> Self {
         let license_url =
             std::env::var("ZCLI_LICENSE_URL").unwrap_or_else(|_| "http://127.0.0.1:3334".into());
@@ -64,6 +69,7 @@ impl ZidecarService {
             mempool_cache: Arc::new(RwLock::new(None)),
             mempool_cache_ttl,
             ring_vrf: Arc::new(RingVrfManager::new(license_url)),
+            history,
         }
     }
 }
@@ -97,6 +103,13 @@ impl Zidecar for ZidecarService {
         request: Request<ProofRequest>,
     ) -> std::result::Result<Response<HeaderProof>, Status> {
         self.handle_get_header_proof(request).await
+    }
+
+    async fn get_fly_client_proof(
+        &self,
+        request: Request<FlyClientProofRequest>,
+    ) -> std::result::Result<Response<FlyClientProofResponse>, Status> {
+        self.handle_get_flyclient_proof(request).await
     }
 
     async fn get_trustless_state_proof(
