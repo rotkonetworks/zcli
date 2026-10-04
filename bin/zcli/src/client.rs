@@ -692,6 +692,64 @@ impl ZidecarClient {
         Ok((resp.ligerito_proof, resp.from_height, resp.to_height))
     }
 
+    /// FlyClient proof over the ZIP-221 history tree, and the anchor height
+    /// the server built it from. `Ok(None)` when the server does not serve
+    /// FlyClient proofs (gRPC UNIMPLEMENTED).
+    pub async fn get_flyclient_proof(
+        &self,
+        params: &zync_core::flyclient::FlyParams,
+    ) -> Result<Option<(zync_core::flyclient::FlyClientProof, u32)>, Error> {
+        use zync_core::flyclient::{EpochProof, FlyClientProof, LeafProof};
+        let resp: zidecar_proto::FlyClientProofResponse = match self
+            .call_unary(
+                "zidecar.v1.Zidecar/GetFlyClientProof",
+                &zidecar_proto::FlyClientProofRequest {
+                    lambda: params.lambda,
+                    tail: params.tail,
+                },
+            )
+            .await
+        {
+            Ok(r) => r,
+            Err(Error::Network(m)) if m.contains("grpc status 12") => return Ok(None),
+            Err(e) => return Err(e),
+        };
+        let epochs = resp
+            .epochs
+            .into_iter()
+            .map(|e| {
+                let auth_data_root = match e.auth_data_root.len() {
+                    0 => None,
+                    32 => Some(e.auth_data_root.as_slice().try_into().expect("32 bytes")),
+                    n => {
+                        return Err(Error::Network(format!(
+                            "flyclient: auth data root is {n} bytes"
+                        )))
+                    }
+                };
+                Ok(EpochProof {
+                    activation: e.activation,
+                    branch_id: e.branch_id,
+                    n_leaves: e.n_leaves,
+                    commit_header: e.commit_header,
+                    auth_data_root,
+                    peaks: e.peaks,
+                    leaves: e
+                        .leaves
+                        .into_iter()
+                        .map(|l| LeafProof {
+                            index: l.index,
+                            header: l.header,
+                            leaf: l.leaf,
+                            path: l.path,
+                        })
+                        .collect(),
+                })
+            })
+            .collect::<Result<Vec<_>, Error>>()?;
+        Ok(Some((FlyClientProof { epochs }, resp.anchor_height)))
+    }
+
     pub async fn get_commitment_proofs(
         &self,
         cmxs: Vec<Vec<u8>>,

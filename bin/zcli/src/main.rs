@@ -737,6 +737,9 @@ async fn cmd_verify(cli: &Cli, mainnet: bool) -> Result<(), Error> {
         eprintln!("   proof freshness: {} blocks behind tip", staleness);
     }
 
+    // step 5: FlyClient over the ZIP-221 history tree
+    let fly = verify_flyclient_step(cli, &zidecar, mainnet, tip, &tip_hash).await?;
+
     if !cli.json {
         eprintln!();
         eprintln!("all checks passed");
@@ -760,11 +763,103 @@ async fn cmd_verify(cli: &Cli, mainnet: bool) -> Result<(), Error> {
                 "actions_commitment": hex::encode(outputs.final_actions_commitment),
                 "staleness_blocks": staleness,
                 "cross_verified": !endpoints.is_empty(),
+                "flyclient": fly,
             })
         );
     }
 
     Ok(())
+}
+
+/// Check the server's chain against proof-of-work through the ZIP-221
+/// history tree: sampled headers with valid Equihash, MMR paths to the root
+/// each committing header carries, epochs linked down to a compiled anchor.
+/// Returns a JSON summary, or `null` when the server does not offer it.
+async fn verify_flyclient_step(
+    cli: &Cli,
+    zidecar: &client::ZidecarClient,
+    mainnet: bool,
+    tip: u32,
+    tip_hash: &[u8],
+) -> Result<serde_json::Value, Error> {
+    use zync_core::flyclient::{verify_flyclient, Anchor, FlyParams, Network};
+
+    if !cli.json {
+        eprintln!();
+        eprintln!("5. flyclient (ZIP-221 history tree)");
+    }
+    if !mainnet {
+        if !cli.json {
+            eprintln!("   skipped (anchors are mainnet blocks)");
+        }
+        return Ok(serde_json::Value::Null);
+    }
+    let params = FlyParams::default();
+    let Some((proof, anchor_height)) = zidecar.get_flyclient_proof(&params).await? else {
+        if !cli.json {
+            eprintln!("   skipped (server does not serve FlyClient proofs)");
+        }
+        return Ok(serde_json::Value::Null);
+    };
+    let anchor = [Anchor::nu6_3_mainnet(), Anchor::nu5_mainnet()]
+        .into_iter()
+        .find(|a| a.height == anchor_height)
+        .ok_or_else(|| {
+            Error::Other(format!(
+                "flyclient: server anchored at {anchor_height}, which is not a compiled anchor"
+            ))
+        })?;
+    let opened: usize = proof.epochs.iter().map(|e| e.leaves.len()).sum();
+    let chain = verify_flyclient(&proof, Network::Mainnet, &params, &anchor)
+        .map_err(|e| Error::Other(format!("flyclient verification failed: {e}")))?;
+
+    // the FlyClient tip may trail the zidecar tip by the index lag; at the
+    // same height it must be the same block
+    let mut fly_tip_display = chain.tip_hash;
+    fly_tip_display.reverse();
+    if chain.tip_height > tip {
+        return Err(Error::Other("flyclient tip is ahead of the server's tip".into()));
+    }
+    if chain.tip_height == tip && fly_tip_display.as_slice() != tip_hash {
+        return Err(Error::Other(
+            "flyclient tip differs from the server's tip at the same height".into(),
+        ));
+    }
+    let root = chain.tip_root();
+    if !cli.json {
+        eprintln!("   anchor: block {} (compiled hash)", anchor.height);
+        eprintln!(
+            "   {} epoch{}, {} blocks opened, each with valid Equihash",
+            chain.epochs.len(),
+            if chain.epochs.len() == 1 { "" } else { "s" },
+            opened
+        );
+        eprintln!(
+            "   tip {} ({}), {} blocks behind the server tip",
+            chain.tip_height,
+            hex::encode(&fly_tip_display[..8]),
+            tip - chain.tip_height
+        );
+        if let Some(r) = root.end_orchard_root() {
+            eprintln!("   orchard root after {}: {}", chain.tip_height - 1, hex::encode(r));
+        }
+        if let Some(r) = root.end_ironwood_root() {
+            eprintln!("   ironwood root after {}: {}", chain.tip_height - 1, hex::encode(r));
+        }
+        eprintln!("   PASS");
+    }
+    Ok(serde_json::json!({
+        "anchor_height": anchor.height,
+        "tip_height": chain.tip_height,
+        "tip_hash": hex::encode(fly_tip_display),
+        "epochs": chain.epochs.len(),
+        "blocks_opened": opened,
+        "total_work": format!("{:#x}", chain.total_work),
+        "orchard_tx_in_tip_epoch": root.orchard_tx(),
+        "ironwood_tx_in_tip_epoch": root.ironwood_tx(),
+        "orchard_root": root.end_orchard_root().map(hex::encode),
+        "ironwood_root": root.end_ironwood_root().map(hex::encode),
+    }))
 }
 
 async fn cmd_tree_info(cli: &Cli, height: u32) -> Result<(), Error> {
