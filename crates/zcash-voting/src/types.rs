@@ -67,7 +67,11 @@ impl Parameters for Network {
     fn activation_height(&self, nu: NetworkUpgrade) -> Option<BlockHeight> {
         match self {
             Self::Mainnet => ZcashNetwork::MainNetwork.activation_height(nu),
-            Self::Testnet => ZcashNetwork::TestNetwork.activation_height(nu),
+            // Common 2.0 has no testnet NU7 height (2.2 does); remove with the bump.
+            Self::Testnet => match nu {
+                NetworkUpgrade::Nu7 => Some(BlockHeight::from_u32(4_465_026)),
+                _ => ZcashNetwork::TestNetwork.activation_height(nu),
+            },
             Self::Regtest => match nu {
                 NetworkUpgrade::Overwinter
                 | NetworkUpgrade::Sapling
@@ -81,6 +85,7 @@ impl Parameters for Network {
                 NetworkUpgrade::Nu6_3 => {
                     Some(BlockHeight::from_u32(REGTEST_NU6_3_ACTIVATION_HEIGHT))
                 }
+                NetworkUpgrade::Nu7 => None,
             },
         }
     }

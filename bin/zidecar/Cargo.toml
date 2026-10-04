@@ -35,7 +35,7 @@ prost-types = "0.13"
 
 # orchard tree — needed to compute the canonical orchard tree root
 # from zebrad's frontier hex (the "anchor" we sign + bind in the proof).
-orchard = { package = "zakura-orchard", version = "=1.0.0", default-features = false }
+orchard = { package = "zakura-orchard", version = "=2.0.0", default-features = false }
 incrementalmerkletree = { version = "0.8", features = ["legacy-api"] }
 
 # ZIP-221 history tree node types for the FlyClient index (see history.rs)

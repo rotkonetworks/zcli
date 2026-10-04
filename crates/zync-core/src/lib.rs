@@ -41,6 +41,7 @@
 
 #![allow(dead_code)]
 
+pub mod consensus;
 pub mod endpoints;
 pub mod error;
 pub mod flyclient;

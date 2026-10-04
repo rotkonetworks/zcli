@@ -42,12 +42,13 @@ osst = { git = "https://github.com/penumbrafi/frostito", rev = "f4f1a1aecd5193c8
 rand = "0.8"
 sha2 = "0.10"
 blake2b_simd = "1.0"
+# Stays on Common 1.0 pasta: it only meets the frozen osst rev above, which is 1.0.
 pasta_curves = { package = "zakura-pasta-curves", version = "=1.0.0", default-features = false, features = ["alloc"] }
 
 # zcash address derivation
-orchard = { package = "zakura-orchard", version = "=1.0.0", default-features = false }
-zcash_address = "0.13"
-zcash_protocol = { version = "0.10", default-features = false }
+orchard = { package = "zakura-orchard", version = "=2.0.0", default-features = false }
+zcash_address = { package = "zakura-address", version = "=2.0.0" }
+zcash_protocol = { package = "zakura-protocol", version = "=2.0.0", default-features = false }
 zip32 = { version = "0.2", default-features = false }
 
 # cli

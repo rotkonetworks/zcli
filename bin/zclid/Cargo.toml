@@ -28,11 +28,11 @@ tower = "0.4"
 # version: zclid passes orchard values (Note, Address, Anchor, MerklePath,
 # FullViewingKey) straight through zecli's APIs, and cargo treats
 # `zakura-orchard` and crates.io `orchard` as unrelated crates even where the
-# types are structurally identical. Zakura Common 1.0 across the board here,
+# types are structurally identical. Zakura Common 2.0 across the board here,
 # matching bin/zcli/Cargo.toml.
-orchard = { package = "zakura-orchard", version = "=1.0.0", default-features = false }
+orchard = { package = "zakura-orchard", version = "=2.0.0", default-features = false }
 zip32 = { version = "0.2", default-features = false }
-pasta_curves = { package = "zakura-pasta-curves", version = "=1.0.0" }
+pasta_curves = { package = "zakura-pasta-curves", version = "=2.0.0" }
 ff = "0.14"
 rand = "0.8"
 

@@ -21,15 +21,15 @@ parallel = ["rayon", "wasm-bindgen-rayon"]
 # threads are available and halo2 should use them. (It used to be mandatory
 # there rather than merely faster: an upstream `halo2_proofs 0.3.5` shared the
 # native graph and forced `maybe-rayon/threads` ON for the single shim crate.
-# The native graph is all Zakura Common 1.0 now and that crate is gone.)
+# The native graph is all Zakura Common 2.0 now and that crate is gone.)
 multicore = ["orchard/multicore"]
 # Shielded-voting + PIR delegation stack (zcash-voting, pir-client, imt-tree).
 # Gated so the proving core can build without the voting cluster.
 voting = ["dep:zcash-voting", "dep:pir-client", "dep:imt-tree"]
 
 [dependencies]
-# crypto primitives (WASM-compatible) — Zakura Common 1.0 (pasta-1.0 / ff+group 0.14)
-pasta_curves = { package = "zakura-pasta-curves", version = "=1.0.0" }
+# crypto primitives (WASM-compatible) — Zakura Common 2.0 (ff+group 0.14)
+pasta_curves = { package = "zakura-pasta-curves", version = "=2.0.0" }
 subtle = "2.5"
 ff = "0.14"
 group = "0.14"
@@ -42,10 +42,10 @@ group = "0.14"
 #   zcash_protocol 0.10.x ships the real NU6.3 branch id (0x37a5165b,
 #   mainnet activation 3_428_143) and V6 version group id 0xD884B698 —
 #   NU6.3 is fully ungated upstream, so no zcash_unstable cfg is needed.
-orchard = { package = "zakura-orchard", version = "=1.0.0", default-features = false, features = ["circuit"] }
-zcash_keys = { package = "zakura-keys", version = "=1.0.0", default-features = false, features = ["orchard", "transparent-inputs"] }
-zcash_address = { version = "0.13", default-features = false }
-zcash_protocol = { version = "0.10", default-features = false }
+orchard = { package = "zakura-orchard", version = "=2.0.0", default-features = false, features = ["circuit"] }
+zcash_keys = { package = "zakura-keys", version = "=2.0.0", default-features = false, features = ["orchard", "transparent-inputs"] }
+zcash_address = { package = "zakura-address", version = "=2.0.0", default-features = false }
+zcash_protocol = { package = "zakura-protocol", version = "=2.0.0", default-features = false }
 rand_core = "0.6"
 # rand_core 0.10 (pure-trait) for the OsRng10 adapter that feeds Zakura Common
 # 1.0's builders/signers, which now bound their RNG on rand_core 0.10's `Rng`.
@@ -69,19 +69,19 @@ zcash_note_encryption = "0.4"
 # zcash_primitives 0.28 + sapling-crypto 0.7 + orchard 0.14 line up with the
 # Released librustzcash workspace (NU6.3 is upstream as of these versions)
 # coords the zigner valar spike consumes. Required for `pczt` V6 interop.
-zcash_primitives = { package = "zakura-primitives", version = "=1.0.0", default-features = false, features = ["non-standard-fees", "transparent-inputs"] }
-zcash_transparent = { version = "0.10", package = "zcash_transparent", default-features = false, features = ["transparent-inputs"] }
+zcash_primitives = { package = "zakura-primitives", version = "=2.0.0", default-features = false, features = ["non-standard-fees", "transparent-inputs"] }
+zcash_transparent = { package = "zakura-transparent", version = "=2.0.0", default-features = false, features = ["transparent-inputs"] }
 
 # Partially-Created Zcash Transaction (PCZT) construction.
 # Pinned to the same librustzcash fork branch that zigner's valar spike
 # consumes so orchard/sapling/zcash_primitives versions match byte-for-byte.
-pczt = { package = "zakura-pczt", version = "=0.1.0-rc2", default-features = false, features = ["orchard", "transparent", "sapling", "zcp-builder", "prover", "io-finalizer", "tx-extractor", "signer", "spend-finalizer"] }
+pczt = { package = "zakura-pczt", version = "=0.1.0-rc4", default-features = false, features = ["orchard", "transparent", "sapling", "zcp-builder", "prover", "io-finalizer", "tx-extractor", "signer", "spend-finalizer"] }
 # zcash_primitives renames sapling-crypto to `sapling` internally; mirror the
 # alias so BuildConfig's `Option<sapling::Anchor>` field type-checks.
 # `circuit` feature pulls bellman+groth16 proving — bloats the wasm but is
 # required because pczt's prover/io-finalizer code paths reference
 # sapling::pczt::ProverError / Prover even when the tx has no sapling actions.
-sapling = { package = "zakura-sapling-crypto", version = "=1.0.0", default-features = false, features = ["circuit"] }
+sapling = { package = "zakura-sapling-crypto", version = "=2.0.0", default-features = false, features = ["circuit"] }
 
 # key derivation
 bip39 = { version = "2.0", features = ["rand"] }
@@ -115,8 +115,8 @@ getrandom = { version = "0.2", features = ["js"] }
 # JS `fetch` callback), so no hyper/tonic/tokio enters wasm.
 pir-client = { path = "../pir-client", optional = true }
 # The IMT proof field type (imt_tree::ImtProofData) and its Fp field elements.
-# Zakura Common 1.0: imt-tree 0.5.2 gained a `zakura` feature (pasta-1.0).
-imt-tree = { version = "=0.5.2", default-features = false, features = ["zakura"], optional = true }
+# Zakura Common 2.0: imt-tree 0.5.4 (voting-crypto-deps 0.2.4, pasta 2.0).
+imt-tree = { version = "=0.5.4", default-features = false, features = ["zakura"], optional = true }
 # pir_client's Transport trait returns anyhow::Result.
 anyhow = "1"
 
