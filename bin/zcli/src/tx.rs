@@ -316,7 +316,8 @@ pub fn build_ironwood_shielding_tx(
     branch_id: u32,
     mainnet: bool,
 ) -> Result<Vec<u8>, Error> {
-    use zcash_protocol::consensus::{MainNetwork, TestNetwork};
+    use zcash_protocol::consensus::MainNetwork;
+    use zync_core::consensus::TestNetwork;
     use zcash_protocol::memo::MemoBytes;
 
     // FAIL CLOSED before proving: a V6 ironwood tx is only a valid shape once
@@ -676,7 +677,8 @@ fn base58_decode(s: &str) -> Result<Vec<u8>, Error> {
 /// parse an orchard address from a unified address string (from zafu-wasm)
 pub fn parse_orchard_address(addr_str: &str, mainnet: bool) -> Result<orchard::Address, Error> {
     use zcash_keys::address::Address as ZkAddress;
-    use zcash_protocol::consensus::{MainNetwork, TestNetwork};
+    use zcash_protocol::consensus::MainNetwork;
+    use zync_core::consensus::TestNetwork;
 
     let decoded = if mainnet {
         ZkAddress::decode(&MainNetwork, addr_str)

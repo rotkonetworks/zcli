@@ -346,7 +346,8 @@ pub fn build_unsigned_transparent_transaction(
     null_data_hex: Option<String>,
 ) -> Result<String, JsError> {
     use zcash_keys::encoding::AddressCodec;
-    use zcash_protocol::consensus::{BlockHeight, MainNetwork, TestNetwork};
+    use zcash_protocol::consensus::{BlockHeight, MainNetwork};
+    use crate::consensus::TestNetwork;
     use zcash_protocol::value::Zatoshis;
     use zcash_transparent::address::TransparentAddress;
     use zcash_transparent::bundle::{OutPoint, TxOut};

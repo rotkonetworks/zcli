@@ -331,7 +331,8 @@ fn build_signed_migration(
     memo: Option<&str>,
     mainnet: bool,
 ) -> Result<Vec<u8>, Error> {
-    use zcash_protocol::consensus::{MainNetwork, TestNetwork};
+    use zcash_protocol::consensus::MainNetwork;
+    use zync_core::consensus::TestNetwork;
     use zcash_protocol::memo::MemoBytes;
 
     let coin_type = if mainnet { 133 } else { 1 };

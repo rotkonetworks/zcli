@@ -63,6 +63,24 @@ fn is_watch_mode() -> bool {
     WATCH_MODE.get().copied().unwrap_or(false)
 }
 
+/// global testnet flag — set once at startup, moves all wallet state under
+/// ~/.zcli/testnet so testnet notes never land in the mainnet wallet
+static TESTNET: OnceLock<bool> = OnceLock::new();
+
+pub fn set_testnet(enabled: bool) {
+    TESTNET.set(enabled).ok();
+}
+
+/// ~/.zcli on mainnet, ~/.zcli/testnet on testnet
+fn zcli_dir() -> String {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+    if TESTNET.get().copied().unwrap_or(false) {
+        format!("{}/.zcli/testnet", home)
+    } else {
+        format!("{}/.zcli", home)
+    }
+}
+
 /// Which shielded pool a note lives in.
 ///
 /// Re-exported from `zafu_wasm`, which is where it now lives. It used to be
@@ -288,33 +306,30 @@ impl Wallet {
     /// default wallet path based on mode:
     /// - normal: ~/.zcli/wallet
     /// - watch:  ~/.zcli/watch
+    /// (under ~/.zcli/testnet on testnet)
     pub fn default_path() -> String {
         if is_watch_mode() {
             Self::watch_path()
         } else {
-            let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-            format!("{}/.zcli/wallet", home)
+            format!("{}/wallet", zcli_dir())
         }
     }
 
     /// watch-only wallet path: ~/.zcli/watch
     pub fn watch_path() -> String {
-        let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-        format!("{}/.zcli/watch", home)
+        format!("{}/watch", zcli_dir())
     }
 
     /// marker file recording which seed derivation an ssh-key wallet uses
     /// ("legacy-ssh" or "mnemonic-v1"); lives beside the wallet db, not in it,
     /// so it can be read before the db is opened
     pub fn derivation_marker_path() -> String {
-        let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-        format!("{}/.zcli/seed_derivation", home)
+        format!("{}/seed_derivation", zcli_dir())
     }
 
     /// wallet db path ignoring watch mode — the spending wallet's location
     pub fn spending_path() -> String {
-        let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-        format!("{}/.zcli/wallet", home)
+        format!("{}/wallet", zcli_dir())
     }
 
     pub fn sync_height(&self) -> Result<u32, Error> {

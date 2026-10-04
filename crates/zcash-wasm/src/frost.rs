@@ -445,7 +445,8 @@ pub fn frost_parse_tx_outputs(
     use zcash_primitives::transaction::{Transaction, TxVersion};
     // zcash_primitives 0.26 (librustzcash 5333c01b) moved consensus types
     // into zcash_protocol; BranchId is re-exported there.
-    use zcash_protocol::consensus::{BranchId, MainNetwork, TestNetwork};
+    use zcash_protocol::consensus::{BranchId, MainNetwork};
+    use crate::consensus::TestNetwork;
 
     let mut tx_bytes =
         hex::decode(unsigned_tx_hex).map_err(|e| JsError::new(&format!("bad tx hex: {}", e)))?;
@@ -780,7 +781,8 @@ fn committed_outputs_of(
 /// Encode a standard P2PKH / P2SH script as a t-address; `None` for anything else.
 fn transparent_address_for_script(script: &[u8], mainnet: bool) -> Option<String> {
     use zcash_keys::encoding::AddressCodec;
-    use zcash_protocol::consensus::{MainNetwork, TestNetwork};
+    use zcash_protocol::consensus::MainNetwork;
+    use crate::consensus::TestNetwork;
     use zcash_transparent::address::TransparentAddress;
     let addr = match script {
         [0x76, 0xa9, 0x14, hash @ .., 0x88, 0xac] if hash.len() == 20 => {
@@ -805,7 +807,8 @@ pub fn inspect_pczt_outputs_core(
 ) -> Result<serde_json::Value, String> {
     use orchard::keys::Scope;
     use zcash_keys::keys::UnifiedFullViewingKey;
-    use zcash_protocol::consensus::{MainNetwork, TestNetwork};
+    use zcash_protocol::consensus::MainNetwork;
+    use crate::consensus::TestNetwork;
 
     let pczt = pczt::Pczt::parse(bytes).map_err(|e| format!("pczt parse failed: {:?}", e))?;
 

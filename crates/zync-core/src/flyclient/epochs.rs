@@ -10,11 +10,13 @@
 //! upgrades `zcash_protocol` knows ([`Schedule::compiled`]) or from any list
 //! of `(activation height, branch id)` pairs, such as zebrad's
 //! `getblockchaininfo` ([`Schedule::from_upgrades`]). An upgrade this code has
-//! never heard of (NU7, ...) gets the newest node format and the NU5-style
+//! never heard of (NU8, ...) gets the newest node format and the NU5-style
 //! header binding; if it changes the node format, parsing fails and proofs
 //! are rejected until the code learns it, never accepted wrongly.
 
-use zcash_protocol::consensus::{BranchId, MainNetwork, NetworkUpgrade, Parameters, TestNetwork};
+use zcash_protocol::consensus::{BranchId, MainNetwork, NetworkUpgrade, Parameters};
+
+use crate::consensus::TestNetwork;
 
 use super::node::NodeVersion;
 
@@ -108,6 +110,7 @@ impl Schedule {
             NetworkUpgrade::Nu6_1,
             NetworkUpgrade::Nu6_2,
             NetworkUpgrade::Nu6_3,
+            NetworkUpgrade::Nu7,
         ];
         Self::from_upgrades(nus.iter().filter_map(|nu| {
             let h = match network {

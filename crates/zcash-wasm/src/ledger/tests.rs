@@ -54,7 +54,7 @@ impl Parameters for PreNu6_3TestNetwork {
 
     fn activation_height(&self, nu: NetworkUpgrade) -> Option<BlockHeight> {
         match nu {
-            NetworkUpgrade::Nu6_3 => None,
+            NetworkUpgrade::Nu6_3 | NetworkUpgrade::Nu7 => None,
             _ => Some(BlockHeight::from_u32(1)),
         }
     }

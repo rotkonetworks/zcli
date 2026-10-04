@@ -158,7 +158,8 @@ impl SpendKeys {
     /// only the encoding.
     pub fn ufvk(&self) -> Result<String, JsError> {
         use zcash_keys::keys::UnifiedSpendingKey;
-        use zcash_protocol::consensus::{MainNetwork, TestNetwork};
+        use zcash_protocol::consensus::MainNetwork;
+        use crate::consensus::TestNetwork;
         let ufvk = UnifiedSpendingKey::from_seed(&MainNetwork, &*self.seed, self.account)
             .map_err(|e| JsError::new(&format!("account key derivation failed: {e:?}")))?
             .to_unified_full_viewing_key();
