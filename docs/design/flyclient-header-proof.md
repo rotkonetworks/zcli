@@ -1,158 +1,133 @@
-# Genesis-anchored header proof: FlyClient over the ZIP-221 MMR
+# FlyClient over the ZIP-221 history tree
 
-Status: design for task #39 ("valid header/epoch proofs from a low/genesis start")
-Scope: `bin/zidecar/src/header_chain.rs`, `epoch.rs`, `prover.rs`, `grpc_service/proofs.rs`
-References: FlyClient (Bunz-Kiffer-Luu-Zamani, 2019); ZIP-221 (FlyClient-compatible
-chain history); `zcash_history` crate. Extends `per-pool-proofs.md`.
+Status: implemented natively (no ligerito wrapper) on `feat/flyclient`.
+Code: `crates/zync-core/src/flyclient/` (verifier, MMR store, sampling),
+`bin/zidecar/src/history.rs` (index + proof builder),
+`bin/zidecar/src/grpc_service/flyclient.rs` (`GetFlyClientProof`),
+`bin/zcli/src/main.rs` (`signer verify`, step 5).
+References: FlyClient (Bünz, Kiffer, Luu, Zamani 2019); ZIP-221; ZIP-244;
+`zcash_history` 0.6 (V3 nodes for Ironwood).
 
 ## Problem
 
-Today `header_chain.rs` builds a **full contiguous verification trace**: 32 fields
-per header (block_hash, prev_hash, nBits, cumulative_difficulty, running
-header/state commitments), and the ligerito proof proves EVERY header from a
-configured `start_height` to tip - hash-chain linkage, PoW, difficulty
-progression. Two consequences:
+The ligerito header proof proves a trace of headers from a configured
+`start_height`, but its public outputs (block hashes, state roots) are values
+the prover chose: nothing ties them to what consensus committed (see
+`ligerito-evaluation-binding.md`). Proving Equihash for every header in-circuit
+does not scale, which is why the anchor sat at a configured start.
 
-1. **Trusted anchor.** The proof bottoms out at a configured `start_height`, not a
-   consensus constant. A client trusts the operator gave the real block there.
-   `TrustlessStateProof.checkpoint` (the FROST anchor slot) is `None` - never
-   constructed. So the state is trustless only DOWN TO that configured start.
-2. **Genesis-anchoring is prohibitively expensive.** Anchoring at a universal
-   constant means proving the whole header chain (millions of headers, each with
-   an Equihash PoW). Proving Equihash in-circuit for every header does not scale;
-   that is why the anchor sits at a configured start instead.
+## What we built instead
 
-## Target
+Every header since Heartwood commits to a Merkle mountain range over the
+blocks of its own network-upgrade epoch. The commitment is in a proof-of-work
+header, so the tree is authenticated by consensus for free. Each node carries
+subtree work, first/last note commitment tree roots and shielded transaction
+counts. FlyClient checks a logarithmic number of headers, chosen by work, and
+their MMR paths.
 
-Replace the full contiguous trace with **FlyClient sampling over the ZIP-221
-chain-history MMR**, anchored at **Heartwood** (a consensus constant), so the
-header proof is both **cheap** and **trustless with no configured trust**.
+Per epoch, newest first, the verifier (`verify_flyclient`) checks:
 
-### Why ZIP-221 is the right substrate (not a custom MMR)
+1. the committing header (the tip, or an older epoch's last block) has a
+   valid Equihash (200, 9) solution and meets its target and the pow limit;
+2. the peaks bag into a root whose hash opens the header's commitment field:
+   `hashLightClientRoot` directly for Heartwood/Canopy (V1 nodes),
+   `hashBlockCommitments = BLAKE2b("ZcashBlockCommit", root ‖ authDataRoot ‖ 0³²)`
+   from NU5 on;
+3. every opened leaf matches its PoW-checked header (hash, time, nBits, work),
+   sits at the right height, and folds up an authenticated path to its peak;
+4. every Fiat-Shamir sample point lies inside the cumulative-work interval of
+   some opened leaf, computed from the left siblings' and left peaks' work
+   along authenticated paths — so the server cannot answer a sample with a
+   block of its choosing;
+5. the tree's last leaf is the committing header's parent; each epoch's
+   activation block's parent is the previous epoch's committing block; the
+   oldest epoch's first block is a compiled anchor hash.
 
-- **Consensus-committed root.** The ZIP-221 MMR root is in every header's
-  `hashBlockCommitments`. So the MMR is authenticated by the header PoW for free -
-  the prover does NOT have to prove the MMR is complete/correct in-circuit. A
-  custom zidecar MMR would need an in-circuit completeness argument (heavier,
-  weaker).
-- **Per-subtree total work.** ZIP-221 nodes commit `subtreeTotalWork` - exactly
-  what FlyClient's difficulty-weighted sampling requires. ZIP-221 was designed for
-  FlyClient (same lineage).
-- **Canonical implementation exists.** The `zcash_history` crate builds/verifies
-  the MMR; zidecar already holds every header (`header_chain.rs` fetches them from
-  zebrad), so it can construct the MMR locally and self-verify each root against
-  the `hashBlockCommitments` field. No new zebrad RPC required.
+The server (`HistoryIndex`) rebuilds each epoch from zebrad and, before adding
+a block's leaf, checks that the block's own header commits to the tree built
+so far (fail closed: on a mismatch it stops serving). It verifies every proof
+with the client's verifier before sending it.
 
-### Why Heartwood, not block 0
+## Corrections to the earlier version of this note
 
-ZIP-221 activated at **Heartwood (~block 903k)**, not genesis. That is complete
-for a shielded wallet:
+- **The tree is per epoch, not one tree from Heartwood.** It restarts at every
+  upgrade (Heartwood, Canopy, NU5, NU6, NU6.1, NU6.2, NU6.3). Block `n`
+  commits to blocks `activation..n-1` of its epoch; an activation block
+  commits to the previous epoch's complete tree (zebra's `HistoryTree::push`).
+  We commit older epochs through their last block instead (equally valid, and
+  the link is a plain `hashPrevBlock` check).
+- **Node versions differ by epoch.** V1 for Heartwood/Canopy, V2 (adds Orchard)
+  for NU5–NU6.2, V3 (adds Ironwood) for NU6.3. `zcash_history` 0.6 has all
+  three.
+- **Two header-binding modes**, as above; the old note only described the NU5
+  one.
+- **Anchors.** NU5 activation (already compiled into zync) or NU6.3 activation
+  (`IRONWOOD_ACTIVATION_HASH_MAINNET`). With the NU6.3 anchor the server only
+  indexes the current epoch.
+- **Native, not ligerito.** A FlyClient proof is already logarithmic; checking
+  it in wasm is cheap. Ligerito may wrap it later for size; correctness no
+  longer depends on it.
 
-- Heartwood is **below NU5/orchard (~1.69M) and ironwood (NU6.3)** - the MMR fully
-  covers every shielded pool zafu spends. There are no orchard/ironwood notes
-  below it. (Only early Sapling is pre-Heartwood; zafu is orchard-based.)
-- The Heartwood activation block is a **hardcoded consensus constant** -
-  universally agreed, not operator-chosen. Same trust quality as genesis.
+## Details that are easy to get wrong
 
-So "genesis-anchored" for this wallet means **Heartwood-anchored via ZIP-221**,
-and it is trustless and complete.
+- Sampling must agree bit for bit between a native server and a wasm client,
+  so it is integer-only: `x = 1 - 2^(-k·u)` with a Q64 table for `2^(-2^-j)`,
+  `δ = 2^-k ≤ tail / n`, and `m = ⌈λ · k · 0.694⌉` samples (an upper bound on
+  FlyClient's `λ / log2(k / (k-1))` for an adversary below half the honest
+  work). Defaults: λ = 40, tail = 16. Both are protocol parameters, sent in
+  the request; the server clamps them.
+- `zcash_history::Version::combine` asserts equal branch ids and adds work and
+  counts unchecked; the verifier rejects such input before calling it.
+- zebra's `getblock` prints `finalsaplingroot` and `blockcommitments`
+  byte-reversed but `finalorchardroot` as is, and has no auth data root. The
+  index takes hash/time/nBits from `getblockheader <hash> false`, Orchard and
+  Ironwood roots from `z_gettreestate` frontiers (zebra's Ironwood tree is an
+  Orchard note commitment tree), and rebuilds the ZIP-244 auth data root from
+  the per-transaction `authdigest` (display order; `0xff…` for pre-v5).
+- Transaction counts follow zebra: a transaction counts for a pool when it
+  carries that pool's bundle (non-empty spends/outputs or actions).
 
-## The two-axis split (what goes in-circuit vs native)
+## What FlyClient does not give us
 
-FlyClient's whole point. Do NOT prove Equihash in-circuit for every header.
+- **Spent status.** The history tree has no nullifiers (ZIP-221 considered and
+  left them out). NOMT nullifier proofs stay, and their roots are still not
+  consensus-bound.
+- **Difficulty adjustment between samples.** Sampled headers are checked
+  against their own nBits; the per-block Digishield window is not re-derived.
+  ZIP-221 itself calls FlyClient's guarantee under Zcash's fast-adjusting
+  difficulty heuristic.
+- **The heaviest chain.** A proof shows the server's chain has the claimed
+  work; picking between servers means comparing `total_work` (cross-check).
 
-- **In the ligerito proof (succinct):** MMR inclusion of the sampled headers,
-  cumulative-difficulty accounting, and binding the state roots
-  (`tree_root`/`nullifier_root`) to the sampled chain.
-- **Native (outside the circuit), on the O(log n) sampled headers only:** Equihash
-  PoW verification. ~25 samples, not millions - cheap, and never in-circuit.
+## Not done yet
 
-## Soundness-critical invariant
+1. **Validate against a live zebrad.** The index has only run against unit
+   fixtures. The first sync is the real test: the fail-closed check compares
+   every block's header to our tree, so any byte-order or count mistake shows
+   up as a refusal to serve, not as bad proofs.
+2. **Omission checks.** The tip root's `orchard_tx`/`ironwood_tx` let a client
+   compare against compact blocks; wire that into sync (whole epoch first,
+   subtree ranges later).
+3. **Proof size.** ~4.3 KB per opened leaf, mostly paths; a two-epoch proof
+   (NU6.2 + part of NU6.3) is ~1.9 MB. Deduplicate shared path nodes, and let
+   clients cache closed epochs (their proofs never change).
+4. **Memory for the NU5 anchor.** The index keeps every epoch's tree in memory
+   (~1.7M leaves). Fine for `nu6.3`; for `nu5`, store closed epochs' nodes on
+   disk.
+5. **zafu.** Expose `verify_flyclient` through `zcash-wasm` and call
+   `GetFlyClientProof` from the extension (separate repo).
+6. **Ligerito.** Either retire the header trace in favour of FlyClient-bound
+   roots, or prove "this FlyClient proof verifies" to shrink it.
 
-The sample positions MUST be derived by **Fiat-Shamir from (MMR root, tip
-cumulative_difficulty)** - the same transcript both sides can recompute - and
-NEVER chosen by the server. A server that picks its own samples can present a
-lighter forged chain. This is the single line the whole construction rests on;
-it holds whether the wrapper is ligerito or native FlyClient.
+## Prior art we looked at
 
-## Protocol sketch
-
-**Prover (zidecar), per proof:**
-1. Maintain the ZIP-221 MMR via `zcash_history` up to the anchor height (last
-   completed epoch boundary >= Heartwood). Verify its root == the anchor header's
-   `hashBlockCommitments` (consensus binding).
-2. Derive sample set S = FiatShamir(mmr_root, tip_cumulative_difficulty),
-   difficulty-weighted per FlyClient.
-3. For each s in S: MMR inclusion path + the header.
-4. ligerito-prove: every inclusion path is valid against mmr_root; the
-   difficulty accounting from Heartwood to anchor is consistent; and the state
-   roots at the anchor bind to this chain (`final_state_commitment`).
-5. Fill `TrustlessStateProof.checkpoint` with the Heartwood-anchored,
-   ZIP-221-bound checkpoint (replacing the `None` / unbuilt FROST slot).
-
-**Verifier (zafu client):**
-1. Recompute S = FiatShamir(mmr_root, tip_cumulative_difficulty); reject if the
-   proof's samples differ.
-2. Verify the ligerito proof (inclusions + difficulty + state binding).
-3. **Native-check the PoW** of each sampled header (Equihash), and that the anchor
-   header's `hashBlockCommitments` == mmr_root, and that the anchor descends from
-   the hardcoded Heartwood constant.
-4. Accept `tree_root`/`nullifier_root` at the anchor as trustless.
-
-## What changes in zidecar
-
-- `header_chain.rs`: alongside (or replacing) the 32-field contiguous trace, add
-  the ZIP-221 MMR (via `zcash_history`) and per-header `hashBlockCommitments`
-  verification. The contiguous trace can remain for the epoch-local segment;
-  FlyClient carries the deep history.
-- `epoch.rs`: anchor at the last completed epoch boundary >= Heartwood; the
-  FlyClient sample set replaces "prove from configured start_height".
-- `prover.rs`: the ligerito statement changes from "all headers contiguous" to
-  "sampled MMR inclusions + difficulty + state binding". `ProofPublicOutputs`
-  gains the mmr_root and the sample commitment.
-- `grpc_service/proofs.rs`: populate `TrustlessStateProof.checkpoint` with the
-  ZIP-221/Heartwood anchor; `get_state_roots(anchor)` at the boundary (already
-  height-keyed).
-
-## Relationship to NOMT (unchanged)
-
-NOMT stays exactly as it is - the current-state nullifier/commitment accumulator
-serving spend-time membership proofs. FlyClient authenticates the CHAIN; the
-ligerito state binding ties NOMT's roots to that chain; NOMT is bound on top, not
-modified. FlyClient does not go "into" NOMT - it goes into the header proof and
-becomes the trust anchor NOMT's roots hang from.
-
-## Ecosystem alignment
-
-This is deliberately a "ride the standard, not our own trace" change - the header
-work had gone cowboy and this pulls it back:
-
-- **ZIP-221** (FlyClient-compatible chain history) is the consensus substrate, and
-  the `zcash_history` crate is the canonical builder/verifier. We stop maintaining
-  a bespoke 32-field header trace and bind to the consensus MMR root that every
-  header already commits (`hashBlockCommitments`).
-- **FlyClient** is a published protocol, not a home-grown sampling scheme.
-
-Keep the genuinely novel part - the trustless light-client proof (ligerito header
-proof + NOMT state binding, verified client-side; almost no wallet ships this).
-But the durable path for it is NOT a private zidecar fork: **specify it as a ZIP**
-(proof format + verifier), so other wallets/indexers can implement and review it.
-Ride the substrate (ZIP-221, `zcash_history`); standardize the extension (the
-trustless proof). Cowboy -> sheriff.
-
-## Non-goals
-
-- Not proving Equihash in-circuit (the whole point is native PoW on samples).
-- Not covering pre-Heartwood history (no shielded notes there for this wallet).
-- Not changing NOMT, the note-decryption kernels, or the wallet DB shape.
-
-## Correctness / test gates
-
-- MMR root at every synced height must equal the header's `hashBlockCommitments`
-  (fail closed on mismatch - this is the consensus binding).
-- Sample set must be reproducible from the public transcript (prover cannot
-  influence it); a proof whose samples do not match the recomputed set is
-  rejected.
-- End-to-end: a client verifying only the proof + native PoW on samples must
-  arrive at the same `tree_root`/`nullifier_root` a full contiguous verification
-  would, anchored at Heartwood.
+- `ordian/zflyclient` (March 2026 hackathon): a `no_std` verifier for one
+  block's inclusion under a tip (header parse, Equihash, `hashBlockCommitments`,
+  V2 MMR path). No sampling, no PoW on sampled blocks, V2 only, one epoch, and
+  no license, so nothing was copied. Its server half (Zaino PR #922) was
+  closed unmerged; the lightwallet-protocol RPC (PR #21) is still open. Our
+  message shapes are close enough to converge if that lands.
+- `shielded-labs/zcash-light-client`: transparent-only SPV client whose Cairo
+  "STARK proof" of Equihash only checks the solution length and that it is not
+  all zeros, with a BLAKE2b block hash and a Digishield routine that does not
+  match zcashd. Nothing reusable.
