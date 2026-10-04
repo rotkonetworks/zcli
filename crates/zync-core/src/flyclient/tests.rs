@@ -29,7 +29,9 @@ fn fixture(height: u32) -> Vec<u8> {
 
 #[test]
 fn real_headers_have_valid_pow() {
-    for h in [1_687_103, 1_687_104, 3_000_000, 3_428_142, 3_428_143, 3_428_144] {
+    for h in [
+        1_687_103, 1_687_104, 3_000_000, 3_428_142, 3_428_143, 3_428_144,
+    ] {
         BlockHeader::parse_and_verify(&fixture(h), h, Network::Mainnet)
             .unwrap_or_else(|e| panic!("height {h}: {e}"));
     }
@@ -129,11 +131,21 @@ fn store_root_matches_zcash_history_v2_and_v3() {
             let h = 5_000 + i;
             l2.push(synth_v2(0xc2d6_d0b4, h, i));
             l3.push(synth_v3(0x37a5_165b, h, i));
-            s2.push(HistoryNode::V2(synth_v2(0xc2d6_d0b4, h, i))).unwrap();
-            s3.push(HistoryNode::V3(synth_v3(0x37a5_165b, h, i))).unwrap();
+            s2.push(HistoryNode::V2(synth_v2(0xc2d6_d0b4, h, i)))
+                .unwrap();
+            s3.push(HistoryNode::V3(synth_v3(0x37a5_165b, h, i)))
+                .unwrap();
         }
-        assert_eq!(s2.root().unwrap().hash(), reference_root::<V2>(l2), "V2 n={n}");
-        assert_eq!(s3.root().unwrap().hash(), reference_root::<V3>(l3), "V3 n={n}");
+        assert_eq!(
+            s2.root().unwrap().hash(),
+            reference_root::<V2>(l2),
+            "V2 n={n}"
+        );
+        assert_eq!(
+            s3.root().unwrap().hash(),
+            reference_root::<V3>(l3),
+            "V3 n={n}"
+        );
     }
 }
 
@@ -221,7 +233,16 @@ struct SynthEpoch {
 }
 
 fn synth_epoch(activation: u32, n: u64, prev: [u8; 32], seed: u64) -> SynthEpoch {
-    let epoch = epoch_activated_at(Network::Mainnet, activation).unwrap();
+    synth_epoch_in(
+        epoch_activated_at(Network::Mainnet, activation).unwrap(),
+        n,
+        prev,
+        seed,
+    )
+}
+
+fn synth_epoch_in(epoch: Epoch, n: u64, prev: [u8; 32], seed: u64) -> SynthEpoch {
+    let activation = epoch.activation;
     let mut store = HistoryStore::new();
     let mut headers = Vec::new();
     let mut prev = prev;
@@ -229,7 +250,13 @@ fn synth_epoch(activation: u32, n: u64, prev: [u8; 32], seed: u64) -> SynthEpoch
         let height = activation + i as u32;
         // vary the target so blocks carry different work
         let bits = 0x1c00_8000 + ((i * 2_654_435_761 + seed) % 0x7000) as u32;
-        let b = make_header(prev, [0u8; 32], 1_700_000_000 + i as u32 * 75, bits, i ^ seed);
+        let b = make_header(
+            prev,
+            [0u8; 32],
+            1_700_000_000 + i as u32 * 75,
+            bits,
+            i ^ seed,
+        );
         let parsed = BlockHeader::parse(&b.header).unwrap();
         store.push(leaf_for(&epoch, height, &parsed, i)).unwrap();
         prev = b.hash;
@@ -243,7 +270,13 @@ fn synth_epoch(activation: u32, n: u64, prev: [u8; 32], seed: u64) -> SynthEpoch
         block_commitments(&root_hash, &adr)
     };
     let commit = make_header(prev, commitments, 1_800_000_000, 0x1c00_9000, seed);
-    SynthEpoch { epoch, store, headers, commit, adr }
+    SynthEpoch {
+        epoch,
+        store,
+        headers,
+        commit,
+        adr,
+    }
 }
 
 fn prove(e: &SynthEpoch, params: &FlyParams) -> EpochProof {
@@ -265,7 +298,12 @@ fn prove(e: &SynthEpoch, params: &FlyParams) -> EpochProof {
 fn two_epochs(tip_leaves: u64) -> (SynthEpoch, SynthEpoch) {
     let nu62 = epoch_activated_at(Network::Mainnet, 3_364_600).unwrap();
     let nu63 = epoch_activated_at(Network::Mainnet, 3_428_143).unwrap();
-    let old = synth_epoch(nu62.activation, (nu63.activation - nu62.activation - 1) as u64, [9u8; 32], 1);
+    let old = synth_epoch(
+        nu62.activation,
+        (nu63.activation - nu62.activation - 1) as u64,
+        [9u8; 32],
+        1,
+    );
     let new = synth_epoch(nu63.activation, tip_leaves, old.commit.hash, 2);
     (old, new)
 }
@@ -281,47 +319,72 @@ fn anchor_of(e: &SynthEpoch) -> Anchor {
 fn two_epoch_proof_verifies_and_reports_the_tip() {
     let params = FlyParams::default();
     let (old, new) = two_epochs(777);
-    let proof = FlyClientProof { epochs: vec![prove(&new, &params), prove(&old, &params)] };
-    let chain = verify_flyclient_without_pow(&proof, Network::Mainnet, &params, &anchor_of(&old)).unwrap();
+    let proof = FlyClientProof {
+        epochs: vec![prove(&new, &params), prove(&old, &params)],
+    };
+    let chain =
+        verify_flyclient_without_pow(&proof, Network::Mainnet, &params, &anchor_of(&old)).unwrap();
     assert_eq!(chain.tip_height, 3_428_143 + 777);
     assert_eq!(chain.tip_hash, new.commit.hash);
     let expected_work = bits_work(0x1c00_9000).unwrap()
         + old.store.root().unwrap().work()
         + new.store.root().unwrap().work();
     assert_eq!(chain.total_work, expected_work);
-    assert_eq!(chain.tip_root().ironwood_tx(), new.store.root().unwrap().ironwood_tx());
+    assert_eq!(
+        chain.tip_root().ironwood_tx(),
+        new.store.root().unwrap().ironwood_tx()
+    );
 
     let bytes = bincode::serialize(&proof).unwrap();
     let opened: usize = proof.epochs.iter().map(|e| e.leaves.len()).sum();
-    eprintln!("two-epoch proof: {opened} leaves opened, {} bytes", bytes.len());
+    eprintln!(
+        "two-epoch proof: {opened} leaves opened, {} bytes",
+        bytes.len()
+    );
 }
 
 #[test]
 fn every_epoch_size_round_trips() {
-    let params = FlyParams { lambda: 20, tail: 4 };
+    let params = FlyParams {
+        lambda: 20,
+        tail: 4,
+    };
     for n in [1u64, 2, 3, 4, 5, 7, 8, 9, 31, 64, 65, 200] {
         let e = synth_epoch(3_428_143, n, [3u8; 32], n);
-        let proof = FlyClientProof { epochs: vec![prove(&e, &params)] };
+        let proof = FlyClientProof {
+            epochs: vec![prove(&e, &params)],
+        };
         verify_flyclient_without_pow(&proof, Network::Mainnet, &params, &anchor_of(&e))
             .unwrap_or_else(|err| panic!("n={n}: {err}"));
     }
 }
 
 fn single(n: u64) -> (SynthEpoch, EpochProof, FlyParams) {
-    let params = FlyParams { lambda: 30, tail: 8 };
+    let params = FlyParams {
+        lambda: 30,
+        tail: 8,
+    };
     let e = synth_epoch(3_428_143, n, [5u8; 32], 7);
     let p = prove(&e, &params);
     (e, p, params)
 }
 
 fn check(e: &SynthEpoch, p: EpochProof, params: &FlyParams) -> Result<(), FlyError> {
-    verify_flyclient_without_pow(&FlyClientProof { epochs: vec![p] }, Network::Mainnet, params, &anchor_of(e))
-        .map(|_| ())
+    verify_flyclient_without_pow(
+        &FlyClientProof { epochs: vec![p] },
+        Network::Mainnet,
+        params,
+        &anchor_of(e),
+    )
+    .map(|_| ())
 }
 
 fn sampled_index(p: &EpochProof, params: &FlyParams) -> usize {
     let required: BTreeSet<u64> = super::sampling::required_leaves(params, p.n_leaves);
-    p.leaves.iter().position(|l| !required.contains(&l.index)).expect("a sampled leaf")
+    p.leaves
+        .iter()
+        .position(|l| !required.contains(&l.index))
+        .expect("a sampled leaf")
 }
 
 #[test]
@@ -344,7 +407,13 @@ fn answering_a_sample_with_a_different_leaf_is_caught() {
         index: other,
         header: e.headers[other as usize].clone(),
         leaf: e.store.leaf(other).unwrap().to_bytes(),
-        path: e.store.path(other).unwrap().into_iter().map(|n| n.to_bytes()).collect(),
+        path: e
+            .store
+            .path(other)
+            .unwrap()
+            .into_iter()
+            .map(|n| n.to_bytes())
+            .collect(),
     };
     p.leaves[j] = swap;
     assert!(matches!(check(&e, p, &params), Err(FlyError::Uncovered(_))));
@@ -400,9 +469,14 @@ fn missing_tail_or_first_leaf_is_caught() {
 
 #[test]
 fn wrong_anchor_or_broken_link_is_caught() {
-    let params = FlyParams { lambda: 20, tail: 4 };
+    let params = FlyParams {
+        lambda: 20,
+        tail: 4,
+    };
     let (old, new) = two_epochs(300);
-    let good = FlyClientProof { epochs: vec![prove(&new, &params), prove(&old, &params)] };
+    let good = FlyClientProof {
+        epochs: vec![prove(&new, &params), prove(&old, &params)],
+    };
 
     let mut anchor = anchor_of(&old);
     anchor.hash[0] ^= 1;
@@ -413,14 +487,18 @@ fn wrong_anchor_or_broken_link_is_caught() {
 
     // an NU6.3 epoch built on a different parent does not link
     let stray = synth_epoch(3_428_143, 300, [0x77u8; 32], 2);
-    let bad = FlyClientProof { epochs: vec![prove(&stray, &params), prove(&old, &params)] };
+    let bad = FlyClientProof {
+        epochs: vec![prove(&stray, &params), prove(&old, &params)],
+    };
     assert!(matches!(
         verify_flyclient_without_pow(&bad, Network::Mainnet, &params, &anchor_of(&old)),
         Err(FlyError::Link(_))
     ));
 
     // the tip epoch alone does not reach the anchor
-    let short = FlyClientProof { epochs: vec![prove(&new, &params)] };
+    let short = FlyClientProof {
+        epochs: vec![prove(&new, &params)],
+    };
     assert!(matches!(
         verify_flyclient_without_pow(&short, Network::Mainnet, &params, &anchor_of(&old)),
         Err(FlyError::Anchor(_))
@@ -440,7 +518,10 @@ fn the_server_cannot_shrink_the_tree() {
 fn proofs_over_a_prefix_match_a_tree_of_that_size() {
     // the server's store already holds the tip's own leaf; the tip commits to
     // the prefix without it
-    let params = FlyParams { lambda: 20, tail: 4 };
+    let params = FlyParams {
+        lambda: 20,
+        tail: 4,
+    };
     let e = synth_epoch(3_428_143, 300, [1u8; 32], 9);
     let mut bigger = HistoryStore::new();
     for i in 0..e.store.len() {
@@ -448,11 +529,20 @@ fn proofs_over_a_prefix_match_a_tree_of_that_size() {
     }
     let extra = HistoryNode::V3(synth_v3(e.epoch.branch_id, 3_428_143 + 300, 300));
     bigger.push(extra).unwrap();
-    assert_eq!(bigger.root_at(300).unwrap().hash(), e.store.root().unwrap().hash());
+    assert_eq!(
+        bigger.root_at(300).unwrap().hash(),
+        e.store.root().unwrap().hash()
+    );
     let plan = plan_epoch(&bigger, 300, &e.epoch, &e.commit.hash, &params).unwrap();
-    let p = assemble_epoch(&bigger, 300, &e.epoch, e.commit.header.clone(), Some(e.adr), &plan, |i| {
-        e.headers.get(i as usize).cloned()
-    })
+    let p = assemble_epoch(
+        &bigger,
+        300,
+        &e.epoch,
+        e.commit.header.clone(),
+        Some(e.adr),
+        &plan,
+        |i| e.headers.get(i as usize).cloned(),
+    )
     .unwrap();
     assert_eq!(p, prove(&e, &params));
     check(&e, p, &params).unwrap();
@@ -470,9 +560,73 @@ fn padded_proofs_are_rejected_before_checking_leaves() {
             index: i,
             header: e.headers[i as usize].clone(),
             leaf: e.store.leaf(i).unwrap().to_bytes(),
-            path: e.store.path(i).unwrap().into_iter().map(|n| n.to_bytes()).collect(),
+            path: e
+                .store
+                .path(i)
+                .unwrap()
+                .into_iter()
+                .map(|n| n.to_bytes())
+                .collect(),
         })
         .collect();
     p.leaves.extend(extra);
     assert!(matches!(check(&e, p, &params), Err(FlyError::Epoch(_))));
+}
+
+// ---------------------------------------------------------------- upgrades
+
+/// NU6.3 with `n` blocks, then an upgrade this build has never heard of.
+fn nu63_then_unknown(n: u64, unknown_branch: u32, tip_leaves: u64) -> (SynthEpoch, SynthEpoch) {
+    let old = synth_epoch(3_428_143, n, [4u8; 32], 11);
+    let activation = 3_428_143 + n as u32 + 1;
+    let new = synth_epoch_in(
+        Epoch::new(activation, unknown_branch, None),
+        tip_leaves,
+        old.commit.hash,
+        12,
+    );
+    (old, new)
+}
+
+#[test]
+fn an_upgrade_this_build_does_not_know_verifies_from_the_proof() {
+    let params = FlyParams {
+        lambda: 20,
+        tail: 4,
+    };
+    let (old, new) = nu63_then_unknown(400, 0xdead_beef, 150);
+    assert_eq!(new.epoch.version, NodeVersion::V3);
+    let proof = FlyClientProof {
+        epochs: vec![prove(&new, &params), prove(&old, &params)],
+    };
+    let chain =
+        verify_flyclient_without_pow(&proof, Network::Mainnet, &params, &anchor_of(&old)).unwrap();
+    assert_eq!(chain.tip_height, new.epoch.activation + 150);
+    assert_eq!(chain.epochs[0].epoch.branch_id, 0xdead_beef);
+}
+
+#[test]
+fn an_unknown_upgrade_cannot_hide_inside_a_known_epoch_or_reuse_a_known_id() {
+    let params = FlyParams {
+        lambda: 20,
+        tail: 4,
+    };
+    // a known branch id at a new height
+    let (old, new) = nu63_then_unknown(400, 0x37a5_165b, 150);
+    let proof = FlyClientProof {
+        epochs: vec![prove(&new, &params), prove(&old, &params)],
+    };
+    assert!(matches!(
+        verify_flyclient_without_pow(&proof, Network::Mainnet, &params, &anchor_of(&old)),
+        Err(FlyError::Epoch(_))
+    ));
+    // an unknown epoch starting inside the known NU6.2 range
+    let fake = synth_epoch_in(Epoch::new(3_400_000, 0xdead_beef, None), 50, [6u8; 32], 13);
+    let proof = FlyClientProof {
+        epochs: vec![prove(&fake, &params)],
+    };
+    assert!(matches!(
+        verify_flyclient_without_pow(&proof, Network::Mainnet, &params, &anchor_of(&fake)),
+        Err(FlyError::Epoch(_))
+    ));
 }

@@ -2,7 +2,7 @@
 
 use primitive_types::U256;
 
-use super::epochs::{epoch_activated_at, Epoch, Network};
+use super::epochs::{Epoch, Network, Schedule};
 use super::header::{bits_work, BlockHeader};
 use super::node::HistoryNode;
 use super::proof::{EpochProof, FlyClientProof};
@@ -25,7 +25,10 @@ impl Anchor {
     pub fn nu5_mainnet() -> Self {
         let mut hash = crate::ACTIVATION_HASH_MAINNET;
         hash.reverse();
-        Anchor { height: crate::ORCHARD_ACTIVATION_HEIGHT, hash }
+        Anchor {
+            height: crate::ORCHARD_ACTIVATION_HEIGHT,
+            hash,
+        }
     }
 
     /// The NU6.3 (Ironwood) activation block on mainnet. A server only has to
@@ -33,7 +36,10 @@ impl Anchor {
     pub fn nu6_3_mainnet() -> Self {
         let mut hash = crate::IRONWOOD_ACTIVATION_HASH_MAINNET;
         hash.reverse();
-        Anchor { height: crate::IRONWOOD_ACTIVATION_HEIGHT, hash }
+        Anchor {
+            height: crate::IRONWOOD_ACTIVATION_HEIGHT,
+            hash,
+        }
     }
 }
 
@@ -118,10 +124,14 @@ fn verify_inner(
         let (v, first_prev) = verify_epoch(ep, network, params, pow)?;
         if let Some((prev_hash, newer_activation)) = link {
             if v.commit_height.checked_add(1) != Some(newer_activation) {
-                return Err(FlyError::Link("epoch does not end right before the next one"));
+                return Err(FlyError::Link(
+                    "epoch does not end right before the next one",
+                ));
             }
             if v.commit_hash != prev_hash {
-                return Err(FlyError::Link("activation block's parent is not this epoch's last block"));
+                return Err(FlyError::Link(
+                    "activation block's parent is not this epoch's last block",
+                ));
             }
         } else {
             // the newest epoch's committing header is the tip; count its own work
@@ -137,12 +147,22 @@ fn verify_inner(
 
     let oldest = verified.last().expect("non-empty");
     if oldest.epoch.activation != anchor.height {
-        return Err(FlyError::Anchor("oldest epoch does not start at the anchor"));
+        return Err(FlyError::Anchor(
+            "oldest epoch does not start at the anchor",
+        ));
     }
-    let first_leaf = proof.epochs.last().expect("non-empty").leaves.iter().find(|l| l.index == 0);
+    let first_leaf = proof
+        .epochs
+        .last()
+        .expect("non-empty")
+        .leaves
+        .iter()
+        .find(|l| l.index == 0);
     let first = first_leaf.ok_or(FlyError::Missing(0))?;
     if BlockHeader::parse(&first.header)?.hash != anchor.hash {
-        return Err(FlyError::Anchor("anchor epoch's first block is not the anchor block"));
+        return Err(FlyError::Anchor(
+            "anchor epoch's first block is not the anchor block",
+        ));
     }
 
     let newest = &verified[0];
@@ -154,6 +174,42 @@ fn verify_inner(
     })
 }
 
+/// The epoch an epoch proof claims. An upgrade this build knows must match its
+/// compiled activation and branch id. An upgrade newer than every one this
+/// build knows (NU7, ...) is taken from the proof: the branch id personalizes
+/// every history-tree hash and the header commits to the result, so a wrong
+/// id or boundary cannot verify, and the epochs must still link to the anchor.
+fn epoch_for(ep: &EpochProof, network: Network) -> FlyResult<Epoch> {
+    let known = Schedule::compiled(network);
+    if let Some(e) = known.activated_at(ep.activation) {
+        if ep.branch_id != e.branch_id {
+            return Err(FlyError::Epoch("branch id does not match the epoch"));
+        }
+        return Ok(e);
+    }
+    if known
+        .newest_activation()
+        .is_some_and(|newest| ep.activation <= newest)
+    {
+        return Err(FlyError::Epoch("no history epoch activates at this height"));
+    }
+    if known.epochs().iter().any(|e| e.branch_id == ep.branch_id) {
+        return Err(FlyError::Epoch(
+            "a known upgrade's branch id at a new height",
+        ));
+    }
+    let e = Epoch::new(ep.activation, ep.branch_id, None);
+    if Schedule::from_upgrades([(ep.activation, ep.branch_id)])
+        .epochs()
+        .is_empty()
+    {
+        return Err(FlyError::Epoch(
+            "a pre-Heartwood branch id has no history tree",
+        ));
+    }
+    Ok(e)
+}
+
 /// Verify one epoch. Returns it and the `hashPrevBlock` of its activation
 /// block, which must be the previous epoch's committing block.
 fn verify_epoch(
@@ -162,11 +218,7 @@ fn verify_epoch(
     params: &FlyParams,
     pow: bool,
 ) -> FlyResult<(VerifiedEpoch, [u8; 32])> {
-    let epoch = epoch_activated_at(network, ep.activation)
-        .ok_or(FlyError::Epoch("no history epoch activates at this height"))?;
-    if ep.branch_id != epoch.branch_id {
-        return Err(FlyError::Epoch("branch id does not match the epoch"));
-    }
+    let epoch = epoch_for(ep, network)?;
     if ep.n_leaves == 0 {
         return Err(FlyError::Epoch("an epoch proof needs at least one leaf"));
     }
@@ -214,7 +266,9 @@ fn verify_epoch(
     // a hostile server could pad the proof to burn Equihash checks
     let (_, max_samples) = sample_count(params, ep.n_leaves);
     if ep.leaves.len() > required_leaves(params, ep.n_leaves).len() + max_samples as usize {
-        return Err(FlyError::Epoch("proof opens more leaves than sampling can ask for"));
+        return Err(FlyError::Epoch(
+            "proof opens more leaves than sampling can ask for",
+        ));
     }
 
     // 3. each opened leaf is authentic and its block has real work
@@ -224,7 +278,10 @@ fn verify_epoch(
     let mut last_hash = None;
     for lp in &ep.leaves {
         let i = lp.index;
-        let bad = |reason| FlyError::Leaf { index: i as u32, reason };
+        let bad = |reason| FlyError::Leaf {
+            index: i as u32,
+            reason,
+        };
         if i >= ep.n_leaves {
             return Err(bad("index beyond the tree"));
         }
@@ -272,7 +329,9 @@ fn verify_epoch(
         for n in &peak_nodes[..pi] {
             before = before.checked_add(n.work()).ok_or(bad("work overflows"))?;
         }
-        let end = before.checked_add(leaf.work()).ok_or(bad("work overflows"))?;
+        let end = before
+            .checked_add(leaf.work())
+            .ok_or(bad("work overflows"))?;
         intervals.push((before, end, i));
 
         if i == 0 {
@@ -291,7 +350,13 @@ fn verify_epoch(
         }
     }
     let (k, m) = sample_count(params, ep.n_leaves);
-    let s = seed(epoch.branch_id, ep.activation, ep.n_leaves, &root_hash, &commit.hash);
+    let s = seed(
+        epoch.branch_id,
+        ep.activation,
+        ep.n_leaves,
+        &root_hash,
+        &commit.hash,
+    );
     intervals.sort();
     for (j, p) in sample_points(&s, k, m, root.work()).into_iter().enumerate() {
         let at = intervals.partition_point(|(start, _, _)| *start <= p);
@@ -303,7 +368,9 @@ fn verify_epoch(
 
     // 5. the committing header extends the tree's last block
     if last_hash != Some(commit.prev_hash) {
-        return Err(FlyError::Link("committing header's parent is not the tree's last leaf"));
+        return Err(FlyError::Link(
+            "committing header's parent is not the tree's last leaf",
+        ));
     }
 
     Ok((

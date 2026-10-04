@@ -39,7 +39,7 @@ pub mod sampling;
 pub mod store;
 pub mod verify;
 
-pub use epochs::{Epoch, Network};
+pub use epochs::{Epoch, Network, Schedule};
 pub use header::BlockHeader;
 pub use node::{HistoryNode, NodeVersion};
 pub use proof::{EpochProof, FlyClientProof, LeafProof};

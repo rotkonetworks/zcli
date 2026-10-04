@@ -28,7 +28,7 @@ use orchard::tree::MerkleHashOrchard;
 use tokio::sync::{Mutex, RwLock};
 use tracing::{error, info, warn};
 use zcash_history::{NodeData, NodeDataV2, NodeDataV3};
-use zync_core::flyclient::epochs::{epoch_activated_at, epoch_at, epochs, Epoch, Network};
+use zync_core::flyclient::epochs::{Epoch, Network, Schedule};
 use zync_core::flyclient::header::{bits_work, BlockHeader};
 use zync_core::flyclient::node::{HistoryNode, NodeVersion};
 use zync_core::flyclient::proof::{assemble_epoch, plan_epoch, EpochProof, FlyClientProof};
@@ -120,12 +120,9 @@ async fn fetch_leaf(zebrad: &ZebradClient, epoch: &Epoch, height: u32) -> Result
         .map_err(|e| ZidecarError::Validation(format!("header {height}: {e}")))?;
     let block = zebrad.get_block_verbose_at(height).await?;
     let (sapling_tx, orchard_tx, ironwood_tx) = pool_counts(&block);
-    let sapling_root = hex32_reversed(
-        block
-            .finalsaplingroot
-            .as_deref()
-            .ok_or_else(|| ZidecarError::Validation(format!("block {height}: no finalsaplingroot")))?,
-    )?;
+    let sapling_root = hex32_reversed(block.finalsaplingroot.as_deref().ok_or_else(|| {
+        ZidecarError::Validation(format!("block {height}: no finalsaplingroot"))
+    })?)?;
     let work = bits_work(header.bits)
         .ok_or_else(|| ZidecarError::Validation(format!("block {height}: invalid nBits")))?;
     let v1 = NodeData {
@@ -204,13 +201,16 @@ impl State {
         self.stores.entry(epoch.activation).or_default()
     }
 
-    fn leaf_hash(&self, network: Network, height: u32) -> Option<[u8; 32]> {
-        let e = epoch_at(network, height)?;
-        let leaf = self.stores.get(&e.activation)?.leaf((height - e.activation) as u64)?;
+    fn leaf_hash(&self, schedule: &Schedule, height: u32) -> Option<[u8; 32]> {
+        let e = schedule.at(height)?;
+        let leaf = self
+            .stores
+            .get(&e.activation)?
+            .leaf((height - e.activation) as u64)?;
         Some(leaf.v1().subtree_commitment)
     }
 
-    fn truncate_to(&mut self, network: Network, last_kept: u32) {
+    fn truncate_to(&mut self, schedule: &Schedule, last_kept: u32) {
         for (activation, store) in self.stores.iter_mut() {
             let keep = if last_kept < *activation {
                 0
@@ -222,13 +222,17 @@ impl State {
             }
         }
         self.stores.retain(|_, s| !s.is_empty());
-        self.indexed_to = epoch_at(network, last_kept).map(|_| last_kept);
+        self.indexed_to = schedule.at(last_kept).map(|_| last_kept);
     }
 }
 
 pub struct HistoryIndex {
     network: Network,
     anchor: Anchor,
+    /// Upgrade schedule, refreshed from zebrad on every pass so upgrades this
+    /// build does not know (NU7, ...) are followed as soon as the node knows
+    /// them. Starts from the compiled one.
+    schedule: std::sync::RwLock<Schedule>,
     state: RwLock<State>,
     /// Proofs for closed epochs never change; key (activation, lambda, tail).
     closed: Mutex<HashMap<(u32, u32, u32), EpochProof>>,
@@ -238,7 +242,8 @@ pub struct HistoryIndex {
 
 impl HistoryIndex {
     pub fn new(network: Network, anchor: Anchor) -> Result<Self> {
-        if epoch_activated_at(network, anchor.height).is_none() {
+        let compiled = Schedule::compiled(network);
+        if compiled.activated_at(anchor.height).is_none() {
             return Err(ZidecarError::Validation(format!(
                 "FlyClient anchor {} is not a history-tree activation height",
                 anchor.height
@@ -247,6 +252,7 @@ impl HistoryIndex {
         Ok(Self {
             network,
             anchor,
+            schedule: std::sync::RwLock::new(compiled),
             state: RwLock::new(State::default()),
             closed: Mutex::new(HashMap::new()),
             tip: Mutex::new(None),
@@ -257,12 +263,43 @@ impl HistoryIndex {
         self.anchor
     }
 
+    fn schedule(&self) -> Schedule {
+        self.schedule.read().expect("schedule lock").clone()
+    }
+
+    /// Take the node's upgrade list when it reports one. A node that knows
+    /// fewer upgrades than this build (an old zebrad) keeps the compiled list.
+    fn refresh_schedule(&self, upgrades: Vec<(u32, u32)>) {
+        let from_node = Schedule::from_upgrades(upgrades);
+        let compiled = Schedule::compiled(self.network);
+        let pick = if from_node.epochs().len() >= compiled.epochs().len() {
+            from_node
+        } else {
+            compiled
+        };
+        let mut s = self.schedule.write().expect("schedule lock");
+        if *s != pick {
+            if let Some(e) = pick.epochs().last() {
+                info!(
+                    "history: upgrade schedule has {} epochs, newest branch {:08x} at {}",
+                    pick.epochs().len(),
+                    e.branch_id,
+                    e.activation
+                );
+            }
+            *s = pick;
+        }
+    }
+
     /// Reload stored leaves into memory. Stops at the first gap.
     async fn load(&self, storage: &Storage) -> Result<()> {
+        let schedule = self.schedule();
         let mut st = self.state.write().await;
         let mut height = self.anchor.height;
         while let Some(bytes) = storage.get_history_leaf(height)? {
-            let Some(epoch) = epoch_at(self.network, height) else { break };
+            let Some(epoch) = schedule.at(height) else {
+                break;
+            };
             let node = HistoryNode::from_bytes(epoch.version, epoch.branch_id, &bytes)
                 .map_err(|e| ZidecarError::Storage(format!("history leaf {height}: {e}")))?;
             if let Err(e) = st.store_for(&epoch).push(node) {
@@ -286,7 +323,10 @@ impl HistoryIndex {
         storage: Arc<Storage>,
         mut shutdown: tokio::sync::watch::Receiver<bool>,
     ) {
-        info!("history: FlyClient index from anchor {}", self.anchor.height);
+        info!(
+            "history: FlyClient index from anchor {}",
+            self.anchor.height
+        );
         if let Err(e) = self.load(&storage).await {
             error!("history: could not load stored leaves: {e}");
         }
@@ -311,7 +351,10 @@ impl HistoryIndex {
 
     /// Index one batch. Returns `true` when caught up with the tip.
     async fn step(&self, zebrad: &ZebradClient, storage: &Storage) -> Result<bool> {
-        let tip = zebrad.get_blockchain_info().await?.blocks;
+        let info = zebrad.get_blockchain_info().await?;
+        self.refresh_schedule(info.upgrade_schedule());
+        let schedule = self.schedule();
+        let tip = info.blocks;
         let next = {
             let st = self.state.read().await;
             st.indexed_to.map_or(self.anchor.height, |h| h + 1)
@@ -320,13 +363,15 @@ impl HistoryIndex {
             return Ok(true);
         }
         let end = tip.min(next + 999);
-        let network = self.network;
         let leaves: Vec<BlockLeaf> = stream::iter(next..=end)
-            .map(|h| async move {
-                let epoch = epoch_at(network, h).ok_or_else(|| {
-                    ZidecarError::Validation(format!("height {h} has no history epoch"))
-                })?;
-                fetch_leaf(zebrad, &epoch, h).await
+            .map(|h| {
+                let schedule = &schedule;
+                async move {
+                    let epoch = schedule.at(h).ok_or_else(|| {
+                        ZidecarError::Validation(format!("height {h} has no history epoch"))
+                    })?;
+                    fetch_leaf(zebrad, &epoch, h).await
+                }
             })
             .buffered(FETCH_CONCURRENCY)
             .try_collect()
@@ -335,15 +380,19 @@ impl HistoryIndex {
         let mut st = self.state.write().await;
         for b in leaves {
             // a reorg shows up as a parent we do not have
-            if let Some(prev) = b.height.checked_sub(1).and_then(|p| st.leaf_hash(network, p)) {
+            if let Some(prev) = b
+                .height
+                .checked_sub(1)
+                .and_then(|p| st.leaf_hash(&schedule, p))
+            {
                 if prev != b.header.prev_hash {
                     drop(st);
                     self.rollback(zebrad, storage, b.height - 1).await?;
                     return Ok(false);
                 }
             }
-            let epoch = epoch_at(network, b.height).expect("checked when fetched");
-            self.check_commitment(&st, &epoch, &b)?;
+            let epoch = schedule.at(b.height).expect("checked when fetched");
+            self.check_commitment(&st, &schedule, &epoch, &b)?;
             st.store_for(&epoch)
                 .push(b.leaf.clone())
                 .map_err(|e| ZidecarError::Validation(format!("history leaf {}: {e}", b.height)))?;
@@ -356,16 +405,22 @@ impl HistoryIndex {
 
     /// Fail-closed self-check: the block's header must commit to the tree we
     /// built from the blocks before it.
-    fn check_commitment(&self, st: &State, epoch: &Epoch, b: &BlockLeaf) -> Result<()> {
+    fn check_commitment(
+        &self,
+        st: &State,
+        schedule: &Schedule,
+        epoch: &Epoch,
+        b: &BlockLeaf,
+    ) -> Result<()> {
         let expected = if b.height == epoch.activation {
             // An activation block commits to the previous epoch's complete
             // tree, under its own epoch's rule. Heartwood's commits to nothing.
-            let prev = epochs(self.network)
-                .into_iter()
-                .find(|e| e.end == Some(epoch.activation));
+            let prev = schedule.before(epoch);
             match prev.and_then(|p| st.stores.get(&p.activation).map(|s| (p, s))) {
                 Some((p, store)) if store.len() == (epoch.activation - p.activation) as u64 => {
-                    let root = store.root().map_err(|e| ZidecarError::Validation(e.to_string()))?;
+                    let root = store
+                        .root()
+                        .map_err(|e| ZidecarError::Validation(e.to_string()))?;
                     Some(expected_commitment(epoch, &root.hash(), &b.auth_data_root))
                 }
                 // below the anchor: nothing of ours to compare with
@@ -411,7 +466,7 @@ impl HistoryIndex {
                 self.state.write().await.fault = Some(msg.clone());
                 return Err(ZidecarError::Validation(msg));
             }
-            let ours = self.state.read().await.leaf_hash(self.network, h);
+            let ours = self.state.read().await.leaf_hash(&self.schedule(), h);
             let theirs = hex32_reversed(&zebrad.get_block_hash(h).await?)?;
             if ours == Some(theirs) {
                 break;
@@ -421,7 +476,7 @@ impl HistoryIndex {
         warn!("history: reorg, rolling back to {h}");
         storage.delete_history_from(h + 1)?;
         let mut st = self.state.write().await;
-        st.truncate_to(self.network, h);
+        st.truncate_to(&self.schedule(), h);
         *self.tip.lock().await = None;
         Ok(())
     }
@@ -442,11 +497,15 @@ impl HistoryIndex {
             (st.indexed_to, st.fault.clone())
         };
         if let Some(f) = fault {
-            return Err(ZidecarError::Validation(format!("history index is faulted: {f}")));
+            return Err(ZidecarError::Validation(format!(
+                "history index is faulted: {f}"
+            )));
         }
-        let mut commit = tip.ok_or_else(|| ZidecarError::Validation("history index is empty".into()))?;
+        let mut commit =
+            tip.ok_or_else(|| ZidecarError::Validation("history index is empty".into()))?;
         // an activation block's own tree is empty; let its parent commit instead
-        if epoch_at(self.network, commit).map(|e| e.activation) == Some(commit) {
+        let schedule = self.schedule();
+        if schedule.at(commit).map(|e| e.activation) == Some(commit) {
             commit -= 1;
         }
 
@@ -454,10 +513,13 @@ impl HistoryIndex {
         let mut plan = Vec::new();
         let mut c = commit;
         loop {
-            let e = epoch_at(self.network, c)
-                .ok_or_else(|| ZidecarError::Validation(format!("height {c} has no history epoch")))?;
+            let e = schedule.at(c).ok_or_else(|| {
+                ZidecarError::Validation(format!("height {c} has no history epoch"))
+            })?;
             if c <= e.activation {
-                return Err(ZidecarError::Validation("history index has not reached the anchor epoch's second block".into()));
+                return Err(ZidecarError::Validation(
+                    "history index has not reached the anchor epoch's second block".into(),
+                ));
             }
             plan.push((e, c));
             if e.activation <= self.anchor.height {
@@ -470,7 +532,12 @@ impl HistoryIndex {
         for (i, (epoch, c)) in plan.iter().enumerate() {
             let closed = i > 0;
             if closed {
-                if let Some(p) = self.closed.lock().await.get(&(epoch.activation, params.lambda, params.tail)) {
+                if let Some(p) =
+                    self.closed
+                        .lock()
+                        .await
+                        .get(&(epoch.activation, params.lambda, params.tail))
+                {
                     epochs_out.push(p.clone());
                     continue;
                 }
@@ -487,11 +554,25 @@ impl HistoryIndex {
                     }
                 }
             }
-            let ep = self.epoch_proof(zebrad, storage, epoch, *c, commit_header, &commit_hash, &params).await?;
+            let ep = self
+                .epoch_proof(
+                    zebrad,
+                    storage,
+                    epoch,
+                    *c,
+                    commit_header,
+                    &commit_hash,
+                    &params,
+                )
+                .await?;
             if closed {
-                self.closed.lock().await.insert((epoch.activation, params.lambda, params.tail), ep.clone());
+                self.closed
+                    .lock()
+                    .await
+                    .insert((epoch.activation, params.lambda, params.tail), ep.clone());
             } else {
-                *self.tip.lock().await = Some((commit_hash, params.lambda, params.tail, ep.clone()));
+                *self.tip.lock().await =
+                    Some((commit_hash, params.lambda, params.tail, ep.clone()));
             }
             epochs_out.push(ep);
         }
@@ -506,7 +587,9 @@ impl HistoryIndex {
             .await
             .map_err(|e| ZidecarError::Validation(format!("proof self-check panicked: {e}")))?
             .map_err(|e| {
-                ZidecarError::Validation(format!("built a FlyClient proof that does not verify: {e}"))
+                ZidecarError::Validation(format!(
+                    "built a FlyClient proof that does not verify: {e}"
+                ))
             })?;
         Ok(proof)
     }
@@ -534,7 +617,9 @@ impl HistoryIndex {
         };
         let headers: HashMap<u64, Vec<u8>> = stream::iter(indices.iter().copied())
             .map(|i| async move {
-                fetch_header(zebrad, epoch.activation + i as u32).await.map(|h| (i, h))
+                fetch_header(zebrad, epoch.activation + i as u32)
+                    .await
+                    .map(|h| (i, h))
             })
             .buffer_unordered(FETCH_CONCURRENCY)
             .try_collect()
@@ -551,8 +636,10 @@ impl HistoryIndex {
             .stores
             .get(&epoch.activation)
             .ok_or_else(|| ZidecarError::Validation("epoch not indexed".into()))?;
-        assemble_epoch(store, n, epoch, commit_header, adr, &indices, |i| headers.get(&i).cloned())
-            .map_err(|e| ZidecarError::Validation(e.to_string()))
+        assemble_epoch(store, n, epoch, commit_header, adr, &indices, |i| {
+            headers.get(&i).cloned()
+        })
+        .map_err(|e| ZidecarError::Validation(e.to_string()))
     }
 }
 
@@ -561,7 +648,12 @@ mod tests {
     use super::*;
     use crate::zebrad::{OrchardAction, OrchardData, RawTransaction, SaplingOutput};
 
-    fn tx(sapling_out: bool, orchard: usize, ironwood: usize, digest: Option<&str>) -> RawTransaction {
+    fn tx(
+        sapling_out: bool,
+        orchard: usize,
+        ironwood: usize,
+        digest: Option<&str>,
+    ) -> RawTransaction {
         let action = OrchardAction {
             cv: String::new(),
             nullifier: String::new(),
@@ -589,10 +681,61 @@ mod tests {
             } else {
                 vec![]
             }),
-            orchard: Some(OrchardData { actions: vec![action.clone(); orchard] }),
-            ironwood: Some(OrchardData { actions: vec![action; ironwood] }),
+            orchard: Some(OrchardData {
+                actions: vec![action.clone(); orchard],
+            }),
+            ironwood: Some(OrchardData {
+                actions: vec![action; ironwood],
+            }),
             authdigest: digest.map(str::to_string),
         }
+    }
+
+    #[test]
+    fn the_schedule_follows_what_zebrad_reports() {
+        // getblockchaininfo's shape: upgrades keyed by big-endian branch id
+        let json = r#"{
+            "chain": "main", "blocks": 3500000, "bestblockhash": "00", "difficulty": 1.0,
+            "upgrades": {
+                "5ba81b19": {"name": "Overwinter", "activationheight": 347500, "status": "active"},
+                "f5b9230b": {"name": "Heartwood", "activationheight": 903000, "status": "active"},
+                "e9ff75a6": {"name": "Canopy", "activationheight": 1046400, "status": "active"},
+                "c2d6d0b4": {"name": "NU5", "activationheight": 1687104, "status": "active"},
+                "c8e71055": {"name": "NU6", "activationheight": 2726400, "status": "active"},
+                "4dec4df0": {"name": "NU6.1", "activationheight": 3146400, "status": "active"},
+                "5437f330": {"name": "NU6.2", "activationheight": 3364600, "status": "active"},
+                "37a5165b": {"name": "NU6.3", "activationheight": 3428143, "status": "active"},
+                "deadbeef": {"name": "NU7", "activationheight": 3600000, "status": "pending"}
+            }
+        }"#;
+        let info: crate::zebrad::BlockchainInfo = serde_json::from_str(json).unwrap();
+        let s = Schedule::from_upgrades(info.upgrade_schedule());
+        assert_eq!(s.epochs().first().unwrap().activation, 903_000);
+        assert_eq!(s.at(1_700_000).unwrap().branch_id, 0xc2d6_d0b4);
+        assert_eq!(s.at(3_500_000).unwrap().end, Some(3_600_000));
+        let nu7 = s.at(3_600_001).unwrap();
+        assert_eq!(nu7.branch_id, 0xdead_beef);
+        assert!(!nu7.commits_root_directly());
+
+        // an index on mainnet takes it, since it knows at least as much
+        let index = HistoryIndex::new(
+            Network::Mainnet,
+            zync_core::flyclient::Anchor::nu6_3_mainnet(),
+        )
+        .unwrap();
+        index.refresh_schedule(info.upgrade_schedule());
+        assert_eq!(
+            index.schedule().at(3_600_001).unwrap().branch_id,
+            0xdead_beef
+        );
+        // and keeps the compiled list when a node reports nothing
+        let index = HistoryIndex::new(
+            Network::Mainnet,
+            zync_core::flyclient::Anchor::nu6_3_mainnet(),
+        )
+        .unwrap();
+        index.refresh_schedule(vec![]);
+        assert_eq!(index.schedule(), Schedule::compiled(Network::Mainnet));
     }
 
     #[test]
@@ -600,7 +743,12 @@ mod tests {
         let block = BlockVerbose {
             hash: String::new(),
             height: 1,
-            tx: vec![tx(false, 0, 0, None), tx(true, 2, 0, None), tx(false, 0, 3, None), tx(true, 1, 1, None)],
+            tx: vec![
+                tx(false, 0, 0, None),
+                tx(true, 2, 0, None),
+                tx(false, 0, 3, None),
+                tx(true, 1, 1, None),
+            ],
             finalsaplingroot: None,
         };
         assert_eq!(pool_counts(&block), (2, 2, 2));

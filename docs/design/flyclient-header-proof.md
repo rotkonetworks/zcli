@@ -85,6 +85,19 @@ with the client's verifier before sending it.
   it in wasm is cheap. Ligerito may wrap it later for size; correctness no
   longer depends on it.
 
+## Network upgrades are not hardcoded
+
+Epochs come from a `Schedule`: the upgrades `zcash_protocol` knows, or any
+`(activation height, branch id)` list. zidecar refreshes its schedule from
+zebrad's `getblockchaininfo` on every pass, so an upgrade a newer zebrad knows
+(NU7, ...) is indexed without a zidecar release. The verifier checks upgrades
+it knows against the compiled table and takes a newer one from the proof:
+the branch id personalizes every history-tree hash and the PoW header commits
+to the result, so a wrong id or boundary cannot verify, and the epoch must
+still link down to the anchor. An unknown upgrade gets the newest node format
+(V3) and the NU5 header binding; if it changes the node format, parsing fails
+and the proof is rejected until the code learns the new format.
+
 ## Details that are easy to get wrong
 
 - Sampling must agree bit for bit between a native server and a wasm client,

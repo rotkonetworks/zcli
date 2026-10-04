@@ -377,6 +377,32 @@ pub struct BlockchainInfo {
     pub difficulty: f64,
     #[serde(default)]
     pub consensus: Option<ConsensusInfo>,
+    /// Every network upgrade the node knows, keyed by branch id in big-endian
+    /// hex ("c2d6d0b4" is NU5), active or scheduled.
+    #[serde(default)]
+    pub upgrades: std::collections::HashMap<String, UpgradeInfo>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct UpgradeInfo {
+    #[serde(default)]
+    pub name: String,
+    #[serde(rename = "activationheight")]
+    pub activation_height: u32,
+}
+
+impl BlockchainInfo {
+    /// `(activation height, branch id)` for every upgrade the node reports.
+    pub fn upgrade_schedule(&self) -> Vec<(u32, u32)> {
+        self.upgrades
+            .iter()
+            .filter_map(|(id, u)| {
+                u32::from_str_radix(id, 16)
+                    .ok()
+                    .map(|b| (u.activation_height, b))
+            })
+            .collect()
+    }
 }
 
 #[derive(Debug, Deserialize)]
