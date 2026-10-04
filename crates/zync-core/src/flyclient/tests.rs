@@ -457,3 +457,22 @@ fn proofs_over_a_prefix_match_a_tree_of_that_size() {
     assert_eq!(p, prove(&e, &params));
     check(&e, p, &params).unwrap();
 }
+
+#[test]
+fn padded_proofs_are_rejected_before_checking_leaves() {
+    // every extra leaf would cost the client an Equihash check
+    let (e, mut p, params) = single(5000);
+    let opened: BTreeSet<u64> = p.leaves.iter().map(|l| l.index).collect();
+    let extra: Vec<_> = (1..p.n_leaves)
+        .filter(|i| !opened.contains(i))
+        .take(400)
+        .map(|i| super::proof::LeafProof {
+            index: i,
+            header: e.headers[i as usize].clone(),
+            leaf: e.store.leaf(i).unwrap().to_bytes(),
+            path: e.store.path(i).unwrap().into_iter().map(|n| n.to_bytes()).collect(),
+        })
+        .collect();
+    p.leaves.extend(extra);
+    assert!(matches!(check(&e, p, &params), Err(FlyError::Epoch(_))));
+}

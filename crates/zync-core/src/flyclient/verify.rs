@@ -211,6 +211,12 @@ fn verify_epoch(
         return Err(FlyError::Tree("header does not commit to these peaks"));
     }
 
+    // a hostile server could pad the proof to burn Equihash checks
+    let (_, max_samples) = sample_count(params, ep.n_leaves);
+    if ep.leaves.len() > required_leaves(params, ep.n_leaves).len() + max_samples as usize {
+        return Err(FlyError::Epoch("proof opens more leaves than sampling can ask for"));
+    }
+
     // 3. each opened leaf is authentic and its block has real work
     let mut intervals: Vec<(U256, U256, u64)> = Vec::with_capacity(ep.leaves.len());
     let mut seen = std::collections::BTreeSet::new();
@@ -278,9 +284,10 @@ fn verify_epoch(
     }
 
     // 4. the server opened what Fiat-Shamir and the tail rule demand
-    for i in required_leaves(params, ep.n_leaves) {
-        if !seen.contains(&i) {
-            return Err(FlyError::Missing(i as u32));
+    let required = required_leaves(params, ep.n_leaves);
+    for i in &required {
+        if !seen.contains(i) {
+            return Err(FlyError::Missing(*i as u32));
         }
     }
     let (k, m) = sample_count(params, ep.n_leaves);

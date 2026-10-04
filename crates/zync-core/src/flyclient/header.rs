@@ -56,6 +56,9 @@ impl BlockHeader {
         if raw[140..143] != [0xfd, 0x40, 0x05] {
             return Err(FlyError::Header("solution length is not 1344"));
         }
+        if le32(&raw[0..4]) < 4 {
+            return Err(FlyError::Header("block version below 4"));
+        }
         Ok(BlockHeader {
             version: le32(&raw[0..4]),
             prev_hash: arr32(&raw[4..36]),

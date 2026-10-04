@@ -18,8 +18,12 @@ use orchard::tree::MerkleHashOrchard;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShieldedPool {
     Orchard,
-    /// NU6.3 pool. Same frontier wire format as orchard, but a second,
-    /// independent tree with its own hash type. Not yet supported.
+    /// NU6.3 pool. Same frontier wire format as orchard and a second,
+    /// independent tree. Zebra stores it as an Orchard note commitment tree
+    /// (`zebra_state` `ironwood_tree_*` return `orchard::tree::NoteCommitmentTree`),
+    /// i.e. the same hash; `history.rs` relies on that and its fail-closed
+    /// header check would catch it if it were wrong. This dispatcher still
+    /// refuses until that check has passed against a live node.
     Ironwood,
 }
 
@@ -50,19 +54,17 @@ pub fn parse_orchard_tree_root(final_state_hex: &str) -> [u8; 32] {
 }
 
 /// Pool-dispatching variant of the frontier parse. The orchard arm is the
-/// exact code path `parse_orchard_tree_root` uses; the ironwood arm is a
-/// refusal until the ironwood node hash type is available (the pool's
-/// personalization / empty-leaf constants are not published in a crate we
-/// can depend on yet), so callers surface a clear error instead of garbage.
+/// exact code path `parse_orchard_tree_root` uses; the ironwood arm refuses
+/// for now (see [`ShieldedPool::Ironwood`]: zebra hashes it like Orchard, and
+/// the history index already parses it that way under a consensus check).
 pub fn parse_pool_tree_root(
     pool: ShieldedPool,
     final_state_hex: &str,
 ) -> Result<[u8; 32], &'static str> {
     match pool {
         ShieldedPool::Orchard => Ok(parse_orchard_tree_root(final_state_hex)),
-        // When ironwood's hash type lands, this becomes
-        // `Ok(parse_frontier_tree_root::<MerkleHashIronwood>(final_state_hex))`
-        // and the refusal disappears.
+        // Once history.rs has passed its header check on NU6.3 blocks, this
+        // becomes `Ok(parse_frontier_tree_root::<MerkleHashOrchard>(..))`.
         ShieldedPool::Ironwood => Err("ironwood pool not yet supported"),
     }
 }

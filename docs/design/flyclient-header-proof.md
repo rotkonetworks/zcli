@@ -19,11 +19,27 @@ does not scale, which is why the anchor sat at a configured start.
 ## What we built instead
 
 Every header since Heartwood commits to a Merkle mountain range over the
-blocks of its own network-upgrade epoch. The commitment is in a proof-of-work
-header, so the tree is authenticated by consensus for free. Each node carries
-subtree work, first/last note commitment tree roots and shielded transaction
-counts. FlyClient checks a logarithmic number of headers, chosen by work, and
-their MMR paths.
+blocks of its own network-upgrade epoch. Each node carries subtree work,
+first/last note commitment tree roots and shielded transaction counts.
+FlyClient checks a logarithmic number of headers, chosen by work, and their
+MMR paths.
+
+What that binds, and what it does not:
+
+- **The header chain** (block hashes, times, targets, work of the leaves) is
+  bound by proof of work: every sampled leaf must match a header with a valid
+  Equihash solution, at a work point the server did not choose.
+- **The tree's other fields** (note commitment tree roots, transaction counts)
+  are only as good as the committing header. A server can mine one block on
+  top of the honest chain whose commitment opens to a fabricated tree whose
+  leaves copy honest headers: every sample passes, honest nodes reject the
+  block, a lone light client cannot tell. So treat `end_orchard_root`,
+  `end_ironwood_root` and the counts as proven only when the committing header
+  is a block independent nodes report (`zcli signer verify` requires the
+  FlyClient tip to be the cross-verified tip, or confirmed by >2/3 of
+  `--verify-endpoints`), or is buried under enough work that faking it costs
+  more than it gains. This is FlyClient's own "connected to at least one
+  honest node" assumption, made explicit.
 
 Per epoch, newest first, the verifier (`verify_flyclient`) checks:
 
@@ -62,7 +78,8 @@ with the client's verifier before sending it.
 - **Two header-binding modes**, as above; the old note only described the NU5
   one.
 - **Anchors.** NU5 activation (already compiled into zync) or NU6.3 activation
-  (`IRONWOOD_ACTIVATION_HASH_MAINNET`). With the NU6.3 anchor the server only
+  (`IRONWOOD_ACTIVATION_HASH_MAINNET`, `00000000001a8b54…8128d761`, checked
+  against blockchair, zec.rocks and zcash.rotko.net). With the NU6.3 anchor the server only
   indexes the current epoch.
 - **Native, not ligerito.** A FlyClient proof is already logarithmic; checking
   it in wasm is cheap. Ligerito may wrap it later for size; correctness no
@@ -101,7 +118,8 @@ with the client's verifier before sending it.
 
 ## Not done yet
 
-1. **Validate against a live zebrad.** The index has only run against unit
+1. **Validate against a live zebrad** (`zidecar --zidecar-rpc --flyclient nu6.3`
+   pointed at a node, read-only). The index has only run against unit
    fixtures. The first sync is the real test: the fail-closed check compares
    every block's header to our tree, so any byte-order or count mistake shows
    up as a refusal to serve, not as bad proofs.
@@ -115,7 +133,10 @@ with the client's verifier before sending it.
    (~1.7M leaves). Fine for `nu6.3`; for `nu5`, store closed epochs' nodes on
    disk.
 5. **zafu.** Expose `verify_flyclient` through `zcash-wasm` and call
-   `GetFlyClientProof` from the extension (separate repo).
+   `GetFlyClientProof` from the extension (separate repo), with the same tip
+   cross-check zcli does before trusting any root or count. zync-core's tonic
+   `ZidecarClient` has no FlyClient call yet; if one is added, raise its 4 MB
+   decode limit — multi-epoch proofs exceed it.
 6. **Ligerito.** Either retire the header trace in favour of FlyClient-bound
    roots, or prove "this FlyClient proof verifies" to shrink it.
 

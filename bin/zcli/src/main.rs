@@ -738,7 +738,7 @@ async fn cmd_verify(cli: &Cli, mainnet: bool) -> Result<(), Error> {
     }
 
     // step 5: FlyClient over the ZIP-221 history tree
-    let fly = verify_flyclient_step(cli, &zidecar, mainnet, tip, &tip_hash).await?;
+    let fly = verify_flyclient_step(cli, &zidecar, mainnet, tip, &tip_hash, &endpoints).await?;
 
     if !cli.json {
         eprintln!();
@@ -781,6 +781,7 @@ async fn verify_flyclient_step(
     mainnet: bool,
     tip: u32,
     tip_hash: &[u8],
+    endpoints: &[&str],
 ) -> Result<serde_json::Value, Error> {
     use zync_core::flyclient::{verify_flyclient, Anchor, FlyParams, Network};
 
@@ -813,17 +814,52 @@ async fn verify_flyclient_step(
     let chain = verify_flyclient(&proof, Network::Mainnet, &params, &anchor)
         .map_err(|e| Error::Other(format!("flyclient verification failed: {e}")))?;
 
-    // the FlyClient tip may trail the zidecar tip by the index lag; at the
-    // same height it must be the same block
+    // PoW sampling binds the header chain, not the tree's other fields: a
+    // server could mine one block on the honest chain whose commitment opens
+    // to a made-up tree, and every sample would still pass. So the committing
+    // tip must be a block other nodes have: either the tip step 2 already
+    // cross-verified, or one the --verify-endpoints agree on.
     let mut fly_tip_display = chain.tip_hash;
     fly_tip_display.reverse();
     if chain.tip_height > tip {
         return Err(Error::Other("flyclient tip is ahead of the server's tip".into()));
     }
-    if chain.tip_height == tip && fly_tip_display.as_slice() != tip_hash {
-        return Err(Error::Other(
-            "flyclient tip differs from the server's tip at the same height".into(),
-        ));
+    if chain.tip_height == tip {
+        if fly_tip_display.as_slice() != tip_hash {
+            return Err(Error::Other(
+                "flyclient tip differs from the server's tip at the same height".into(),
+            ));
+        }
+    } else if endpoints.is_empty() {
+        return Err(Error::Other(format!(
+            "flyclient tip {} trails the server tip {} and no --verify-endpoints are \
+             configured to cross-check it; retry, or configure endpoints",
+            chain.tip_height, tip
+        )));
+    } else {
+        let (mut agree, mut disagree) = (0u32, 0u32);
+        for &ep in endpoints {
+            let Ok(lwd) = client::LightwalletdClient::connect(ep).await else { continue };
+            if let Ok((_, hash, _)) = lwd.get_block(chain.tip_height as u64).await {
+                let mut rev = hash.clone();
+                rev.reverse();
+                if hash == fly_tip_display || rev == fly_tip_display {
+                    agree += 1;
+                } else {
+                    disagree += 1;
+                }
+            }
+        }
+        let total = agree + disagree;
+        if total == 0 || agree < (total * 2).div_ceil(3) {
+            return Err(Error::Other(format!(
+                "flyclient tip {} not confirmed by independent nodes ({agree}/{total} agree)",
+                chain.tip_height
+            )));
+        }
+        if !cli.json {
+            eprintln!("   flyclient tip confirmed by {agree}/{total} independent nodes");
+        }
     }
     let root = chain.tip_root();
     if !cli.json {
