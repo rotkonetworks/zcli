@@ -25,7 +25,7 @@ pub struct Cli {
         long,
         global = true,
         env = "ZCLI_ENDPOINT",
-        default_value = "https://zcash.rotko.net"
+        default_value = MAINNET_ENDPOINT
     )]
     pub endpoint: String,
 
@@ -34,7 +34,7 @@ pub struct Cli {
         long,
         global = true,
         env = "ZCLI_VERIFY_ENDPOINTS",
-        default_value = "https://na.zec.rocks,https://eu.zec.rocks,https://ap.zec.rocks,https://us.zec.stardust.rest,https://eu.zec.stardust.rest,https://jp.zec.stardust.rest",
+        default_value = MAINNET_VERIFY_ENDPOINTS,
         hide = true
     )]
     pub verify_endpoints: String,
@@ -43,18 +43,40 @@ pub struct Cli {
     #[arg(long, global = true, env = "ZCLI_JSON")]
     pub json: bool,
 
-    /// use mainnet (always true — testnet not supported yet)
+    /// use mainnet (the default; kept so old scripts passing it still parse)
     #[arg(long, global = true, default_value_t = true, hide = true)]
     pub mainnet: bool,
+
+    /// use testnet: endpoint defaults to testzcash.rotko.net, wallet lives
+    /// in ~/.zcli/testnet, no cross-verification against mainnet nodes
+    #[arg(long, global = true, env = "ZCLI_TESTNET")]
+    pub testnet: bool,
 
     /// use watch-only (FVK) wallet instead of SSH key wallet
     #[arg(short = 'w', long, global = true, env = "ZCLI_WATCH")]
     pub watch: bool,
 }
 
+pub const MAINNET_ENDPOINT: &str = "https://zcash.rotko.net";
+pub const TESTNET_ENDPOINT: &str = "https://testzcash.rotko.net";
+pub const MAINNET_VERIFY_ENDPOINTS: &str = "https://na.zec.rocks,https://eu.zec.rocks,https://ap.zec.rocks,https://us.zec.stardust.rest,https://eu.zec.stardust.rest,https://jp.zec.stardust.rest";
+
 impl Cli {
     pub fn is_mainnet(&self) -> bool {
-        true
+        !self.testnet
+    }
+
+    /// On testnet, swap the mainnet defaults for testnet ones. An explicit
+    /// non-default `--endpoint` / `--verify-endpoints` is left alone.
+    pub fn apply_network_defaults(&mut self) {
+        if self.testnet {
+            if self.endpoint == MAINNET_ENDPOINT {
+                self.endpoint = TESTNET_ENDPOINT.into();
+            }
+            if self.verify_endpoints == MAINNET_VERIFY_ENDPOINTS {
+                self.verify_endpoints.clear();
+            }
+        }
     }
 
     pub fn expand_tilde(path: &str) -> String {

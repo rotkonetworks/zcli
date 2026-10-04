@@ -8,7 +8,7 @@
 //! RUSTFLAGS='-C target-feature=+simd128' wasm-pack build --target web --out-dir ../bin/zidecar/www/pkg
 //! ```
 
-mod consensus;
+pub mod consensus;
 mod frost;
 /// HOT shielded-voting vote-casting bindings (casting slice only).
 #[cfg(feature = "voting")]

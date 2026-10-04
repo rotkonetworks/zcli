@@ -18,7 +18,9 @@ use zecli::error::Error;
 
 #[tokio::main]
 async fn main() {
-    let cli = Cli::parse();
+    let mut cli = Cli::parse();
+    cli.apply_network_defaults();
+    wallet::set_testnet(cli.testnet);
     let code = match run(&cli).await {
         Ok(()) => 0,
         Err(e) => {
