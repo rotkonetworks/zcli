@@ -42,6 +42,12 @@ fn nu5_activation_header_is_the_compiled_anchor() {
 }
 
 #[test]
+fn nu6_3_activation_header_is_the_compiled_anchor() {
+    let h = BlockHeader::parse(&fixture(3_428_143)).unwrap();
+    assert_eq!(h.hash, Anchor::nu6_3_mainnet().hash);
+}
+
+#[test]
 fn activation_blocks_link_to_the_previous_epoch() {
     for (last, activation) in [(1_687_103, 1_687_104), (3_428_142, 3_428_143)] {
         let prev = BlockHeader::parse(&fixture(last)).unwrap();
@@ -241,9 +247,11 @@ fn synth_epoch(activation: u32, n: u64, prev: [u8; 32], seed: u64) -> SynthEpoch
 }
 
 fn prove(e: &SynthEpoch, params: &FlyParams) -> EpochProof {
-    let plan = plan_epoch(&e.store, &e.epoch, &e.commit.hash, params).unwrap();
+    let n = e.store.len();
+    let plan = plan_epoch(&e.store, n, &e.epoch, &e.commit.hash, params).unwrap();
     assemble_epoch(
         &e.store,
+        n,
         &e.epoch,
         e.commit.header.clone(),
         Some(e.adr),
@@ -426,4 +434,26 @@ fn the_server_cannot_shrink_the_tree() {
     let (e, mut p, params) = single(600);
     p.n_leaves -= 1;
     assert!(check(&e, p, &params).is_err());
+}
+
+#[test]
+fn proofs_over_a_prefix_match_a_tree_of_that_size() {
+    // the server's store already holds the tip's own leaf; the tip commits to
+    // the prefix without it
+    let params = FlyParams { lambda: 20, tail: 4 };
+    let e = synth_epoch(3_428_143, 300, [1u8; 32], 9);
+    let mut bigger = HistoryStore::new();
+    for i in 0..e.store.len() {
+        bigger.push(e.store.leaf(i).unwrap().clone()).unwrap();
+    }
+    let extra = HistoryNode::V3(synth_v3(e.epoch.branch_id, 3_428_143 + 300, 300));
+    bigger.push(extra).unwrap();
+    assert_eq!(bigger.root_at(300).unwrap().hash(), e.store.root().unwrap().hash());
+    let plan = plan_epoch(&bigger, 300, &e.epoch, &e.commit.hash, &params).unwrap();
+    let p = assemble_epoch(&bigger, 300, &e.epoch, e.commit.header.clone(), Some(e.adr), &plan, |i| {
+        e.headers.get(i as usize).cloned()
+    })
+    .unwrap();
+    assert_eq!(p, prove(&e, &params));
+    check(&e, p, &params).unwrap();
 }

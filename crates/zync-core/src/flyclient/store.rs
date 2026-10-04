@@ -143,9 +143,26 @@ impl HistoryStore {
             .ok_or(FlyError::Tree("node outside the tree"))
     }
 
+    // Every method below has an `_at(n)` form that answers for the tree of
+    // the first `n` leaves. Each aligned subtree of that prefix is also a node
+    // of the full store, so no copy is needed: the block at height
+    // `activation + n` commits to exactly this prefix.
+
+    fn check_prefix(&self, n: u64) -> FlyResult<()> {
+        if n == 0 || n > self.len() {
+            return Err(FlyError::Tree("prefix outside the tree"));
+        }
+        Ok(())
+    }
+
     /// Peak nodes, left to right.
     pub fn peak_nodes(&self) -> FlyResult<Vec<&HistoryNode>> {
-        peaks(self.len())
+        self.peak_nodes_at(self.len())
+    }
+
+    pub fn peak_nodes_at(&self, n: u64) -> FlyResult<Vec<&HistoryNode>> {
+        self.check_prefix(n)?;
+        peaks(n)
             .iter()
             .map(|p| self.node(p.height, p.first_leaf >> p.height))
             .collect()
@@ -154,13 +171,22 @@ impl HistoryStore {
     /// The bagged root node; its [`HistoryNode::hash`] is the value the next
     /// block commits to.
     pub fn root(&self) -> FlyResult<HistoryNode> {
-        let peaks: Vec<HistoryNode> = self.peak_nodes()?.into_iter().cloned().collect();
+        self.root_at(self.len())
+    }
+
+    pub fn root_at(&self, n: u64) -> FlyResult<HistoryNode> {
+        let peaks: Vec<HistoryNode> = self.peak_nodes_at(n)?.into_iter().cloned().collect();
         bag(&peaks)
     }
 
     /// Siblings from a leaf up to (not including) its peak.
     pub fn path(&self, leaf: u64) -> FlyResult<Vec<&HistoryNode>> {
-        let peak = peaks(self.len())
+        self.path_at(self.len(), leaf)
+    }
+
+    pub fn path_at(&self, n: u64, leaf: u64) -> FlyResult<Vec<&HistoryNode>> {
+        self.check_prefix(n)?;
+        let peak = peaks(n)
             .into_iter()
             .find(|p| p.contains(leaf))
             .ok_or(FlyError::Tree("leaf outside the tree"))?;
@@ -173,8 +199,13 @@ impl HistoryStore {
     /// `[0, total work)`. Descends by the work recorded in each node, which is
     /// exactly the rule the verifier checks.
     pub fn leaf_at_work(&self, point: U256) -> FlyResult<u64> {
+        self.leaf_at_work_at(self.len(), point)
+    }
+
+    pub fn leaf_at_work_at(&self, n: u64, point: U256) -> FlyResult<u64> {
+        self.check_prefix(n)?;
         let mut before = U256::zero();
-        for p in peaks(self.len()) {
+        for p in peaks(n) {
             let peak = self.node(p.height, p.first_leaf >> p.height)?;
             if point >= before + peak.work() {
                 before += peak.work();

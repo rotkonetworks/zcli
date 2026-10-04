@@ -27,6 +27,14 @@ impl Anchor {
         hash.reverse();
         Anchor { height: crate::ORCHARD_ACTIVATION_HEIGHT, hash }
     }
+
+    /// The NU6.3 (Ironwood) activation block on mainnet. A server only has to
+    /// index the current epoch to serve proofs against it.
+    pub fn nu6_3_mainnet() -> Self {
+        let mut hash = crate::IRONWOOD_ACTIVATION_HASH_MAINNET;
+        hash.reverse();
+        Anchor { height: crate::IRONWOOD_ACTIVATION_HEIGHT, hash }
+    }
 }
 
 /// What a verified epoch tells you.
@@ -316,4 +324,31 @@ pub fn block_commitments(history_root: &[u8; 32], auth_data_root: &[u8; 32]) -> 
     let mut out = [0u8; 32];
     out.copy_from_slice(h.as_bytes());
     out
+}
+
+/// ZIP-244 `hashAuthDataRoot`: a BLAKE2b-256 (`ZcashAuthDatHash`) Merkle tree
+/// over the block's transaction auth digests in internal byte order, padded
+/// with zero leaves to a power of two. Pre-v5 transactions use `[0xff; 32]`.
+pub fn auth_data_root(digests: &[[u8; 32]]) -> [u8; 32] {
+    let mut level: Vec<[u8; 32]> = digests.to_vec();
+    let size = level.len().max(1).next_power_of_two();
+    level.resize(size, [0u8; 32]);
+    while level.len() > 1 {
+        level = level
+            .chunks(2)
+            .map(|pair| {
+                let h = blake2b_simd::Params::new()
+                    .hash_length(32)
+                    .personal(b"ZcashAuthDatHash")
+                    .to_state()
+                    .update(&pair[0])
+                    .update(&pair[1])
+                    .finalize();
+                let mut out = [0u8; 32];
+                out.copy_from_slice(h.as_bytes());
+                out
+            })
+            .collect();
+    }
+    level[0]
 }

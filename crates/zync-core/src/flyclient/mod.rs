@@ -44,7 +44,9 @@ pub use header::BlockHeader;
 pub use node::{HistoryNode, NodeVersion};
 pub use proof::{EpochProof, FlyClientProof, LeafProof};
 pub use sampling::FlyParams;
-pub use verify::{verify_flyclient, Anchor, VerifiedChain, VerifiedEpoch};
+pub use verify::{
+    auth_data_root, block_commitments, verify_flyclient, Anchor, VerifiedChain, VerifiedEpoch,
+};
 
 /// FlyClient verification errors. Every variant is a rejection: the proof is
 /// either malformed or does not match the chain the header commits to.

@@ -44,32 +44,33 @@ pub struct FlyClientProof {
 }
 
 /// Leaf indices an epoch proof must open: the required ones plus the leaf
-/// under every Fiat-Shamir sample point. The server calls this, fetches those
-/// headers, then calls [`assemble_epoch`].
+/// under every Fiat-Shamir sample point. `n` is the size of the tree the
+/// committing block (height `activation + n`) commits to; the store may hold
+/// more. The server calls this, fetches those headers, then calls
+/// [`assemble_epoch`].
 pub fn plan_epoch(
     store: &HistoryStore,
+    n: u64,
     epoch: &Epoch,
     commit_hash: &[u8; 32],
     params: &FlyParams,
 ) -> FlyResult<BTreeSet<u64>> {
-    let n = store.len();
-    if n == 0 {
-        return Err(FlyError::Tree("empty tree"));
-    }
-    let root = store.root()?;
+    let root = store.root_at(n)?;
     let (k, m) = sample_count(params, n);
     let s = seed(epoch.branch_id, epoch.activation, n, &root.hash(), commit_hash);
     let mut set = required_leaves(params, n);
     for p in sample_points(&s, k, m, root.work()) {
-        set.insert(store.leaf_at_work(p)?);
+        set.insert(store.leaf_at_work_at(n, p)?);
     }
     Ok(set)
 }
 
 /// Build the epoch proof. `header` returns the raw header of the block at a
 /// given leaf index (height `activation + index`).
+#[allow(clippy::too_many_arguments)]
 pub fn assemble_epoch(
     store: &HistoryStore,
+    n: u64,
     epoch: &Epoch,
     commit_header: Vec<u8>,
     auth_data_root: Option<[u8; 32]>,
@@ -77,7 +78,7 @@ pub fn assemble_epoch(
     mut header: impl FnMut(u64) -> Option<Vec<u8>>,
 ) -> FlyResult<EpochProof> {
     BlockHeader::parse(&commit_header)?;
-    let peaks = store.peak_nodes()?.into_iter().map(|p| p.to_bytes()).collect();
+    let peaks = store.peak_nodes_at(n)?.into_iter().map(|p| p.to_bytes()).collect();
     let leaves = leaves
         .iter()
         .map(|&i| {
@@ -86,16 +87,17 @@ pub fn assemble_epoch(
                 header: header(i).ok_or(FlyError::Missing(i as u32))?,
                 leaf: store
                     .leaf(i)
+                    .filter(|_| i < n)
                     .ok_or(FlyError::Tree("leaf outside the tree"))?
                     .to_bytes(),
-                path: store.path(i)?.into_iter().map(|n| n.to_bytes()).collect(),
+                path: store.path_at(n, i)?.into_iter().map(|n| n.to_bytes()).collect(),
             })
         })
         .collect::<FlyResult<Vec<_>>>()?;
     Ok(EpochProof {
         activation: epoch.activation,
         branch_id: epoch.branch_id,
-        n_leaves: store.len(),
+        n_leaves: n,
         commit_header,
         auth_data_root,
         peaks,
