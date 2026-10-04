@@ -93,6 +93,7 @@
 pub mod actions;
 pub mod endpoints;
 pub mod error;
+pub mod flyclient;
 pub mod nomt;
 pub mod prover;
 pub mod scanner;

@@ -7424,7 +7424,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
@@ -9426,7 +9426,7 @@ dependencies = [
  "zakura-orchard",
  "zakura-sapling-crypto",
  "zcash_address",
- "zcash_encoding",
+ "zcash_encoding 0.4.0",
  "zcash_protocol",
  "zcash_transparent",
  "zip32",
@@ -9549,7 +9549,7 @@ dependencies = [
  "zakura-orchard",
  "zakura-redjubjub",
  "zakura-sapling-crypto",
- "zcash_encoding",
+ "zcash_encoding 0.4.0",
  "zcash_note_encryption",
  "zcash_protocol",
  "zcash_script",
@@ -9643,7 +9643,7 @@ dependencies = [
  "bs58",
  "corez",
  "f4jumble",
- "zcash_encoding",
+ "zcash_encoding 0.4.0",
  "zcash_protocol",
 ]
 
@@ -9684,7 +9684,7 @@ dependencies = [
  "tracing",
  "which",
  "zcash_address",
- "zcash_encoding",
+ "zcash_encoding 0.4.0",
  "zcash_keys",
  "zcash_note_encryption",
  "zcash_primitives",
@@ -9731,7 +9731,7 @@ dependencies = [
  "uuid",
  "zcash_address",
  "zcash_client_backend",
- "zcash_encoding",
+ "zcash_encoding 0.4.0",
  "zcash_keys",
  "zcash_pool_migration",
  "zcash_primitives",
@@ -9750,6 +9750,29 @@ dependencies = [
  "corez",
  "hex",
  "nonempty",
+]
+
+[[package]]
+name = "zcash_encoding"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b2871fd3c37eaeb635c815a9c97495553bf8237a481b9f8b37eba661764bf937"
+dependencies = [
+ "corez",
+ "hex",
+ "nonempty",
+]
+
+[[package]]
+name = "zcash_history"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "da3dc4f915efe84d479343fb655505cfd26afcfd965f4678ad5ee339353acd62"
+dependencies = [
+ "blake2b_simd",
+ "corez",
+ "primitive-types",
+ "zcash_encoding 0.5.0",
 ]
 
 [[package]]
@@ -9774,7 +9797,7 @@ dependencies = [
  "subtle",
  "tracing",
  "zcash_address",
- "zcash_encoding",
+ "zcash_encoding 0.4.0",
  "zcash_protocol",
  "zcash_transparent",
  "zip32",
@@ -9838,7 +9861,7 @@ dependencies = [
  "redjubjub",
  "sapling-crypto",
  "sha2 0.10.9",
- "zcash_encoding",
+ "zcash_encoding 0.4.0",
  "zcash_note_encryption",
  "zcash_protocol",
  "zcash_script",
@@ -9855,7 +9878,7 @@ dependencies = [
  "document-features",
  "hex",
  "memuse",
- "zcash_encoding",
+ "zcash_encoding 0.4.0",
 ]
 
 [[package]]
@@ -9902,7 +9925,7 @@ dependencies = [
  "sha2 0.10.9",
  "subtle",
  "zcash_address",
- "zcash_encoding",
+ "zcash_encoding 0.4.0",
  "zcash_protocol",
  "zcash_script",
  "zcash_spec",
@@ -10251,13 +10274,16 @@ dependencies = [
  "bincode",
  "bitvec",
  "blake2",
+ "blake2b_simd",
  "console_error_panic_hook",
+ "equihash",
  "getrandom 0.2.17",
  "hex",
  "js-sys",
  "ligerito",
  "ligerito-binary-fields",
  "nomt-core",
+ "primitive-types",
  "prost 0.12.6",
  "rand 0.8.7",
  "rayon",
@@ -10274,5 +10300,7 @@ dependencies = [
  "wasm-bindgen-rayon",
  "zakura-orchard",
  "zakura-pasta-curves",
+ "zcash_history",
  "zcash_note_encryption",
+ "zcash_protocol",
 ]

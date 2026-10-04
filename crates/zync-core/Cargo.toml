@@ -43,6 +43,13 @@ anyhow = "1.0"
 hex = "0.4"
 bincode = "1.3"
 
+# FlyClient over the ZIP-221 chain history tree
+zcash_history = "0.6"
+zcash_protocol = { version = "0.10", default-features = false }
+equihash = { version = "0.3", default-features = false }
+primitive-types = { version = "0.12", default-features = false }
+blake2b_simd = "1"
+
 # nomt merkle proof verification
 nomt-core = { version = "1.0", features = ["blake3-hasher", "serde"] }
 bitvec = "1"
