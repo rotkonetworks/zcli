@@ -8311,7 +8311,7 @@ dependencies = [
 
 [[package]]
 name = "zclid"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -8339,7 +8339,7 @@ dependencies = [
 
 [[package]]
 name = "zecli"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "axum 0.8.9",
@@ -8497,7 +8497,7 @@ dependencies = [
 
 [[package]]
 name = "zidecar"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "ark-serialize",

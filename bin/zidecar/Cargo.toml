@@ -1,6 +1,6 @@
 [package]
 name = "zidecar"
-version = "0.9.0"
+version = "0.10.0"
 edition = "2021"
 license = "MIT"
 description = "Zcash light server: lightwalletd-compatible, with FlyClient proofs over the ZIP-221 history tree"
