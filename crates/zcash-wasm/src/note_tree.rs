@@ -28,9 +28,13 @@ use crate::witness::{deserialize_tree, deserialize_witness, PathElement, Witness
 
 pub const TREE_DEPTH: u8 = 32;
 pub const SHARD_HEIGHT: u8 = 16;
+/// leaves hashed per task when a batch is appended
+const FLUSH_CHUNK: usize = 1024;
 
 type H = MerkleHashOrchard;
 type Tree32 = ShardTree<TrackedStore, TREE_DEPTH, SHARD_HEIGHT>;
+/// a leaf waiting to be hashed into a subtree
+type Slot = Option<(H, Retention<u32>)>;
 
 /// A MemoryShardStore that remembers what changed since the last `take_changes`.
 pub struct TrackedStore {
@@ -580,13 +584,47 @@ impl NoteTreeCore {
         self.flush(run_start, &mut leaves)
     }
 
+    /// Hash `leaves` into subtrees of `FLUSH_CHUNK` leaves (in parallel where
+    /// rayon has threads, as zcash_client_backend's build_subtrees does), then
+    /// insert them in order.
     fn flush(&mut self, start: u64, leaves: &mut Vec<(H, Retention<u32>)>) -> Result<(), String> {
         if leaves.is_empty() {
             return Ok(());
         }
-        self.tree
-            .batch_insert(Position::from(start), leaves.drain(..))
-            .map_err(err("append"))?;
+        let start = Position::from(start);
+        let mut slots: Vec<Slot> = leaves.drain(..).map(Some).collect();
+        let build = |(i, chunk): (usize, &mut [Slot])| {
+            let from = start + (i * FLUSH_CHUNK) as u64;
+            let to = from + chunk.len() as u64;
+            LocatedPrunableTree::from_iter(
+                from..to,
+                Level::from(SHARD_HEIGHT),
+                chunk
+                    .iter_mut()
+                    .map(|n| n.take().expect("each slot is taken once")),
+            )
+            .map(|r| (r.subtree, r.checkpoints))
+        };
+        #[cfg(feature = "parallel")]
+        let built: Vec<_> = {
+            use rayon::prelude::*;
+            slots
+                .par_chunks_mut(FLUSH_CHUNK)
+                .enumerate()
+                .filter_map(build)
+                .collect()
+        };
+        #[cfg(not(feature = "parallel"))]
+        let built: Vec<_> = slots
+            .chunks_mut(FLUSH_CHUNK)
+            .enumerate()
+            .filter_map(build)
+            .collect();
+        for (subtree, checkpoints) in built {
+            self.tree
+                .insert_tree(subtree, checkpoints)
+                .map_err(err("append"))?;
+        }
         Ok(())
     }
 
