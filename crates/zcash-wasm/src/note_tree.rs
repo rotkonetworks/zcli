@@ -24,7 +24,9 @@ use shardtree::{
     LocatedPrunableTree, LocatedTree, Node, PrunableTree, RetentionFlags, ShardTree, Tree,
 };
 
-use crate::witness::{deserialize_tree, deserialize_witness, PathElement, WitnessPathResult};
+use crate::witness::{
+    deserialize_tree, deserialize_witness, PathElement, WitnessPathResult, WitnessReplay,
+};
 
 pub const TREE_DEPTH: u8 = 32;
 pub const SHARD_HEIGHT: u8 = 16;
@@ -389,6 +391,22 @@ impl NoteTreeCore {
         self.latest_checkpoint().and_then(|h| self.size_at(h))
     }
 
+    /// The newest retained checkpoint at or below `height`: where a rewind to
+    /// `height` can land without dropping the tree.
+    pub fn checkpoint_at_or_below(&self, height: u32) -> Option<u32> {
+        let mut best = None;
+        self.tree
+            .store()
+            .for_each_checkpoint(usize::MAX, |id, _| {
+                if *id <= height {
+                    best = Some(*id);
+                }
+                Ok(())
+            })
+            .unwrap();
+        best
+    }
+
     pub fn is_marked(&self, position: u64) -> bool {
         matches!(
             self.tree.get_marked_leaf(Position::from(position)),
@@ -443,6 +461,66 @@ impl NoteTreeCore {
         self.tree
             .insert_witness_nodes(w, height)
             .map_err(err("insert witness"))
+    }
+
+    /// Make notes the tree does not hold witnessable again (a stored witness
+    /// that was stale at migration, or a tree dropped and reseeded): replay
+    /// `blocks` (the `append_blocks` encoding) from `frontier` (zcashd encoding,
+    /// the tree state before the first block), which must end exactly at the
+    /// checkpoint at `height`, and insert a witness for each of `positions` there.
+    /// Nothing is inserted unless every position was reached and the replayed
+    /// root equals the tree's root at `height`.
+    pub fn recover(
+        &mut self,
+        frontier: &[u8],
+        blocks: &[u8],
+        positions: &[u32],
+        height: u32,
+    ) -> Result<u32, String> {
+        let size = self
+            .size_at(height)
+            .ok_or_else(|| format!("no checkpoint at {height}"))?;
+        let want: Vec<u64> = positions.iter().map(|&p| p as u64).collect();
+        let mut replay = WitnessReplay::from_frontier_bytes(frontier, &want)?;
+        let mut r = Reader {
+            data: blocks,
+            pos: 0,
+        };
+        while r.pos < blocks.len() {
+            let _height = r.u32()?;
+            let n = r.u32()? as usize;
+            let cmxs = r.take(n.checked_mul(32).ok_or("block too large")?)?;
+            for cmx in cmxs.chunks(32) {
+                replay.append(leaf_hash(cmx))?;
+            }
+        }
+        if replay.next_position() != size {
+            return Err(format!(
+                "replay ends at size {}, checkpoint {height} at {size}",
+                replay.next_position()
+            ));
+        }
+        let root = self
+            .root_at(height)?
+            .ok_or_else(|| format!("no root at {height}"))?;
+        if replay.root().to_bytes() != root {
+            return Err(format!("replayed root differs from the tree's at {height}"));
+        }
+        let mut witnesses = Vec::with_capacity(want.len());
+        for (i, p) in want.iter().enumerate() {
+            witnesses.push(
+                replay
+                    .witness(i)
+                    .cloned()
+                    .ok_or_else(|| format!("position {p} not reached by the replay"))?,
+            );
+        }
+        for w in witnesses {
+            self.tree
+                .insert_witness_nodes(w, height)
+                .map_err(err("insert witness"))?;
+        }
+        Ok(want.len() as u32)
     }
 
     /// Add complete-shard roots from GetSubtreeRoots, `roots` = n x 32 bytes for
@@ -756,6 +834,10 @@ impl NoteTree {
         self.core.next_position().map(|p| p as f64)
     }
 
+    pub fn checkpoint_at_or_below(&self, height: u32) -> Option<u32> {
+        self.core.checkpoint_at_or_below(height)
+    }
+
     pub fn is_marked(&self, position: f64) -> bool {
         self.core.is_marked(position as u64)
     }
@@ -773,6 +855,21 @@ impl NoteTree {
     pub fn insert_witness(&mut self, witness_hex: &str, height: u32) -> Result<(), JsError> {
         let bytes = hex::decode(witness_hex).map_err(|e| JsError::new(&e.to_string()))?;
         self.core.insert_witness(&bytes, height).map_err(js_err)
+    }
+
+    /// witnesses for `positions` by replaying `blocks` from `frontier_hex` up to
+    /// the checkpoint at `height`; returns how many were inserted
+    pub fn recover(
+        &mut self,
+        frontier_hex: &str,
+        blocks: &[u8],
+        positions: &[u32],
+        height: u32,
+    ) -> Result<u32, JsError> {
+        let frontier = hex::decode(frontier_hex).map_err(|e| JsError::new(&e.to_string()))?;
+        self.core
+            .recover(&frontier, blocks, positions, height)
+            .map_err(js_err)
     }
 
     /// returns how many roots were taken (resume from start_index + n)
