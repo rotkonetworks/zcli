@@ -10,6 +10,7 @@ pub mod constants;
 pub mod error;
 pub mod grpc_service;
 pub mod history;
+pub mod legacy;
 pub mod lwd_service;
 pub mod middleware;
 pub mod orchard_tree;
