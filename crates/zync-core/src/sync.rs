@@ -45,10 +45,6 @@ pub fn hashes_match(a: &[u8], b: &[u8]) -> bool {
     a == b_rev.as_slice()
 }
 
-/// Validate a header proof and extract proven NOMT roots.
-///
-/// Returns `ProvenRoots` on success, or error if the proof is invalid,
-
 /// Extract the 580-byte enc_ciphertext for an action matching cmx+epk from raw tx bytes.
 ///
 /// V5 orchard action layout: cv(32) + nf(32) + rk(32) + cmx(32) + epk(32) + enc(580) + out(80) = 820 bytes
