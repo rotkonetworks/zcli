@@ -11,53 +11,6 @@
 
 use crate::error::Error;
 use prost::Message;
-use zync_core::nomt;
-
-// re-export for callers that use these directly
-pub use zync_core::nomt::{key_for_note, key_for_nullifier};
-
-#[derive(Debug, Clone)]
-pub struct CommitmentProof {
-    pub cmx: [u8; 32],
-    pub position: u64,
-    pub tree_root: [u8; 32],
-    pub path_proof_raw: Vec<u8>,
-    pub value_hash: [u8; 32],
-}
-
-impl CommitmentProof {
-    pub fn verify(&self) -> Result<bool, Error> {
-        nomt::verify_commitment_proof(
-            &self.cmx,
-            self.tree_root,
-            &self.path_proof_raw,
-            self.value_hash,
-        )
-        .map_err(|e| Error::Other(e.to_string()))
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct NullifierProof {
-    pub nullifier: [u8; 32],
-    pub nullifier_root: [u8; 32],
-    pub is_spent: bool,
-    pub path_proof_raw: Vec<u8>,
-    pub value_hash: [u8; 32],
-}
-
-impl NullifierProof {
-    pub fn verify(&self) -> Result<bool, Error> {
-        nomt::verify_nullifier_proof(
-            &self.nullifier,
-            self.nullifier_root,
-            self.is_spent,
-            &self.path_proof_raw,
-            self.value_hash,
-        )
-        .map_err(|e| Error::Other(e.to_string()))
-    }
-}
 
 #[allow(clippy::result_large_err, clippy::double_must_use)]
 pub mod zidecar_proto {
@@ -92,7 +45,10 @@ pub const NU6_2_BRANCH_ID: u32 = 0x5437F330;
 /// empty input so the caller can fall back safely.
 pub fn parse_branch_id(s: &str) -> Option<u32> {
     let t = s.trim();
-    let t = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")).unwrap_or(t);
+    let t = t
+        .strip_prefix("0x")
+        .or_else(|| t.strip_prefix("0X"))
+        .unwrap_or(t);
     if t.is_empty() {
         return None;
     }
@@ -235,41 +191,6 @@ mod already_accepted_tests {
             assert!(!rejection_means_already_accepted(m), "{m}");
         }
     }
-}
-
-// -- proto conversion --
-
-fn bytes_to_32(b: &[u8]) -> Result<[u8; 32], Error> {
-    b.try_into()
-        .map_err(|_| Error::Network(format!("expected 32 bytes, got {}", b.len())))
-}
-
-fn proto_to_commitment_proof(p: zidecar_proto::CommitmentProof) -> Result<CommitmentProof, Error> {
-    Ok(CommitmentProof {
-        cmx: bytes_to_32(&p.cmx)?,
-        position: p.position,
-        tree_root: bytes_to_32(&p.tree_root)?,
-        path_proof_raw: p.path_proof_raw,
-        value_hash: bytes_to_32(&p.value_hash)
-            .map_err(|_| Error::Other("missing value_hash in proof".into()))?,
-    })
-}
-
-fn proto_to_nullifier_proof(p: zidecar_proto::NullifierProof) -> Result<NullifierProof, Error> {
-    // for non-existence proofs (is_spent=false), value_hash can legitimately be zeros
-    let value_hash = if !p.is_spent && p.value_hash.is_empty() {
-        [0u8; 32]
-    } else {
-        bytes_to_32(&p.value_hash)
-            .map_err(|_| Error::Other("missing value_hash in proof".into()))?
-    };
-    Ok(NullifierProof {
-        nullifier: bytes_to_32(&p.nullifier)?,
-        nullifier_root: bytes_to_32(&p.nullifier_root)?,
-        is_spent: p.is_spent,
-        path_proof_raw: p.path_proof_raw,
-        value_hash,
-    })
 }
 
 // -- grpc-web transport --
@@ -750,32 +671,6 @@ impl ZidecarClient {
         Ok(Some((FlyClientProof { epochs }, resp.anchor_height)))
     }
 
-    pub async fn get_commitment_proofs(
-        &self,
-        cmxs: Vec<Vec<u8>>,
-        positions: Vec<u64>,
-        height: u32,
-    ) -> Result<(Vec<CommitmentProof>, [u8; 32]), Error> {
-        let resp: zidecar_proto::GetCommitmentProofsResponse = self
-            .call_unary(
-                "zidecar.v1.Zidecar/GetCommitmentProofs",
-                &zidecar_proto::GetCommitmentProofsRequest {
-                    cmxs,
-                    positions,
-                    height,
-                },
-            )
-            .await?;
-
-        let root = bytes_to_32(&resp.tree_root)?;
-        let proofs = resp
-            .proofs
-            .into_iter()
-            .map(proto_to_commitment_proof)
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok((proofs, root))
-    }
-
     pub async fn get_mempool_stream(&self) -> Result<Vec<CompactBlock>, Error> {
         let protos: Vec<zidecar_proto::CompactBlock> = self
             .call_server_stream(
@@ -794,27 +689,6 @@ impl ZidecarClient {
                 ironwood_actions: convert_actions(block.ironwood_actions),
             })
             .collect())
-    }
-
-    pub async fn get_nullifier_proofs(
-        &self,
-        nullifiers: Vec<Vec<u8>>,
-        height: u32,
-    ) -> Result<(Vec<NullifierProof>, [u8; 32]), Error> {
-        let resp: zidecar_proto::GetNullifierProofsResponse = self
-            .call_unary(
-                "zidecar.v1.Zidecar/GetNullifierProofs",
-                &zidecar_proto::GetNullifierProofsRequest { nullifiers, height },
-            )
-            .await?;
-
-        let root = bytes_to_32(&resp.nullifier_root)?;
-        let proofs = resp
-            .proofs
-            .into_iter()
-            .map(proto_to_nullifier_proof)
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok((proofs, root))
     }
 }
 
