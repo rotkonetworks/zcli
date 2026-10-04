@@ -23,7 +23,7 @@ pub use crate::wire::VotingRoundParams;
 pub const MIN_PROPOSAL_ID: u32 = 1;
 
 /// Highest valid on-chain proposal identifier supported by the vote circuit.
-pub const MAX_PROPOSAL_ID: u32 = 15;
+pub const MAX_PROPOSAL_ID: u32 = 50;
 
 /// Minimum number of options a proposal can declare.
 pub const MIN_VOTE_OPTIONS: u32 = 2;
@@ -399,6 +399,9 @@ pub struct GovernancePczt {
     /// ZIP-244 sighash extracted from the PCZT (32 bytes).
     /// Both Keystone and non-Keystone paths sign this.
     pub pczt_sighash: Vec<u8>,
+    /// Versioned effecting data for reconstructing the Ironwood TX1 sighash.
+    /// This contains transaction data only, never PCZT signer metadata.
+    pub tx1_effects: Vec<u8>,
 }
 
 /// El Gamal ciphertext of a voting share.
@@ -510,6 +513,8 @@ pub struct SharePayload {
     pub vote_decision: u32,
     pub enc_share: WireEncryptedShare,
     pub tree_position: u64,
+    /// Voting round ID as 32 bytes encoded in lowercase hex.
+    pub vote_round_id: String,
     /// All encrypted shares (public components only).
     pub all_enc_shares: Vec<WireEncryptedShare>,
     /// Pre-computed per-share Poseidon commitments (N x 32 bytes).
@@ -570,6 +575,8 @@ pub struct DelegationSubmissionData {
     pub spend_auth_sig: Vec<u8>,
     /// Canonical sighash (32 bytes). Blake2b-256 of domain-separated fields.
     pub sighash: Vec<u8>,
+    /// Versioned effecting data needed to reconstruct the Ironwood TX1 sighash.
+    pub tx1_effects: Vec<u8>,
 }
 
 /// Result of real delegation proof generation (ZKP #1).
@@ -901,7 +908,7 @@ pub fn validate_notes_for_round(notes: &[NoteInfo]) -> Result<(), VotingError> {
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "native"))]
 mod tests {
     use super::*;
     use crate::governance::BALLOT_DIVISOR;

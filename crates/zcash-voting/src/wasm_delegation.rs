@@ -251,3 +251,23 @@ pub fn prove_delegation(
         Some(&precomp),
     )
 }
+
+/// Checks a cold signer's spend-auth signature over the delegation sighash
+/// under the governance action's randomized key `rk`, as the vote chain does.
+pub fn verify_spend_auth_sig(
+    rk: &[u8],
+    sighash: &[u8; 32],
+    spend_auth_sig: &[u8; 64],
+) -> Result<(), VotingError> {
+    use orchard::primitives::redpallas::{Signature, SpendAuth, VerificationKey};
+    let rk: [u8; 32] = rk.try_into().map_err(|_| VotingError::InvalidInput {
+        message: format!("rk must be 32 bytes, got {}", rk.len()),
+    })?;
+    let vk = VerificationKey::<SpendAuth>::try_from(rk).map_err(|_| VotingError::InvalidInput {
+        message: "rk is not a valid RedPallas verification key".to_string(),
+    })?;
+    vk.verify(sighash, &Signature::<SpendAuth>::from(*spend_auth_sig))
+        .map_err(|_| VotingError::InvalidInput {
+            message: "spend_auth_sig does not verify under rk".to_string(),
+        })
+}

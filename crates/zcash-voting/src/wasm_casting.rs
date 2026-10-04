@@ -20,8 +20,9 @@
 //! * `address_index` / `total_note_value` — diversifier index and summed value of
 //!   the delegated note bundle.
 //! * `proposal_authority` — per-bundle authority bitmask; each already-submitted
-//!   vote clears its bit. For a bundle with no submitted votes this is the full
-//!   mask the delegation established, NOT a constant this module may invent.
+//!   vote clears its bit (see [`next_proposal_authority`]). For a bundle with no
+//!   submitted votes this is `voting_circuits::MAX_PROPOSAL_AUTHORITY`, the
+//!   constant the delegation circuit commits to.
 //! * `van_auth_path` / `van_position` / `anchor_height` — the VAN Merkle witness
 //!   in the vote-commitment tree, snapshotted after the delegation TX confirmed.
 
@@ -168,4 +169,109 @@ pub fn cast_vote_hot(
         signed_commitment,
         share_payloads,
     })
+}
+
+/// Proposal-authority bitmask after one vote on `proposal_id` in a bundle.
+///
+/// A fresh delegation grants [`voting_circuits::MAX_PROPOSAL_AUTHORITY`] (bit 0
+/// reserved, bits 1..=50 usable). Each cast clears its proposal's bit, and the
+/// vote proof for the next cast in the same bundle must start from the cleared
+/// mask. The mask is 51 bits wide, so hosts must not do this arithmetic in
+/// JavaScript (bitwise operators there are 32-bit).
+pub fn next_proposal_authority(authority: u64, proposal_id: u32) -> Result<u64, VotingError> {
+    crate::types::validate_proposal_id(proposal_id)?;
+    if authority > voting_circuits::MAX_PROPOSAL_AUTHORITY {
+        return Err(VotingError::InvalidInput {
+            message: format!(
+                "proposal_authority {authority} exceeds the circuit maximum {}",
+                voting_circuits::MAX_PROPOSAL_AUTHORITY
+            ),
+        });
+    }
+    let bit = 1u64 << proposal_id;
+    if authority & bit == 0 {
+        return Err(VotingError::InvalidInput {
+            message: format!("proposal {proposal_id} was already voted in this bundle"),
+        });
+    }
+    Ok(authority & !bit)
+}
+
+/// Helper-share payloads for a vote that is already on chain.
+///
+/// The helper needs the vote commitment's leaf position in the vote-commitment
+/// tree, which is only known once the cast-vote transaction is included. This
+/// rebuilds the payloads from the recovery bundle `cast_vote_hot` returned, so
+/// the shares match the submitted commitment (re-running the proof would draw
+/// fresh share randomness and a different `shares_hash`).
+pub fn share_payloads_from_recovery(
+    recovery_json: &str,
+    vc_tree_position: u64,
+) -> Result<Vec<SharePayload>, VotingError> {
+    let recovery = crate::vote::parse_recovery(recovery_json)?;
+    let enc_shares: Vec<WireEncryptedShare> = recovery
+        .encrypted_shares
+        .iter()
+        .map(WireEncryptedShare::from)
+        .collect();
+    // Only the share-facing fields are read by `build_share_payloads`.
+    let commitment = VoteCommitmentBundle {
+        van_nullifier: recovery.van_nullifier.to_vec(),
+        vote_authority_note_new: recovery.vote_authority_note_new.to_vec(),
+        vote_commitment: recovery.vote_commitment.to_vec(),
+        proposal_id: recovery.proposal_id,
+        proof: Vec::new(),
+        enc_shares: Vec::new(),
+        anchor_height: recovery.anchor_height,
+        vote_round_id: recovery.vote_round_id.clone(),
+        shares_hash: recovery.shares_hash.to_vec(),
+        share_blinds: recovery.share_blinds.iter().map(|b| b.to_vec()).collect(),
+        share_comms: recovery.share_comms.iter().map(|c| c.to_vec()).collect(),
+        r_vpk_bytes: recovery.r_vpk.to_vec(),
+        alpha_v: Vec::new(),
+    };
+    crate::vote_commitment::build_share_payloads(
+        &enc_shares,
+        &commitment,
+        recovery.vote_decision,
+        recovery.num_options,
+        vc_tree_position,
+        recovery.single_share,
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use voting_circuits::MAX_PROPOSAL_AUTHORITY;
+
+    #[test]
+    fn fresh_authority_covers_fifty_proposals() {
+        assert_eq!(MAX_PROPOSAL_AUTHORITY, (1u64 << 51) - 1);
+        for id in crate::types::MIN_PROPOSAL_ID..=crate::types::MAX_PROPOSAL_ID {
+            let next = next_proposal_authority(MAX_PROPOSAL_AUTHORITY, id).unwrap();
+            assert_eq!(next, MAX_PROPOSAL_AUTHORITY & !(1u64 << id));
+        }
+    }
+
+    #[test]
+    fn authority_chain_clears_one_bit_per_vote() {
+        let after_17 = next_proposal_authority(MAX_PROPOSAL_AUTHORITY, 17).unwrap();
+        let after_37 = next_proposal_authority(after_17, 37).unwrap();
+        assert_eq!(
+            after_37,
+            MAX_PROPOSAL_AUTHORITY & !(1u64 << 17) & !(1u64 << 37)
+        );
+        assert!(
+            next_proposal_authority(after_37, 17).is_err(),
+            "double vote"
+        );
+    }
+
+    #[test]
+    fn authority_rejects_out_of_range_inputs() {
+        assert!(next_proposal_authority(MAX_PROPOSAL_AUTHORITY, 0).is_err());
+        assert!(next_proposal_authority(MAX_PROPOSAL_AUTHORITY, 51).is_err());
+        assert!(next_proposal_authority(MAX_PROPOSAL_AUTHORITY + 1, 1).is_err());
+    }
 }

@@ -14,12 +14,16 @@
 //! vote is impossible without this prior delegation state.
 
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 
 use zcash_voting::types::Network;
 use zcash_voting::vote::VanWitness;
-use zcash_voting::wasm_casting::{cast_vote_hot, CastVoteInputs, CastVoteResult};
+use zcash_voting::types::SharePayload;
+use zcash_voting::wasm_casting::{
+    cast_vote_hot, next_proposal_authority, share_payloads_from_recovery, CastVoteInputs,
+    CastVoteResult,
+};
 use zcash_voting::wire::{DraftVote, VoteCommitmentWire, VoteShareWire};
 
 fn parse_network(network: &str) -> Result<Network, JsError> {
@@ -50,7 +54,7 @@ struct RoundParamsArg {
 
 /// Per-bundle delegation-phase state. Every field is host-persisted from the
 /// delegation phase; none may be defaulted or zeroed for a real vote.
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 struct DelegationStateArg {
     /// Diversifier index used for the hotkey address during delegation.
     address_index: u32,
@@ -58,7 +62,10 @@ struct DelegationStateArg {
     total_note_value: u64,
     /// 32-byte VAN blinding factor (hex).
     gov_comm_rand_hex: String,
-    /// Per-bundle proposal-authority bitmask (delegation/round submission state).
+    /// Per-bundle proposal-authority bitmask. A fresh bundle carries
+    /// `MAX_PROPOSAL_AUTHORITY` (51 bits); each cast clears its proposal's bit.
+    /// Take the next value from `next_delegation_state_json`, never compute it
+    /// in JS (bitwise operators there are 32-bit).
     proposal_authority: u64,
     /// Delegation bundle index this vote belongs to.
     bundle_index: u32,
@@ -112,7 +119,7 @@ fn run_cast(
     van_witness_json: &str,
     vote_json: &str,
     network: &str,
-) -> Result<(CastVoteResult, DraftVote), JsError> {
+) -> Result<(CastVoteResult, DraftVote, DelegationStateArg), JsError> {
     let net = parse_network(network)?;
     let hotkey_seed = hexd(hotkey_secret_hex, "hotkey_secret")?;
     let round: RoundParamsArg = serde_json::from_str(round_params_json)
@@ -144,7 +151,13 @@ fn run_cast(
 
     let result =
         cast_vote_hot(&inputs, &draft).map_err(|e| JsError::new(&format!("cast vote failed: {e}")))?;
-    Ok((result, draft))
+    let next_authority = next_proposal_authority(deleg.proposal_authority, draft.proposal_id)
+        .map_err(|e| JsError::new(&format!("proposal authority: {e}")))?;
+    let next_state = DelegationStateArg {
+        proposal_authority: next_authority,
+        ..deleg
+    };
+    Ok((result, draft, next_state))
 }
 
 /// Build the `POST /cast-vote` body ([`VoteCommitmentWire`]) for one HOT vote.
@@ -160,7 +173,7 @@ pub fn build_vote_commitment_wire(
     vote_json: &str,
     network: &str,
 ) -> Result<String, JsError> {
-    let (result, _) = run_cast(
+    let (result, _, _) = run_cast(
         hotkey_secret_hex,
         round_params_json,
         delegation_state_json,
@@ -186,7 +199,7 @@ pub fn build_vote_shares_wire(
     network: &str,
     submit_at: u64,
 ) -> Result<String, JsError> {
-    let (result, _) = run_cast(
+    let (result, _, _) = run_cast(
         hotkey_secret_hex,
         round_params_json,
         delegation_state_json,
@@ -194,7 +207,7 @@ pub fn build_vote_shares_wire(
         vote_json,
         network,
     )?;
-    let shares = share_wires(&result, submit_at)?;
+    let shares = share_wires(&result.share_payloads, submit_at)?;
     serde_json::to_string(&shares).map_err(|e| JsError::new(&format!("serialize shares: {e}")))
 }
 
@@ -214,7 +227,7 @@ pub fn cast_vote_hot_wire(
     network: &str,
     submit_at: u64,
 ) -> Result<String, JsError> {
-    let (result, _) = run_cast(
+    let (result, _, next_state) = run_cast(
         hotkey_secret_hex,
         round_params_json,
         delegation_state_json,
@@ -223,12 +236,15 @@ pub fn cast_vote_hot_wire(
         network,
     )?;
     let wire = commitment_wire(&result)?;
-    let shares = share_wires(&result, submit_at)?;
+    let shares = share_wires(&result.share_payloads, submit_at)?;
+    let next_state = serde_json::to_string(&next_state)
+        .map_err(|e| JsError::new(&format!("serialize delegation state: {e}")))?;
     let out = serde_json::json!({
         "proposal_id": result.signed_commitment.proposal_id,
         "wire": wire,
         "shares": shares,
         "commitment_bundle_json": result.signed_commitment.commitment_bundle_json,
+        "next_delegation_state_json": next_state,
     });
     Ok(out.to_string())
 }
@@ -252,23 +268,42 @@ fn commitment_wire(result: &CastVoteResult) -> Result<VoteCommitmentWire, JsErro
 }
 
 /// Mirror of `wire_codec::VoteShareWire::from_payload` over the payload set.
-fn share_wires(result: &CastVoteResult, submit_at: u64) -> Result<Vec<VoteShareWire>, JsError> {
-    result
-        .share_payloads
+fn share_wires(payloads: &[SharePayload], submit_at: u64) -> Result<Vec<VoteShareWire>, JsError> {
+    payloads
         .iter()
         .map(|p| {
             Ok(VoteShareWire {
+                vote_round_id: p.vote_round_id.clone(),
                 shares_hash: b64(&p.shares_hash),
                 proposal_id: p.proposal_id,
                 vote_decision: p.vote_decision,
                 encrypted_share: p.enc_share.clone(),
                 share_index: p.enc_share.share_index,
                 vc_tree_position: p.tree_position,
-                all_encrypted_shares: p.all_enc_shares.clone(),
                 share_comms: p.share_comms.iter().map(|c| b64(c)).collect(),
                 primary_blind: b64(&p.primary_blind),
                 submit_at,
             })
         })
         .collect()
+}
+
+/// Build the helper-share payloads (`[VoteShareWire]`, `POST {helper}/shielded-vote/v1/shares`)
+/// for a vote that is already on chain.
+///
+/// `commitment_bundle_json` is the recovery bundle `cast_vote_hot_wire`
+/// returned for this vote; `vc_tree_position` is the vote commitment's leaf
+/// index in the round's commitment tree, known once the cast-vote transaction
+/// is included. No proof runs here, so the shares match the submitted
+/// commitment.
+#[wasm_bindgen]
+pub fn build_vote_shares_from_recovery(
+    commitment_bundle_json: &str,
+    vc_tree_position: u64,
+    submit_at: u64,
+) -> Result<String, JsError> {
+    let payloads = share_payloads_from_recovery(commitment_bundle_json, vc_tree_position)
+        .map_err(|e| JsError::new(&format!("share payloads: {e}")))?;
+    let shares = share_wires(&payloads, submit_at)?;
+    serde_json::to_string(&shares).map_err(|e| JsError::new(&format!("serialize shares: {e}")))
 }

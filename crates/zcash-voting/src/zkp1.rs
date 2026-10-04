@@ -570,7 +570,7 @@ pub fn build_and_prove_delegation(
     })
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "native"))]
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU32, Ordering};

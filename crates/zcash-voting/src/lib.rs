@@ -54,6 +54,7 @@ pub mod phases;
 pub mod round;
 pub mod share_policy;
 mod shielded_protocol;
+pub mod tx1;
 pub mod types;
 pub mod vote;
 pub mod vote_commitment;
@@ -120,6 +121,11 @@ pub use pir_client::{
 };
 
 pub use governance::{BALLOT_DIVISOR, BUNDLE_NOTE_SLOTS};
+/// Proposal authority a fresh delegation grants: bit 0 reserved, bits 1..=50
+/// usable. The delegation circuit commits to it as a constant, so it changes
+/// with the circuit's verifying key (16 bits up to voting-circuits 0.11, 51
+/// bits from 0.12).
+pub use voting_circuits::MAX_PROPOSAL_AUTHORITY;
 pub use note_bundling::{
     minimum_voting_eligibility_for_notes, validate_minimum_voting_eligibility_for_notes,
     BundlePolicy, MinimumVotingEligibility, MINIMUM_VOTING_NOTE_COUNT,

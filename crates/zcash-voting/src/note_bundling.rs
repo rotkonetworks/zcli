@@ -342,7 +342,7 @@ fn bundle_addition_would_exceed_threshold(
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "native"))]
 mod tests {
     use super::*;
     use crate::types::NoteRef;

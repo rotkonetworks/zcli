@@ -51,7 +51,20 @@ rand = "0.8"
 rayon = { version = ">=1.10, <1.11", optional = true }
 wasm-bindgen-rayon = { version = "1.2", optional = true }
 
+# The Zakura Common 2.0 crypto stack (rand 0.10) pulls getrandom 0.4, whose
+# wasm32 backend needs the `wasm_js` feature plus the
+# `--cfg getrandom_backend="wasm_js"` rustflag already in the workspace
+# .cargo/config.toml. Same pin as crates/zcash-wasm; without it the wasm32
+# build stops at getrandom's compile_error!.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom_v04 = { package = "getrandom", version = "0.4", features = ["wasm_js"] }
+
 # [profile.release] intentionally omitted: cargo ignores per-package profiles
 # for non-root workspace members (see build warning); the workspace root has
 # no [profile.release] override, so this builds under cargo's plain release
 # defaults, matching zafu-wasm's own recipe (see BUILD_PROVENANCE.md).
+
+[dev-dependencies]
+reqwest = { version = "0.11", features = ["blocking", "json"] }
+vote-commitment-tree = { version = "=0.6.3", default-features = false, features = ["zakura"] }
+vote-commitment-tree-client = { version = "=0.8.3", features = ["http"] }

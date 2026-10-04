@@ -6,14 +6,14 @@ use rand::RngCore;
 use subtle::CtOption;
 
 use orchard::builder::{Builder, BundleType};
-use orchard::bundle::BundleVersion;
+use orchard::bundle::{BundleVersion, TxVersion as OrchardTxVersion};
 use orchard::keys::FullViewingKey;
 use orchard::note::{NoteVersion, RandomSeed, Rho};
 use orchard::pczt::Zip32Derivation;
-use orchard::tree::{MerkleHashOrchard, MerklePath};
 use orchard::value::NoteValue;
 use orchard::Address;
 use voting_circuits::delegation::synthetic_padding_note_parts;
+use zcash_keys::address::UnifiedAddress;
 use zcash_primitives::transaction::builder::PcztParts;
 use zcash_primitives::transaction::TxVersion;
 use zcash_protocol::consensus::{
@@ -28,8 +28,6 @@ use crate::types::{
     VotingError, VotingRoundParams,
 };
 
-/// Orchard Merkle tree depth (32 levels).
-const MERKLE_DEPTH: usize = 32;
 const DELEGATION_ACTION_FIXED_FIELD_COUNT: usize = 5;
 const MAX_PCZT_LAYOUT_ATTEMPTS: usize = 32;
 
@@ -482,26 +480,8 @@ pub(crate) fn build_governance_pczt(
     let (signed_note, rseed_signed_bytes) =
         make_dummy_note(sender_address, rho_for_note, &mut rng, shielded_protocol)?;
 
-    // --- Build PCZT using orchard Builder ---
-    // Dummy MerklePath: all-zero siblings, position 0.
-    // Compute the anchor from the note commitment so the Builder's anchor check passes.
-    let dummy_auth_path: [MerkleHashOrchard; MERKLE_DEPTH] = {
-        let zero_hash = MerkleHashOrchard::from_bytes(&[0u8; 32])
-            .into_option()
-            .ok_or_else(|| VotingError::Internal {
-                message: "zero bytes is not a valid MerkleHashOrchard".to_string(),
-            })?;
-        [zero_hash; MERKLE_DEPTH]
-    };
-    let dummy_merkle_path = MerklePath::from_parts(0u32, dummy_auth_path);
-    let anchor = {
-        let cm = signed_note.commitment();
-        dummy_merkle_path.root(cm.into())
-    };
-
     // Add output to hotkey address. The circuit commits to a zero-value output
     // note for cmx_new, so Phase 1 must use the same value and rseed.
-    let ovk = fvk.to_ovk(Scope::External);
     let memo = {
         let memo_str = crate::delegate::display_memo(round_name, total_weight);
         let mut buf = [0u8; 512];
@@ -514,32 +494,36 @@ pub(crate) fn build_governance_pczt(
     // Use Creator::build_from_parts to construct the PCZT with the selected
     // Orchard or Ironwood bundle, matching the wallet transaction builder path.
     let consensus_network = consensus_network_for_voting_network(network);
+    let hotkey_user_address = UnifiedAddress::from_receivers(Some(hotkey_addr), None)
+        .expect("an Orchard receiver forms a valid Unified Address")
+        .encode(&consensus_network);
 
     for _ in 0..MAX_PCZT_LAYOUT_ATTEMPTS {
-        let mut builder = Builder::new(
-            BundleType::DEFAULT,
+        // TX1 is V6-only and is never proved or broadcast, so its unused anchor
+        // and spend witness remain deferred instead of being fabricated.
+        let mut builder = Builder::new_with_anchor_deferred(
+            BundleType::UNPADDED,
             bundle_version,
             bundle_version.default_flags(),
-            anchor,
+            OrchardTxVersion::V6,
         )
-        .expect("default flags are representable under the bundle version");
+        .expect("Ironwood V3 in a V6 transaction supports anchor deferral");
 
         // Add the governance signed note as a spend.
         builder
-            .add_spend(fvk.clone(), signed_note, dummy_merkle_path.clone())
+            .add_spend_unwitnessed(fvk.clone(), signed_note)
             .map_err(|e| VotingError::Internal {
-                message: format!("Builder::add_spend failed: {:?}", e),
+                message: format!("Builder::add_spend_unwitnessed failed: {:?}", e),
             })?;
 
         builder
-            .add_output(Some(ovk.clone()), hotkey_addr, NoteValue::ZERO, memo)
+            .add_output(None, hotkey_addr, NoteValue::ZERO, memo)
             .map_err(|e| VotingError::Internal {
                 message: format!("Builder::add_output failed: {:?}", e),
             })?;
 
-        // Build the PCZT bundle. The Orchard builder pads and shuffles spends
-        // and outputs independently, so retry until the governance spend and
-        // governance output are paired in the same action slot.
+        // The unpadded profile pairs the single spend and output in one action.
+        // Keep the metadata check below as a defensive layout assertion.
         let (mut pczt_bundle, bundle_meta) =
             builder
                 .build_for_pczt(&mut crate::OsRng10)
@@ -616,6 +600,7 @@ pub(crate) fn build_governance_pczt(
             .update_with(|mut updater| {
                 updater.update_action_with(action_index, |mut action_updater| {
                     action_updater.set_spend_zip32_derivation(zip32_deriv);
+                    action_updater.set_output_user_address(hotkey_user_address.clone());
                     Ok(())
                 })
             })
@@ -683,6 +668,17 @@ pub(crate) fn build_governance_pczt(
         // --- Extract ZIP-244 sighash ---
         // This is the sighash that Keystone signs; the non-Keystone path also uses it.
         let pczt_sighash = extract_pczt_sighash(&pczt_bytes)?;
+        let tx1_effects = crate::tx1::encode_tx1_effects(indexed_actions)?;
+        // The vote chain never sees this PCZT: it rebuilds the signed digest
+        // from `tx1_effects` under a fixed V6/NU6.3 profile. A PCZT whose own
+        // sighash differs (other branch, version, flags or value balance)
+        // would get a signature the chain rejects, so refuse it here.
+        if crate::tx1::sighash(&tx1_effects)? != pczt_sighash {
+            return Err(VotingError::Internal {
+                message: "governance PCZT sighash differs from the vote chain's TX1 digest"
+                    .to_string(),
+            });
+        }
 
         // --- Encode canonical action bytes for cosmos chain ---
         let action_bytes = encode_delegation_action_bytes(
@@ -712,6 +708,7 @@ pub(crate) fn build_governance_pczt(
             action_index,
             padded_note_secrets: normalized_padded_note_secrets,
             pczt_sighash: pczt_sighash.to_vec(),
+            tx1_effects,
         });
     }
 
@@ -743,10 +740,8 @@ pub fn extract_pczt_sighash(pczt_bytes: &[u8]) -> Result<[u8; 32], VotingError> 
 /// so a byte-diff between unsigned and signed PCZTs doesn't work. This function parses
 /// the signed PCZT structurally and reads the `spend_auth_sig` field directly.
 ///
-/// Tries `action_index` first, then falls back to scanning all actions. The Builder
-/// shuffles action order, so the governance spend may not end up at the expected index
-/// from Keystone's perspective. Our governance PCZT has exactly 2 actions (1 real +
-/// 1 dummy padding); only the real one gets signed (the dummy lacks zip32_derivation).
+/// Tries `action_index` first, then falls back to scanning all actions. The
+/// current governance PCZT has exactly one signable action.
 ///
 /// Returns the 64-byte SpendAuthSig, or an error if no signed action is found.
 pub fn extract_spend_auth_sig(
@@ -766,10 +761,8 @@ pub fn extract_spend_auth_sig(
         }
     }
 
-    // Fallback: scan all actions for a signature.
-    // The governance PCZT has 2 actions; only the real governance spend gets signed
-    // by Keystone (the padding action has no zip32_derivation so Keystone skips it).
-    // This is safe because there is exactly one signable action.
+    // Fallback: scan all actions for a signature. This remains unambiguous
+    // because the governance PCZT has exactly one signable action.
     for action in actions {
         if let Some(sig) = action.spend().spend_auth_sig() {
             return Ok(*sig);
@@ -788,7 +781,15 @@ pub fn extract_spend_auth_sig(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use orchard::keys::SpendingKey;
+    use orchard::{
+        keys::SpendingKey,
+        note::{ExtractedNoteCommitment, Nullifier, TransmittedNoteCiphertext},
+        note_encryption::IronwoodDomain,
+        primitives::redpallas::{SpendAuth, VerificationKey},
+        value::ValueCommitment,
+        Action,
+    };
+    use zcash_note_encryption::try_output_recovery_with_ovk;
 
     fn mock_note() -> NoteInfo {
         NoteInfo {
@@ -977,20 +978,39 @@ mod tests {
             32 * (BUNDLE_NOTE_SLOTS + DELEGATION_ACTION_FIXED_FIELD_COUNT)
         );
 
-        // action_index is 0 or 1 (2 actions total: 1 real + 1 dummy padding)
-        assert!(result.action_index <= 1);
+        assert_eq!(result.action_index, 0);
 
-        // The parsed PCZT should have 2 Ironwood actions (1 real + 1 padding)
+        // The parsed PCZT has one Ironwood action containing the real spend and output.
         let pczt = parsed.unwrap();
         assert!(pczt.orchard().actions().is_empty());
-        assert_eq!(pczt.ironwood().actions().len(), 2);
-        let output_value = pczt
+        assert_eq!(pczt.ironwood().actions().len(), 1);
+        assert!(pczt.ironwood().anchor().is_none());
+        let governance_action = pczt
             .ironwood()
-            .actions()
-            .iter()
-            .find_map(|action| action.output().value().as_ref().copied())
+            .sole_action()
+            .expect("the Ironwood bundle has one action");
+        assert!(governance_action.spend().witness().is_none());
+        let output = governance_action.output();
+        let output_value = output
+            .value()
+            .as_ref()
+            .copied()
             .expect("PCZT should expose the output value");
         assert_eq!(output_value, NoteValue::ZERO.inner());
+
+        let hotkey_raw: [u8; 43] = mock_hotkey_address().try_into().unwrap();
+        let hotkey_addr = Address::from_raw_address_bytes(&hotkey_raw)
+            .into_option()
+            .expect("mock hotkey address is valid");
+        let expected_user_address = UnifiedAddress::from_receivers(Some(hotkey_addr), None)
+            .expect("an Orchard receiver forms a valid Unified Address")
+            .encode(&consensus_network_for_voting_network(
+                VotingNetwork::Regtest,
+            ));
+        assert_eq!(
+            output.user_address().as_deref(),
+            Some(expected_user_address.as_str())
+        );
     }
 
     #[test]
@@ -1047,8 +1067,50 @@ mod tests {
         let result = build_mock_nu6_3_pczt(&[mock_note()]);
 
         let pczt = pczt::Pczt::parse(&result.pczt_bytes).unwrap();
+        assert_eq!(*pczt.global().tx_version(), 6);
+        assert_eq!(
+            *pczt.global().consensus_branch_id(),
+            u32::from(BranchId::Nu6_3)
+        );
+        assert_eq!(
+            pczt::common::determine_lock_time(pczt.global(), pczt.transparent().inputs()),
+            Some(0)
+        );
+        assert_eq!(*pczt.global().expiry_height(), 0);
+        assert!(pczt.transparent().inputs().is_empty());
+        assert!(pczt.transparent().outputs().is_empty());
+        assert!(pczt.sapling().spends().is_empty());
+        assert!(pczt.sapling().outputs().is_empty());
         assert!(pczt.orchard().actions().is_empty());
-        assert_eq!(pczt.ironwood().actions().len(), 2);
+        assert_eq!(pczt.ironwood().actions().len(), 1);
+        assert_eq!(*pczt.ironwood().flags(), 0x07);
+        assert_eq!(*pczt.ironwood().value_sum(), (1, false));
+        crate::tx1::validate_tx1_effects(&result.tx1_effects).unwrap();
+        // What the wallet signs is what the chain rebuilds from tx1_effects.
+        assert_eq!(
+            crate::tx1::sighash(&result.tx1_effects).unwrap().to_vec(),
+            result.pczt_sighash
+        );
+
+        for (index, action) in pczt.ironwood().actions().iter().enumerate() {
+            let action_start = 1 + (index * crate::tx1::TX1_ACTION_EFFECTS_LEN);
+            let encoded = &result.tx1_effects
+                [action_start..action_start + crate::tx1::TX1_ACTION_EFFECTS_LEN];
+            let enc_ciphertext = action
+                .output()
+                .enc_ciphertext()
+                .clone()
+                .into_encrypted()
+                .unwrap();
+
+            assert_eq!(&encoded[0..32], action.cv_net().as_ref().unwrap());
+            assert_eq!(&encoded[32..64], action.spend().nullifier());
+            assert_eq!(&encoded[64..96], action.spend().rk());
+            assert_eq!(&encoded[96..128], action.output().cmx().as_ref().unwrap());
+            assert_eq!(&encoded[128..160], action.output().ephemeral_key());
+            assert_eq!(&encoded[160..740], enc_ciphertext.as_slice());
+            assert_eq!(&encoded[740..820], action.output().out_ciphertext());
+        }
 
         let indexed_action = pczt
             .ironwood()
@@ -1064,6 +1126,64 @@ mod tests {
             indexed_action.output().cmx().map(|cmx| cmx.to_vec()),
             Some(result.cmx_new)
         );
+    }
+
+    #[test]
+    fn test_governance_outputs_are_not_recoverable_with_account_ovk() {
+        let result = build_mock_nu6_3_pczt(&[mock_note()]);
+        let fvk = FullViewingKey::from_bytes(&mock_fvk_bytes().try_into().unwrap()).unwrap();
+        let ovk = fvk.to_ovk(Scope::External);
+
+        for index in 0..crate::tx1::TX1_ACTION_COUNT {
+            let start = 1 + index * crate::tx1::TX1_ACTION_EFFECTS_LEN;
+            let action = Action::from_parts(
+                Nullifier::from_bytes(
+                    result.tx1_effects[start + 32..start + 64]
+                        .try_into()
+                        .unwrap(),
+                )
+                .unwrap(),
+                VerificationKey::<SpendAuth>::try_from(
+                    <[u8; 32]>::try_from(&result.tx1_effects[start + 64..start + 96]).unwrap(),
+                )
+                .unwrap(),
+                ExtractedNoteCommitment::from_bytes(
+                    result.tx1_effects[start + 96..start + 128]
+                        .try_into()
+                        .unwrap(),
+                )
+                .unwrap(),
+                TransmittedNoteCiphertext {
+                    epk_bytes: result.tx1_effects[start + 128..start + 160]
+                        .try_into()
+                        .unwrap(),
+                    enc_ciphertext: result.tx1_effects[start + 160..start + 740]
+                        .try_into()
+                        .unwrap(),
+                    out_ciphertext: result.tx1_effects[start + 740..start + 820]
+                        .try_into()
+                        .unwrap(),
+                },
+                ValueCommitment::from_bytes(
+                    result.tx1_effects[start..start + 32].try_into().unwrap(),
+                )
+                .unwrap(),
+                (),
+            )
+            .unwrap();
+
+            assert!(
+                try_output_recovery_with_ovk(
+                    &IronwoodDomain::for_action(&action),
+                    &ovk,
+                    &action,
+                    action.cv_net(),
+                    &action.encrypted_note().out_ciphertext,
+                )
+                .is_none(),
+                "action {index} was recoverable with the governance account OVK"
+            );
+        }
     }
 
     #[test]
@@ -1091,7 +1211,7 @@ mod tests {
         let note = mock_note();
         let params = mock_nu6_3_params();
         let fvk_bytes = mock_fvk_bytes();
-        let result = build_mock_nu6_3_pczt(&[note.clone()]);
+        let result = build_mock_nu6_3_pczt(std::slice::from_ref(&note));
 
         let fvk_96: [u8; 96] = fvk_bytes.clone().try_into().unwrap();
         let fvk = FullViewingKey::from_bytes(&fvk_96).unwrap();
