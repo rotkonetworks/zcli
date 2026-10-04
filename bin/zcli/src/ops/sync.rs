@@ -506,10 +506,6 @@ async fn sync_inner(
     type MemoEntry = ([u8; 32], Vec<u8>, [u8; 32], [u8; 32], [u8; 32]);
     let mut needs_memo: Vec<MemoEntry> = Vec::new();
 
-    // collect received cmxs and positions for commitment proof verification
-    let mut received_cmxs: Vec<[u8; 32]> = Vec::new();
-    let mut received_positions: Vec<u64> = Vec::new();
-
     // collect notes in memory first; only persist after proof verification
     let mut pending_notes: Vec<WalletNote> = Vec::new();
     // collect nullifiers seen in actions to mark spent after verification
@@ -634,8 +630,6 @@ async fn sync_inner(
                     };
                     pending_notes.push(wallet_note);
                     found_total += 1;
-                    received_cmxs.push(action.cmx);
-                    received_positions.push(position_counter);
 
                     if !action.txid.is_empty() && !decrypted.is_change {
                         needs_memo.push((
@@ -693,8 +687,6 @@ async fn sync_inner(
                         pool: crate::wallet::Pool::Ironwood,
                     });
                     found_total += 1;
-                    received_cmxs.push(action.cmx);
-                    received_positions.push(ironwood_position);
                 }
 
                 seen_nullifiers.push(action.nullifier);
@@ -785,11 +777,13 @@ async fn sync_inner(
             &proven_roots.actions_commitment,
             actions_commitment_available,
         )
-        .map_err(|e| Error::Other(explain_commitment_mismatch(
-            &e.to_string(),
-            first_height_gap,
-            first_root_divergence,
-        )))?;
+        .map_err(|e| {
+            Error::Other(explain_commitment_mismatch(
+                &e.to_string(),
+                first_height_gap,
+                first_root_divergence,
+            ))
+        })?;
         if !actions_commitment_available {
             eprintln!(
                 "actions commitment: migrating from pre-0.5.1 wallet, saving proven {}...",
@@ -803,20 +797,6 @@ async fn sync_inner(
         }
     }
 
-    // verify commitment proofs (NOMT) for received notes BEFORE storing
-    if !received_cmxs.is_empty() && !skip_verify {
-        verify_commitments(
-            &client,
-            &received_cmxs,
-            &received_positions,
-            tip,
-            &proven_roots,
-        )
-        .await?;
-    } else if skip_verify && !received_cmxs.is_empty() {
-        eprintln!("  skipping commitment verification (ZCLI_NO_VERIFY set)");
-    }
-
     // now that proofs are verified, persist notes to wallet
     for note in &pending_notes {
         wallet.insert_note(note)?;
@@ -824,7 +804,12 @@ async fn sync_inner(
     for nf in &seen_nullifiers {
         wallet.mark_spent(nf).ok();
     }
-    wallet.commit_sync_point(tip, position_counter, ironwood_position, &running_actions_commitment)?;
+    wallet.commit_sync_point(
+        tip,
+        position_counter,
+        ironwood_position,
+        &running_actions_commitment,
+    )?;
 
     // cache tree frontier at sync height for fast witness building (no binary search).
     // BOTH pools: the two trees are separate, and a witness for an ironwood note
@@ -854,12 +839,11 @@ async fn sync_inner(
         ),
     }
 
-    // verify nullifier proofs (NOMT) for unspent notes
-    if skip_verify {
-        eprintln!("  skipping nullifier verification (ZCLI_NO_VERIFY set)");
-    } else {
-        verify_nullifiers(&client, &wallet, tip, &proven_roots).await?;
-    }
+    // Spends are found above: every action's nullifier in every scanned block
+    // is matched against our notes (seen_nullifiers). Nothing about our notes
+    // is sent to the server; the NOMT nullifier and commitment proof rounds
+    // that used to run here sent our unspent nullifiers in the clear and
+    // answered nothing the scan does not.
 
     // fetch memos for newly found notes
     if !needs_memo.is_empty() {
@@ -1176,91 +1160,6 @@ async fn verify_header_proof(
     );
 
     Ok(proven)
-}
-
-async fn verify_commitments(
-    client: &ZidecarClient,
-    cmxs: &[[u8; 32]],
-    positions: &[u64],
-    tip: u32,
-    proven: &ProvenRoots,
-) -> Result<(), Error> {
-    eprintln!("verifying {} commitment proofs...", cmxs.len());
-    let cmx_vecs: Vec<Vec<u8>> = cmxs.iter().map(|c| c.to_vec()).collect();
-    let (proofs, root) = client
-        .get_commitment_proofs(cmx_vecs, positions.to_vec(), tip)
-        .await
-        .map_err(|e| Error::Other(format!("commitment proof fetch failed: {}", e)))?;
-
-    let proof_data: Vec<zync_core::sync::CommitmentProofData> = proofs
-        .iter()
-        .map(|p| zync_core::sync::CommitmentProofData {
-            cmx: p.cmx,
-            tree_root: p.tree_root,
-            path_proof_raw: p.path_proof_raw.clone(),
-            value_hash: p.value_hash,
-        })
-        .collect();
-
-    zync_core::sync::verify_commitment_proofs(&proof_data, cmxs, proven, &root)
-        .map_err(|e| Error::Other(e.to_string()))?;
-
-    eprintln!(
-        "all {} commitment proofs cryptographically valid",
-        proofs.len()
-    );
-    Ok(())
-}
-
-async fn verify_nullifiers(
-    client: &ZidecarClient,
-    wallet: &Wallet,
-    tip: u32,
-    proven: &ProvenRoots,
-) -> Result<(), Error> {
-    let (_, unspent_notes) = wallet.shielded_balance()?;
-    if unspent_notes.is_empty() {
-        return Ok(());
-    }
-    eprintln!(
-        "verifying nullifier proofs for {} unspent notes...",
-        unspent_notes.len()
-    );
-    let nf_vecs: Vec<Vec<u8>> = unspent_notes.iter().map(|n| n.nullifier.to_vec()).collect();
-    let requested_nfs: Vec<[u8; 32]> = unspent_notes.iter().map(|n| n.nullifier).collect();
-    let (proofs, root) = client
-        .get_nullifier_proofs(nf_vecs, tip)
-        .await
-        .map_err(|e| Error::Other(format!("nullifier proof fetch failed: {}", e)))?;
-
-    let proof_data: Vec<zync_core::sync::NullifierProofData> = proofs
-        .iter()
-        .map(|p| zync_core::sync::NullifierProofData {
-            nullifier: p.nullifier,
-            nullifier_root: p.nullifier_root,
-            is_spent: p.is_spent,
-            path_proof_raw: p.path_proof_raw.clone(),
-            value_hash: p.value_hash,
-        })
-        .collect();
-
-    let spent =
-        zync_core::sync::verify_nullifier_proofs(&proof_data, &requested_nfs, proven, &root)
-            .map_err(|e| Error::Other(e.to_string()))?;
-
-    for nf in &spent {
-        eprintln!(
-            "  nullifier {} proven spent, updating wallet",
-            hex::encode(nf)
-        );
-        wallet.mark_spent(nf).ok();
-    }
-
-    eprintln!(
-        "all {} nullifier proofs cryptographically valid",
-        proofs.len()
-    );
-    Ok(())
 }
 
 /// Error text when a `--from` rescan cannot continue the stored commitment
@@ -1595,7 +1494,10 @@ mod work_model_tests {
         let client = ZidecarClient::connect(&endpoint).await.unwrap();
         let start = 1_700_000u32;
         let tip = 1_780_000u32;
-        let seed = client.get_tree_states(start.saturating_sub(1)).await.unwrap();
+        let seed = client
+            .get_tree_states(start.saturating_sub(1))
+            .await
+            .unwrap();
         let size = |h: &str| crate::witness::frontier_leaf_count(&hex::decode(h).unwrap()).unwrap();
         let (o0, i0) = (size(&seed.orchard_tree), size(&seed.ironwood_tree));
         let m = WorkModel::build(&client, start, tip, o0, i0).await.unwrap();
@@ -1604,7 +1506,10 @@ mod work_model_tests {
             eprintln!("  sapling size @{h} = {s}");
         }
         let blocks = (tip - start + 1) as u64;
-        assert!(m.total > WORK_PER_BLOCK * blocks, "no shielded outputs counted");
+        assert!(
+            m.total > WORK_PER_BLOCK * blocks,
+            "no shielded outputs counted"
+        );
         assert!(
             WorkModel::sapling_span(&m.sapling_samples) > 0,
             "sapling sandblast region must contribute sapling outputs"
