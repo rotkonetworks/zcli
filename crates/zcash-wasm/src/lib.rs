@@ -40,6 +40,8 @@ pub use transparent_send::{
     zip317_transparent_fee, TransparentPlan, UnsignedTransparent, MAX_NULL_DATA_BYTES,
     P2PKH_TX_OUT_SIZE, TRANSPARENT_CHANGE_DUST_ZAT,
 };
+/// Note commitment trees as ShardTrees: witnesses read at a checkpoint, no replay.
+pub mod note_tree;
 
 use blake2::{Blake2b512, Digest};
 use serde::{Deserialize, Serialize};

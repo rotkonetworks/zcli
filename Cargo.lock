@@ -7609,6 +7609,7 @@ dependencies = [
  "serde-wasm-bindgen",
  "serde_json",
  "sha2 0.10.9",
+ "shardtree",
  "subtle",
  "ur",
  "wasm-bindgen",
