@@ -444,15 +444,18 @@ impl NoteTreeCore {
     /// Add complete-shard roots from GetSubtreeRoots, `roots` = n x 32 bytes for
     /// shard indices `start_index..`. Only shards wholly behind the newest
     /// checkpoint are taken (a root ahead of the scan would sit to the right of
-    /// the tree's tip). A shard whose root we can already compute from our own
-    /// leaves is compared, not inserted. Returns how many roots were consumed,
-    /// so the caller resumes from `start_index + n`.
+    /// the tree's tip). Before anything is inserted, every node the roots
+    /// determine (each root, and each parent of two given siblings, up the cap)
+    /// is compared with the same node of our tree wherever we can compute it:
+    /// the shards we hashed ourselves and the frontier's ommers. A root that
+    /// disagrees is refused. Returns how many roots were consumed, so the caller
+    /// resumes from `start_index + n`.
     pub fn insert_subtree_roots(&mut self, start_index: u64, roots: &[u8]) -> Result<u64, String> {
         if !roots.len().is_multiple_of(32) {
             return Err("subtree roots must be 32-byte hashes".into());
         }
         let next = self.next_position().ok_or("tree has no checkpoint yet")?;
-        let mut taken = 0u64;
+        let mut level: Vec<(Address, H)> = Vec::new();
         for (i, chunk) in roots.chunks(32).enumerate() {
             let index = start_index + i as u64;
             let addr = Address::from_parts(Level::from(SHARD_HEIGHT), index);
@@ -462,20 +465,36 @@ impl NoteTreeCore {
             let b: [u8; 32] = chunk.try_into().unwrap();
             let root: H = Option::from(H::from_bytes(&b))
                 .ok_or_else(|| format!("subtree root {index} is not a field element"))?;
-            match self.tree.root(addr, addr.position_range_end()) {
-                Ok(ours) if ours == root => {}
-                Ok(_) => {
-                    return Err(format!(
-                        "subtree root {index} does not match the leaves we scanned"
-                    ))
+            level.push((addr, root));
+        }
+        let taken = level.len() as u64;
+        let shards = level.clone();
+
+        // compare every determined node, level by level up to the root
+        while !level.is_empty() {
+            for (addr, h) in &level {
+                if let Ok(ours) = self.tree.root(*addr, addr.position_range_end()) {
+                    if ours != *h {
+                        return Err(format!("subtree roots do not match our tree at {addr:?}"));
+                    }
                 }
-                // not computable from what we hold (before the wallet's birthday)
-                Err(_) => self
-                    .tree
-                    .insert(addr, root)
-                    .map_err(err("insert subtree root"))?,
             }
-            taken += 1;
+            let mut up = Vec::new();
+            for pair in level.windows(2) {
+                let ((l_addr, l), (r_addr, r)) = (&pair[0], &pair[1]);
+                if l_addr.is_left_child() && l_addr.sibling() == *r_addr {
+                    up.push((l_addr.parent(), H::combine(l_addr.level(), l, r)));
+                }
+            }
+            level = up;
+        }
+
+        for (addr, root) in shards {
+            if self.tree.root(addr, addr.position_range_end()).is_err() {
+                self.tree
+                    .insert(addr, root)
+                    .map_err(err("insert subtree root"))?;
+            }
         }
         Ok(taken)
     }

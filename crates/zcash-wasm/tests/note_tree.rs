@@ -367,3 +367,30 @@ fn checkpoints_empty_blocks_and_guards() {
     let (root, paths) = c2.replay(3_000, &[7]);
     assert_same(&tree, 7, end, root, &paths[0]);
 }
+
+#[test]
+fn roots_under_a_higher_frontier_ommer() {
+    // birthday in shard 2: the frontier's level-17 ommer already covers shards 0 and 1
+    let n = 2 * SHARD + 9_000;
+    let c = chain(n, 5);
+    let birthday = c.boundary(2 * SHARD + 1_000);
+    let p = birthday + 50;
+    let end_h = c.height_at_size(n);
+    let mut tree = NoteTreeCore::new(100);
+    tree.insert_frontier(&c.frontier(birthday), c.height_at_size(birthday))
+        .unwrap();
+    let roots: Vec<u8> = [c.shard_root(0), c.shard_root(1)].concat();
+    assert_eq!(tree.insert_subtree_roots(0, &roots).unwrap(), 2);
+    // a root that disagrees with the ommer above it is refused
+    let mut t2 = NoteTreeCore::new(100);
+    t2.insert_frontier(&c.frontier(birthday), c.height_at_size(birthday))
+        .unwrap();
+    assert!(t2
+        .insert_subtree_roots(0, &[c.shard_root(1), c.shard_root(0)].concat())
+        .is_err());
+
+    tree.append_blocks(birthday, &c.encode(birthday, n), &[p as u32], end_h)
+        .unwrap();
+    let (root, paths) = c.replay(n, &[p]);
+    assert_same(&tree, p, end_h, root, &paths[0]);
+}
