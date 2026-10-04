@@ -27,6 +27,8 @@ mod voting_pir;
 /// pool-aware witness builder, and the regtest end-to-end tests. Duplicating it
 /// per pool is how you end up with a witness against the wrong tree.
 pub mod witness;
+/// Note commitment trees as ShardTrees: witnesses read at a checkpoint, no replay.
+pub mod note_tree;
 
 use blake2::{Blake2b512, Digest};
 use serde::{Deserialize, Serialize};

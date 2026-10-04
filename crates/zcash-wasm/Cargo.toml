@@ -54,6 +54,8 @@ zip32 = { version = "0.2", default-features = false }
 
 # merkle witness building
 incrementalmerkletree = { version = "0.8", features = ["legacy-api"] }
+# note commitment trees kept as shards, so a spend reads its witness locally
+shardtree = { version = "0.7", features = ["legacy-api"] }
 hex = "0.4"
 
 # force indexmap's `std` feature across the dep graph so halo2_proofs
