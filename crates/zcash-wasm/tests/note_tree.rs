@@ -394,3 +394,88 @@ fn roots_under_a_higher_frontier_ommer() {
     let (root, paths) = c.replay(n, &[p]);
     assert_same(&tree, p, end_h, root, &paths[0]);
 }
+
+#[test]
+fn rewind_lands_on_a_retained_checkpoint() {
+    let n = SHARD + 4_000;
+    let c = chain(n, 6);
+    let birthday = c.boundary(SHARD - 2_000);
+    let birthday_h = c.height_at_size(birthday);
+    let end_h = c.height_at_size(n);
+    let p = birthday + 9;
+    let mut tree = NoteTreeCore::new(100);
+    tree.insert_frontier(&c.frontier(birthday), birthday_h)
+        .unwrap();
+    // a batch that crosses the shard boundary, every block of its last 60 checkpointed
+    tree.append_blocks(birthday, &c.encode(birthday, n), &[p as u32], end_h - 60)
+        .unwrap();
+    // a rewind aimed between checkpoints lands on the one below it
+    let back = c.boundary(n - 150);
+    let back_h = c.height_at_size(back);
+    assert_eq!(tree.checkpoint_at_or_below(back_h), Some(back_h));
+    assert_eq!(tree.checkpoint_at_or_below(end_h + 5), Some(end_h));
+    // below every block-level checkpoint: only the seed is left
+    assert_eq!(tree.checkpoint_at_or_below(end_h - 61), Some(birthday_h));
+    assert_eq!(tree.checkpoint_at_or_below(birthday_h - 1), None);
+    assert!(tree.truncate(back_h).unwrap());
+    assert_eq!(tree.next_position(), Some(back));
+    assert_eq!(tree.root_at(back_h).unwrap(), Some(c.replay(back, &[]).0));
+    // and the note is still witnessable there
+    let (root, paths) = c.replay(back, &[p]);
+    assert_same(&tree, p, back_h, root, &paths[0]);
+}
+
+#[test]
+fn recover_marks_notes_the_tree_lost() {
+    let n = SHARD + 6_000;
+    let c = chain(n, 7);
+    let seed = c.boundary(SHARD + 3_000);
+    let seed_h = c.height_at_size(seed);
+    let end_h = c.height_at_size(n);
+    let lost = [1_234u64, SHARD + 10];
+    // a tree seeded at `seed` (as after a drop) that never saw the old notes
+    let mut tree = NoteTreeCore::new(100);
+    tree.insert_frontier(&c.frontier(seed), seed_h).unwrap();
+    tree.append_blocks(seed, &c.encode(seed, n), &[], end_h)
+        .unwrap();
+    assert!(!tree.is_marked(lost[0]) && !tree.is_marked(lost[1]));
+
+    // a replay that ends short of the checkpoint, or starts from a wrong frontier, inserts nothing
+    let from = 1_000;
+    let from = c.boundary(from);
+    let short = c.boundary(n - 500);
+    assert!(tree
+        .recover(
+            &c.frontier(from),
+            &c.encode(from, short),
+            &[lost[0] as u32],
+            end_h
+        )
+        .is_err());
+    assert!(tree
+        .recover(
+            &c.frontier(from + 7),
+            &c.encode(from, n),
+            &[lost[0] as u32],
+            end_h
+        )
+        .is_err());
+    assert!(!tree.is_marked(lost[0]));
+
+    let ps: Vec<u32> = lost.iter().map(|&p| p as u32).collect();
+    assert_eq!(
+        tree.recover(&c.frontier(from), &c.encode(from, n), &ps, end_h)
+            .unwrap(),
+        2
+    );
+    let (root, paths) = c.replay(n, &lost);
+    assert_same(&tree, lost[0], end_h, root, &paths[0]);
+    assert_same(&tree, lost[1], end_h, root, &paths[1]);
+    // and the tree keeps going with them
+    let more = chain(n + 2_000, 7);
+    let next_h = more.height_at_size(n + 2_000);
+    tree.append_blocks(n, &more.encode(n, n + 2_000), &[], next_h)
+        .unwrap();
+    let (root2, paths2) = more.replay(n + 2_000, &lost);
+    assert_same(&tree, lost[0], next_h, root2, &paths2[0]);
+}
