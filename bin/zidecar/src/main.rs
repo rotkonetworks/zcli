@@ -14,6 +14,7 @@ mod constants;
 mod error;
 mod grpc_service;
 mod history;
+mod legacy;
 mod lwd_service;
 mod middleware;
 mod orchard_tree;
@@ -217,7 +218,10 @@ async fn main() -> Result<()> {
         ))
         .layer(middleware::concurrency_limit_layer(
             middleware::DEFAULT_MAX_CONCURRENT_RPCS,
-        ));
+        ))
+        // innermost: retired Ligerito/NOMT methods answer UNIMPLEMENTED with
+        // a message saying so, instead of tonic's empty one (see legacy.rs)
+        .layer(legacy::RemovedRpcLayer);
 
     // One shared interceptor across every surface. When --auth-token is unset
     // it passes through; when set it requires `authorization: Bearer <token>`
