@@ -117,6 +117,7 @@ fn cold_seam_is_byte_identical_to_hot_modulo_binding_sig() {
         TARGET_HEIGHT,
         NU6_3_BRANCH_ID,
         MemoBytes::empty(),
+        None,
     )
     .expect("shared proven pczt");
     let n_inputs = base.transparent().inputs().len();
@@ -260,6 +261,7 @@ fn public_entrypoints_agree_structurally() {
         TARGET_HEIGHT,
         NU6_3_BRANCH_ID,
         MemoBytes::empty(),
+        None,
     )
     .expect("unsigned build");
     assert_eq!(sighashes.len(), 2, "one sighash per input");
@@ -323,6 +325,7 @@ fn complete_shielding_transaction_sniffs_pczt_and_delegates() {
         TARGET_HEIGHT,
         NU6_3_BRANCH_ID,
         MemoBytes::empty(),
+        None,
     )
     .expect("unsigned build");
 
@@ -366,6 +369,7 @@ fn wrong_message_signature_is_rejected() {
         TARGET_HEIGHT,
         NU6_3_BRANCH_ID,
         MemoBytes::empty(),
+        None,
     )
     .expect("unsigned build");
 

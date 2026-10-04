@@ -84,7 +84,8 @@ pczt = { package = "zakura-pczt", version = "=0.1.0-rc2", default-features = fal
 sapling = { package = "zakura-sapling-crypto", version = "=1.0.0", default-features = false, features = ["circuit"] }
 
 # key derivation
-bip39 = { version = "2.0", features = ["rand"] }
+bip39 = { version = "2.0", features = ["rand", "zeroize"] }
+zeroize = "1"
 blake2 = "0.10"
 chacha20poly1305 = "0.10"
 
@@ -101,6 +102,9 @@ k256 = { version = "0.13", features = ["ecdsa-core", "ecdsa", "sha256"] }
 hmac = "0.12"
 sha2 = "0.10"
 ripemd = "0.1"
+# Ledger PCZT serializer reads transparent script bytes via `Evaluable`; same
+# 0.4 line zcash_transparent already pulls in (no new crate in the graph).
+zcash_script = { version = "0.4", default-features = false }
 blake2b_simd = "1.0"
 
 # wasm bindings

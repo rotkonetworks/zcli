@@ -690,18 +690,124 @@ fn compute_orchard_digest_legacy<A: orchard::bundle::Authorization>(
 /// So the value the joiner checks is the canonical message its signature will
 /// commit to — never a host-supplied claim. The host publishes the (proven,
 /// io-finalized, redacted) PCZT; `into_effects` needs neither proof nor sigs.
+///
+/// ADDITIVE fields for intent verification (older consumers ignore them):
+///
+/// per action:
+///   - `committed_value_zat` / `committed_recipient_raw_hex`: the output note's
+///     value and recipient as carried in the PCZT, reported ONLY when
+///     `cmx_verified` is true, i.e. when `(recipient, value, rho, rseed)`
+///     recompute the action's `cmx`. `cmx` is sighash-bound, so these are the
+///     values the chain will actually record, independent of whether the
+///     output is OVK-decryptable. (`null` when the PCZT lacks the fields or they
+///     do not match.)
+///   - `cmx_verified`: bool, as above.
+///   - `recipient_scope`: `"external" | "internal" | null` - which scope of the
+///     inspecting UFVK's orchard key the committed recipient belongs to
+///     (`FullViewingKey::scope_for_address`), `null` for a foreign address.
+///     This is a key-derivation fact, unlike `is_change`, which only says which
+///     OVK decrypted the output.
+///
+/// transaction level:
+///   - `expiry_height`, `tx_version`, `consensus_branch_id` (from the global).
+///   - `value_balance_zat`: `{ orchard, ironwood, sapling }` (i64 each, the
+///     value the sighash binds; 0 when the bundle is absent).
+///   - `sapling_present`: bool.
+///   - `transparent_input_count`, `transparent_input_total_zat`.
+///   - `transparent_outputs`: `[{ value_zat, script_pubkey_hex, address }]`,
+///     `address` = encoded P2PKH/P2SH t-address or `null` for any other script.
+///   - `fee_zat`: `orchard + ironwood + sapling value balances + transparent
+///     inputs - transparent outputs`; `null` when negative or out of range.
+///   - `committed_outputs_error`: `null`, or why the per-action committed view
+///     could not be produced (the committed fields are then all null/false).
 #[wasm_bindgen]
 pub fn frost_inspect_pczt_outputs(
     pczt_hex: &str,
     orchard_fvk_uview: &str,
 ) -> Result<String, JsError> {
+    let bytes = hex::decode(pczt_hex).map_err(|e| JsError::new(&format!("bad pczt hex: {}", e)))?;
+    inspect_pczt_outputs_core(&bytes, orchard_fvk_uview)
+        .map(|v| v.to_string())
+        .map_err(|e| JsError::new(&e))
+}
+
+/// Per-action committed view of one output (see `frost_inspect_pczt_outputs`).
+struct CommittedOutput {
+    value_zat: Option<u64>,
+    recipient_raw: Option<[u8; 43]>,
+    cmx_verified: bool,
+    scope: Option<&'static str>,
+}
+
+fn committed_outputs_of(
+    bundle: &orchard::pczt::Bundle,
+    fvk: &orchard::keys::FullViewingKey,
+) -> Vec<CommittedOutput> {
+    use orchard::keys::Scope;
+    bundle
+        .actions()
+        .iter()
+        .map(|action| {
+            let out = action.output();
+            let cmx_verified = out.verify_note_commitment(action.spend()).is_ok();
+            if !cmx_verified {
+                return CommittedOutput {
+                    value_zat: None,
+                    recipient_raw: None,
+                    cmx_verified: false,
+                    scope: None,
+                };
+            }
+            // verify_note_commitment succeeded, so recipient and value are Some.
+            let recipient = *out.recipient();
+            let scope = recipient
+                .as_ref()
+                .and_then(|a| match fvk.scope_for_address(a) {
+                    Some(Scope::External) => Some("external"),
+                    Some(Scope::Internal) => Some("internal"),
+                    None => None,
+                });
+            CommittedOutput {
+                value_zat: out.value().map(|v| v.inner()),
+                recipient_raw: recipient.map(|a| a.to_raw_address_bytes()),
+                cmx_verified: true,
+                scope,
+            }
+        })
+        .collect()
+}
+
+/// Encode a standard P2PKH / P2SH script as a t-address; `None` for anything else.
+fn transparent_address_for_script(script: &[u8], mainnet: bool) -> Option<String> {
+    use zcash_keys::encoding::AddressCodec;
+    use zcash_protocol::consensus::{MainNetwork, TestNetwork};
+    use zcash_transparent::address::TransparentAddress;
+    let addr = match script {
+        [0x76, 0xa9, 0x14, hash @ .., 0x88, 0xac] if hash.len() == 20 => {
+            TransparentAddress::PublicKeyHash(hash.try_into().ok()?)
+        }
+        [0xa9, 0x14, hash @ .., 0x87] if hash.len() == 20 => {
+            TransparentAddress::ScriptHash(hash.try_into().ok()?)
+        }
+        _ => return None,
+    };
+    Some(if mainnet {
+        addr.encode(&MainNetwork)
+    } else {
+        addr.encode(&TestNetwork)
+    })
+}
+
+/// Native-testable core of [`frost_inspect_pczt_outputs`].
+pub fn inspect_pczt_outputs_core(
+    bytes: &[u8],
+    orchard_fvk_uview: &str,
+) -> Result<serde_json::Value, String> {
     use orchard::keys::Scope;
     use zcash_keys::keys::UnifiedFullViewingKey;
     use zcash_protocol::consensus::{MainNetwork, TestNetwork};
 
-    let bytes = hex::decode(pczt_hex).map_err(|e| JsError::new(&format!("bad pczt hex: {}", e)))?;
-    let pczt = pczt::Pczt::parse(&bytes)
-        .map_err(|e| JsError::new(&format!("pczt parse failed: {:?}", e)))?;
+    let pczt = pczt::Pczt::parse(bytes).map_err(|e| format!("pczt parse failed: {:?}", e))?;
 
     // Canonical sighash, taken from pczt's own Signer because it dispatches on
     // the transaction version. v5_signature_hash is WRONG for an ironwood (v6)
@@ -712,15 +818,9 @@ pub fn frost_inspect_pczt_outputs(
     // verifies against, so builder, joiner and completion agree by
     // construction rather than by three separate reimplementations.
     let shielded_sighash = pczt::roles::signer::Signer::new(pczt.clone())
-        .map_err(|e| JsError::new(&format!("signer init: {:?}", e)))?
+        .map_err(|e| format!("signer init: {:?}", e))?
         .shielded_sighash();
     let computed_sighash_hex = hex::encode(shielded_sighash);
-
-    // Effects supply the bundles for the output display. Same byte stream the
-    // sighash above was derived from.
-    let tx_data = pczt
-        .into_effects()
-        .map_err(|e| JsError::new(&format!("pczt into_effects: {:?}", e)))?;
 
     // testnet uview prefix is `uviewtest1`, mainnet is `uview1`.
     let mainnet = !orchard_fvk_uview.starts_with("uviewtest");
@@ -729,15 +829,77 @@ pub fn frost_inspect_pczt_outputs(
     } else {
         UnifiedFullViewingKey::decode(&TestNetwork, orchard_fvk_uview)
     }
-    .map_err(|e| JsError::new(&format!("invalid UFVK: {}", e)))?;
+    .map_err(|e| format!("invalid UFVK: {}", e))?;
     let orchard_fvk_keys = ufvk
         .orchard()
-        .ok_or_else(|| JsError::new("UFVK has no orchard component"))?;
+        .ok_or_else(|| "UFVK has no orchard component".to_string())?;
     let fvk_bytes = orchard_fvk_keys.to_bytes();
     let fvk = orchard::keys::FullViewingKey::from_bytes(&fvk_bytes)
-        .ok_or_else(|| JsError::new("invalid orchard FVK in UFVK"))?;
+        .ok_or_else(|| "invalid orchard FVK in UFVK".to_string())?;
     let ovk_external = fvk.to_ovk(Scope::External);
     let ovk_internal = fvk.to_ovk(Scope::Internal);
+
+    // ── global + transparent facts, read before `pczt` is consumed ─────────
+    let expiry_height = *pczt.global().expiry_height();
+    let tx_version = *pczt.global().tx_version();
+    let consensus_branch_id = *pczt.global().consensus_branch_id();
+    let t_inputs = pczt.transparent().inputs();
+    let transparent_input_count = t_inputs.len() as u32;
+    let transparent_input_total: Option<u64> = t_inputs
+        .iter()
+        .try_fold(0u64, |acc, i| acc.checked_add(*i.value()));
+    let mut transparent_output_total: Option<u64> = Some(0);
+    let transparent_outputs: Vec<serde_json::Value> = pczt
+        .transparent()
+        .outputs()
+        .iter()
+        .map(|o| {
+            transparent_output_total =
+                transparent_output_total.and_then(|t| t.checked_add(*o.value()));
+            serde_json::json!({
+                "value_zat": *o.value(),
+                "script_pubkey_hex": hex::encode(o.script_pubkey()),
+                "address": transparent_address_for_script(o.script_pubkey(), mainnet),
+            })
+        })
+        .collect();
+
+    // ── committed per-output view (cmx-verified), both pools ───────────────
+    // Parsed through the read-only Verifier role. A parse failure does NOT fail
+    // the whole inspection (older consumers only need the OVK view); it leaves
+    // every committed field null/false and says why, so an intent verifier
+    // refuses instead of guessing.
+    let mut committed_orchard: Vec<CommittedOutput> = Vec::new();
+    let mut committed_ironwood: Vec<CommittedOutput> = Vec::new();
+    let committed_outputs_error: Option<String> = {
+        use pczt::roles::verifier::{OrchardError, Verifier};
+        let res = Verifier::new(pczt.clone())
+            .with_orchard::<(), _>(|b| {
+                committed_orchard = committed_outputs_of(b, &fvk);
+                Ok(())
+            })
+            .and_then(|v| {
+                v.with_ironwood::<(), _>(|b| {
+                    committed_ironwood = committed_outputs_of(b, &fvk);
+                    Ok(())
+                })
+            });
+        match res {
+            Ok(_) => None,
+            Err(e) => {
+                let _: &OrchardError<()> = &e;
+                committed_orchard.clear();
+                committed_ironwood.clear();
+                Some(format!("{:?}", e))
+            }
+        }
+    };
+
+    // Effects supply the bundles for the output display. Same byte stream the
+    // sighash above was derived from.
+    let tx_data = pczt
+        .into_effects()
+        .map_err(|e| format!("pczt into_effects: {:?}", e))?;
 
     // Inspect both pools. A turnstile / post-NU6.3 PCZT carries its outputs in
     // the ironwood bundle, whose V3 note plaintexts `OrchardDomain` refuses by
@@ -745,6 +907,27 @@ pub fn frost_inspect_pczt_outputs(
     // transaction that in fact moves funds.
     let orchard_bundle = tx_data.orchard_bundle();
     let ironwood_bundle = tx_data.ironwood_bundle();
+
+    let vb_orchard: i64 = orchard_bundle
+        .map(|b| i64::from(*b.value_balance()))
+        .unwrap_or(0);
+    let vb_ironwood: i64 = ironwood_bundle
+        .map(|b| i64::from(*b.value_balance()))
+        .unwrap_or(0);
+    let sapling_present = tx_data.sapling_bundle().is_some();
+    let vb_sapling: i64 = tx_data
+        .sapling_bundle()
+        .map(|b| i64::from(*b.value_balance()))
+        .unwrap_or(0);
+
+    let fee_zat: Option<u64> = match (transparent_input_total, transparent_output_total) {
+        (Some(t_in), Some(t_out)) => {
+            let fee = vb_orchard as i128 + vb_ironwood as i128 + vb_sapling as i128 + t_in as i128
+                - t_out as i128;
+            u64::try_from(fee).ok()
+        }
+        _ => None,
+    };
 
     let mut actions_json: Vec<serde_json::Value> = Vec::new();
     let mut totals: (u64, u64, u32) = (0, 0, 0);
@@ -773,6 +956,38 @@ pub fn frost_inspect_pczt_outputs(
         );
     }
 
+    // Attach the committed view to each action by (pool, index).
+    for a in actions_json.iter_mut() {
+        let pool = a["pool"].as_str().unwrap_or("");
+        let idx = a["index"].as_u64().unwrap_or(u64::MAX) as usize;
+        let c = match pool {
+            "orchard" => committed_orchard.get(idx),
+            "ironwood" => committed_ironwood.get(idx),
+            _ => None,
+        };
+        let obj = a.as_object_mut().expect("action is a json object");
+        match c {
+            Some(c) => {
+                obj.insert("committed_value_zat".into(), serde_json::json!(c.value_zat));
+                obj.insert(
+                    "committed_recipient_raw_hex".into(),
+                    serde_json::json!(c.recipient_raw.map(hex::encode)),
+                );
+                obj.insert("cmx_verified".into(), serde_json::json!(c.cmx_verified));
+                obj.insert("recipient_scope".into(), serde_json::json!(c.scope));
+            }
+            None => {
+                obj.insert("committed_value_zat".into(), serde_json::Value::Null);
+                obj.insert(
+                    "committed_recipient_raw_hex".into(),
+                    serde_json::Value::Null,
+                );
+                obj.insert("cmx_verified".into(), serde_json::json!(false));
+                obj.insert("recipient_scope".into(), serde_json::Value::Null);
+            }
+        }
+    }
+
     Ok(serde_json::json!({
         "actions": actions_json,
         "summary": {
@@ -782,8 +997,21 @@ pub fn frost_inspect_pczt_outputs(
             "action_count": action_count,
         },
         "computed_sighash_hex": computed_sighash_hex,
-    })
-    .to_string())
+        "expiry_height": expiry_height,
+        "tx_version": tx_version,
+        "consensus_branch_id": consensus_branch_id,
+        "value_balance_zat": {
+            "orchard": vb_orchard,
+            "ironwood": vb_ironwood,
+            "sapling": vb_sapling,
+        },
+        "sapling_present": sapling_present,
+        "transparent_input_count": transparent_input_count,
+        "transparent_input_total_zat": transparent_input_total,
+        "transparent_outputs": transparent_outputs,
+        "fee_zat": fee_zat,
+        "committed_outputs_error": committed_outputs_error,
+    }))
 }
 
 // ── anchor attestation (domain-separated from spend auth) ──

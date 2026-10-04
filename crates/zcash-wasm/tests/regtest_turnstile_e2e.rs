@@ -79,7 +79,8 @@ use serde_json::json;
 use orchard::keys::Scope;
 use orchard::note_encryption::{IronwoodDomain, OrchardDomain};
 use zafu_wasm::{
-    build_shielding_transaction, build_signed_turnstile_migration_core, shielding_pool_for_height,
+    build_signed_turnstile_migration_core, build_unsigned_shielding_transaction,
+    complete_shielding_transaction, shielding_pool_for_height, sign_transparent_sighash,
     zip317_shielding_fee, NU6_3_BRANCH_ID,
 };
 use zcash_primitives::transaction::{Transaction, TxVersion};
@@ -133,7 +134,7 @@ const SEED: &str = "abandon abandon abandon abandon abandon abandon abandon aban
                     abandon abandon abandon about";
 
 /// Encode an orchard address as a unified address string, which is what the
-/// legacy `build_shielding_transaction` takes as its recipient. `mainnet=false`
+/// legacy orchard shielding builder takes as its recipient. `mainnet=false`
 /// there decodes with `TestNetwork`, so encode for testnet.
 fn unified_address_for(addr: &orchard::Address) -> String {
     use zcash_address::unified::{Address as UnifiedAddress, Encoding, Receiver};
@@ -288,17 +289,36 @@ fn regtest_migrates_an_orchard_note_through_the_turnstile_into_ironwood() {
     }])
     .to_string();
 
-    let shield_hex = build_shielding_transaction(
-        &utxos_json,
-        &hex::encode(t_sk.secret_bytes()),
-        &unified_address_for(&orchard_recipient),
-        shielded_value,
-        shield_fee,
-        shield_target_height,
-        false, // regtest decodes addresses as testnet
-        Some(format!("{NU6_1_BRANCH_ID:08x}")),
+    // The hot wallet's split path: the prover builds the unsigned tx from the
+    // recipient alone, the worker signs the sighashes and completes it.
+    let unsigned: serde_json::Value = serde_json::from_str(
+        &build_unsigned_shielding_transaction(
+            &utxos_json,
+            &unified_address_for(&orchard_recipient),
+            shielded_value,
+            shield_fee,
+            shield_target_height,
+            false, // regtest decodes addresses as testnet
+            Some(format!("{NU6_1_BRANCH_ID:08x}")),
+        )
+        .expect("legacy orchard shielding build must succeed pre-NU6.3"),
     )
-    .expect("legacy orchard shielding build must succeed pre-NU6.3");
+    .expect("unsigned shielding json");
+    let t_pk_hex = hex::encode(t_pk.serialize());
+    let sigs: Vec<serde_json::Value> = unsigned["sighashes"]
+        .as_array()
+        .expect("sighashes")
+        .iter()
+        .map(|h| {
+            let digest: [u8; 32] = hex::decode(h.as_str().unwrap()).unwrap().try_into().unwrap();
+            json!({ "sig_hex": hex::encode(sign_transparent_sighash(&t_sk, digest)), "pubkey_hex": t_pk_hex })
+        })
+        .collect();
+    let shield_hex = complete_shielding_transaction(
+        unsigned["unsigned_tx_hex"].as_str().unwrap(),
+        &json!(sigs).to_string(),
+    )
+    .expect("signing the unsigned shielding tx must succeed");
     let shield_bytes = hex::decode(&shield_hex).expect("builder returns hex");
 
     let shield_txid = rpc("sendrawtransaction", json!([shield_hex]))

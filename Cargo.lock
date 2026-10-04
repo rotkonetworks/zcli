@@ -728,6 +728,7 @@ dependencies = [
  "rand_core 0.6.4",
  "serde",
  "unicode-normalization",
+ "zeroize",
 ]
 
 [[package]]
@@ -7623,8 +7624,10 @@ dependencies = [
  "zcash_address",
  "zcash_note_encryption",
  "zcash_protocol",
+ "zcash_script",
  "zcash_transparent",
  "zcash_voting",
+ "zeroize",
  "zip32",
  "zoda-vss",
 ]

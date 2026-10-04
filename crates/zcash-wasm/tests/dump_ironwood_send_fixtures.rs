@@ -22,7 +22,7 @@ mod common;
 
 use zafu_wasm::{
     build_ironwood_send_pczt_proven, redact_pczt_compact, redact_pczt_for_signer,
-    IronwoodPcztWithFrost, IronwoodRecipient,
+    IronwoodPcztWithFrost, IronwoodRecipient, LEGACY_PCZT_EXPIRY_DELTA,
 };
 use zcash_protocol::consensus::{
     BlockHeight, BranchId, MainNetwork, NetworkType, NetworkUpgrade, Parameters,
@@ -141,6 +141,8 @@ fn dump(
         target_height,
         NU6_3_BRANCH_ID,
         memo,
+        // Legacy expiry, so the dumped fixtures keep the shape zigner replays.
+        LEGACY_PCZT_EXPIRY_DELTA,
     )
     .unwrap_or_else(|e| panic!("[{name}] build+prove: {e}"));
 
