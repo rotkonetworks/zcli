@@ -306,7 +306,7 @@ impl Wallet {
     /// default wallet path based on mode:
     /// - normal: ~/.zcli/wallet
     /// - watch:  ~/.zcli/watch
-    /// (under ~/.zcli/testnet on testnet)
+    ///   (under ~/.zcli/testnet on testnet)
     pub fn default_path() -> String {
         if is_watch_mode() {
             Self::watch_path()
