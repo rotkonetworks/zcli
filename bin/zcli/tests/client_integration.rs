@@ -56,16 +56,6 @@ mod tests {
 
     #[tokio::test]
     #[ignore]
-    async fn test_get_header_proof() {
-        let client = require_client().await;
-        let (proof, from, to) = client.get_header_proof().await.unwrap();
-        assert!(!proof.is_empty(), "proof should not be empty");
-        assert!(from > 0, "from_height should be set");
-        assert!(to > from, "to_height should be > from_height");
-    }
-
-    #[tokio::test]
-    #[ignore]
     async fn test_get_address_utxos() {
         let client = require_client().await;
         // known funded transparent address (zcash foundation)

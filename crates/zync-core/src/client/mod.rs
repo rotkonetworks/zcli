@@ -33,12 +33,6 @@ pub mod lightwalletd_proto {
 #[derive(Debug, Clone)]
 pub struct SyncStatus {
     pub current_height: u32,
-    pub current_epoch: u32,
-    pub blocks_in_epoch: u32,
-    pub complete_epochs: u32,
-    pub epoch_proof_ready: bool,
-    pub blocks_until_ready: u32,
-    pub last_epoch_proof_height: u32,
 }
 
 /// tree state at a block height

@@ -122,7 +122,7 @@ pub enum Command {
         action: TxAction,
     },
 
-    /// Air-gapped signer interaction: export notes, scan QR, verify proofs [aliases: s]
+    /// Air-gapped signer interaction: export notes, scan QR, verify the chain [aliases: s]
     #[command(alias = "s")]
     Signer {
         #[command(subcommand)]
@@ -291,7 +291,7 @@ pub enum SignerAction {
         timeout: u64,
     },
 
-    /// verify proofs: header chain, commitment proofs, nullifier proofs
+    /// verify the chain: activation anchor, tip cross-check, FlyClient proof
     Verify,
 }
 
@@ -315,10 +315,6 @@ pub enum InitAction {
         /// full rescan from orchard activation (for restoring old wallets)
         #[arg(long)]
         full: bool,
-
-        /// skip NOMT commitment proof verification (use if zidecar state is stale)
-        #[arg(long)]
-        no_verify: bool,
 
         /// resume from specific block height (advanced)
         #[arg(long, hide = true)]

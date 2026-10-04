@@ -7,14 +7,20 @@ full node. Runs in one of two modes:
   replacement. All 20 `CompactTxStreamer` RPCs, wire-compatible with the
   Zcash SDK (Zashi, ywallet, ...).
 - **`zidecar --zidecar-rpc`** — also exposes the rotko-specific surface:
-  Ligerito header-chain proofs, NOMT commitment/nullifier inclusion proofs,
-  FROST checkpoints at epoch boundaries, plus a few SaaS-flavored endpoints
-  (license issuance, zigner sign anchors, anonymous pro membership ring).
+  FlyClient proofs over the ZIP-221 history tree (`--flyclient`), whole-block
+  transaction reads for private memo fetches, a compact mempool stream, plus
+  a few SaaS-flavored endpoints (license issuance, zigner sign anchors,
+  anonymous pro membership ring).
 
 The first mode is the obvious one and what most operators want. The second
-is what [zafu](https://github.com/rotkonetworks/zeratul) (rotko's desktop
-wallet) consumes when it wants trustless sync — cryptographic guarantees
-about chain completeness instead of trusting the server's word.
+is what [zafu](https://github.com/rotkonetworks/zafu) consumes.
+
+The Ligerito header proofs and NOMT commitment/nullifier proofs this server
+used to offer are gone (2026-10). The NOMT proofs required clients to send
+the server their own nullifiers and note commitments; the Ligerito proofs
+proved values the prover chose. Wallets now find notes and spends by
+scanning blocks locally, and FlyClient checks the chain against proof of
+work.
 
 ## Quick start
 
@@ -22,8 +28,8 @@ about chain completeness instead of trusting the server's word.
 # pure lightwalletd replacement — points at a local Zebra
 zidecar --zebrad-rpc http://127.0.0.1:8232
 
-# also expose the trustless-sync + proof surface for zafu
-zidecar --zebrad-rpc http://127.0.0.1:8232 --zidecar-rpc
+# also expose the zidecar surface for zafu, with FlyClient proofs
+zidecar --zebrad-rpc http://127.0.0.1:8232 --zidecar-rpc --flyclient nu6.3
 
 # lock the server down with a bearer token
 ZIDECAR_AUTH_TOKEN=secret zidecar --zidecar-rpc --frost-relay
@@ -46,7 +52,7 @@ background work, and requires no auth — just a forwarder to Zebra.
                   │   by default)             │
                   │                           │
    zafu ────gRPC──┤  ┌─Zidecar (opt-in)─┐     │       ┌──────────┐
-                  │  │  proofs, NOMT,   ├─────┼──RPC──┤  Zebra   │
+                  │  │  flyclient,      ├─────┼──RPC──┤  Zebra   │
                   │  │  FROST anchors   │     │       └──────────┘
                   │  └──────────────────┘     │
                   │  ┌─FrostRelay opt-in┐     │
@@ -90,34 +96,17 @@ only), not position-in-shielded-set.
 
 ## ZidecarService surface (opt-in, `--zidecar-rpc`)
 
-Five groups of RPCs that wallet clients use only if they want the
-trustless-sync guarantees zidecar adds on top of lwd:
-
-### Cryptographic chain proofs
+### Chain proofs
 
 | RPC | Returns |
 |---|---|
-| `GetHeaderProof` | Ligerito polynomial-commitment proof for a height range; verifier reconstructs cumulative chain work in O(log n) without downloading every header |
-| `GetTrustlessStateProof` | FROST checkpoint + state-transition proof — the main endpoint for fully-trustless sync |
-| `GetCheckpoint` | FROST-threshold-signed tip for an epoch boundary (1024 blocks); your trust root |
-| `GetEpochBoundary` / `GetEpochBoundaries` | Epoch boundary hashes for chain continuity between proofs |
-
-### NOMT state proofs
-
-| RPC | Proves |
-|---|---|
-| `GetCommitmentProof` (+ batch) | "cmx is in the commitment tree at position N" |
-| `GetNullifierProof` (+ batch) | "nullifier is / isn't in the spent-nullifier set" |
-
-[NOMT](https://github.com/thrumdev/nomt) — Nearly Optimal Merkle Trie —
-backs the commitment and nullifier state.
+| `GetFlyClientProof` | FlyClient proof over the ZIP-221 history tree, from the anchor epoch (`--flyclient nu6.3\|nu5`) up to the tip. Sampled headers carry valid Equihash and authenticated MMR paths; the client verifies with `zync_core::flyclient`. The index refuses to serve if any block's commitment disagrees with the tree it rebuilt. |
 
 ### Privacy-preserving block reads
 
 | RPC | Notes |
 |---|---|
-| `GetCompactBlocks` | Zidecar's own compact-Orchard wire format (not lwd's) |
-| `GetVerifiedBlocks` | Same, with a merkle path binding the action data to the block header |
+| `GetCompactBlocks` | Zidecar's own compact Orchard + Ironwood wire format (not lwd's) |
 | `GetBlockTransactions` | All txs at a height — client hides which specific tx it cares about |
 | `GetMempoolStream` | Compact actions for unconfirmed txs (`height=0`); enables local trial-decryption + nullifier checks without revealing which note the client is scanning for |
 
@@ -236,19 +225,16 @@ position-in-block index.
 | Bearer-token auth | opt-in | none | cookie auth on JSON-RPC only |
 | Retry policy on `sendrawtransaction` | bypassed | n/a | n/a |
 | Upstream URL leak in errors | scrubbed | n/a | leaks via `{err:?}` |
-| Trustless-sync proofs (Ligerito, FROST) | yes (opt-in) | no | no |
-| NOMT inclusion proofs | yes (opt-in) | no | no |
+| FlyClient (ZIP-221) proofs | yes (opt-in) | no | no |
 
 **Honest framing:** Zaino is the upstream strategic Rust lightwalletd
 replacement (Zingo Labs, integrated into Zebra's QA framework). Its
 architecture is more ambitious — direct `ReadStateService` integration
 gives in-process backpressure and avoids JSON serialization on the hot
 path. If you want a pure lwd-shim in Rust and you're OK with Zaino's
-deployment constraints, use Zaino. zidecar's reason to exist is the
-**trustless-sync stack** (Ligerito header proofs, NOMT commitment +
-nullifier proofs, FROST checkpoints) plus the rotko-specific surfaces
-(license, zigner, pro ring) — none of which are in scope for Zaino or
-canonical lightwalletd.
+deployment constraints, use Zaino. zidecar's reasons to exist are gRPC-web
+for browser wallets, whole-block reads for private memo fetches, FlyClient
+proofs, and the rotko-specific surfaces (license, zigner, pro ring).
 
 ## Compatibility scope
 

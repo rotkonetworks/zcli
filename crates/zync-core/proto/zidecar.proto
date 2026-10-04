@@ -4,8 +4,6 @@ package zidecar.v1;
 // Zidecar gRPC service
 // Provides Ligerito-proven header chain and compact blocks
 service Zidecar {
-    // Get header chain proof from height range
-    rpc GetHeaderProof(ProofRequest) returns (HeaderProof);
 
     // Stream compact blocks in range
     rpc GetCompactBlocks(BlockRange) returns (stream CompactBlock);
@@ -38,37 +36,6 @@ service Zidecar {
     // epoch up to the tip (see zync_core::flyclient). Opt-in on the server
     // (--flyclient); UNIMPLEMENTED/UNAVAILABLE when it is off.
     rpc GetFlyClientProof(FlyClientProofRequest) returns (FlyClientProofResponse);
-}
-
-// Request proof for height range
-message ProofRequest {
-    uint32 from_height = 1;
-    uint32 to_height = 2;    // 0 = current tip
-}
-
-// Header chain proof with Ligerito
-message HeaderProof {
-    // Ligerito proof bytes (serialized)
-    bytes ligerito_proof = 1;
-
-    // Height range covered
-    uint32 from_height = 2;
-    uint32 to_height = 3;
-
-    // Chain tip hash
-    bytes tip_hash = 4;
-
-    // Block headers for verification
-    repeated BlockHeader headers = 5;
-}
-
-// Block header metadata
-message BlockHeader {
-    uint32 height = 1;
-    bytes hash = 2;           // 32 bytes
-    bytes prev_hash = 3;      // 32 bytes
-    uint64 timestamp = 4;
-    bytes merkle_root = 5;    // 32 bytes
 }
 
 // Block range query
@@ -107,31 +74,10 @@ message Empty {}
 
 // Sync status information
 message SyncStatus {
-    // Current blockchain height from zcashd
+    // Current blockchain height from zebrad
     uint32 current_height = 1;
-
-    // Current epoch number (height / 1024)
-    uint32 current_epoch = 2;
-
-    // Blocks in current epoch (0-1023)
-    uint32 blocks_in_epoch = 3;
-
-    // Total complete epochs
-    uint32 complete_epochs = 4;
-
-    // Epoch proof generation status
-    enum EpochProofStatus {
-        WAITING_FOR_EPOCH = 0;    // Need more blocks
-        GENERATING = 1;            // Currently generating proof
-        READY = 2;                 // Epoch proof available
-    }
-    EpochProofStatus epoch_proof_status = 5;
-
-    // Blocks remaining until first epoch proof (0 if ready)
-    uint32 blocks_until_ready = 6;
-
-    // Last epoch proof height (0 if none)
-    uint32 last_epoch_proof_height = 7;
+    // 2-7 described the retired Ligerito epoch proofs
+    reserved 2, 3, 4, 5, 6, 7;
 }
 
 // Raw transaction for send/receive

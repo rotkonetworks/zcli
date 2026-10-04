@@ -3,9 +3,9 @@ name = "zync-core"
 version = "0.6.1"
 edition = "2021"
 license = "MIT"
-description = "Trust-minimized Zcash light client primitives: verification, scanning, proving"
+description = "Zcash light client primitives: FlyClient verification and note scanning"
 repository = "https://github.com/rotkonetworks/zcli"
-keywords = ["zcash", "ligerito", "light-client", "zk-proofs"]
+keywords = ["zcash", "light-client", "flyclient"]
 categories = ["cryptography"]
 
 [lib]
@@ -30,9 +30,6 @@ wasm-parallel = [
 ]
 
 [dependencies]
-# ligerito polynomial commitment scheme
-ligerito = { version = "0.6.0", path = "../ligerito", features = ["transcript-blake2b"] }
-ligerito-binary-fields = { version = "0.6.1", path = "../ligerito-binary-fields" }
 
 blake2 = "0.10"
 sha2 = "0.10"
@@ -50,9 +47,6 @@ equihash = { version = "0.3", default-features = false }
 primitive-types = { version = "0.12", default-features = false }
 blake2b_simd = "1"
 
-# nomt merkle proof verification
-nomt-core = { version = "1.0", features = ["blake3-hasher", "serde"] }
-bitvec = "1"
 
 # zcash — Zakura Common 1.0 (zakura-orchard 1.0), the SAME orchard the native
 # zecli graph now uses everywhere (via zafu-wasm / frost-spend). This retires

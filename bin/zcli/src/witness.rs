@@ -581,7 +581,6 @@ mod tests {
             height,
             hash: vec![],
             actions: orchard.iter().map(mk).collect(),
-            actions_root: [0u8; 32],
             ironwood_actions: ironwood.iter().map(mk).collect(),
         }
     }

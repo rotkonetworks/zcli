@@ -26,7 +26,6 @@ const SENT_TXS_TREE: &str = "sent_txs";
 const PAYMENT_REQUESTS_TREE: &str = "payment_requests";
 const WITHDRAWAL_REQUESTS_TREE: &str = "withdrawal_requests";
 const NEXT_WITHDRAWAL_ID_KEY: &[u8] = b"next_withdrawal_id";
-const ACTIONS_COMMITMENT_KEY: &[u8] = b"actions_commitment";
 const FVK_KEY: &[u8] = b"full_viewing_key";
 
 /// lock retry budget for `Wallet::open`: 200+400+...+2000ms ≈ 11s
@@ -714,44 +713,10 @@ impl Wallet {
         }
     }
 
-    // -- actions commitment --
-
-    /// get the running actions commitment (for resuming sync)
-    pub fn actions_commitment(&self) -> Result<[u8; 32], Error> {
-        match self
-            .db
-            .get(ACTIONS_COMMITMENT_KEY)
-            .map_err(|e| Error::Wallet(format!("read actions_commitment: {}", e)))?
-        {
-            Some(bytes) => {
-                if bytes.len() == 32 {
-                    let mut ac = [0u8; 32];
-                    ac.copy_from_slice(&bytes);
-                    Ok(ac)
-                } else {
-                    Ok([0u8; 32])
-                }
-            }
-            None => Ok([0u8; 32]),
-        }
-    }
-
-    pub fn set_actions_commitment(&self, commitment: &[u8; 32]) -> Result<(), Error> {
-        self.db
-            .insert(ACTIONS_COMMITMENT_KEY, &commitment[..])
-            .map_err(|e| Error::Wallet(format!("write actions_commitment: {}", e)))?;
-        Ok(())
-    }
-
-    /// Persist the whole sync point — height, both tree positions and the
-    /// running commitment — in ONE sled transaction.
-    ///
-    /// These four values are a single fact: the commitment is only meaningful
-    /// as the fold UP TO that height. Written one by one (as they were), a
-    /// process killed between the inserts leaves a height beside a commitment
-    /// from another height; every later run then fails the proof check while
-    /// every block it receives is internally consistent, and the failure
-    /// reports "tampering" when the real cause was a torn write.
+    /// Persist the whole sync point — height and both tree positions — in ONE
+    /// sled transaction. The positions are only meaningful as the count UP TO
+    /// that height; written one by one, a process killed between the inserts
+    /// would leave a height beside positions from another height.
     ///
     /// Notes and nullifiers stay outside this transaction deliberately: they
     /// are keyed by nullifier, so re-scanning a range re-inserts them
@@ -761,14 +726,12 @@ impl Wallet {
         height: u32,
         orchard_position: u64,
         ironwood_position: u64,
-        commitment: &[u8; 32],
     ) -> Result<(), Error> {
         self.db
             .transaction(|tx| -> sled::transaction::ConflictableTransactionResult<(), ()> {
                 tx.insert(SYNC_HEIGHT_KEY, &height.to_le_bytes())?;
                 tx.insert(ORCHARD_POSITION_KEY, &orchard_position.to_le_bytes())?;
                 tx.insert(IRONWOOD_POSITION_KEY, &ironwood_position.to_le_bytes())?;
-                tx.insert(ACTIONS_COMMITMENT_KEY, &commitment[..])?;
                 Ok(())
             })
             .map_err(|e| Error::Wallet(format!("commit sync point: {:?}", e)))?;
@@ -945,36 +908,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_actions_commitment_default_zero() {
-        let w = temp_wallet();
-        assert_eq!(w.actions_commitment().unwrap(), [0u8; 32]);
-    }
 
-    #[test]
-    fn test_actions_commitment_roundtrip() {
-        let w = temp_wallet();
-        let commitment = [0xab; 32];
-        w.set_actions_commitment(&commitment).unwrap();
-        assert_eq!(w.actions_commitment().unwrap(), commitment);
-    }
 
-    #[test]
-    fn test_actions_commitment_persists_across_reopen() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("wallet");
-        let path_str = path.to_str().unwrap();
-
-        let commitment = [0xcd; 32];
-        {
-            let w = Wallet::open(path_str).unwrap();
-            w.set_actions_commitment(&commitment).unwrap();
-        }
-        {
-            let w = Wallet::open(path_str).unwrap();
-            assert_eq!(w.actions_commitment().unwrap(), commitment);
-        }
-    }
 
     #[test]
     fn test_sync_height_and_position_roundtrip() {
@@ -989,48 +924,6 @@ mod tests {
         assert_eq!(w.orchard_position().unwrap(), 789);
     }
 
-    #[test]
-    fn test_actions_commitment_chains_correctly() {
-        let w = temp_wallet();
-
-        // simulate syncing blocks 100..103 and saving commitment
-        let mut ac = [0u8; 32];
-        for height in 100..103 {
-            let root = zync_core::actions::compute_actions_root(&[(
-                [height as u8; 32],
-                [0u8; 32],
-                [0u8; 32],
-            )]);
-            ac = zync_core::actions::update_actions_commitment(&ac, &root, height);
-        }
-        w.set_actions_commitment(&ac).unwrap();
-        w.set_sync_height(102).unwrap();
-
-        // simulate resuming from 103 and continuing
-        let mut resumed_ac = w.actions_commitment().unwrap();
-        assert_eq!(resumed_ac, ac);
-        for height in 103..106 {
-            let root = zync_core::actions::compute_actions_root(&[(
-                [height as u8; 32],
-                [0u8; 32],
-                [0u8; 32],
-            )]);
-            resumed_ac = zync_core::actions::update_actions_commitment(&resumed_ac, &root, height);
-        }
-
-        // compute the full chain from scratch for comparison
-        let mut full_ac = [0u8; 32];
-        for height in 100..106 {
-            let root = zync_core::actions::compute_actions_root(&[(
-                [height as u8; 32],
-                [0u8; 32],
-                [0u8; 32],
-            )]);
-            full_ac = zync_core::actions::update_actions_commitment(&full_ac, &root, height);
-        }
-
-        assert_eq!(resumed_ac, full_ac, "resumed chain must match full chain");
-    }
 }
 
 #[cfg(test)]
@@ -1043,28 +936,25 @@ mod sync_point_tests {
     }
 
     #[test]
-    fn commit_sync_point_writes_height_positions_and_commitment() {
+    fn commit_sync_point_writes_height_and_positions() {
         let w = temp_wallet();
-        w.commit_sync_point(4_242, 17, 23, &[7u8; 32]).unwrap();
+        w.commit_sync_point(4_242, 17, 23).unwrap();
 
         assert_eq!(w.sync_height().unwrap(), 4_242);
         assert_eq!(w.orchard_position().unwrap(), 17);
         assert_eq!(w.ironwood_position().unwrap(), 23);
-        assert_eq!(w.actions_commitment().unwrap(), [7u8; 32]);
     }
 
-    // Height and commitment are ONE fact: a transaction that dies partway must
-    // leave the stored pair untouched, not half-updated. Without the
-    // transaction the four inserts were independent, so a kill between them
-    // left a height beside a commitment folded to a different height.
+    // Height and positions are ONE fact: a transaction that dies partway must
+    // leave them untouched, not half-updated.
     #[test]
-    fn aborted_sync_point_transaction_leaves_the_stored_pair_untouched() {
+    fn aborted_sync_point_transaction_leaves_the_stored_point_untouched() {
         let w = temp_wallet();
-        w.commit_sync_point(100, 7, 9, &[1u8; 32]).unwrap();
+        w.commit_sync_point(100, 7, 9).unwrap();
 
         let res: sled::transaction::TransactionResult<(), ()> = w.db.transaction(|tx| {
             tx.insert(SYNC_HEIGHT_KEY, &999u32.to_le_bytes())?;
-            tx.insert(ACTIONS_COMMITMENT_KEY, &[2u8; 32][..])?;
+            tx.insert(ORCHARD_POSITION_KEY, &1u64.to_le_bytes())?;
             Err(sled::transaction::ConflictableTransactionError::Abort(()))
         });
         assert!(res.is_err());
@@ -1072,6 +962,5 @@ mod sync_point_tests {
         assert_eq!(w.sync_height().unwrap(), 100);
         assert_eq!(w.orchard_position().unwrap(), 7);
         assert_eq!(w.ironwood_position().unwrap(), 9);
-        assert_eq!(w.actions_commitment().unwrap(), [1u8; 32]);
     }
 }

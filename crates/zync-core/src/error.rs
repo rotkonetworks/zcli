@@ -28,20 +28,11 @@ pub enum ZyncError {
     #[error("invalid data: {0}")]
     InvalidData(String),
 
-    #[error("ligerito error: {0}")]
-    Ligerito(String),
-
     #[error("serialization error: {0}")]
     Serialization(String),
 
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
-}
-
-impl From<ligerito::LigeritoError> for ZyncError {
-    fn from(e: ligerito::LigeritoError) -> Self {
-        ZyncError::Ligerito(e.to_string())
-    }
 }
 
 pub type Result<T> = std::result::Result<T, ZyncError>;

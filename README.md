@@ -5,9 +5,10 @@ input comes from a flag or an environment variable, key derivation is
 deterministic, and a long-running daemon (`zclid`) exposes the whole wallet over
 gRPC so an agent never has to shell out at all.
 
-Nothing is trusted. Chain data arrives with proofs — a ligerito commitment over
-the header chain, NOMT merkle proofs for note commitments and nullifiers — and
-is cross-checked against independent nodes before the wallet believes it.
+Your notes stay yours. zcli scans every block itself, so the server never learns
+which notes are yours. The chain is checked against a compiled anchor block,
+cross-checked against independent nodes, and, where the server offers it,
+against Zcash's own proof of work through FlyClient (ZIP-221).
 
 ```
 cargo install zecli
@@ -55,35 +56,19 @@ for the daemon to reach the tip, or stop it (`systemctl --user stop zclid`) and
 run the catch-up from the CLI.
 
 A failed sync is retried with a doubling delay (30s, 60s, … capped at ten
-minutes) instead of on the fixed `--sync-interval`. That matters because the
-expensive failures are not transient: a wallet whose stored actions commitment
-no longer matches the chain the server proves fails *after* a full rescan every
-time, so a fixed-interval retry would scan back to back and hold the wallet
-lock almost continuously. The failure log names the repair — one
-`zcli init sync --no-verify` run, which adopts the server's proven commitment
-and stores it beside the matching height; runs after that verify normally.
+minutes) instead of on the fixed `--sync-interval`, so a server that keeps
+failing is not hammered and the wallet lock is not held back to back.
 
-Three checks keep that state from being corrupted in the first place, because
-each of them was a way for a wallet to end up permanently unverifiable:
+Two checks keep a sync from storing a height it did not reach:
 
 * a compact-block response that does not cover the requested range is treated
-  as a *failed* fetch and retried, not as a smaller success — the scan chains
-  every block it receives and then continues from the requested end, so a
-  truncated stream folds a prefix while the height stored beside it claims the
-  tip;
-* the scan refuses to store a sync point unless the last block it folded is
-  the proven tip (this also catches the truncation that slips through, and it
-  fires before `--no-verify` can adopt the value past it);
-* height, both tree positions and the commitment are written in ONE sled
-  transaction. They are one fact — the commitment is only meaningful as the
-  fold up to that height — and four separate inserts let a kill in between
-  leave a height beside a commitment from another height, which then reads as
-  server tampering on every later run.
+  as a *failed* fetch and retried, not as a smaller success;
+* the scan refuses to store a sync point unless every height from the start to
+  the tip arrived, in order, with no gaps. A server that skips a block would
+  otherwise hide whatever it contains.
 
-If the mismatch survives the `--no-verify` repair, the server no longer proves
-the chain *below* the stored height either — a reorganisation below it, or a
-rebuilt proof window. Adoption cannot fix that; the wallet has to be re-synced
-from a height both sides still agree on (`--from`), or rebuilt.
+Height and both tree positions are written in one sled transaction, so a kill
+in between cannot leave a height beside positions from another height.
 
 ```sh
 zclid -i ~/.ssh/id_ed25519                       # unix socket only
@@ -175,66 +160,29 @@ no value to anyone else, but it is one-way. Use `--dry-run` first.
 
 ## verification
 
-`zcli signer verify` walks the whole chain of evidence and refuses to accept
-server data that does not prove itself:
-
-```
-$ zcli signer verify
-network:  mainnet
-endpoint: https://zcash.rotko.net
-tip:      3266078 (000000000075b2db)
-
-1. trust anchor
-   hardcoded orchard activation hash at height 1687104
-   server returned: 0000000000d72315
-   expected:        0000000000d72315
-   PASS
-2. cross-verification (1 independent node)
-   https://zec.rocks - tip matches
-   consensus: 1/1 agree (threshold: >2/3)
-   PASS
-3. header chain proof (ligerito)
-   epoch proof: 1687104 -> 3265535 (1578432 headers, 452 KB)
-   epoch proof anchored to activation hash: PASS
-   epoch proof cryptographic verification:  PASS
-   tip proof: 3265536 -> 3266078 (543 headers)
-   tip proof cryptographic verification:  PASS
-   chain continuity (tip chains to epoch proof): PASS
-   total blocks proven: 1578974
-4. cryptographically proven state roots
-   (extracted from ligerito polynomial trace sentinel row)
-   tree_root:          b375422028a896ed...
-   nullifier_root:     512ab0f1f95c751e...
-   actions_commitment: 18001392bc7a253b...
-   proof freshness: 0 blocks behind tip
-
-all checks passed
-```
-
-The layers:
+`zcli signer verify` checks the chain the server shows you:
 
 1. **trust anchor** — the orchard activation block hash (height 1,687,104) is
-   compiled into the binary. Everything else chains back to it.
-2. **cross-verification** — block hashes checked against independent
+   compiled into the binary, and the server must return that block.
+2. **cross-verification** — the tip hash is checked against independent
    lightwalletd nodes (`--verify-endpoints` / `ZCLI_VERIFY_ENDPOINTS`,
    comma-separated; defaults to the zec.rocks and zec.stardust.rest regions),
    requiring >2/3 agreement.
-3. **epoch proofs** — ligerito polynomial commitments prove the header chain
-   from the anchor forward, 1.5M+ headers in one ~450 KB proof.
-4. **commitment proofs** — NOMT merkle proves each received note commitment is
-   in the tree.
-5. **nullifier proofs** — NOMT merkle proves your nullifiers are *absent*, i.e.
-   the notes are unspent.
-6. **actions commitment** — a BLAKE2b chain over per-block action roots,
-   checked against the value the proof asserts.
+3. **FlyClient** — when the server runs with `--flyclient`, a FlyClient proof
+   over the ZIP-221 history tree: sampled headers with valid Equihash, MMR
+   paths to the roots each committing header carries, epochs linked down to a
+   compiled anchor (NU5 or NU6.3 activation). The FlyClient tip must be the
+   cross-verified tip or be confirmed by the endpoints. See
+   `docs/design/flyclient-header-proof.md` for what it does and does not prove.
 
-Trial decryption is local. The server learns which blocks you fetched, never
-which notes are yours.
+Notes and spends are found by scanning on your machine: trial decryption for
+notes, nullifier matching for spends. The server learns which blocks you
+fetched, never which notes are yours.
 
 ## backends
 
 The default endpoint is a **zidecar** (`https://zcash.rotko.net`), which serves
-compact blocks *and* the proof RPCs above. The cross-verification endpoints are
+compact blocks and, when enabled, FlyClient proofs. The cross-verification endpoints are
 plain **lightwalletd** `CompactTxStreamer`, so any lightwalletd-compatible
 server works there — lightwalletd or zaino, self-hosted or public.
 `LightwalletdClient::connect` probes the endpoint with a grpc-web request and
@@ -243,19 +191,15 @@ server answers `application/grpc`, so neither transport needs configuring.
 
 The main data path still requires zidecar: compact blocks, tree state,
 transactions, and broadcast go over `zidecar.v1`. Running zcli against a bare
-lightwalletd or zaino as its *primary* endpoint is not supported yet — the four
-proof RPCs have no equivalent there, and degrading them silently would defeat
-the point of the verification chain.
+lightwalletd or zaino as its *primary* endpoint is not supported yet.
 
 ## zidecar
 
-The light server. Indexes the chain into NOMT and serves:
+The light server. lightwalletd-compatible, and with `--zidecar-rpc` also serves:
 
 - compact blocks (orchard/ironwood actions only)
-- epoch proofs — ligerito commitments over 1.5M+ block headers
-- commitment proofs (NOMT merkle) for received notes
-- nullifier proofs (NOMT merkle) for unspent verification
-- cross-verification data against lightwalletd endpoints
+- whole-block transaction reads, for private memo fetches
+- FlyClient proofs over the ZIP-221 history tree (`--flyclient nu6.3|nu5`)
 
 ## workspace
 
@@ -263,7 +207,7 @@ The light server. Indexes the chain into NOMT and serves:
 bin/
   zcli/            the CLI wallet (crate: zecli)
   zclid/           background wallet daemon — gRPC, the agent-facing surface
-  zidecar/         light server — compact blocks + proofs
+  zidecar/         light server — compact blocks + FlyClient proofs
   relay/           dumb relay: rooms, participants, opaque bytes
   poker/           heads-up poker CLI with frostito escrow via relay
   pokerbot/        headless heads-up bot driving poker-pvm over the E2EE relay
@@ -271,7 +215,7 @@ bin/
   integration-v09/ end-to-end integration harness (not published)
 
 crates/
-  zync-core/       shared primitives — verification, scanning, proof types, gRPC proto
+  zync-core/       shared primitives — FlyClient verification, scanning, gRPC proto
   zcash-wasm/      zafu — browser proving + wallet core (crate: zafu-wasm)
   zcash-voting/    shielded voting: ZKP delegation, vote commitments, Halo 2
   voting-wasm/     browser prover for the voting circuits
@@ -281,20 +225,16 @@ crates/
   zoda-vss/        verifiable secret sharing via reed-solomon coding
   ring-vrf-wasm/   Bandersnatch Ring VRF prover for zafu pro membership proofs
   maybe-rayon/     local fork: rayon shim compatible with halo2 on wasm32+atomics
-  ligerito/        polynomial commitment scheme over binary extension fields
-  ligerito-binary-fields/   binary field arithmetic (GF(2^128))
-  ligerito-merkle/          merkle trees for ligerito commitments
-  ligerito-reed-solomon/    reed-solomon erasure coding over binary fields
 
-docs/design/       design notes (FROST custody, header proofs, per-pool proofs)
+docs/design/       design notes (FROST custody, FlyClient, per-pool proofs)
 deploy/regtest/    ironwood end-to-end harness against a real zebrad
 ```
 
 ## ligerito
 
-Polynomial commitment scheme over binary extension fields (GF(2^128)). Proves
-properties of 1.5M+ block headers in a single proof using Reed-Solomon encoding
-and Merkle-based verification.
+The Ligerito polynomial commitment crates used to live here under `crates/`.
+zcli no longer uses them; they moved to their own repository with their
+history (2026-10).
 
 ## regtest: ironwood money paths against a real validator
 
@@ -375,8 +315,7 @@ Include a memo and it shows up on the [donation board](https://zcli.rotko.net/bo
 
 ## acknowledgments
 
-- [Bain Capital Crypto / ligerito.jl](https://github.com/BainCapitalCrypto/ligerito.jl) — the original polynomial commitment scheme we ported to Rust
-- [thrumdev/nomt](https://github.com/thrumdev/nomt) — Nearly Optimal Merkle Tree, used for commitment and nullifier proofs
+- [zcash_history](https://crates.io/crates/zcash_history) and the [equihash](https://crates.io/crates/equihash) crate — the ZIP-221 history tree and proof of work behind FlyClient
 - [Penumbra Labs](https://github.com/penumbra-zone) — client-side sync model we build on
 
 ## license

@@ -7,15 +7,12 @@
 
 pub mod compact;
 pub mod constants;
-pub mod epoch;
 pub mod error;
 pub mod grpc_service;
-pub mod header_chain;
 pub mod history;
 pub mod lwd_service;
 pub mod middleware;
 pub mod orchard_tree;
-pub mod prover;
 pub mod rendezvous;
 pub mod ring_vrf;
 pub mod storage;

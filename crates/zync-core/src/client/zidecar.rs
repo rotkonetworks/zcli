@@ -2,14 +2,14 @@
 
 use super::{
     zidecar_proto::{
-        zidecar_client::ZidecarClient as GrpcClient, BlockId, BlockRange, Empty, ProofRequest,
+        zidecar_client::ZidecarClient as GrpcClient, BlockId, BlockRange, Empty,
         RawTransaction, TransparentAddressFilter, TxFilter,
     },
     CompactAction, CompactBlock, SendResult, SyncStatus, TreeState, Utxo,
 };
 use anyhow::Result;
 use tonic::transport::Channel;
-use tracing::{debug, info};
+use tracing::info;
 
 pub struct ZidecarClient {
     client: GrpcClient<Channel>,
@@ -20,26 +20,6 @@ impl ZidecarClient {
         info!("connecting to zidecar at {}", url);
         let client = GrpcClient::connect(url.to_string()).await?;
         Ok(Self { client })
-    }
-
-    /// get epoch proof + tip proof for full chain
-    pub async fn get_header_proof(&mut self) -> Result<(Vec<u8>, u32, u32)> {
-        let request = tonic::Request::new(ProofRequest {
-            from_height: 0,
-            to_height: 0, // 0 = tip
-        });
-
-        let response = self.client.get_header_proof(request).await?;
-        let proof = response.into_inner();
-
-        debug!(
-            "received proof: {} -> {} ({} bytes)",
-            proof.from_height,
-            proof.to_height,
-            proof.ligerito_proof.len()
-        );
-
-        Ok((proof.ligerito_proof, proof.from_height, proof.to_height))
     }
 
     /// get current chain tip
@@ -101,7 +81,7 @@ impl ZidecarClient {
         Ok(blocks)
     }
 
-    /// get sync status (blockchain height, epoch progress, epoch proof status)
+    /// get sync status (blockchain height)
     pub async fn get_sync_status(&mut self) -> Result<SyncStatus> {
         let request = tonic::Request::new(Empty {});
         let response = self.client.get_sync_status(request).await?;
@@ -109,12 +89,6 @@ impl ZidecarClient {
 
         Ok(SyncStatus {
             current_height: status.current_height,
-            current_epoch: status.current_epoch,
-            blocks_in_epoch: status.blocks_in_epoch,
-            complete_epochs: status.complete_epochs,
-            epoch_proof_ready: status.epoch_proof_status == 2, // READY
-            blocks_until_ready: status.blocks_until_ready,
-            last_epoch_proof_height: status.last_epoch_proof_height,
         })
     }
 

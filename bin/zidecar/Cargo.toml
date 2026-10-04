@@ -3,9 +3,9 @@ name = "zidecar"
 version = "0.9.0"
 edition = "2021"
 license = "MIT"
-description = "Ligerito-powered Zcash light server with real-time header chain proofs"
+description = "Zcash light server: lightwalletd-compatible, with FlyClient proofs over the ZIP-221 history tree"
 repository = "https://github.com/rotkonetworks/zcli"
-keywords = ["zcash", "ligerito", "light-server", "zk-proofs"]
+keywords = ["zcash", "light-server", "flyclient"]
 categories = ["cryptography"]
 
 [[bin]]
@@ -16,9 +16,6 @@ path = "src/main.rs"
 # zync core types
 zync-core = { version = "0.6.1", path = "../../crates/zync-core" }
 
-# ligerito polynomial commitment scheme
-ligerito = { version = "0.6.1", path = "../../crates/ligerito", features = ["transcript-blake2b"] }
-ligerito-binary-fields = { version = "0.6.1", path = "../../crates/ligerito-binary-fields" }
 
 # async runtime
 tokio = { version = "1", features = ["full"] }
@@ -48,9 +45,8 @@ zcash_history = "0.6"
 reqwest = { version = "0.11", default-features = false, features = ["json", "rustls-tls"] }
 serde_json = "1.0"
 
-# storage (nomt for sparse merkle trees)
-nomt = { version = "1.0", features = ["serde"] }
-sled = "0.34"  # for simple proof cache
+# storage: FlyClient history-tree leaves (see storage.rs)
+sled = "0.34"
 
 # crypto
 blake2 = "0.10"

@@ -4,6 +4,29 @@ All notable changes to **zidecar** are documented here. Format roughly follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows
 SemVer with pre-1.0 minor bumps treated as breaking.
 
+## [Unreleased]
+
+### Removed (breaking)
+
+- **Ligerito header proofs and NOMT state proofs.** `GetHeaderProof`,
+  `GetTrustlessStateProof`, `GetVerifiedBlocks`, `GetCheckpoint`,
+  `GetEpochBoundary(ies)`, `GetCommitmentProof(s)` and `GetNullifierProof(s)`
+  are gone, with the epoch/tip provers, the NOMT database, and the nullifier
+  and ironwood sync tasks that fed it. The NOMT proofs made clients send
+  their own nullifiers and note commitments; the Ligerito proofs proved
+  values the prover chose. Clients older than the 2026-10 releases of zcli
+  and zafu call `GetHeaderProof` and need upgrading first.
+- `CompactBlock.actions_root` (field 4) and the epoch fields of `SyncStatus`
+  are reserved. `--start-height` and `--ironwood-activation` are removed.
+- The `nomt/` directory and old sled keys in `--db-path` are no longer read
+  and can be deleted.
+
+### Added
+
+- `--flyclient nu6.3|nu5`: index the ZIP-221 history tree from zebrad,
+  checking every block's commitment against it, and serve
+  `GetFlyClientProof`.
+
 ## [0.8.0] - 2026-06-01
 
 Soundness + surface-scoping release informed by a side-by-side diff against

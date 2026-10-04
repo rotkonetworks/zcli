@@ -11,28 +11,25 @@ use tracing::{error, info, warn};
 
 mod compact;
 mod constants;
-mod epoch;
 mod error;
 mod grpc_service;
-mod header_chain;
 mod history;
 mod lwd_service;
 mod middleware;
 mod orchard_tree;
-mod prover;
 mod rendezvous;
 mod ring_vrf;
 mod storage;
 mod witness;
 mod zebrad;
 
-use crate::{epoch::EpochManager, grpc_service::ZidecarService, lwd_service::LwdService};
+use crate::{grpc_service::ZidecarService, lwd_service::LwdService};
 use std::sync::Arc;
 
 #[derive(Parser, Debug)]
 #[command(name = "zidecar")]
 #[command(
-    about = "Zcash lightwalletd-compatible gRPC server, with optional ligerito proof and FROST surfaces.",
+    about = "Zcash lightwalletd-compatible gRPC server, with optional FlyClient and FROST surfaces.",
     long_about = None,
 )]
 struct Args {
@@ -55,11 +52,11 @@ struct Args {
     #[arg(long, default_value_t = 0)]
     mempool_cache_ttl: u64,
 
-    /// OPT-IN: enable the rotko-specific ZidecarService (ligerito header-chain
-    /// proofs, NOMT state-root tracking, FROST sign anchors). Also opens the
-    /// RocksDB cache at `--db-path` and spawns the proof-generation background
-    /// tasks. Off by default so the default `zidecar` binary is a drop-in
-    /// lightwalletd replacement with no extra attack surface.
+    /// OPT-IN: enable the rotko-specific ZidecarService (FlyClient proofs
+    /// with --flyclient, whole-block reads, mempool stream, FROST sign
+    /// anchors, pro ring). Also opens the store at `--db-path`. Off by default
+    /// so the default `zidecar` binary is a drop-in lightwalletd replacement
+    /// with no extra attack surface.
     #[arg(long)]
     zidecar_rpc: bool,
 
@@ -92,18 +89,9 @@ struct Args {
     #[arg(long, env = "ZIDECAR_AUTH_TOKEN")]
     auth_token: Option<String>,
 
-    /// RocksDB cache path (only used when --zidecar-rpc is set).
+    /// Store path (only used when --zidecar-rpc is set).
     #[arg(long, default_value = "./zidecar.db")]
     db_path: String,
-
-    /// Start height for header chain proofs (only used when --zidecar-rpc).
-    #[arg(long, default_value_t = zync_core::ORCHARD_ACTIVATION_HEIGHT)]
-    start_height: u32,
-    /// Ironwood (NU6.3) activation height of the chain being indexed. Defaults
-    /// to mainnet, or testnet with --testnet; set explicitly for regtest
-    /// chains that activate NU6.3 at a custom height.
-    #[arg(long)]
-    ironwood_activation: Option<u32>,
 
     /// OPT-IN (with --zidecar-rpc): index the ZIP-221 history tree and serve
     /// FlyClient proofs (GetFlyClientProof), anchored at the NU6.3 (`nu6.3`)
@@ -212,9 +200,9 @@ async fn main() -> Result<()> {
 
     // Build the base server stack with Tower hygiene that applies to every
     // surface (lwd + any opt-in extras): tracing, timeout, concurrency limit.
-    // Populated when the zidecar-rpc surface opens NOMT; the shutdown drain
-    // below flushes + fsyncs it so a restart can't leave a torn bbn store.
-    let mut drain_storage: Option<(Arc<storage::Storage>, String)> = None;
+    // Populated when the zidecar-rpc surface opens storage; the shutdown drain
+    // below flushes it.
+    let mut drain_storage: Option<Arc<storage::Storage>> = None;
 
     let mut builder = Server::builder()
         .accept_http1(true)
@@ -247,86 +235,21 @@ async fn main() -> Result<()> {
         );
     let mut router = builder.add_service(tonic_web::enable(lwd_server));
 
-    // Opt-in: the rotko ZidecarService surface (ligerito proofs, NOMT state
-    // tracking, FROST sign anchors). Storage + EpochManager + the background
-    // proof tasks are scoped to this branch so the default lwd-only deploy
-    // doesn't open RocksDB or spawn provers.
+    // Opt-in: the rotko ZidecarService surface (FlyClient proofs, block
+    // transactions for private memo fetches, mempool stream, FROST sign
+    // anchors, pro ring). Storage is opened only on this branch so the default
+    // lwd-only deploy touches no disk.
     if args.zidecar_rpc {
         info!("zidecar-rpc surface: enabled");
         let storage = storage::Storage::open(&args.db_path)?;
         info!("opened database at {}", args.db_path);
         let storage_arc = Arc::new(storage);
-        // Hand the drain path a handle so SIGTERM can flush NOMT before exit.
-        drain_storage = Some((storage_arc.clone(), args.db_path.clone()));
+        drain_storage = Some(storage_arc.clone());
 
-        info!("initialized ligerito prover configs");
-        info!("  tip proof: 2^{} config", zync_core::TIP_TRACE_LOG_SIZE);
-        info!(
-            "  epoch proof: 2^{} config",
-            zync_core::EPOCH_PROOF_TRACE_LOG_SIZE
-        );
-
-        let ironwood_activation = args.ironwood_activation.unwrap_or(if args.testnet {
-            zync_core::IRONWOOD_ACTIVATION_HEIGHT_TESTNET
-        } else {
-            crate::constants::IRONWOOD_ACTIVATION_HEIGHT
-        });
-        let epoch_manager = Arc::new(EpochManager::new(
-            zebrad.clone(),
-            storage_arc.clone(),
-            zync_core::epoch_proof_prover_config(),
-            zync_core::tip_prover_config(),
-            args.start_height,
-            ironwood_activation,
-        ));
-
-        let start_epoch = args.start_height / zync_core::EPOCH_SIZE;
-        if let Ok(Some(cached_epoch)) = storage_arc.get_epoch_proof_epoch() {
-            let from_height = args.start_height;
-            let to_height = cached_epoch * zync_core::EPOCH_SIZE + zync_core::EPOCH_SIZE - 1;
-            let num_blocks = to_height - from_height + 1;
-            info!(
-                "existing epoch proof: epochs {} -> {} ({} blocks, height {} -> {})",
-                start_epoch, cached_epoch, num_blocks, from_height, to_height
-            );
-        } else {
-            info!("no existing epoch proof found, will generate...");
-        }
-
-        match epoch_manager.generate_epoch_proof().await {
-            Ok(_) => info!("epoch proof: ready"),
-            Err(e) => warn!("epoch proof: generation failed: {}", e),
-        }
-
-        info!("starting background tasks...");
-        // Shutdown signal for background loops (graceful-exit plumbing the
-        // epoch tasks select on). Sender parked in a leaked guard: zidecar
-        // currently runs tasks for the process lifetime; flip to a real
-        // broadcast on SIGTERM when a drain path is needed.
+        // Shutdown signal for background loops. Sender parked in a leaked
+        // guard: the tasks run for the process lifetime.
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
         std::mem::forget(shutdown_tx);
-        let epoch_manager_bg = epoch_manager.clone();
-        let rx = shutdown_rx.clone();
-        tokio::spawn(async move { epoch_manager_bg.run_background_prover(rx).await });
-        let epoch_manager_state = epoch_manager.clone();
-        let rx = shutdown_rx.clone();
-        tokio::spawn(async move { epoch_manager_state.run_background_state_tracker(rx).await });
-        let epoch_manager_tip = epoch_manager.clone();
-        let rx = shutdown_rx.clone();
-        tokio::spawn(async move { epoch_manager_tip.run_background_tip_prover(rx).await });
-        let epoch_manager_nf = epoch_manager.clone();
-        let rx = shutdown_rx.clone();
-        tokio::spawn(async move { epoch_manager_nf.run_background_nullifier_sync(rx).await });
-        // Ironwood indexes on its own cursor, concurrently with the full-chain
-        // backfill: it spans only ~9k blocks from NU6.3 activation, so it is
-        // servable in minutes instead of waiting out the backfill.
-        let epoch_manager_iw = epoch_manager.clone();
-        let rx = shutdown_rx.clone();
-        tokio::spawn(async move { epoch_manager_iw.run_background_ironwood_sync(rx).await });
-        info!(
-            "  epoch proof generator + state tracker + tip prover + nullifier sync \
-             + ironwood sync: running"
-        );
 
         let history = match args.flyclient.as_deref() {
             None => None,
@@ -357,8 +280,6 @@ async fn main() -> Result<()> {
         let service = ZidecarService::new(
             zebrad.clone(),
             storage_arc,
-            epoch_manager,
-            args.start_height,
             mempool_cache_ttl,
             history,
         );
@@ -383,25 +304,15 @@ async fn main() -> Result<()> {
 
     let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
 
-    // Graceful shutdown. Without this, `systemctl restart` (SIGTERM) killed the
-    // process mid-commit and NOMT v1.0.3's un-fsynced post-meta page writes were
-    // lost, leaving a torn bbn store that fails to reopen ("failed to
-    // reconstruct btree from bbn store file") — which cost us the whole
-    // nullifier/commitment index three times. Storage::flush + fsync_nomt_files
-    // existed for exactly this and had no caller.
+    // Graceful shutdown: flush storage on SIGTERM (systemd stop/restart).
     router
         .serve_with_incoming_shutdown(incoming, shutdown_signal())
         .await?;
 
-    if let Some((storage, db_path)) = drain_storage {
-        info!("draining NOMT before exit...");
+    if let Some(storage) = drain_storage {
         if let Err(e) = storage.flush() {
-            warn!("NOMT flush failed on shutdown: {}", e);
+            warn!("storage flush failed on shutdown: {}", e);
         }
-        if let Err(e) = storage::Storage::fsync_nomt_files(&db_path) {
-            warn!("NOMT fsync failed on shutdown: {}", e);
-        }
-        info!("NOMT drained");
     }
 
     Ok(())

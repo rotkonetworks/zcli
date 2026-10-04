@@ -285,7 +285,6 @@ async fn sync_inner(
     let wallet = Wallet::open(&Wallet::default_path())?;
 
     let stored_height = wallet.sync_height()?;
-    let stored_commitment = wallet.actions_commitment()?;
 
     let start = if let Some(h) = from {
         // --from H means "tree state is known at H", so scan from H+1
@@ -306,27 +305,6 @@ async fn sync_inner(
         }
     };
 
-    // A scan can only CONTINUE the stored commitment when it resumes at the
-    // very height that commitment was folded to. `--from` overrides that
-    // height, so a rescan from anywhere else would root the fold at one height
-    // and compare it at another, and the run would die at the end — after
-    // rescanning the whole range. Refuse here, while it is still cheap, and
-    // name the two things that do work.
-    // Under --no-verify the end-of-run comparison is skipped and the proven
-    // commitment adopted instead, so there is nothing to refuse — and that is
-    // exactly the escape hatch the error text below points at.
-    let skip_verify = std::env::var("ZCLI_NO_VERIFY").is_ok();
-    if let (Some(h), false) = (from, skip_verify) {
-        if let Some(msg) = from_rescan_error(
-            h,
-            start,
-            stored_height,
-            stored_commitment != [0u8; 32],
-            activation,
-        ) {
-            return Err(Error::Other(msg));
-        }
-    }
     let (tip, tip_hash) = client.get_tip().await?;
 
     // verify activation block hash against hardcoded anchor
@@ -353,9 +331,6 @@ async fn sync_inner(
     if !endpoints.is_empty() {
         cross_verify(&client, &endpoints, tip, &tip_hash, activation).await?;
     }
-
-    // verify header chain proof (ligerito) — returns proven NOMT roots
-    let proven_roots = verify_header_proof(&client, tip, mainnet).await?;
 
     eprintln!("tip={} start={}", tip, start);
 
@@ -510,37 +485,16 @@ async fn sync_inner(
     let mut pending_notes: Vec<WalletNote> = Vec::new();
     // collect nullifiers seen in actions to mark spent after verification
     let mut seen_nullifiers: Vec<[u8; 32]> = Vec::new();
-    // running actions commitment chain for verifying block completeness
-    // when resuming a partial sync, load the commitment saved at last sync height;
-    // it must chain from activation to match the proven value.
-    let saved_actions_commitment = stored_commitment;
-    let actions_commitment_available = start <= activation || saved_actions_commitment != [0u8; 32];
-    let mut running_actions_commitment = if start > activation {
-        saved_actions_commitment
-    } else {
-        [0u8; 32]
-    };
-    // First height (if any) where the actions root this client computes from the
-    // block's actions disagrees with the root the server sent alongside them.
-    //
-    // The commitment check at the end of the scan is a single chained hash over
-    // the whole range: it can only say "the chain does not match", which reads
-    // as "server tampered" and is useless for telling a real attack apart from
-    // the two things that actually happen — a wallet and a server that disagree
-    // about which actions belong in a block, or a gap in the blocks streamed to
-    // the client. Recording the FIRST divergence turns that into a height, and a
-    // height can be looked at.
-    let mut first_root_divergence: Option<(u32, [u8; 32], [u8; 32])> = None;
-    // The commitment chain hashes in every height from `start` to the tip. The
-    // server proves it over a contiguous range, so a block MISSING from the
-    // stream breaks the chain just as surely as a wrong one — and looks
-    // identical at the end. Track the first gap separately.
+    // The server must stream every height from `start` to the tip. A block
+    // missing from the stream would hide whatever it contains (a payment, a
+    // spend) while every block received is internally consistent, so track the
+    // first gap and refuse to store a sync point past it.
     let mut first_height_gap: Option<(u32, u32)> = None;
     // The scan begins AT `start` (`current = start` below), not after it — the
-    // block at `start` is the first one streamed and the first one chained.
+    // block at `start` is the first one streamed.
     let mut expected_height = start;
-    // Highest block actually folded into the running commitment. Must equal
-    // `tip` before that commitment is stored beside `tip`.
+    // Highest block actually scanned. Must equal `tip` before the sync point
+    // is stored at `tip`.
     let mut last_folded_height: Option<u32> = None;
 
     while current <= tip {
@@ -694,39 +648,13 @@ async fn sync_inner(
                 ironwood_position += 1;
             }
 
-            // compute per-block actions_root and update running commitment chain
-            let action_tuples: Vec<([u8; 32], [u8; 32], [u8; 32])> = block
-                .actions
-                .iter()
-                .map(|a| (a.cmx, a.nullifier, a.ephemeral_key))
-                .collect();
+            // every height in order, no gaps
             if block.height != expected_height && first_height_gap.is_none() {
                 first_height_gap = Some((expected_height, block.height));
             }
             expected_height = block.height + 1;
             last_folded_height = Some(block.height);
 
-            let actions_root = zync_core::actions::compute_actions_root(&action_tuples);
-
-            // The server sends its own actions_root per block. It is NOT trusted
-            // (the root is recomputed above, which is the whole point), but
-            // comparing them localises a chain mismatch to one height instead of
-            // leaving the end-of-scan check to report the whole range. An
-            // all-zero server root means "not supplied", not "empty block", so
-            // skip those rather than flag every block a server declines to
-            // annotate.
-            if block.actions_root != [0u8; 32]
-                && block.actions_root != actions_root
-                && first_root_divergence.is_none()
-            {
-                first_root_divergence = Some((block.height, actions_root, block.actions_root));
-            }
-
-            running_actions_commitment = zync_core::actions::update_actions_commitment(
-                &running_actions_commitment,
-                &actions_root,
-                block.height,
-            );
         }
 
         current = end + 1;
@@ -746,16 +674,13 @@ async fn sync_inner(
         pb.finish_and_clear();
     }
 
-    // The sync point that is about to be stored must describe the chain that
-    // was actually folded. A run whose last batch came back short folds up to
-    // some height below `tip` and would store it AS `tip` — severing the chain
-    // for every later run, with every block this client received still
-    // internally consistent. Refuse before the value can be adopted, including
-    // under ZCLI_NO_VERIFY, which skips the only other check that would notice.
+    // The sync point about to be stored must describe the blocks actually
+    // scanned. A run whose last batch came back short scans up to some height
+    // below `tip` and would store it AS `tip`, silently skipping the rest.
     if last_folded_height != Some(tip) {
         return Err(Error::Other(format!(
-            "scan folded blocks up to {} but the proven tip is {}: refusing to \
-             store a sync point the commitment chain does not cover",
+            "scan reached block {} but the tip is {}: refusing to store a sync \
+             point past the blocks actually scanned",
             last_folded_height
                 .map(|h| h.to_string())
                 .unwrap_or_else(|| "none".to_string()),
@@ -763,53 +688,22 @@ async fn sync_inner(
         )));
     }
 
-    // verify actions commitment chain against proven value
-    if skip_verify {
-        // when skipping verification (e.g. resync with --from), adopt the proven commitment
-        running_actions_commitment = proven_roots.actions_commitment;
-        eprintln!(
-            "  skipping actions commitment verification (ZCLI_NO_VERIFY set), adopting proven {}...",
-            hex::encode(&running_actions_commitment[..8]),
-        );
-    } else {
-        running_actions_commitment = zync_core::sync::verify_actions_commitment(
-            &running_actions_commitment,
-            &proven_roots.actions_commitment,
-            actions_commitment_available,
-        )
-        .map_err(|e| {
-            Error::Other(explain_commitment_mismatch(
-                &e.to_string(),
-                first_height_gap,
-                first_root_divergence,
-            ))
-        })?;
-        if !actions_commitment_available {
-            eprintln!(
-                "actions commitment: migrating from pre-0.5.1 wallet, saving proven {}...",
-                hex::encode(&running_actions_commitment[..8]),
-            );
-        } else {
-            eprintln!(
-                "actions commitment verified: {}...",
-                hex::encode(&running_actions_commitment[..8])
-            );
-        }
+    if let Some((expected, got)) = first_height_gap {
+        return Err(Error::Other(format!(
+            "the server skipped blocks: expected block {} but it sent {}. Nothing \
+             was stored; retry, or sync from another server.",
+            expected, got
+        )));
     }
 
-    // now that proofs are verified, persist notes to wallet
+    // every block arrived; persist notes to wallet
     for note in &pending_notes {
         wallet.insert_note(note)?;
     }
     for nf in &seen_nullifiers {
         wallet.mark_spent(nf).ok();
     }
-    wallet.commit_sync_point(
-        tip,
-        position_counter,
-        ironwood_position,
-        &running_actions_commitment,
-    )?;
+    wallet.commit_sync_point(tip, position_counter, ironwood_position)?;
 
     // cache tree frontier at sync height for fast witness building (no binary search).
     // BOTH pools: the two trees are separate, and a witness for an ironwood note
@@ -1062,141 +956,11 @@ async fn cross_verify(
     Ok(())
 }
 
-/// Turn "actions commitment mismatch: server tampered with block actions" into
-/// something a person can act on.
-///
-/// The bare message is a single chained hash over tens of thousands of blocks
-/// saying only "these differ". Its wording asserts the most alarming of several
-/// possible causes, and in practice the likeliest ones are mundane: the stream
-/// skipped a height, or the client and server disagree about which actions
-/// belong to a block (for example across a network upgrade that introduced a new
-/// shielded pool). The per-block signals collected during the scan distinguish
-/// them, so report which one actually fired.
-fn explain_commitment_mismatch(
-    base: &str,
-    first_height_gap: Option<(u32, u32)>,
-    first_root_divergence: Option<(u32, [u8; 32], [u8; 32])>,
-) -> String {
-    let mut msg = base.to_string();
-
-    if let Some((expected, got)) = first_height_gap {
-        msg.push_str(&format!(
-            "\n\nFIRST GAP: expected block {} but the server sent {}. The \
-             commitment chains EVERY height, so a skipped block breaks it \
-             without any block being wrong. This is a server/stream problem, \
-             not evidence of tampering.",
-            expected, got
-        ));
-    }
-
-    if let Some((height, computed, served)) = first_root_divergence {
-        msg.push_str(&format!(
-            "\n\nFIRST DIVERGENT BLOCK: {} (this client computed actions root \
-             {}..., the server sent {}...). The chain is fine up to there, so \
-             this height is where wallet and server stop agreeing about which \
-             actions a block contains — compare that block's action set against \
-             the server's before concluding anything about the rest.",
-            height,
-            hex::encode(&computed[..8]),
-            hex::encode(&served[..8]),
-        ));
-    }
-
-    if first_height_gap.is_none() && first_root_divergence.is_none() {
-        msg.push_str(
-            "\n\nEvery block the server sent is contiguous and its actions root \
-             matched what this client computed from its actions. The mismatch is \
-             therefore NOT in the blocks scanned this run: the stored commitment \
-             at the last sync height chains in from before this range and no \
-             longer matches the chain the server proves (a height/commitment pair \
-             knocked out of step by a rewind, or a server whose proof window \
-             moved). Nothing was written, so the stored pair is unchanged and \
-             every run from here fails the same way.",
-        );
-    }
-
-    msg.push_str(
-        "\n\nThe repair is one run of `zcli init sync --no-verify`: it skips \
-         this chain check, adopts the server's proven commitment for the new \
-         tip, and stores it beside the matching height, which restores a \
-         consistent pair that later runs verify normally. It does NOT skip \
-         per-note commitment verification, so note values still cannot be faked; \
-         what it gives up is the guarantee that no block was withheld, for that \
-         one run.",
-    );
-    msg
-}
-
-use zync_core::sync::ProvenRoots;
-
-async fn verify_header_proof(
-    client: &ZidecarClient,
-    tip: u32,
-    mainnet: bool,
-) -> Result<ProvenRoots, Error> {
-    eprintln!("verifying header proof...");
-    let (proof_bytes, proof_from, proof_to) = client
-        .get_header_proof()
-        .await
-        .map_err(|e| Error::Other(format!("header proof fetch failed: {}", e)))?;
-    eprintln!(
-        "  proof: {} bytes, range {}..{}",
-        proof_bytes.len(),
-        proof_from,
-        proof_to
-    );
-
-    let proven = zync_core::sync::verify_header_proof(&proof_bytes, tip, mainnet)
-        .map_err(|e| Error::Other(e.to_string()))?;
-
-    eprintln!(
-        "header proof valid ({}..{}) continuous=true",
-        proof_from, proof_to
-    );
-    eprintln!(
-        "  proven tree_root={}.. nullifier_root={}...",
-        hex::encode(&proven.tree_root[..8]),
-        hex::encode(&proven.nullifier_root[..8]),
-    );
-
-    Ok(proven)
-}
-
-/// Error text when a `--from` rescan cannot continue the stored commitment
-/// chain, `None` when it can.
-///
-/// A scan continues that chain only when it resumes at the height the
-/// commitment was folded to (`stored_height + 1`) — or when there is no stored
-/// commitment (activation, or a wallet that never verified), in which case the
-/// proven value is adopted instead of chained. Any other `--from` roots the
-/// fold at one height and compares it at another: the run dies at the end,
-/// after rescanning the whole range, which is the expensive failure this check
-/// exists to make cheap.
-fn from_rescan_error(
-    from: u32,
-    start: u32,
-    stored_height: u32,
-    has_stored_commitment: bool,
-    activation: u32,
-) -> Option<String> {
-    let uses_stored = start > activation && has_stored_commitment;
-    if !uses_stored || start == stored_height + 1 {
-        return None;
-    }
-    Some(format!(
-        "--from {} starts the scan at block {} but the stored actions commitment was \
-         folded to height {}: the chain cannot be continued from a different height. \
-         Resume from {} instead (drop --from), or add --no-verify to adopt the \
-         server's proven commitment for this run.",
-        from, start, stored_height, stored_height
-    ))
-}
-
 /// Coverage check for one compact-block response.
 ///
 /// A SHORT response is a failure, not a success with fewer blocks: the scan
-/// chains every block it receives and then continues from `end + 1`, so a
-/// stream that stops early folds a prefix while the height it stores claims
+/// takes every block it receives and then continues from `end + 1`, so a
+/// stream that stops early scans a prefix while the height it stores claims
 /// the requested tip. Nothing downstream can tell — the gap check only
 /// compares a block against its neighbour, and a missing tail has no
 /// neighbour. Returns the received span for the error message.
@@ -1527,37 +1291,10 @@ mod coverage_tests {
             height,
             hash: vec![height as u8; 32],
             actions: Vec::new(),
-            actions_root: [0u8; 32],
             ironwood_actions: Vec::new(),
         }
     }
 
-    // A `--from` that cannot chain is refused here rather than after a rescan.
-    #[test]
-    fn from_rescan_is_refused_unless_it_resumes_the_stored_height() {
-        const ACT: u32 = 1_687_104;
-        const STORED: u32 = 3_500_000;
-
-        // resumes exactly where the commitment was folded to
-        assert!(from_rescan_error(STORED, STORED + 1, STORED, true, ACT).is_none());
-
-        // one block further on: the fold would start at STORED + 2 while the
-        // stored chain ends at STORED, and the run would die after the rescan
-        let msg = from_rescan_error(STORED + 1, STORED + 2, STORED, true, ACT).unwrap();
-        assert!(msg.contains("folded to height 3500000"), "{}", msg);
-        assert!(msg.contains("Resume from 3500000"), "{}", msg);
-
-        // no stored commitment to continue (fresh wallet / pre-0.5.1)
-        assert!(from_rescan_error(STORED + 1, STORED + 2, STORED, false, ACT).is_none());
-
-        // scan starts at activation: the fold is rooted at zero, not at the
-        // stored chain, so any --from below activation is folded from scratch
-        assert!(from_rescan_error(ACT - 1, ACT, STORED, true, ACT).is_none());
-    }
-
-    // A short response is a failed fetch, not a smaller success: the scan
-    // continues from the requested `end`, so a stream that stopped early folds
-    // a prefix while the stored height claims the tip.
     #[test]
     fn response_covers_demands_the_whole_requested_range() {
         let full: Vec<_> = (10..=12).map(blk).collect();

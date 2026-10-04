@@ -72,10 +72,9 @@ pub struct CompactBlock {
     pub height: u32,
     pub hash: Vec<u8>,
     pub actions: Vec<CompactAction>,
-    pub actions_root: [u8; 32],
     /// ironwood actions (NU6.3+); empty pre-activation. Same shape as
     /// orchard actions and trial-decrypted with the same keys, but their
-    /// commitments live in the ironwood tree — not covered by actions_root.
+    /// commitments live in the ironwood tree.
     pub ironwood_actions: Vec<CompactAction>,
 }
 
@@ -487,19 +486,10 @@ impl ZidecarClient {
                 let actions = convert_actions(block.actions);
                 let ironwood_actions = convert_actions(block.ironwood_actions);
 
-                let actions_root = if block.actions_root.len() == 32 {
-                    let mut ar = [0u8; 32];
-                    ar.copy_from_slice(&block.actions_root);
-                    ar
-                } else {
-                    [0u8; 32]
-                };
-
                 CompactBlock {
                     height: block.height,
                     hash: block.hash,
                     actions,
-                    actions_root,
                     ironwood_actions,
                 }
             })
@@ -600,22 +590,6 @@ impl ZidecarClient {
         })
     }
 
-    pub async fn get_header_proof(&self) -> Result<(Vec<u8>, u32, u32), Error> {
-        let resp: zidecar_proto::HeaderProof = self
-            .call_unary(
-                "zidecar.v1.Zidecar/GetHeaderProof",
-                &zidecar_proto::ProofRequest {
-                    from_height: 0,
-                    to_height: 0,
-                },
-            )
-            .await?;
-        Ok((resp.ligerito_proof, resp.from_height, resp.to_height))
-    }
-
-    /// FlyClient proof over the ZIP-221 history tree, and the anchor height
-    /// the server built it from. `Ok(None)` when the server does not serve
-    /// FlyClient proofs (gRPC UNIMPLEMENTED).
     pub async fn get_flyclient_proof(
         &self,
         params: &zync_core::flyclient::FlyParams,
@@ -685,7 +659,6 @@ impl ZidecarClient {
                 height: 0,
                 hash: block.hash,
                 actions: convert_actions(block.actions),
-                actions_root: [0u8; 32],
                 ironwood_actions: convert_actions(block.ironwood_actions),
             })
             .collect())

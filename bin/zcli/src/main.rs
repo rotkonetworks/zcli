@@ -186,15 +186,11 @@ async fn run(cli: &Cli) -> Result<(), Error> {
                 from,
                 position,
                 full,
-                no_verify,
             } => {
-                if *no_verify {
-                    std::env::set_var("ZCLI_NO_VERIFY", "1");
-                }
                 // `--from H` scans from H+1, so the activation block itself
                 // needs H = activation - 1. Starting AT activation is what makes
-                // the sync fold the commitment and both note-position counters
-                // from empty rather than resume the stored ones.
+                // the sync count both note positions from empty rather than
+                // resume the stored ones.
                 let activation = if mainnet {
                     zync_core::ORCHARD_ACTIVATION_HEIGHT
                 } else {
@@ -553,7 +549,7 @@ async fn cmd_verify(cli: &Cli, mainnet: bool) -> Result<(), Error> {
     let network = if mainnet { "mainnet" } else { "testnet" };
 
     if !cli.json {
-        eprintln!("zcli verify - trustless verification chain");
+        eprintln!("zcli verify - chain verification");
         eprintln!("network:  {}", network);
         eprintln!("endpoint: {}", cli.endpoint);
         eprintln!("tip:      {} ({})", tip, hex::encode(&tip_hash[..8]));
@@ -657,87 +653,7 @@ async fn cmd_verify(cli: &Cli, mainnet: bool) -> Result<(), Error> {
         eprintln!("   skipped (no --verify-endpoints configured)");
     }
 
-    // step 3: header chain proof
-    if !cli.json {
-        eprintln!();
-        eprintln!("3. header chain proof (ligerito)");
-    }
-    let (proof_bytes, proof_from, proof_to) = zidecar.get_header_proof().await?;
-
-    let result = zync_core::verifier::verify_proofs_full(&proof_bytes)
-        .map_err(|e| Error::Other(format!("proof verification failed: {}", e)))?;
-
-    if !result.epoch_proof_valid {
-        return Err(Error::Other("epoch proof cryptographically INVALID".into()));
-    }
-    if !result.tip_valid {
-        return Err(Error::Other("tip proof cryptographically INVALID".into()));
-    }
-    if !result.continuous {
-        return Err(Error::Other(
-            "proof chain DISCONTINUOUS — gap between epoch proof and tip".into(),
-        ));
-    }
-
-    // verify epoch proof anchors to hardcoded activation hash
-    if mainnet && result.epoch_outputs.start_hash != zync_core::ACTIVATION_HASH_MAINNET {
-        return Err(Error::Other(
-            "epoch proof start_hash doesn't match activation anchor".into(),
-        ));
-    }
-
-    let epoch = &result.epoch_outputs;
-    let blocks_proven = proof_to - proof_from;
-    if !cli.json {
-        eprintln!(
-            "   epoch proof: {} -> {} ({} headers, {} KB)",
-            epoch.start_height,
-            epoch.end_height,
-            epoch.num_headers,
-            proof_bytes.len() / 1024,
-        );
-        eprintln!("   epoch proof anchored to activation hash: PASS");
-        eprintln!("   epoch proof cryptographic verification:  PASS");
-        if let Some(ref tip_out) = result.tip_outputs {
-            eprintln!(
-                "   tip proof: {} -> {} ({} headers)",
-                tip_out.start_height, tip_out.end_height, tip_out.num_headers
-            );
-            eprintln!("   tip proof cryptographic verification:  PASS");
-        }
-        eprintln!("   chain continuity (tip chains to epoch proof): PASS");
-        eprintln!("   total blocks proven: {}", blocks_proven);
-    }
-
-    // step 4: proven state roots
-    let outputs = result.tip_outputs.as_ref().unwrap_or(&result.epoch_outputs);
-    let staleness = tip.saturating_sub(outputs.end_height);
-    if staleness > zync_core::EPOCH_SIZE {
-        return Err(Error::Other(format!(
-            "proof too stale: {} blocks behind tip (>1 epoch)",
-            staleness
-        )));
-    }
-    if !cli.json {
-        eprintln!();
-        eprintln!("4. cryptographically proven state roots");
-        eprintln!("   (extracted from ligerito polynomial trace sentinel row)");
-        eprintln!(
-            "   tree_root:          {}",
-            hex::encode(outputs.tip_tree_root)
-        );
-        eprintln!(
-            "   nullifier_root:     {}",
-            hex::encode(outputs.tip_nullifier_root)
-        );
-        eprintln!(
-            "   actions_commitment: {}",
-            hex::encode(outputs.final_actions_commitment)
-        );
-        eprintln!("   proof freshness: {} blocks behind tip", staleness);
-    }
-
-    // step 5: FlyClient over the ZIP-221 history tree
+    // step 3: FlyClient over the ZIP-221 history tree
     let fly = verify_flyclient_step(cli, &zidecar, mainnet, tip, &tip_hash, &endpoints).await?;
 
     if !cli.json {
@@ -752,16 +668,6 @@ async fn cmd_verify(cli: &Cli, mainnet: bool) -> Result<(), Error> {
                 "network": network,
                 "tip": tip,
                 "tip_hash": hex::encode(&tip_hash),
-                "proof_from": proof_from,
-                "proof_to": proof_to,
-                "blocks_proven": blocks_proven,
-                "epoch_proof_valid": result.epoch_proof_valid,
-                "tip_valid": result.tip_valid,
-                "continuous": result.continuous,
-                "tree_root": hex::encode(outputs.tip_tree_root),
-                "nullifier_root": hex::encode(outputs.tip_nullifier_root),
-                "actions_commitment": hex::encode(outputs.final_actions_commitment),
-                "staleness_blocks": staleness,
                 "cross_verified": !endpoints.is_empty(),
                 "flyclient": fly,
             })
@@ -787,7 +693,7 @@ async fn verify_flyclient_step(
 
     if !cli.json {
         eprintln!();
-        eprintln!("5. flyclient (ZIP-221 history tree)");
+        eprintln!("3. flyclient (ZIP-221 history tree)");
     }
     if !mainnet {
         if !cli.json {

@@ -6,10 +6,10 @@ use crate::{
     error::{Result, ZidecarError},
     zebrad::ZebradClient,
     zidecar::{
-        BlockHeader as ProtoBlockHeader, BlockId, BlockRange, BlockTransactions,
+        BlockId, BlockRange, BlockTransactions,
         CompactAction as ProtoCompactAction, CompactBlock as ProtoCompactBlock, Empty,
         RawTransaction, SendResponse, TransparentAddressFilter, TreeState, TxFilter, TxidList,
-        Utxo, UtxoList, VerifiedBlock,
+        Utxo, UtxoList,
     },
 };
 use std::sync::Arc;
@@ -31,7 +31,6 @@ impl ZidecarService {
         let (tx, rx) = tokio::sync::mpsc::channel(128);
 
         let zebrad = self.zebrad.clone();
-        let storage = self.storage.clone();
         let start = range.start_height;
         let end = range.end_height;
 
@@ -39,97 +38,14 @@ impl ZidecarService {
             for height in start..=end {
                 match InternalCompactBlock::from_zebrad(&zebrad, height).await {
                     Ok(block) => {
-                        let actions_tuples: Vec<([u8; 32], [u8; 32], [u8; 32])> = block
-                            .actions
-                            .iter()
-                            .filter_map(|a| {
-                                if a.cmx.len() == 32
-                                    && a.nullifier.len() == 32
-                                    && a.ephemeral_key.len() == 32
-                                {
-                                    let mut cmx = [0u8; 32];
-                                    let mut nf = [0u8; 32];
-                                    let mut epk = [0u8; 32];
-                                    cmx.copy_from_slice(&a.cmx);
-                                    nf.copy_from_slice(&a.nullifier);
-                                    epk.copy_from_slice(&a.ephemeral_key);
-                                    Some((cmx, nf, epk))
-                                } else {
-                                    None
-                                }
-                            })
-                            .collect();
-
-                        let actions_root =
-                            zync_core::actions::compute_actions_root(&actions_tuples);
-
-                        if let Err(e) = storage.store_actions_root(height, actions_root) {
-                            warn!("failed to store actions_root for height {}: {}", height, e);
-                        }
-
                         let proto_block = ProtoCompactBlock {
                             height: block.height,
                             hash: block.hash,
                             actions: to_proto_actions(block.actions),
-                            actions_root: actions_root.to_vec(),
                             ironwood_actions: to_proto_actions(block.ironwood_actions),
                         };
 
                         if tx.send(Ok(proto_block)).await.is_err() {
-                            warn!("client disconnected during stream");
-                            break;
-                        }
-                    }
-                    Err(e) => {
-                        error!("failed to fetch block {}: {}", height, e);
-                        let _ = tx.send(Err(Status::internal(e.to_string()))).await;
-                        break;
-                    }
-                }
-            }
-        });
-
-        Ok(Response::new(ReceiverStream::new(rx)))
-    }
-
-    pub(crate) async fn handle_get_verified_blocks(
-        &self,
-        request: Request<BlockRange>,
-    ) -> std::result::Result<
-        Response<ReceiverStream<std::result::Result<VerifiedBlock, Status>>>,
-        Status,
-    > {
-        let range = request.into_inner();
-        let (tx, rx) = tokio::sync::mpsc::channel(128);
-
-        let zebrad = self.zebrad.clone();
-        let storage = self.storage.clone();
-        let start = range.start_height;
-        let end = range.end_height;
-
-        tokio::spawn(async move {
-            for height in start..=end {
-                match InternalCompactBlock::from_zebrad(&zebrad, height).await {
-                    Ok(block) => {
-                        let actions_root = compute_actions_root(&block.actions);
-
-                        let (tree_root_after, nullifier_root_after) = storage
-                            .get_state_roots(height)
-                            .unwrap_or(None)
-                            .unwrap_or(([0u8; 32], [0u8; 32]));
-
-                        let verified_block = VerifiedBlock {
-                            height: block.height,
-                            hash: block.hash,
-                            actions: to_proto_actions(block.actions),
-                            actions_root: actions_root.to_vec(),
-                            merkle_path: vec![],
-                            tree_root_after: tree_root_after.to_vec(),
-                            nullifier_root_after: nullifier_root_after.to_vec(),
-                            ironwood_actions: to_proto_actions(block.ironwood_actions),
-                        };
-
-                        if tx.send(Ok(verified_block)).await.is_err() {
                             warn!("client disconnected during stream");
                             break;
                         }
@@ -427,7 +343,6 @@ impl ZidecarService {
                     height: 0,
                     hash: block.hash,
                     actions: to_proto_actions(block.actions),
-                    actions_root: vec![],
                     ironwood_actions: to_proto_actions(block.ironwood_actions),
                 };
                 if tx.send(Ok(proto)).await.is_err() {
@@ -437,29 +352,6 @@ impl ZidecarService {
         });
 
         Ok(Response::new(ReceiverStream::new(rx)))
-    }
-
-    pub(crate) async fn fetch_headers(
-        &self,
-        from_height: u32,
-        to_height: u32,
-    ) -> Result<Vec<ProtoBlockHeader>> {
-        let mut headers = Vec::new();
-        for height in from_height..=to_height {
-            let hash = self.zebrad.get_block_hash(height).await?;
-            let header = self.zebrad.get_block_header(&hash).await?;
-            headers.push(ProtoBlockHeader {
-                height: header.height,
-                hash: hex::decode(&header.hash)
-                    .map_err(|e| ZidecarError::Serialization(e.to_string()))?,
-                prev_hash: hex::decode(&header.prev_hash)
-                    .map_err(|e| ZidecarError::Serialization(e.to_string()))?,
-                timestamp: header.timestamp,
-                merkle_root: hex::decode(&header.merkle_root)
-                    .map_err(|e| ZidecarError::Serialization(e.to_string()))?,
-            });
-        }
-        Ok(headers)
     }
 }
 
@@ -509,20 +401,4 @@ fn to_proto_actions(actions: Vec<crate::compact::CompactAction>) -> Vec<ProtoCom
             txid: a.txid,
         })
         .collect()
-}
-
-fn compute_actions_root(actions: &[crate::compact::CompactAction]) -> [u8; 32] {
-    use sha2::{Digest, Sha256};
-
-    if actions.is_empty() {
-        return [0u8; 32];
-    }
-
-    let mut hasher = Sha256::new();
-    hasher.update(b"ZIDECAR_ACTIONS_ROOT");
-    for action in actions {
-        hasher.update(&action.cmx);
-        hasher.update(&action.nullifier);
-    }
-    hasher.finalize().into()
 }

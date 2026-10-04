@@ -137,8 +137,9 @@ with the client's verifier before sending it.
    cross-check zcli does before trusting any root or count. zync-core's tonic
    `ZidecarClient` has no FlyClient call yet; if one is added, raise its 4 MB
    decode limit — multi-epoch proofs exceed it.
-6. **Ligerito.** Either retire the header trace in favour of FlyClient-bound
-   roots, or prove "this FlyClient proof verifies" to shrink it.
+6. ~~**Ligerito.**~~ Done (2026-10): the Ligerito header trace and the NOMT
+   proofs are removed from zcli, zidecar and zync-core; the Ligerito crates
+   moved to their own repository.
 
 ## Prior art we looked at
 
