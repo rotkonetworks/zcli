@@ -479,3 +479,132 @@ fn recover_marks_notes_the_tree_lost() {
     let (root2, paths2) = more.replay(n + 2_000, &lost);
     assert_same(&tree, lost[0], next_h, root2, &paths2[0]);
 }
+
+#[test]
+fn recover_shard_replays_one_shard_only() {
+    // four shards: notes in shard 1 (complete, known by its subtree root) and
+    // shard 3 (the tip's partial shard) are lost by a reseed at `seed`
+    let n = 3 * SHARD + 9_000;
+    let c = chain(n, 8);
+    let seed = c.boundary(3 * SHARD + 4_000);
+    let seed_h = c.height_at_size(seed);
+    let end_h = c.height_at_size(n);
+    let lost_old = SHARD + 321;
+    let lost_tip = 3 * SHARD + 77;
+    let mut tree = NoteTreeCore::new(100);
+    tree.insert_frontier(&c.frontier(seed), seed_h).unwrap();
+    tree.append_blocks(seed, &c.encode(seed, n), &[], end_h)
+        .unwrap();
+    let roots: Vec<u8> = (0..3).flat_map(|i| c.shard_root(i)).collect();
+    assert_eq!(tree.insert_subtree_roots(0, &roots).unwrap(), 3);
+
+    // the blocks of one shard: from the block holding its first leaf
+    let blocks_for = |index: u64| {
+        let s = index * SHARD;
+        let first = c.blocks.iter().find(|b| b.1 + b.2 > s).unwrap();
+        let to = c.boundary(((index + 1) * SHARD).min(n));
+        (first.1, c.encode(first.1, to))
+    };
+
+    // a replay that stops short, or one with a wrong leaf, marks nothing
+    let (first, bytes) = blocks_for(1);
+    assert!(tree
+        .recover_shard(1, first, &bytes[..bytes.len() / 2], &[lost_old as u32])
+        .is_err());
+    let mut bad = bytes.clone();
+    let last = bad.len() - 5;
+    bad[last] ^= 1;
+    assert!(tree
+        .recover_shard(1, first, &bad, &[lost_old as u32])
+        .is_err());
+    // a position outside the shard is refused
+    assert!(tree
+        .recover_shard(1, first, &bytes, &[lost_tip as u32])
+        .is_err());
+    assert!(!tree.is_marked(lost_old));
+
+    assert_eq!(
+        tree.recover_shard(1, first, &bytes, &[lost_old as u32])
+            .unwrap(),
+        1
+    );
+    let (first3, bytes3) = blocks_for(3);
+    assert_eq!(
+        tree.recover_shard(3, first3, &bytes3, &[lost_tip as u32])
+            .unwrap(),
+        1
+    );
+    let (root, paths) = c.replay(n, &[lost_old, lost_tip]);
+    assert_same(&tree, lost_old, end_h, root, &paths[0]);
+    assert_same(&tree, lost_tip, end_h, root, &paths[1]);
+
+    // without the subtree roots, shard 1 sits under the frontier's level-17
+    // ommer and cannot be checked: refused. Shard 2 is the frontier's own
+    // level-16 ommer, so it can.
+    let mut bare = NoteTreeCore::new(100);
+    bare.insert_frontier(&c.frontier(seed), seed_h).unwrap();
+    assert!(bare
+        .recover_shard(1, first, &bytes, &[lost_old as u32])
+        .is_err());
+    let (first2, bytes2) = blocks_for(2);
+    assert_eq!(
+        bare.recover_shard(2, first2, &bytes2, &[(2 * SHARD + 5) as u32])
+            .unwrap(),
+        1
+    );
+
+    // the tree keeps going with the recovered notes (one more block)
+    let more = chain(n + 3_000, 8);
+    let next_h = end_h + 1;
+    let mut block = Vec::new();
+    block.extend_from_slice(&next_h.to_le_bytes());
+    block.extend_from_slice(&3_000u32.to_le_bytes());
+    for x in &more.cmxs[n as usize..] {
+        block.extend_from_slice(x);
+    }
+    tree.append_blocks(n, &block, &[], next_h).unwrap();
+    let (root2, paths2) = more.replay(n + 3_000, &[lost_old, lost_tip]);
+    assert_same(&tree, lost_old, next_h, root2, &paths2[0]);
+    assert_same(&tree, lost_tip, next_h, root2, &paths2[1]);
+}
+
+#[test]
+fn carry_marks_keeps_confirmed_shards() {
+    let n = 2 * SHARD + 7_000;
+    let c = chain(n, 9);
+    let birthday = c.boundary(500);
+    let end_h = c.height_at_size(n);
+    let p0 = birthday + 40; // shard 0
+    let p1 = SHARD + 999; // shard 1
+    let p2 = 2 * SHARD + 50; // shard 2, the tip's
+    let mut old = NoteTreeCore::new(100);
+    old.insert_frontier(&c.frontier(birthday), c.height_at_size(birthday))
+        .unwrap();
+    old.append_blocks(
+        birthday,
+        &c.encode(birthday, n),
+        &[p0 as u32, p1 as u32, p2 as u32],
+        end_h - 20,
+    )
+    .unwrap();
+
+    // a reseed at the tip from the server's frontier, with its subtree roots
+    let mut tree = NoteTreeCore::new(100);
+    tree.insert_frontier(&c.frontier(n), end_h).unwrap();
+    let roots: Vec<u8> = [c.shard_root(0), c.shard_root(1)].concat();
+    assert_eq!(tree.insert_subtree_roots(0, &roots).unwrap(), 2);
+    assert_eq!(tree.carry_marks(&old).unwrap(), 2);
+    assert!(tree.is_marked(p0) && tree.is_marked(p1) && !tree.is_marked(p2));
+    let (root, paths) = c.replay(n, &[p0, p1]);
+    assert_same(&tree, p0, end_h, root, &paths[0]);
+    assert_same(&tree, p1, end_h, root, &paths[1]);
+
+    // a shard whose root the new tree does not confirm is not carried
+    let other = chain(n, 10);
+    let mut wrong = NoteTreeCore::new(100);
+    wrong.insert_frontier(&other.frontier(n), end_h).unwrap();
+    let roots: Vec<u8> = [other.shard_root(0), other.shard_root(1)].concat();
+    wrong.insert_subtree_roots(0, &roots).unwrap();
+    assert_eq!(wrong.carry_marks(&old).unwrap(), 0);
+    assert!(!wrong.is_marked(p0));
+}

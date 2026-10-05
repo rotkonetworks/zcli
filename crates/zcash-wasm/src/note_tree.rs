@@ -325,6 +325,45 @@ fn leaf_hash(cmx: &[u8]) -> H {
         .unwrap_or_else(H::empty_leaf)
 }
 
+/// Root of shard `shard` truncated at `truncate`, from the chunks it was
+/// hashed in (left to right, each aligned to its own size); the missing right
+/// part is the empty subtree, as `ShardTree::root` computes it.
+fn shard_root_of(
+    parts: &[LocatedPrunableTree<H>],
+    shard: Address,
+    truncate: Position,
+) -> Result<H, String> {
+    fn go(
+        addr: Address,
+        parts: &[LocatedPrunableTree<H>],
+        truncate: Position,
+    ) -> Result<H, String> {
+        if addr.position_range_start() >= truncate {
+            return Ok(H::empty_root(addr.level()));
+        }
+        if let Some(p) = parts.iter().find(|p| p.root_addr() == addr) {
+            return p
+                .root_hash(truncate)
+                .map_err(|a| format!("replay leaves a gap at {a:?}"));
+        }
+        let inner: Vec<_> = parts
+            .iter()
+            .filter(|p| addr.contains(&p.root_addr()))
+            .cloned()
+            .collect();
+        let (l, r) = addr
+            .children()
+            .ok_or_else(|| format!("replay has no leaves under {addr:?}"))?;
+        if inner.is_empty() {
+            return Err(format!("replay has no leaves under {addr:?}"));
+        }
+        let lh = go(l, &inner, truncate)?;
+        let rh = go(r, &inner, truncate)?;
+        Ok(H::combine(l.level(), &lh, &rh))
+    }
+    go(shard, parts, truncate)
+}
+
 fn err<E: std::fmt::Debug>(what: &str) -> impl FnOnce(E) -> String + '_ {
     move |e| format!("{what}: {e:?}")
 }
@@ -521,6 +560,175 @@ impl NoteTreeCore {
                 .map_err(err("insert witness"))?;
         }
         Ok(want.len() as u32)
+    }
+
+    /// Make notes the tree does not hold witnessable by replaying their shard
+    /// alone (2^16 leaves), not the chain from the note to the tip. `blocks`
+    /// (the `append_blocks` encoding) start with the leaf at `first_position`
+    /// and must reach every leaf of shard `index` up to the shard's end, or up
+    /// to the tree size at the newest checkpoint for the shard that holds the
+    /// tip. Leaves outside the shard are skipped.
+    ///
+    /// The replayed shard's root must equal the root the tree already holds
+    /// for that range: a subtree root taken from GetSubtreeRoots (and checked
+    /// against our own hashes), or the frontier and leaves the tree hashed. So
+    /// a replay can only add marks; it can never change a root. Returns how
+    /// many `positions` were marked.
+    pub fn recover_shard(
+        &mut self,
+        index: u64,
+        first_position: u64,
+        blocks: &[u8],
+        positions: &[u32],
+    ) -> Result<u32, String> {
+        let latest = self
+            .latest_checkpoint()
+            .ok_or("tree has no checkpoint yet")?;
+        let next = self.next_position().ok_or("tree has no checkpoint yet")?;
+        let shard = Address::from_parts(Level::from(SHARD_HEIGHT), index);
+        let start = u64::from(shard.position_range_start());
+        let end = u64::from(shard.position_range_end()).min(next);
+        if start >= end {
+            return Err(format!("shard {index} is past the tree (size {next})"));
+        }
+        if first_position > start {
+            return Err(format!(
+                "replay starts at leaf {first_position}, after the shard start {start}"
+            ));
+        }
+        let want: HashSet<u64> = positions.iter().map(|&p| p as u64).collect();
+        if let Some(p) = want.iter().find(|&&p| p < start || p >= end) {
+            return Err(format!(
+                "position {p} is not in shard {index} ({start}..{end})"
+            ));
+        }
+
+        let mut slots: Vec<Slot> = Vec::with_capacity((end - start) as usize);
+        let mut pos = first_position;
+        let mut r = Reader {
+            data: blocks,
+            pos: 0,
+        };
+        while r.pos < blocks.len() && pos < end {
+            let _height = r.u32()?;
+            let n = r.u32()? as usize;
+            let cmxs = r.take(n.checked_mul(32).ok_or("block too large")?)?;
+            for cmx in cmxs.chunks(32) {
+                if pos >= end {
+                    break;
+                }
+                if pos >= start {
+                    let retention = if want.contains(&pos) {
+                        Retention::Marked
+                    } else {
+                        Retention::Ephemeral
+                    };
+                    slots.push(Some((leaf_hash(cmx), retention)));
+                }
+                pos += 1;
+            }
+        }
+        if pos < end {
+            return Err(format!(
+                "replay ends at leaf {pos}, shard {index} needs {start}..{end}"
+            ));
+        }
+
+        // hash in chunks of FLUSH_CHUNK leaves (in parallel where rayon has
+        // threads), then compare the shard's root before inserting anything
+        let build = |(i, chunk): (usize, &mut [Slot])| {
+            let from = Position::from(start + (i * FLUSH_CHUNK) as u64);
+            let to = from + chunk.len() as u64;
+            LocatedPrunableTree::from_iter(
+                from..to,
+                Level::from(SHARD_HEIGHT),
+                chunk
+                    .iter_mut()
+                    .map(|n| n.take().expect("each slot is taken once")),
+            )
+            .map(|r| r.subtree)
+        };
+        #[cfg(feature = "parallel")]
+        let parts: Vec<LocatedPrunableTree<H>> = {
+            use rayon::prelude::*;
+            slots
+                .par_chunks_mut(FLUSH_CHUNK)
+                .enumerate()
+                .filter_map(build)
+                .collect()
+        };
+        #[cfg(not(feature = "parallel"))]
+        let parts: Vec<LocatedPrunableTree<H>> = slots
+            .chunks_mut(FLUSH_CHUNK)
+            .enumerate()
+            .filter_map(build)
+            .collect();
+
+        let truncate = Position::from(end);
+        let replayed = shard_root_of(&parts, shard, truncate)?;
+        let ours = self.tree.root(shard, truncate).map_err(|_| {
+            format!("no root for shard {index} to check the replay against (take the subtree roots first)")
+        })?;
+        if replayed != ours {
+            return Err(format!("replayed shard {index} differs from the tree"));
+        }
+        let before = self.root_at(latest)?;
+        for part in parts {
+            self.tree
+                .insert_tree(part, std::collections::BTreeMap::new())
+                .map_err(err("insert shard"))?;
+        }
+        if self.root_at(latest)? != before {
+            return Err(format!("shard {index} replay moved the root at {latest}"));
+        }
+        if let Some(p) = want.iter().find(|&&p| !self.is_marked(p)) {
+            return Err(format!("position {p} is not marked after the replay"));
+        }
+        Ok(want.len() as u32)
+    }
+
+    /// Keep the marks of `old` (the tree this one replaces) wherever a shard of
+    /// `old` that holds a mark is complete here and has the same root as this
+    /// tree's (a checked subtree root, most often). Shards that differ, or are
+    /// not complete in this tree yet, are left to `recover_shard`. Returns how
+    /// many marked leaves were carried over.
+    pub fn carry_marks(&mut self, old: &NoteTreeCore) -> Result<u32, String> {
+        let next = self.next_position().ok_or("tree has no checkpoint yet")?;
+        let latest = self
+            .latest_checkpoint()
+            .ok_or("tree has no checkpoint yet")?;
+        let before = self.root_at(latest)?;
+        let mut carried = 0u32;
+        for addr in old.tree.store().get_shard_roots().unwrap() {
+            let end = addr.position_range_end();
+            if u64::from(end) > next {
+                continue;
+            }
+            let Some(shard) = old.tree.store().get_shard(addr).unwrap() else {
+                continue;
+            };
+            if !shard.root().contains_marked() {
+                continue;
+            }
+            let (Ok(theirs), Ok(ours)) = (shard.root_hash(end), self.tree.root(addr, end)) else {
+                continue;
+            };
+            if theirs != ours {
+                continue;
+            }
+            // the old tree's checkpoints are not this tree's
+            let keep = RetentionFlags::MARKED | RetentionFlags::REFERENCE;
+            let clean = shard.map(&|(h, f): &(H, RetentionFlags)| (*h, *f & keep));
+            let marks = clean.marked_positions().len() as u32;
+            self.tree
+                .insert_tree(clean, std::collections::BTreeMap::new())
+                .map_err(err("carry shard"))?;
+            carried += marks;
+        }
+        if self.root_at(latest)? != before {
+            return Err("carried marks moved the root".into());
+        }
+        Ok(carried)
     }
 
     /// Add complete-shard roots from GetSubtreeRoots, `roots` = n x 32 bytes for
@@ -870,6 +1078,26 @@ impl NoteTree {
         self.core
             .recover(&frontier, blocks, positions, height)
             .map_err(js_err)
+    }
+
+    /// marks `positions` by replaying shard `index` alone (see
+    /// `NoteTreeCore::recover_shard`); returns how many were marked
+    pub fn recover_shard(
+        &mut self,
+        index: u32,
+        first_position: f64,
+        blocks: &[u8],
+        positions: &[u32],
+    ) -> Result<u32, JsError> {
+        self.core
+            .recover_shard(index as u64, first_position as u64, blocks, positions)
+            .map_err(js_err)
+    }
+
+    /// keeps `old`'s marks in shards whose root this tree confirms; returns
+    /// how many were carried
+    pub fn carry_marks(&mut self, old: &NoteTree) -> Result<u32, JsError> {
+        self.core.carry_marks(&old.core).map_err(js_err)
     }
 
     /// returns how many roots were taken (resume from start_index + n)
