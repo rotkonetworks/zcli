@@ -13,8 +13,14 @@ on:
   workflow_dispatch:
     inputs:
       vote_sdk_ref:
-        description: "vote-sdk tag to build svoted from"
-        default: "v1.6.1-rc.5"
+        description: "vote-sdk tag to build svoted from (the release prod runs)"
+        type: choice
+        options:
+          - v1.6.1-rc.5
+        default: v1.6.1-rc.5
+
+permissions:
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -26,6 +32,14 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Only the pinned vote-sdk tag
+        run: |
+          case "$VOTE_SDK_REF" in
+            v1.6.1-rc.5) ;;
+            *) echo "unexpected vote-sdk ref: $VOTE_SDK_REF" >&2; exit 1 ;;
+          esac
       - name: Check out vote-sdk
         uses: actions/checkout@v4
         with:
@@ -33,6 +47,7 @@ jobs:
           ref: ${{ env.VOTE_SDK_REF }}
           path: vote-sdk
           fetch-depth: 0
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/setup-go@v5
         with:

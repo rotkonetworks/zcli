@@ -640,9 +640,17 @@ fn local_chain_delegate_cast_tally() {
             wait_until("the included cast tx", 90, || cast_leaf_indexes(&tx_hash));
         let vc_hex = b64_to_hex(cast["wire"]["vote_commitment"].as_str().unwrap());
         let new_van_hex = b64_to_hex(cast["wire"]["vote_authority_note_new"].as_str().unwrap());
-        assert_eq!(leaf_position(&round_id, &vc_hex), Some(vc_position));
-        van_position = leaf_position(&round_id, &new_van_hex).expect("new VAN leaf");
-        assert_eq!(van_position, event_van);
+        // The REST tree view can trail the block the tx landed in: wait
+        // (bounded) for both leaves, then check them against the event.
+        let (tree_vc, tree_van) = wait_until("the cast's leaves in the tree", 60, || {
+            Some((
+                leaf_position(&round_id, &vc_hex)?,
+                leaf_position(&round_id, &new_van_hex)?,
+            ))
+        });
+        assert_eq!(tree_vc, vc_position);
+        assert_eq!(tree_van, event_van);
+        van_position = tree_van;
         log(&format!(
             "tx {tx_hash}: VC at {vc_position}, next VAN at {van_position}"
         ));

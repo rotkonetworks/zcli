@@ -207,7 +207,6 @@ pub struct DraftVote {
 pub struct SignedVoteCommitmentView {
     pub proposal_id: u32,
     pub wire: VoteCommitmentWire,
-    pub shares: Vec<VoteShareWire>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

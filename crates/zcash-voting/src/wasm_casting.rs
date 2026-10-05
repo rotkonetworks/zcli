@@ -58,12 +58,13 @@ pub struct CastVoteInputs<'a> {
     pub witness: &'a VanWitness,
 }
 
-/// Result of a HOT vote cast: the signed commitment plus the helper-share
-/// payloads. The host persists these for crash recovery and submits them to the
-/// vote chain / helper servers. This function performs no I/O.
+/// Result of a HOT vote cast: the signed commitment. Helper shares are not
+/// part of it: they commit to the vote's tree position, known only once the
+/// cast is included, so the host builds them later with
+/// [`share_payloads_from_recovery`] from `commitment_bundle_json`. This
+/// function performs no I/O.
 pub struct CastVoteResult {
     pub signed_commitment: SignedVoteCommitment,
-    pub share_payloads: Vec<SharePayload>,
 }
 
 struct NoopProgress;
@@ -72,8 +73,7 @@ impl ProgressReporter for NoopProgress {
     fn on_progress(&self, _progress: f64) {}
 }
 
-/// Build ZKP #2, sign the cast-vote, and build helper-share payloads for one
-/// proposal — the DB-free equivalent of `vote::commit` + `VoteRecoveryBundle`
+/// Build ZKP #2 and sign the cast-vote for one proposal — the DB-free equivalent of `vote::commit` + `VoteRecoveryBundle`
 /// assembly. Mirrors `storage::VotingDb::build_vote_commitment` but takes the
 /// zkp2 inputs as arguments instead of reading them from a `VotingDb`.
 pub fn cast_vote_hot(
@@ -109,16 +109,6 @@ pub fn cast_vote_hot(
         .iter()
         .map(WireEncryptedShare::from)
         .collect();
-
-    // Helper-share payloads (public reveal-share material).
-    let share_payloads = crate::vote_commitment::build_share_payloads(
-        &wire_shares,
-        &bundle,
-        draft.choice,
-        draft.num_options,
-        draft.vc_tree_position,
-        draft.single_share,
-    )?;
 
     // Sign the canonical cast-vote sighash with the randomized voting key.
     let signature = crate::vote_commitment::sign_cast_vote(
@@ -156,7 +146,6 @@ pub fn cast_vote_hot(
         vote_commitment: recovery.vote_commitment,
         proof: recovery.proof.clone(),
         encrypted_shares: wire_shares,
-        share_payloads: share_payloads.clone(),
         anchor_height: recovery.anchor_height,
         shares_hash: recovery.shares_hash,
         share_comms: recovery.share_comms.clone(),
@@ -165,10 +154,7 @@ pub fn cast_vote_hot(
         commitment_bundle_json,
     };
 
-    Ok(CastVoteResult {
-        signed_commitment,
-        share_payloads,
-    })
+    Ok(CastVoteResult { signed_commitment })
 }
 
 /// Proposal-authority bitmask after one vote on `proposal_id` in a bundle.

@@ -140,7 +140,9 @@ pub struct SignedVoteCommitment {
     pub vote_commitment: [u8; 32],
     pub proof: Vec<u8>,
     pub encrypted_shares: Vec<WireEncryptedShare>,
-    pub share_payloads: Vec<SharePayload>,
+    // No share payloads: a share commits to the vote's tree position, which
+    // only exists once the cast is included. Build them from
+    // `commitment_bundle_json` and that position.
     pub anchor_height: u32,
     pub shares_hash: [u8; 32],
     pub share_comms: Vec<[u8; 32]>,
@@ -282,7 +284,6 @@ impl CommittedVote {
             vote_commitment: self.commit.vote_commitment,
             proof: self.commit.proof.clone(),
             encrypted_shares: self.commit.encrypted_shares.clone(),
-            share_payloads: self.commit.share_payloads.clone(),
             anchor_height: self.commit.anchor_height,
             shares_hash: recovery.shares_hash,
             share_comms: recovery.share_comms,

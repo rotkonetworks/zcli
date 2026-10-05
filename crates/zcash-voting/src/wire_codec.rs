@@ -47,7 +47,7 @@ impl VoteCommitmentWire {
 impl VoteShareWire {
     pub fn from_payload(
         payload: &SharePayload,
-        vc_tree_position: Option<u64>,
+        vc_tree_position: u64,
         submit_at: u64,
     ) -> Result<Self, VotingError> {
         Ok(Self {
@@ -56,10 +56,9 @@ impl VoteShareWire {
             vote_decision: payload.vote_decision,
             encrypted_share: payload.enc_share.clone(),
             share_index: payload.enc_share.share_index,
-            vc_tree_position: json_safe_u64(
-                vc_tree_position.unwrap_or(payload.tree_position),
-                "tree_position",
-            )?,
+            // Always the included position the caller passes: the payload's
+            // own `tree_position` may predate inclusion.
+            vc_tree_position: json_safe_u64(vc_tree_position, "tree_position")?,
             all_encrypted_shares: payload.all_enc_shares.clone(),
             share_comms: payload.share_comms.iter().map(b64).collect(),
             primary_blind: b64(&payload.primary_blind),
@@ -137,7 +136,7 @@ impl SignedVoteCommitment {
 impl SharePayload {
     pub fn to_wire_json(
         &self,
-        vc_tree_position: Option<u64>,
+        vc_tree_position: u64,
         submit_at: u64,
     ) -> Result<String, VotingError> {
         VoteShareWire::from_payload(self, vc_tree_position, submit_at)?.to_json()
@@ -219,15 +218,9 @@ impl TryFrom<SignedVoteCommitment> for SignedVoteCommitmentView {
 
     fn try_from(commitment: SignedVoteCommitment) -> Result<Self, Self::Error> {
         let wire = VoteCommitmentWire::try_from(&commitment)?;
-        let shares = commitment
-            .share_payloads
-            .iter()
-            .map(|payload| VoteShareWire::from_payload(payload, None, 0))
-            .collect::<Result<Vec<_>, _>>()?;
         Ok(Self {
             proposal_id: commitment.proposal_id,
             wire,
-            shares,
         })
     }
 }
@@ -586,7 +579,6 @@ mod tests {
             vote_commitment: [0x13; 32],
             proof: vec![0x14; 8],
             encrypted_shares: vec![],
-            share_payloads: vec![],
             anchor_height: 123,
             shares_hash: [0x15; 32],
             share_comms: vec![],
@@ -629,7 +621,7 @@ mod tests {
             primary_blind: vec![0x27; 32],
         };
 
-        let json = payload.to_wire_json(None, 123).unwrap();
+        let json = payload.to_wire_json(99, 123).unwrap();
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(value.get("tree_position").unwrap().as_u64().unwrap(), 99);
         assert_eq!(value.get("submit_at").unwrap().as_u64().unwrap(), 123);
@@ -654,7 +646,9 @@ mod tests {
             primary_blind: vec![0x27; 32],
         };
 
-        let err = payload.to_wire_json(None, 10).unwrap_err();
+        let err = payload
+            .to_wire_json(MAX_SAFE_JSON_INTEGER + 1, 10)
+            .unwrap_err();
         assert!(err
             .to_string()
             .contains("field tree_position is too large to encode as JSON integer"));
@@ -825,20 +819,6 @@ mod tests {
                     c2: vec![6; 32],
                     share_index: 0,
                 }],
-                share_payloads: vec![crate::SharePayload {
-                    shares_hash: vec![7; 32],
-                    proposal_id: 2,
-                    vote_decision: 1,
-                    enc_share: crate::WireEncryptedShare {
-                        c1: vec![5; 32],
-                        c2: vec![6; 32],
-                        share_index: 0,
-                    },
-                    tree_position: 9,
-                    all_enc_shares: vec![],
-                    share_comms: vec![vec![8; 32]],
-                    primary_blind: vec![9; 32],
-                }],
                 anchor_height: 100,
                 shares_hash: [7; 32],
                 share_comms: vec![[8; 32]],
@@ -851,14 +831,6 @@ mod tests {
         assert_eq!(view.bundle_index, 1);
         assert_eq!(view.commitments[0].proposal_id, 2);
         assert_eq!(view.commitments[0].wire.proposal_id, 2);
-        assert_eq!(
-            view.commitments[0].shares[0].encrypted_share.c1,
-            vec![5; 32]
-        );
-        assert_eq!(
-            view.commitments[0].shares[0].primary_blind,
-            base64::engine::general_purpose::STANDARD.encode(vec![9; 32])
-        );
         assert_eq!(
             view.commitments[0].wire.vote_auth_sig,
             base64::engine::general_purpose::STANDARD.encode(vec![9; 64])
