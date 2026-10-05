@@ -70,11 +70,12 @@ pub mod wasm_casting;
 // host injects lightwalletd/PIR bytes, no network in the crate). Both builds.
 pub mod wasm_delegation;
 
-// Self-contained delegation-proof self-test: builds synthetic wallet notes and
-// runs a real K=14 halo2 proof with no external inputs. Used by voting-wasm's
-// `selftest_prove_delegation` export to measure whether K=14 proving completes
-// inside wasm32 (see BUILD_PROVENANCE.md). Not gated behind `#[cfg(test)]`
-// because it must link into the voting-wasm cdylib as a normal dependency.
+// Self-contained delegation-proof self-test plus the synthetic wallet and hot
+// signer behind voting-wasm's local-chain e2e. Test tooling only: compiled
+// for this crate's tests or under the `selftest` feature, which voting-wasm
+// enables for its own tests and for a measurement build of its
+// `selftest_prove_delegation` export (see BUILD_PROVENANCE.md).
+#[cfg(any(test, feature = "selftest"))]
 pub mod selftest;
 
 // Native-only orchestration: SQLite persistence, lightwalletd/PIR network

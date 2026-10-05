@@ -8,9 +8,11 @@
 //! to measure whether K=14 proving completes inside wasm32 and how long it
 //! takes, without needing a PIR server, lightwalletd, or a real wallet.
 //!
-//! Deliberately NOT gated behind `#[cfg(test)]`: it must be reachable from
-//! the `voting-wasm` cdylib, which links this crate as a normal dependency
-//! (not via `cargo test`).
+//! Also holds the synthetic wallet and hot signer that drive voting-wasm's
+//! `local_chain_e2e`. None of this is wallet code: the module only exists
+//! under `cfg(test)` or the `selftest` feature (voting-wasm turns it on for
+//! its own tests, and for a measurement build of `selftest_prove_delegation`),
+//! never in a release blob.
 
 use ff::{Field, PrimeField};
 use incrementalmerkletree::{Hashable, Level};
@@ -212,7 +214,11 @@ pub struct SyntheticWallet {
 
 /// Builds a [`SyntheticWallet`] holding one note per entry of `values`
 /// (1..=`BUNDLE_NOTE_SLOTS`), all at the start of the note commitment tree.
-pub fn synthetic_wallet(seed: [u8; 32], values: &[u64]) -> Result<SyntheticWallet, VotingError> {
+pub fn synthetic_wallet(
+    network: Network,
+    seed: [u8; 32],
+    values: &[u64],
+) -> Result<SyntheticWallet, VotingError> {
     if values.is_empty() || values.len() > BUNDLE_NOTE_SLOTS {
         return Err(VotingError::InvalidInput {
             message: format!("need 1..={BUNDLE_NOTE_SLOTS} notes, got {}", values.len()),
@@ -221,13 +227,13 @@ pub fn synthetic_wallet(seed: [u8; 32], values: &[u64]) -> Result<SyntheticWalle
     let account = AccountId::try_from(0u32).map_err(|_| VotingError::Internal {
         message: "invalid account id".to_string(),
     })?;
-    let usk = UnifiedSpendingKey::from_seed(&MAIN_NETWORK, &seed, account).map_err(|e| {
+    let usk = UnifiedSpendingKey::from_seed(&network, &seed, account).map_err(|e| {
         VotingError::Internal {
             message: format!("usk from_seed failed: {e}"),
         }
     })?;
     let ufvk = usk.to_unified_full_viewing_key();
-    let ufvk_str = ufvk.encode(&MAIN_NETWORK);
+    let ufvk_str = ufvk.encode(&network);
     let fvk = ufvk
         .orchard()
         .ok_or_else(|| VotingError::Internal {
@@ -348,6 +354,7 @@ pub fn synthetic_imt_proof(
 /// (zigner, or the wallet itself) returns for the governance action, i.e.
 /// RedPallas under `ask + alpha` for the ZIP-32 account of `seed`.
 pub fn sign_delegation_hot(
+    network: Network,
     seed: &[u8; 32],
     account_index: u32,
     alpha: &[u8; 32],
@@ -356,7 +363,7 @@ pub fn sign_delegation_hot(
     let account = AccountId::try_from(account_index).map_err(|_| VotingError::InvalidInput {
         message: format!("invalid account index {account_index}"),
     })?;
-    let usk = UnifiedSpendingKey::from_seed(&MAIN_NETWORK, seed, account).map_err(|e| {
+    let usk = UnifiedSpendingKey::from_seed(&network, seed, account).map_err(|e| {
         VotingError::Internal {
             message: format!("usk from_seed failed: {e}"),
         }

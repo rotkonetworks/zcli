@@ -58,8 +58,9 @@ pub struct DelegationPcztArtifact {
 /// * `fvk_bytes` — 96-byte Orchard FVK of the voter's account (ak||nk||rivk).
 /// * `hotkey_raw_address` — 43-byte raw Orchard address of the voting hotkey
 ///   (the governance output target; from `generate_voting_hotkey`).
-/// * `consensus_branch_id` — branch id active at `snapshot_height` (host resolves
-///   via lightwalletd).
+/// * `consensus_branch_id` — branch id the host's node reports (lightwalletd);
+///   it and `snapshot_height` must both have the Ironwood pool. The PCZT is
+///   built under [`crate::tx1::TX1_BRANCH_ID`] either way.
 /// * `coin_type`, `seed_fingerprint`, `account_index` — ZIP-32 identity of the
 ///   voter's account, so the cold signer can derive the spending key.
 #[allow(clippy::too_many_arguments)]

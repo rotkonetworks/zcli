@@ -51,6 +51,11 @@ wasm-slim = []
 # before the first proof, or rayon's global pool init panics on wasm32
 # (no JS-side Worker spawn glue without it).
 parallel = ["halo2_proofs/multicore"]
+# `selftest` = the `selftest` module: a synthetic wallet, synthetic IMT proofs,
+# a seed-holding delegation signer, and the zero-input K=14 proving probe.
+# Test tooling for voting-wasm's local-chain e2e and timing builds; never in a
+# release blob.
+selftest = []
 
 [dependencies]
 # Curves (same as Orchard/Zcash)

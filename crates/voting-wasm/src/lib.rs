@@ -51,9 +51,12 @@ pub fn voting_wasm_init_panic_hook() {
 /// measure whether K=14 proving completes inside a wasm32 module and how
 /// long it takes; the extension does not call this in production flows.
 ///
+/// Only built with the `selftest` feature (timing builds, not release blobs).
+///
 /// Returns JSON `{"ok":bool,"proof_len":N,"error":string|null}`. Timing is
 /// deliberately left to the JS caller (`Date.now()` around the call) since
 /// `std::time::Instant` panics on bare wasm32-unknown-unknown.
+#[cfg(feature = "selftest")]
 #[wasm_bindgen]
 pub fn selftest_prove_delegation() -> String {
     match zcash_voting::selftest::run_selftest_delegation_proof() {

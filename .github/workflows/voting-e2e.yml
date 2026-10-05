@@ -1,0 +1,68 @@
+name: voting-e2e
+
+# voting-wasm's `local_chain_e2e` against a local vote chain built from the
+# vote-sdk release prod zvote-1 runs: delegate (ZKP #1), cast two votes
+# (ZKP #2), build helper shares from each cast's included tree position, and
+# wait for the finalized tally. It builds svoted with Halo2 + RedPallas and
+# waits out a 10-minute vote window, so it runs nightly and on demand, not
+# per PR.
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      vote_sdk_ref:
+        description: "vote-sdk tag to build svoted from"
+        default: "v1.6.1-rc.5"
+
+env:
+  CARGO_TERM_COLOR: always
+  VOTE_SDK_REF: ${{ inputs.vote_sdk_ref || 'v1.6.1-rc.5' }}
+
+jobs:
+  local-chain:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check out vote-sdk
+        uses: actions/checkout@v4
+        with:
+          repository: valargroup/vote-sdk
+          ref: ${{ env.VOTE_SDK_REF }}
+          path: vote-sdk
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: vote-sdk/go.mod
+          cache-dependency-path: vote-sdk/go.sum
+      - run: sudo apt-get update && sudo apt-get install -y protobuf-compiler jq
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: voting-e2e-v1
+          workspaces: |
+            . -> target
+            vote-sdk/circuits -> target
+      - name: Build svoted (halo2 + redpallas)
+        working-directory: vote-sdk
+        run: make build-ffi
+      - name: Start a single-validator chain
+        env:
+          VOTE_SDK: ${{ github.workspace }}/vote-sdk
+          SVOTED: ${{ github.workspace }}/vote-sdk/svoted
+          SVOTE_HOME: ${{ runner.temp }}/svhome
+        run: |
+          # throwaway vote-manager key for this run only
+          VM_PRIVKEYS="$(openssl rand -hex 32)" crates/voting-wasm/scripts/local-vote-chain.sh start
+      - name: local_chain_e2e
+        env:
+          VOTE_CHAIN_REST: http://127.0.0.1:21317
+          SVOTE_NODE: tcp://127.0.0.1:27657
+          SVOTE_HOME: ${{ runner.temp }}/svhome
+          SVOTED: ${{ github.workspace }}/vote-sdk/svoted
+        run: cargo test -p voting-wasm --release --locked -- --ignored --nocapture local_chain
+      - name: svoted log
+        if: failure()
+        run: tail -200 "${{ runner.temp }}/svhome/svoted.log"

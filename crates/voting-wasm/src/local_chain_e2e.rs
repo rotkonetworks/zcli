@@ -4,6 +4,8 @@
 //! `build_delegation_pczt`, `finalize_delegation`, `cast_vote_hot_wire`,
 //! `build_vote_shares_from_recovery`), compiled natively, against a running
 //! `svoted` (vote-sdk) and checks the chain finalizes a tally for the votes.
+//! Each cast's helper shares are built only after inclusion, from the tree
+//! position the chain reports for its tx hash.
 //!
 //! The round has 37 proposals and the votes go to proposals 37 and 17 in one
 //! delegation bundle: ids above 16 only verify under the 51-bit proposal
@@ -11,9 +13,13 @@
 //! it starts from the authority the first vote left behind.
 //!
 //! Ignored by default. Needs a chain started from vote-sdk's `scripts/init.sh`
-//! (single validator, helper enabled, coordinator threshold 1):
+//! (single validator, helper enabled, coordinator threshold 1);
+//! `scripts/local-vote-chain.sh` sets one up on ports that cannot reach other
+//! local chains (`.github/workflows/voting-e2e.yml` runs exactly this):
 //!
 //! ```sh
+//! VOTE_SDK=/path/to/vote-sdk SVOTED=/path/to/svoted SVOTE_HOME=/path/to/svhome \
+//! VM_PRIVKEYS=<hex> crates/voting-wasm/scripts/local-vote-chain.sh start
 //! VOTE_CHAIN_REST=http://127.0.0.1:21317 \
 //! SVOTE_NODE=tcp://127.0.0.1:27657 SVOTE_HOME=/path/to/svhome SVOTED=/path/to/svoted \
 //! cargo test -p voting-wasm --release -- --ignored --nocapture local_chain
@@ -312,6 +318,39 @@ fn tree_leaves(round_id: &str) -> Vec<String> {
     leaves
 }
 
+/// The `(van, vc)` leaf indexes the chain's `cast_vote` event reports for an
+/// included cast, read from `GET /tx/{hash}` the way zafu reads them.
+/// `None` while the tx is still pending (404).
+fn cast_leaf_indexes(tx_hash: &str) -> Option<(u64, u64)> {
+    let url = format!("{}/shielded-vote/v1/tx/{tx_hash}", rest());
+    let resp = http().get(&url).send().ok()?;
+    if resp.status().as_u16() == 404 {
+        return None;
+    }
+    let status = resp.status().as_u16();
+    let body: Value = resp.json().unwrap_or(Value::Null);
+    assert_eq!(status, 200, "cast tx {tx_hash} failed: {body}");
+    // CometBFT 0.38 sends attribute keys/values as plain strings; older
+    // nodes base64-encoded them.
+    let text = |v: &Value| {
+        let s = v.as_str().unwrap_or_default().to_string();
+        match B64.decode(&s).ok().and_then(|b| String::from_utf8(b).ok()) {
+            Some(d) if s != "leaf_index" && d.is_ascii() => d,
+            _ => s,
+        }
+    };
+    let events = body["events"].as_array().cloned().unwrap_or_default();
+    let value = events
+        .iter()
+        .filter(|e| e["type"] == "cast_vote")
+        .flat_map(|e| e["attributes"].as_array().cloned().unwrap_or_default())
+        .find(|a| text(&a["key"]) == "leaf_index")
+        .map(|a| text(&a["value"]))
+        .unwrap_or_else(|| panic!("no cast_vote leaf_index in {body}"));
+    let (van, vc) = value.split_once(',').expect("leaf_index is \"van,vc\"");
+    Some((van.parse().unwrap(), vc.parse().unwrap()))
+}
+
 fn leaf_position(round_id: &str, leaf_hex: &str) -> Option<u64> {
     tree_leaves(round_id)
         .iter()
@@ -343,7 +382,12 @@ fn local_chain_delegate_cast_tally() {
     // whose nullifiers need IMT proofs, as a real small wallet's would.
     let mut seed = [0u8; 32];
     seed[..8].copy_from_slice(&now().to_le_bytes());
-    let wallet = zcash_voting::selftest::synthetic_wallet(seed, &[7_000_000, 7_000_000]).unwrap();
+    let wallet = zcash_voting::selftest::synthetic_wallet(
+        zcash_voting::types::Network::Mainnet,
+        seed,
+        &[7_000_000, 7_000_000],
+    )
+    .unwrap();
 
     log("creating a 37-proposal round");
     let round_id = create_round(&wallet.nc_root, &wallet.nullifier_imt_root);
@@ -447,8 +491,14 @@ fn local_chain_delegate_cast_tally() {
         .unwrap()
         .try_into()
         .unwrap();
-    let sig =
-        zcash_voting::selftest::sign_delegation_hot(&wallet.seed, 0, &alpha, &sighash).unwrap();
+    let sig = zcash_voting::selftest::sign_delegation_hot(
+        zcash_voting::types::Network::Mainnet,
+        &wallet.seed,
+        0,
+        &alpha,
+        &sighash,
+    )
+    .unwrap();
 
     // What the PIR server would return, for real and padded nullifiers.
     let nullifiers: Vec<String> = built["real_note_nullifiers_hex"]
@@ -571,22 +621,31 @@ fn local_chain_delegate_cast_tally() {
                 &van_witness(&round_id, van_position),
                 &vote_json,
                 "mainnet",
-                0,
             )
             .unwrap(),
         )
         .unwrap();
         log(&format!("ZKP #2 in {:?}", t.elapsed()));
+        assert!(
+            cast.get("shares").is_none(),
+            "shares before inclusion carry a guessed tree position"
+        );
 
         log("POST /cast-vote");
-        post_tx("/shielded-vote/v1/cast-vote", &cast["wire"].to_string());
+        let broadcast = post_tx("/shielded-vote/v1/cast-vote", &cast["wire"].to_string());
+        let tx_hash = broadcast["tx_hash"].as_str().expect("tx_hash").to_string();
+        // The host's path: tx hash -> included tx's leaf indexes, checked
+        // against the tree's own leaves.
+        let (event_van, vc_position) =
+            wait_until("the included cast tx", 90, || cast_leaf_indexes(&tx_hash));
         let vc_hex = b64_to_hex(cast["wire"]["vote_commitment"].as_str().unwrap());
         let new_van_hex = b64_to_hex(cast["wire"]["vote_authority_note_new"].as_str().unwrap());
-        let vc_position = wait_until("the vote commitment leaf", 90, || {
-            leaf_position(&round_id, &vc_hex)
-        });
+        assert_eq!(leaf_position(&round_id, &vc_hex), Some(vc_position));
         van_position = leaf_position(&round_id, &new_van_hex).expect("new VAN leaf");
-        log(&format!("VC at {vc_position}, next VAN at {van_position}"));
+        assert_eq!(van_position, event_van);
+        log(&format!(
+            "tx {tx_hash}: VC at {vc_position}, next VAN at {van_position}"
+        ));
 
         let shares: Vec<Value> = serde_json::from_str(
             &build_vote_shares_from_recovery(
