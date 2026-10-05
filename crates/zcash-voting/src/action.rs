@@ -240,11 +240,20 @@ fn consensus_network_for_voting_network(network: VotingNetwork) -> ConsensusNetw
     }
 }
 
+/// Checks the host's consensus branch for the snapshot height and returns the
+/// voting protocol it implies.
+///
+/// The host reads the branch from its node, which can know an upgrade this
+/// crate's height table lags behind (testnet NU7 at 4,465,026 reports
+/// 0x77190AD9 while a table without NU7 says NU6.3). Both are fine for voting
+/// as long as each has the Ironwood pool, so this requires that of both
+/// rather than equality. The branch only selects the note protocol: the
+/// governance PCZT itself is always built under [`crate::tx1::TX1_BRANCH_ID`].
 fn validate_consensus_branch_id(
     network: VotingNetwork,
     snapshot_height: u64,
     consensus_branch_id: u32,
-) -> Result<BranchId, VotingError> {
+) -> Result<VotingShieldedProtocol, VotingError> {
     let branch_id =
         BranchId::try_from(consensus_branch_id).map_err(|e| VotingError::InvalidInput {
             message: format!(
@@ -252,15 +261,27 @@ fn validate_consensus_branch_id(
                 consensus_branch_id, e
             ),
         })?;
+    let protocol = VotingShieldedProtocol::for_branch_id(branch_id).map_err(|_| {
+        VotingError::InvalidInput {
+            message: format!(
+                "consensus_branch_id 0x{consensus_branch_id:08X} has no Ironwood pool; \
+                 voting needs a snapshot at or after NU6.3"
+            ),
+        }
+    })?;
     let expected = crate::lwd::branch_id_for_height(network, snapshot_height)?;
-    if consensus_branch_id != expected {
+    let expected_branch = BranchId::try_from(expected).map_err(|e| VotingError::Internal {
+        message: format!("branch id table returned 0x{expected:08X}: {e}"),
+    })?;
+    if VotingShieldedProtocol::for_branch_id(expected_branch).is_err() {
         return Err(VotingError::InvalidInput {
             message: format!(
-                "consensus_branch_id 0x{consensus_branch_id:08X} does not match snapshot height {snapshot_height} branch id 0x{expected:08X}",
+                "snapshot height {snapshot_height} is before NU6.3 on {network:?}, \
+                 so it holds no Ironwood notes to vote with"
             ),
         });
     }
-    Ok(branch_id)
+    Ok(protocol)
 }
 
 /// Build a governance-specific PCZT for Keystone signing.
@@ -298,8 +319,13 @@ pub(crate) fn build_governance_pczt(
 ) -> Result<GovernancePczt, VotingError> {
     validate_notes(notes)?;
     validate_round_params(params)?;
-    let branch_id =
+    let shielded_protocol =
         validate_consensus_branch_id(network, params.snapshot_height, consensus_branch_id)?;
+    // The PCZT is only a signing vehicle (never broadcast): the vote chain
+    // rebuilds the signed digest from `tx1_effects` under TX1 v1's fixed
+    // profile, so build it under that profile's branch whatever the snapshot
+    // branch is.
+    let branch_id = crate::tx1::TX1_BRANCH_ID;
     let expected_coin_type = network.network_type().coin_type();
     if coin_type != expected_coin_type {
         return Err(VotingError::InvalidInput {
@@ -352,7 +378,6 @@ pub(crate) fn build_governance_pczt(
         .expect("validated as 32 bytes above");
 
     let mut rng = rand::thread_rng();
-    let shielded_protocol = VotingShieldedProtocol::for_branch_id(branch_id)?;
     let bundle_version = shielded_protocol.bundle_version();
 
     // --- Compute governance nullifiers ---
@@ -670,13 +695,18 @@ pub(crate) fn build_governance_pczt(
         let pczt_sighash = extract_pczt_sighash(&pczt_bytes)?;
         let tx1_effects = crate::tx1::encode_tx1_effects(indexed_actions)?;
         // The vote chain never sees this PCZT: it rebuilds the signed digest
-        // from `tx1_effects` under a fixed V6/NU6.3 profile. A PCZT whose own
-        // sighash differs (other branch, version, flags or value balance)
+        // from `tx1_effects` under TX1 v1's fixed V6/NU6.3 profile. A PCZT whose
+        // own sighash differs (other branch, version, flags or value balance)
         // would get a signature the chain rejects, so refuse it here.
         if crate::tx1::sighash(&tx1_effects)? != pczt_sighash {
             return Err(VotingError::Internal {
-                message: "governance PCZT sighash differs from the vote chain's TX1 digest"
-                    .to_string(),
+                message: format!(
+                    "governance PCZT sighash differs from the vote chain's TX1 digest: \
+                     TX1 effects v{} is pinned to V6 / NU6.3 (0x{:08X}), and this PCZT \
+                     was built under another profile",
+                    crate::tx1::TX1_EFFECTS_VERSION,
+                    u32::from(crate::tx1::TX1_BRANCH_ID),
+                ),
             });
         }
 
@@ -912,8 +942,6 @@ mod tests {
 
     // --- build_governance_pczt tests ---
 
-    /// NU5 mainnet consensus branch ID
-    const NU5_BRANCH_ID: u32 = 0xC2D6D0B4;
     /// Mock seed fingerprint (32 bytes)
     const MOCK_SEED_FP: [u8; 32] = [0xAA; 32];
     /// Mock account index
@@ -1056,10 +1084,72 @@ mod tests {
         )
         .unwrap_err();
 
-        assert!(
-            err.to_string().contains("does not match snapshot height"),
-            "{err}"
+        assert!(err.to_string().contains("is before NU6.3"), "{err}");
+    }
+
+    /// Testnet NU7 activation height (4,465,026).
+    const TESTNET_NU7_HEIGHT: u64 = 4_465_026;
+
+    fn build_testnet_pczt(
+        snapshot_height: u64,
+        branch: BranchId,
+    ) -> Result<GovernancePczt, VotingError> {
+        let mut params = mock_params();
+        params.snapshot_height = snapshot_height;
+        build_governance_pczt(
+            &[mock_note()],
+            &params,
+            VotingNetwork::Testnet,
+            &mock_fvk_bytes(),
+            &mock_hotkey_address(),
+            u32::from(branch),
+            VotingNetwork::Testnet.network_type().coin_type(),
+            &MOCK_SEED_FP,
+            MOCK_ACCOUNT,
+            "Test Round",
+            &sample_padded_note_secrets(1).unwrap(),
+        )
+    }
+
+    #[test]
+    fn test_build_governance_pczt_past_testnet_nu7_stays_on_tx1_profile() {
+        // The node reports NU7 for a snapshot past its activation; the PCZT is
+        // still built under TX1 v1's NU6.3 profile, so its sighash is the
+        // digest the chain rebuilds from tx1_effects.
+        for height in [TESTNET_NU7_HEIGHT, TESTNET_NU7_HEIGHT + 10_000] {
+            let result = build_testnet_pczt(height, BranchId::Nu7).unwrap();
+            let pczt = pczt::Pczt::parse(&result.pczt_bytes).unwrap();
+            assert_eq!(*pczt.global().tx_version(), 6);
+            assert_eq!(
+                *pczt.global().consensus_branch_id(),
+                u32::from(BranchId::Nu6_3)
+            );
+            assert_eq!(result.tx1_effects.len(), crate::tx1::TX1_EFFECTS_LEN);
+            assert_eq!(
+                crate::tx1::sighash(&result.tx1_effects).unwrap().to_vec(),
+                result.pczt_sighash
+            );
+        }
+    }
+
+    #[test]
+    fn test_build_governance_pczt_accepts_live_nu7_branch_for_nu6_3_snapshot() {
+        // A host that reads the branch from a node past NU7 while the round's
+        // snapshot is in the NU6.3 era: both have the Ironwood pool.
+        let result = build_testnet_pczt(TESTNET_NU7_HEIGHT - 1, BranchId::Nu7).unwrap();
+        let pczt = pczt::Pczt::parse(&result.pczt_bytes).unwrap();
+        assert_eq!(
+            *pczt.global().consensus_branch_id(),
+            u32::from(BranchId::Nu6_3)
         );
+    }
+
+    #[test]
+    fn test_build_governance_pczt_refuses_branch_without_ironwood() {
+        let Err(err) = build_testnet_pczt(TESTNET_NU7_HEIGHT, BranchId::Nu6_2) else {
+            panic!("NU6.2 has no Ironwood pool");
+        };
+        assert!(err.to_string().contains("has no Ironwood pool"), "{err}");
     }
 
     #[test]
@@ -1188,13 +1278,16 @@ mod tests {
 
     #[test]
     fn test_build_governance_pczt_rejects_coin_type_network_mismatch() {
+        // A mainnet NU6.3 snapshot, so only the coin type is wrong.
+        let mut params = mock_params();
+        params.snapshot_height = 3_428_143;
         let err = build_governance_pczt(
             &[mock_note()],
-            &mock_params(),
+            &params,
             VotingNetwork::Mainnet,
             &mock_fvk_bytes(),
             &mock_hotkey_address(),
-            NU5_BRANCH_ID,
+            u32::from(BranchId::Nu6_3),
             VotingNetwork::Testnet.network_type().coin_type(),
             &MOCK_SEED_FP,
             MOCK_ACCOUNT,

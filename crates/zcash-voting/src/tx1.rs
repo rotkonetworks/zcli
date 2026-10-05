@@ -12,6 +12,13 @@ use crate::VotingError;
 
 /// Version byte for the current TX1 effects encoding.
 pub const TX1_EFFECTS_VERSION: u8 = 1;
+/// Consensus branch TX1 v1 fixes. The vote chain rebuilds the signed digest
+/// under this branch whatever upgrade the snapshot falls in (NU7 included),
+/// so the governance PCZT must be built under it too. A chain that wants
+/// another profile bumps the effects version, and refuses this one with
+/// "unsupported tx1 effects version".
+pub const TX1_BRANCH_ID: zcash_protocol::consensus::BranchId =
+    zcash_protocol::consensus::BranchId::Nu6_3;
 /// Number of Ironwood actions in the current TX1 construction.
 pub const TX1_ACTION_COUNT: usize = 1;
 /// Length of an Orchard/Ironwood encrypted note ciphertext.
@@ -145,10 +152,7 @@ pub fn sighash(effects: &[u8]) -> Result<[u8; 32], VotingError> {
         txid::{to_txid, TxIdDigester},
         TransactionDigest, TxDigests, TxVersion,
     };
-    use zcash_protocol::{
-        consensus::{BlockHeight, BranchId},
-        value::ZatBalance,
-    };
+    use zcash_protocol::{consensus::BlockHeight, value::ZatBalance};
 
     const BUNDLE_FLAGS: u8 = 0x07;
     const VALUE_BALANCE_ZAT: i64 = 1;
@@ -198,7 +202,7 @@ pub fn sighash(effects: &[u8]) -> Result<[u8; 32], VotingError> {
     let header_digest = <TxIdDigester as TransactionDigest<transaction::Authorized>>::digest_header(
         &TxIdDigester,
         TxVersion::V6,
-        BranchId::Nu6_3,
+        TX1_BRANCH_ID,
         0,
         BlockHeight::from_u32(0),
     );
@@ -216,7 +220,7 @@ pub fn sighash(effects: &[u8]) -> Result<[u8; 32], VotingError> {
         ironwood_digest: Some(ironwood_digest),
     };
 
-    Ok(to_txid(TxVersion::V6, BranchId::Nu6_3, &digests).into())
+    Ok(to_txid(TxVersion::V6, TX1_BRANCH_ID, &digests).into())
 }
 
 #[cfg(test)]

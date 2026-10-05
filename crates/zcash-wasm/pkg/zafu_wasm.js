@@ -85,9 +85,421 @@ export class FrostRelayCipher {
 if (Symbol.dispose) FrostRelayCipher.prototype[Symbol.dispose] = FrostRelayCipher.prototype.free;
 
 /**
+ * One pool's note commitment tree (orchard or ironwood: same hash, same
+ * shape). See `NoteTreeCore` for each method's contract.
+ */
+export class NoteTree {
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        NoteTreeFinalization.unregister(this);
+        return ptr;
+    }
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_notetree_free(ptr, 0);
+    }
+    /**
+     * @param {number} start_position
+     * @param {Uint8Array} blocks
+     * @param {Uint32Array} marked
+     * @param {number} checkpoint_from
+     */
+    append_blocks(start_position, blocks, marked, checkpoint_from) {
+        const ptr0 = passArray8ToWasm0(blocks, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passArray32ToWasm0(marked, wasm.__wbindgen_malloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.notetree_append_blocks(this.__wbg_ptr, start_position, ptr0, len0, ptr1, len1, checkpoint_from);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * @param {number} height
+     * @returns {number | undefined}
+     */
+    checkpoint_at_or_below(height) {
+        const ret = wasm.notetree_checkpoint_at_or_below(this.__wbg_ptr, height);
+        return ret === Number.MAX_SAFE_INTEGER ? undefined : ret;
+    }
+    /**
+     * @param {string} frontier_hex
+     * @param {number} height
+     */
+    insert_frontier(frontier_hex, height) {
+        const ptr0 = passStringToWasm0(frontier_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.notetree_insert_frontier(this.__wbg_ptr, ptr0, len0, height);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * returns how many roots were taken (resume from start_index + n)
+     * @param {number} start_index
+     * @param {Uint8Array} roots
+     * @returns {number}
+     */
+    insert_subtree_roots(start_index, roots) {
+        const ptr0 = passArray8ToWasm0(roots, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.notetree_insert_subtree_roots(this.__wbg_ptr, start_index, ptr0, len0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * @param {string} witness_hex
+     * @param {number} height
+     */
+    insert_witness(witness_hex, height) {
+        const ptr0 = passStringToWasm0(witness_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.notetree_insert_witness(this.__wbg_ptr, ptr0, len0, height);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * @param {number} position
+     * @returns {boolean}
+     */
+    is_marked(position) {
+        const ret = wasm.notetree_is_marked(this.__wbg_ptr, position);
+        return ret !== 0;
+    }
+    /**
+     * @returns {number | undefined}
+     */
+    latest_checkpoint() {
+        const ret = wasm.notetree_latest_checkpoint(this.__wbg_ptr);
+        return ret === Number.MAX_SAFE_INTEGER ? undefined : ret;
+    }
+    /**
+     * @param {Uint8Array} bytes
+     */
+    load_cap(bytes) {
+        const ptr0 = passArray8ToWasm0(bytes, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.notetree_load_cap(this.__wbg_ptr, ptr0, len0);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * @param {Uint8Array} bytes
+     */
+    load_checkpoints(bytes) {
+        const ptr0 = passArray8ToWasm0(bytes, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.notetree_load_checkpoints(this.__wbg_ptr, ptr0, len0);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * @param {number} index
+     * @param {Uint8Array} bytes
+     */
+    load_shard(index, bytes) {
+        const ptr0 = passArray8ToWasm0(bytes, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.notetree_load_shard(this.__wbg_ptr, index, ptr0, len0);
+        if (ret[1]) {
+            throw takeFromExternrefTable0(ret[0]);
+        }
+    }
+    /**
+     * @param {number} max_checkpoints
+     */
+    constructor(max_checkpoints) {
+        const ret = wasm.notetree_new(max_checkpoints);
+        this.__wbg_ptr = ret;
+        NoteTreeFinalization.register(this, this.__wbg_ptr, this);
+        return this;
+    }
+    /**
+     * tree size at the newest checkpoint, or undefined before seeding
+     * @returns {number | undefined}
+     */
+    next_position() {
+        const ret = wasm.notetree_next_position(this.__wbg_ptr);
+        return ret[0] === 0 ? undefined : ret[1];
+    }
+    /**
+     * @returns {number | undefined}
+     */
+    oldest_checkpoint() {
+        const ret = wasm.notetree_oldest_checkpoint(this.__wbg_ptr);
+        return ret === Number.MAX_SAFE_INTEGER ? undefined : ret;
+    }
+    /**
+     * witnesses for `positions` by replaying `blocks` from `frontier_hex` up to
+     * the checkpoint at `height`; returns how many were inserted
+     * @param {string} frontier_hex
+     * @param {Uint8Array} blocks
+     * @param {Uint32Array} positions
+     * @param {number} height
+     * @returns {number}
+     */
+    recover(frontier_hex, blocks, positions, height) {
+        const ptr0 = passStringToWasm0(frontier_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passArray8ToWasm0(blocks, wasm.__wbindgen_malloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passArray32ToWasm0(positions, wasm.__wbindgen_malloc);
+        const len2 = WASM_VECTOR_LEN;
+        const ret = wasm.notetree_recover(this.__wbg_ptr, ptr0, len0, ptr1, len1, ptr2, len2, height);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * hex root at the checkpoint, or undefined if it is not retained
+     * @param {number} height
+     * @returns {string | undefined}
+     */
+    root_at(height) {
+        const ret = wasm.notetree_root_at(this.__wbg_ptr, height);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        let v1;
+        if (ret[0] !== 0) {
+            v1 = getStringFromWasm0(ret[0], ret[1]).slice();
+            wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        }
+        return v1;
+    }
+    /**
+     * `{rewrite, shards: [[index, Uint8Array]], cap?: Uint8Array, checkpoints?: Uint8Array}`
+     * @returns {any}
+     */
+    take_changes() {
+        const ret = wasm.notetree_take_changes(this.__wbg_ptr);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * @param {number} height
+     * @returns {boolean}
+     */
+    truncate(height) {
+        const ret = wasm.notetree_truncate(this.__wbg_ptr, height);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] !== 0;
+    }
+    /**
+     * JSON `{position, root_hex, path: [{hash}]}`, as `witness_extract_path`
+     * @param {number} position
+     * @param {number} height
+     * @returns {string}
+     */
+    witness(position, height) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.notetree_witness(this.__wbg_ptr, position, height);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+}
+if (Symbol.dispose) NoteTree.prototype[Symbol.dispose] = NoteTree.prototype.free;
+
+/**
+ * The spend authority of one ZIP-32 account, held only inside the zcash worker
+ * for the length of one send. Holds the 64-byte BIP39 seed in a zeroizing
+ * buffer and derives each key at the moment of use; JS must call `free()` when
+ * the send ends so the seed is wiped.
+ */
+export class SpendKeys {
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        SpendKeysFinalization.unregister(this);
+        return ptr;
+    }
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_spendkeys_free(ptr, 0);
+    }
+    /**
+     * Parse the phrase once and keep only its seed. The error never quotes the
+     * phrase.
+     * @param {string} seed_phrase
+     * @param {number} account
+     * @param {boolean} mainnet
+     */
+    constructor(seed_phrase, account, mainnet) {
+        const ptr0 = passStringToWasm0(seed_phrase, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.spendkeys_new(ptr0, len0, account, mainnet);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        this.__wbg_ptr = ret[0];
+        SpendKeysFinalization.register(this, this.__wbg_ptr, this);
+        return this;
+    }
+    /**
+     * The account's default receive address exactly as the scanner derives it
+     * (`WalletKeys::get_receiving_address`): where transparent funds shield to.
+     * @returns {string}
+     */
+    receiving_address() {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.spendkeys_receiving_address(this.__wbg_ptr);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * Sign a proven PCZT from the prover and return the signed tx hex.
+     * @param {string} pczt_hex
+     * @returns {string}
+     */
+    sign_pczt(pczt_hex) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passStringToWasm0(pczt_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.spendkeys_sign_pczt(this.__wbg_ptr, ptr0, len0);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
+    }
+    /**
+     * Sign an unsigned tx with transparent inputs (a shielding tx as raw V5 or
+     * PCZT, or a t->t PCZT from `build_unsigned_transparent_transaction`) whose
+     * every input is locked to transparent address `index`, and return the
+     * signed tx hex.
+     * `sighashes_json` is the builder's `sighashes` array; the PCZT completion
+     * re-verifies each signature against the carrier's own sighash.
+     * @param {number} index
+     * @param {string} unsigned_tx_hex
+     * @param {string} sighashes_json
+     * @returns {string}
+     */
+    sign_shielding(index, unsigned_tx_hex, sighashes_json) {
+        let deferred4_0;
+        let deferred4_1;
+        try {
+            const ptr0 = passStringToWasm0(unsigned_tx_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ptr1 = passStringToWasm0(sighashes_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len1 = WASM_VECTOR_LEN;
+            const ret = wasm.spendkeys_sign_shielding(this.__wbg_ptr, index, ptr0, len0, ptr1, len1);
+            var ptr3 = ret[0];
+            var len3 = ret[1];
+            if (ret[3]) {
+                ptr3 = 0; len3 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred4_0 = ptr3;
+            deferred4_1 = len3;
+            return getStringFromWasm0(ptr3, len3);
+        } finally {
+            wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
+        }
+    }
+    /**
+     * Compressed pubkey of transparent address `index` (m/44'/133'/account'/0/index).
+     * @param {number} index
+     * @returns {string}
+     */
+    transparent_pubkey(index) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.spendkeys_transparent_pubkey(this.__wbg_ptr, index);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * The account's unified full viewing key: what the prover builds from.
+     * Derived at coin type 133 like every other zafu key; `mainnet` picks
+     * only the encoding.
+     * @returns {string}
+     */
+    ufvk() {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.spendkeys_ufvk(this.__wbg_ptr);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+}
+if (Symbol.dispose) SpendKeys.prototype[Symbol.dispose] = SpendKeys.prototype.free;
+
+/**
  * Wallet keys derived from seed phrase
  */
 export class WalletKeys {
+    static __wrap(ptr) {
+        const obj = Object.create(WalletKeys.prototype);
+        obj.__wbg_ptr = ptr;
+        WalletKeysFinalization.register(obj, obj.__wbg_ptr, obj);
+        return obj;
+    }
     __destroy_into_raw() {
         const ptr = this.__wbg_ptr;
         this.__wbg_ptr = 0;
@@ -166,6 +578,22 @@ export class WalletKeys {
         return this;
     }
     /**
+     * Derive wallet keys for ZIP 32 account `account` (m/32'/133'/account').
+     * Account 0 is identical to the constructor. Used by zafu "pockets".
+     * @param {string} seed_phrase
+     * @param {number} account
+     * @returns {WalletKeys}
+     */
+    static from_seed_phrase_account(seed_phrase, account) {
+        const ptr0 = passStringToWasm0(seed_phrase, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.walletkeys_from_seed_phrase_account(ptr0, len0, account);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return WalletKeys.__wrap(ret[0]);
+    }
+    /**
      * Get the wallet's receiving address (identifier)
      * @returns {string}
      */
@@ -230,6 +658,32 @@ export class WalletKeys {
             return getStringFromWasm0(ret[0], ret[1]);
         } finally {
             wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
+     * Get receiving address at a full 11-byte diversifier index (22 hex chars, LE)
+     * @param {string} index_hex
+     * @param {boolean} mainnet
+     * @returns {string}
+     */
+    get_receiving_address_at_index(index_hex, mainnet) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passStringToWasm0(index_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.walletkeys_get_receiving_address_at_index(this.__wbg_ptr, ptr0, len0, mainnet);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
         }
     }
     /**
@@ -424,6 +878,31 @@ export class WatchOnlyWallet {
         }
     }
     /**
+     * Get address at a full 11-byte diversifier index (22 hex chars, LE)
+     * @param {string} index_hex
+     * @returns {string}
+     */
+    get_address_at_index(index_hex) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passStringToWasm0(index_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.watchonlywallet_get_address_at_index(this.__wbg_ptr, ptr0, len0);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
+    }
+    /**
      * Is mainnet
      * @returns {boolean}
      */
@@ -495,6 +974,36 @@ export function address_from_ufvk(ufvk_str, diversifier_index) {
 }
 
 /**
+ * Derive an Orchard receiving address from a UFVK string at a full 11-byte
+ * diversifier index (22 hex chars, LE).
+ * @param {string} ufvk_str
+ * @param {string} index_hex
+ * @returns {string}
+ */
+export function address_from_ufvk_at_index(ufvk_str, index_hex) {
+    let deferred4_0;
+    let deferred4_1;
+    try {
+        const ptr0 = passStringToWasm0(ufvk_str, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(index_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.address_from_ufvk_at_index(ptr0, len0, ptr1, len1);
+        var ptr3 = ret[0];
+        var len3 = ret[1];
+        if (ret[3]) {
+            ptr3 = 0; len3 = 0;
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        deferred4_0 = ptr3;
+        deferred4_1 = len3;
+        return getStringFromWasm0(ptr3, len3);
+    } finally {
+        wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
+    }
+}
+
+/**
  * Apply spend-auth signatures to a compact PCZT received from a signer.
  *
  * Signatures are supplied as a JSON array of objects with:
@@ -546,8 +1055,11 @@ export function apply_signature_contributions(pczt_hex, contributions_json) {
  *   `generate_voting_hotkey`); the governance output target.
  * * `notes_json` — `[NoteInfoDto]` (the delegated notes).
  * * `round_params_json` — `RoundParamsDto`.
- * * `consensus_branch_id` — branch id at the snapshot height (host resolves via
- *   lightwalletd).
+ * * `consensus_branch_id` — branch id the host's node reports (lightwalletd).
+ *   It must have the Ironwood pool (NU6.3 or later, NU7 included), and so
+ *   must the snapshot height. It only selects the note protocol: the PCZT is
+ *   always built under TX1 v1's V6 / NU6.3 profile, the one the vote chain
+ *   rebuilds the signed digest under.
  * * `round_name` — display memo text.
  * * `network` — "mainnet" | "testnet" | "regtest".
  * * `bundle_index` — delegation bundle index (echoed into `delegation_state`).
@@ -601,7 +1113,8 @@ export function build_delegation_pczt(fvk_hex, seed_fingerprint_hex, account_ind
 }
 
 /**
- * COLD (zigner / watch-only) sibling of `build_signed_ironwood_send`: build the
+ * Seed-free general ironwood send builder (zigner, watch-only and, signed in the
+ * worker by [`SpendKeys`], hot wallets): build the
  * general ironwood send PCZT - spend the wallet's REAL ironwood notes to an
  * ARBITRARY `recipient` (plus change back to self) in a single V6 transaction -
  * and return a redacted-for-signer PCZT (same redaction contract as
@@ -624,6 +1137,12 @@ export function build_delegation_pczt(fvk_hex, seed_fingerprint_hex, account_ind
  * `build_ironwood_send_pczt_proven` - the tx binds branch id 0x37a5165b, the
  * caller MUST pass that real id as `expected_branch_id`, and the 0xffff_ffff
  * placeholder is refused. No value or recipient appears in any error.
+ *
+ * `expiry_delta` (optional, last argument): blocks after `target_height` at
+ * which the transaction expires. Omitted means [`LEGACY_PCZT_EXPIRY_DELTA`]
+ * (40), exactly what this builder produced before the argument existed.
+ * Validated by [`resolve_pczt_expiry_height`]. The resolved height is returned
+ * as `expiry_height`.
  * @param {string} ufvk_str
  * @param {string} ironwood_notes_json
  * @param {string} recipient
@@ -636,9 +1155,10 @@ export function build_delegation_pczt(fvk_hex, seed_fingerprint_hex, account_ind
  * @param {number} expected_branch_id
  * @param {boolean} mainnet
  * @param {string | null} [memo_hex]
+ * @param {number | null} [expiry_delta]
  * @returns {any}
  */
-export function build_ironwood_send_pczt(ufvk_str, ironwood_notes_json, recipient, amount, fee, ironwood_anchor_hex, ironwood_merkle_paths_json, account_index, target_height, expected_branch_id, mainnet, memo_hex) {
+export function build_ironwood_send_pczt(ufvk_str, ironwood_notes_json, recipient, amount, fee, ironwood_anchor_hex, ironwood_merkle_paths_json, account_index, target_height, expected_branch_id, mainnet, memo_hex, expiry_delta) {
     const ptr0 = passStringToWasm0(ufvk_str, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
     const len0 = WASM_VECTOR_LEN;
     const ptr1 = passStringToWasm0(ironwood_notes_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
@@ -651,7 +1171,7 @@ export function build_ironwood_send_pczt(ufvk_str, ironwood_notes_json, recipien
     const len4 = WASM_VECTOR_LEN;
     var ptr5 = isLikeNone(memo_hex) ? 0 : passStringToWasm0(memo_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
     var len5 = WASM_VECTOR_LEN;
-    const ret = wasm.build_ironwood_send_pczt(ptr0, len0, ptr1, len1, ptr2, len2, amount, fee, ptr3, len3, ptr4, len4, account_index, target_height, expected_branch_id, mainnet, ptr5, len5);
+    const ret = wasm.build_ironwood_send_pczt(ptr0, len0, ptr1, len1, ptr2, len2, amount, fee, ptr3, len3, ptr4, len4, account_index, target_height, expected_branch_id, mainnet, ptr5, len5, isLikeNone(expiry_delta) ? Number.MAX_SAFE_INTEGER : (expiry_delta) >>> 0);
     if (ret[2]) {
         throw takeFromExternrefTable0(ret[1]);
     }
@@ -713,373 +1233,6 @@ export function build_merkle_paths_ironwood(tree_state_hex, compact_blocks_json,
 }
 
 /**
- * Build a shielding transaction (transparent → orchard) with real Halo 2 proofs.
- *
- * PRE-NU6.3 ONLY. [`guard_orchard_shielding_allowed`] refuses to build at or
- * after the NU6.3 activation height (or when the supplied consensus branch id
- * is NU6.3), because orchard outputs are consensus-disabled from that point
- * and the resulting notes would be stranded. Use
- * [`build_shielding_transaction_ironwood`] there.
- *
- * Spends transparent P2PKH UTXOs and creates an orchard output to the sender's
- * own shielded address. Uses `orchard::builder::Builder` for proper action
- * construction and zero-knowledge proof generation (client-side).
- *
- * Returns hex-encoded signed v5 transaction bytes ready for broadcast.
- *
- * # Arguments
- * * `utxos_json` - JSON array of `{txid, vout, value, script}` objects
- * * `privkey_hex` - hex-encoded 32-byte secp256k1 private key for transparent inputs
- * * `recipient` - unified address string (u1... or utest1...) for orchard output
- * * `amount` - total zatoshis to shield (all selected UTXO value minus fee)
- * * `fee` - transaction fee in zatoshis
- * * `anchor_height` - block height for expiry (expiry_height = anchor_height + 100)
- * * `mainnet` - true for mainnet, false for testnet
- * @param {string} utxos_json
- * @param {string} privkey_hex
- * @param {string} recipient
- * @param {bigint} amount
- * @param {bigint} fee
- * @param {number} anchor_height
- * @param {boolean} mainnet
- * @param {string | null} [branch_id_hex]
- * @returns {string}
- */
-export function build_shielding_transaction(utxos_json, privkey_hex, recipient, amount, fee, anchor_height, mainnet, branch_id_hex) {
-    let deferred6_0;
-    let deferred6_1;
-    try {
-        const ptr0 = passStringToWasm0(utxos_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ptr1 = passStringToWasm0(privkey_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len1 = WASM_VECTOR_LEN;
-        const ptr2 = passStringToWasm0(recipient, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len2 = WASM_VECTOR_LEN;
-        var ptr3 = isLikeNone(branch_id_hex) ? 0 : passStringToWasm0(branch_id_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        var len3 = WASM_VECTOR_LEN;
-        const ret = wasm.build_shielding_transaction(ptr0, len0, ptr1, len1, ptr2, len2, amount, fee, anchor_height, mainnet, ptr3, len3);
-        var ptr5 = ret[0];
-        var len5 = ret[1];
-        if (ret[3]) {
-            ptr5 = 0; len5 = 0;
-            throw takeFromExternrefTable0(ret[2]);
-        }
-        deferred6_0 = ptr5;
-        deferred6_1 = len5;
-        return getStringFromWasm0(ptr5, len5);
-    } finally {
-        wasm.__wbindgen_free(deferred6_0, deferred6_1, 1);
-    }
-}
-
-/**
- * Build a shielding transaction into whichever pool is CORRECT at
- * `target_height`, so a caller never has to (and never can) pick the stranded
- * one by omission.
- *
- * At/after NU6.3 activation this is [`build_shielding_transaction_ironwood`]
- * (and `branch_id_hex` must be the live NU6.3 branch id - there is no
- * fallback); before it, the legacy orchard builder. Returns hex-encoded raw
- * transaction bytes either way.
- * @param {string} utxos_json
- * @param {string} privkey_hex
- * @param {string} recipient
- * @param {bigint} amount
- * @param {bigint} fee
- * @param {number} target_height
- * @param {boolean} mainnet
- * @param {string | null} [branch_id_hex]
- * @param {string | null} [memo_hex]
- * @returns {string}
- */
-export function build_shielding_transaction_auto(utxos_json, privkey_hex, recipient, amount, fee, target_height, mainnet, branch_id_hex, memo_hex) {
-    let deferred7_0;
-    let deferred7_1;
-    try {
-        const ptr0 = passStringToWasm0(utxos_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ptr1 = passStringToWasm0(privkey_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len1 = WASM_VECTOR_LEN;
-        const ptr2 = passStringToWasm0(recipient, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len2 = WASM_VECTOR_LEN;
-        var ptr3 = isLikeNone(branch_id_hex) ? 0 : passStringToWasm0(branch_id_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        var len3 = WASM_VECTOR_LEN;
-        var ptr4 = isLikeNone(memo_hex) ? 0 : passStringToWasm0(memo_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        var len4 = WASM_VECTOR_LEN;
-        const ret = wasm.build_shielding_transaction_auto(ptr0, len0, ptr1, len1, ptr2, len2, amount, fee, target_height, mainnet, ptr3, len3, ptr4, len4);
-        var ptr6 = ret[0];
-        var len6 = ret[1];
-        if (ret[3]) {
-            ptr6 = 0; len6 = 0;
-            throw takeFromExternrefTable0(ret[2]);
-        }
-        deferred7_0 = ptr6;
-        deferred7_1 = len6;
-        return getStringFromWasm0(ptr6, len6);
-    } finally {
-        wasm.__wbindgen_free(deferred7_0, deferred7_1, 1);
-    }
-}
-
-/**
- * Build a signed transparent→IRONWOOD shielding transaction (NU6.3 / V6).
- *
- * The post-NU6.3 replacement for [`build_shielding_transaction`]: it spends the
- * selected transparent P2PKH UTXOs and creates ONE ironwood output for
- * `total_selected - fee` to `recipient`. Returns hex-encoded raw transaction
- * bytes, the same shape the legacy orchard builder returns, so the caller
- * broadcasts it unchanged.
- *
- * # Arguments
- * * `utxos_json` - JSON array of `{txid, vout, value, script}` (same shape as
- *   the orchard builder; `txid` is display/big-endian hex, `script` is the
- *   P2PKH scriptPubKey hex)
- * * `privkey_hex` - hex-encoded 32-byte secp256k1 private key owning every UTXO
- * * `recipient` - unified address whose orchard-format receiver is the ironwood
- *   recipient
- * * `amount` - UTXO-selection target (selection stops once `amount + fee` is
- *   covered); the ironwood output always carries ALL selected value minus fee
- * * `fee` - fee in zatoshi; MUST be at least the ZIP-317 conventional fee
- *   ([`zip317_shielding_fee`]) or the build is refused
- * * `target_height` - build height (must be at/after NU6.3 activation)
- * * `expected_branch_id` - branch id the wallet read from GetLightdInfo; must
- *   be 0x37a5165b
- * * `mainnet` - true for mainnet, false for testnet
- * * `memo_hex` - optional memo (hex, ≤512 bytes); empty memo when omitted
- * @param {string} utxos_json
- * @param {string} privkey_hex
- * @param {string} recipient
- * @param {bigint} amount
- * @param {bigint} fee
- * @param {number} target_height
- * @param {number} expected_branch_id
- * @param {boolean} mainnet
- * @param {string | null} [memo_hex]
- * @returns {string}
- */
-export function build_shielding_transaction_ironwood(utxos_json, privkey_hex, recipient, amount, fee, target_height, expected_branch_id, mainnet, memo_hex) {
-    let deferred6_0;
-    let deferred6_1;
-    try {
-        const ptr0 = passStringToWasm0(utxos_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ptr1 = passStringToWasm0(privkey_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len1 = WASM_VECTOR_LEN;
-        const ptr2 = passStringToWasm0(recipient, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len2 = WASM_VECTOR_LEN;
-        var ptr3 = isLikeNone(memo_hex) ? 0 : passStringToWasm0(memo_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        var len3 = WASM_VECTOR_LEN;
-        const ret = wasm.build_shielding_transaction_ironwood(ptr0, len0, ptr1, len1, ptr2, len2, amount, fee, target_height, expected_branch_id, mainnet, ptr3, len3);
-        var ptr5 = ret[0];
-        var len5 = ret[1];
-        if (ret[3]) {
-            ptr5 = 0; len5 = 0;
-            throw takeFromExternrefTable0(ret[2]);
-        }
-        deferred6_0 = ptr5;
-        deferred6_1 = len5;
-        return getStringFromWasm0(ptr5, len5);
-    } finally {
-        wasm.__wbindgen_free(deferred6_0, deferred6_1, 1);
-    }
-}
-
-/**
- * HOT-WALLET general ironwood send: spend the wallet's REAL ironwood notes to
- * an ARBITRARY `recipient` (plus change back to self) in a single V6
- * transaction, sign the ironwood spends LOCALLY with a seed-derived key, and
- * return the hex-encoded, signed, broadcast-ready V6 transaction.
- *
- * This is the ironwood analogue of a normal orchard send and the sibling of
- * `build_signed_turnstile_migration`. Parameters mirror that function's shape,
- * with `recipient`/`amount` added and the anchor/notes/paths being the
- * ironwood tree's:
- *  - `seed_phrase` derives BOTH the orchard `FullViewingKey` (recipient/change
- *    scoping + nullifier verification) AND the `SpendAuthorizingKey` (local
- *    signing) via the exact ZIP-32 path `SpendingKey::from_zip32_seed`.
- *  - `recipient` is a unified address; its orchard-format receiver is used as
- *    the ironwood recipient (the ironwood pool shares the orchard address
- *    format - the note VERSION, not the address, selects the pool).
- *  - `ironwood_anchor_hex` is the REAL ironwood tree anchor;
- *    `ironwood_merkle_paths_json` are ironwood-tree paths from
- *    `build_merkle_paths_ironwood`.
- *
- * FAIL-CLOSED: inherits the hardened NU6.3 branch-id guard from the build core
- * - the tx binds branch id 0x37a5165b, the caller MUST pass that real id as
- * `expected_branch_id`, and the 0xffff_ffff placeholder is refused. No value
- * or recipient appears in any error.
- * @param {string} seed_phrase
- * @param {string} ironwood_notes_json
- * @param {string} recipient
- * @param {bigint} amount
- * @param {bigint} fee
- * @param {string} ironwood_anchor_hex
- * @param {string} ironwood_merkle_paths_json
- * @param {number} account_index
- * @param {number} target_height
- * @param {number} expected_branch_id
- * @param {boolean} mainnet
- * @param {string | null} [memo_hex]
- * @returns {string}
- */
-export function build_signed_ironwood_send(seed_phrase, ironwood_notes_json, recipient, amount, fee, ironwood_anchor_hex, ironwood_merkle_paths_json, account_index, target_height, expected_branch_id, mainnet, memo_hex) {
-    let deferred8_0;
-    let deferred8_1;
-    try {
-        const ptr0 = passStringToWasm0(seed_phrase, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ptr1 = passStringToWasm0(ironwood_notes_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len1 = WASM_VECTOR_LEN;
-        const ptr2 = passStringToWasm0(recipient, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len2 = WASM_VECTOR_LEN;
-        const ptr3 = passStringToWasm0(ironwood_anchor_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len3 = WASM_VECTOR_LEN;
-        const ptr4 = passStringToWasm0(ironwood_merkle_paths_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len4 = WASM_VECTOR_LEN;
-        var ptr5 = isLikeNone(memo_hex) ? 0 : passStringToWasm0(memo_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        var len5 = WASM_VECTOR_LEN;
-        const ret = wasm.build_signed_ironwood_send(ptr0, len0, ptr1, len1, ptr2, len2, amount, fee, ptr3, len3, ptr4, len4, account_index, target_height, expected_branch_id, mainnet, ptr5, len5);
-        var ptr7 = ret[0];
-        var len7 = ret[1];
-        if (ret[3]) {
-            ptr7 = 0; len7 = 0;
-            throw takeFromExternrefTable0(ret[2]);
-        }
-        deferred8_0 = ptr7;
-        deferred8_1 = len7;
-        return getStringFromWasm0(ptr7, len7);
-    } finally {
-        wasm.__wbindgen_free(deferred8_0, deferred8_1, 1);
-    }
-}
-
-/**
- * Build a fully signed orchard spend transaction from a mnemonic wallet.
- *
- * Unlike `build_unsigned_transaction` (for cold signing), this function
- * derives the spending key from the mnemonic, constructs the full orchard
- * bundle with Halo 2 proofs, and returns a broadcast-ready transaction.
- *
- * # Arguments
- * * `seed_phrase` - BIP39 mnemonic for key derivation
- * * `notes_json` - JSON array of spendable notes with rseed/rho
- * * `recipient` - unified address string (u1... or utest1...)
- * * `amount` - zatoshis to send
- * * `fee` - transaction fee in zatoshis
- * * `anchor_hex` - merkle tree anchor (hex, 32 bytes)
- * * `merkle_paths_json` - JSON array of merkle paths from witness building
- * * `account_index` - ZIP-32 account index
- * * `mainnet` - true for mainnet, false for testnet
- *
- * # Returns
- * Hex-encoded signed v5 transaction bytes ready for broadcast
- * @param {string} seed_phrase
- * @param {any} notes_json
- * @param {string} recipient
- * @param {bigint} amount
- * @param {bigint} fee
- * @param {string} anchor_hex
- * @param {any} merkle_paths_json
- * @param {number} account_index
- * @param {boolean} mainnet
- * @param {string | null} [memo_hex]
- * @param {string | null} [branch_id_hex]
- * @returns {string}
- */
-export function build_signed_spend_transaction(seed_phrase, notes_json, recipient, amount, fee, anchor_hex, merkle_paths_json, account_index, mainnet, memo_hex, branch_id_hex) {
-    let deferred7_0;
-    let deferred7_1;
-    try {
-        const ptr0 = passStringToWasm0(seed_phrase, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ptr1 = passStringToWasm0(recipient, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len1 = WASM_VECTOR_LEN;
-        const ptr2 = passStringToWasm0(anchor_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len2 = WASM_VECTOR_LEN;
-        var ptr3 = isLikeNone(memo_hex) ? 0 : passStringToWasm0(memo_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        var len3 = WASM_VECTOR_LEN;
-        var ptr4 = isLikeNone(branch_id_hex) ? 0 : passStringToWasm0(branch_id_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        var len4 = WASM_VECTOR_LEN;
-        const ret = wasm.build_signed_spend_transaction(ptr0, len0, notes_json, ptr1, len1, amount, fee, ptr2, len2, merkle_paths_json, account_index, mainnet, ptr3, len3, ptr4, len4);
-        var ptr6 = ret[0];
-        var len6 = ret[1];
-        if (ret[3]) {
-            ptr6 = 0; len6 = 0;
-            throw takeFromExternrefTable0(ret[2]);
-        }
-        deferred7_0 = ptr6;
-        deferred7_1 = len6;
-        return getStringFromWasm0(ptr6, len6);
-    } finally {
-        wasm.__wbindgen_free(deferred7_0, deferred7_1, 1);
-    }
-}
-
-/**
- * HOT-WALLET sibling of `build_turnstile_migration_pczt`: build the one-way
- * turnstile migration (spend the supplied orchard notes into the wallet's OWN
- * ironwood address in a single V6 transaction), sign the wallet-owned orchard
- * spends LOCALLY with a seed-derived key, and return the hex-encoded, signed,
- * broadcast-ready V6 transaction.
- *
- * Same parameter shape as `build_turnstile_migration_pczt`, except:
- *  - `seed_phrase` is PREPENDED. The orchard `FullViewingKey` (for the
- *    self-migration ironwood recipient) AND the `SpendAuthorizingKey` (for
- *    local signing) are BOTH derived from it via ZIP-32
- *    (`SpendingKey::from_zip32_seed(seed, coin_type, account_index)` - the
- *    exact key `UnifiedSpendingKey::from_seed(...).orchard()` and
- *    `build_signed_spend_transaction` derive), so there is no `ufvk_str`
- *    parameter: the seed fully determines the account and cannot disagree with
- *    a separately supplied viewing key.
- *  - `account_index` selects the ZIP-32 account (it IS used here, unlike the
- *    cold builder where the UFVK is already account-scoped).
- *  - Returns the signed transaction hex `String`, not a redacted PCZT.
- *
- * The FAIL-CLOSED NU6.3 branch-id guard is inherited unchanged from the shared
- * build core: the tx binds consensus branch id `expected_branch_id`, the
- * caller MUST pass the real 0x37a5165b (never the 0xffff_ffff placeholder).
- * @param {string} seed_phrase
- * @param {string} orchard_notes_json
- * @param {bigint} fee
- * @param {string} orchard_anchor_hex
- * @param {string} orchard_merkle_paths_json
- * @param {number} account_index
- * @param {number} target_height
- * @param {number} expected_branch_id
- * @param {boolean} mainnet
- * @param {string | null} [memo_hex]
- * @returns {string}
- */
-export function build_signed_turnstile_migration(seed_phrase, orchard_notes_json, fee, orchard_anchor_hex, orchard_merkle_paths_json, account_index, target_height, expected_branch_id, mainnet, memo_hex) {
-    let deferred7_0;
-    let deferred7_1;
-    try {
-        const ptr0 = passStringToWasm0(seed_phrase, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ptr1 = passStringToWasm0(orchard_notes_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len1 = WASM_VECTOR_LEN;
-        const ptr2 = passStringToWasm0(orchard_anchor_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len2 = WASM_VECTOR_LEN;
-        const ptr3 = passStringToWasm0(orchard_merkle_paths_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len3 = WASM_VECTOR_LEN;
-        var ptr4 = isLikeNone(memo_hex) ? 0 : passStringToWasm0(memo_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        var len4 = WASM_VECTOR_LEN;
-        const ret = wasm.build_signed_turnstile_migration(ptr0, len0, ptr1, len1, fee, ptr2, len2, ptr3, len3, account_index, target_height, expected_branch_id, mainnet, ptr4, len4);
-        var ptr6 = ret[0];
-        var len6 = ret[1];
-        if (ret[3]) {
-            ptr6 = 0; len6 = 0;
-            throw takeFromExternrefTable0(ret[2]);
-        }
-        deferred7_0 = ptr6;
-        deferred7_1 = len6;
-        return getStringFromWasm0(ptr6, len6);
-    } finally {
-        wasm.__wbindgen_free(deferred7_0, deferred7_1, 1);
-    }
-}
-
-/**
  * Build the one-way turnstile migration PCZT: spend the supplied orchard
  * notes into the wallet's OWN ironwood address in a single V6 transaction.
  *
@@ -1127,7 +1280,13 @@ export function build_turnstile_migration_pczt(ufvk_str, orchard_notes_json, fee
  * activation for current mainnet operations. The tx version is derived from
  * network upgrade rules (currently V5).
  *
- * Returns JSON: `{ pczt_hex, summary, action_count }`.
+ * `expiry_delta` (optional, last argument): blocks after `target_height` at
+ * which the transaction expires. Omitted means the legacy default of
+ * [`LEGACY_PCZT_EXPIRY_DELTA`] (40), exactly what this builder produced before
+ * the argument existed. Validated by [`resolve_pczt_expiry_height`].
+ *
+ * Returns JSON: `{ pczt_hex, summary, action_count, sighash, alphas,
+ * spend_indices, expiry_height }`.
  * The TS layer wraps `pczt_hex` in CBOR `{1: bytes}` and UR-encodes as
  * `zcash-pczt` for animated QR transport.
  * @param {string} ufvk_str
@@ -1140,9 +1299,10 @@ export function build_turnstile_migration_pczt(ufvk_str, orchard_notes_json, fee
  * @param {number} target_height
  * @param {boolean} mainnet
  * @param {string | null} [memo_hex]
+ * @param {number | null} [expiry_delta]
  * @returns {any}
  */
-export function build_unsigned_pczt(ufvk_str, notes_json, recipient, amount, fee, anchor_hex, merkle_paths_json, target_height, mainnet, memo_hex) {
+export function build_unsigned_pczt(ufvk_str, notes_json, recipient, amount, fee, anchor_hex, merkle_paths_json, target_height, mainnet, memo_hex, expiry_delta) {
     const ptr0 = passStringToWasm0(ufvk_str, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
     const len0 = WASM_VECTOR_LEN;
     const ptr1 = passStringToWasm0(recipient, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
@@ -1151,7 +1311,7 @@ export function build_unsigned_pczt(ufvk_str, notes_json, recipient, amount, fee
     const len2 = WASM_VECTOR_LEN;
     var ptr3 = isLikeNone(memo_hex) ? 0 : passStringToWasm0(memo_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
     var len3 = WASM_VECTOR_LEN;
-    const ret = wasm.build_unsigned_pczt(ptr0, len0, notes_json, ptr1, len1, amount, fee, ptr2, len2, merkle_paths_json, target_height, mainnet, ptr3, len3);
+    const ret = wasm.build_unsigned_pczt(ptr0, len0, notes_json, ptr1, len1, amount, fee, ptr2, len2, merkle_paths_json, target_height, mainnet, ptr3, len3, isLikeNone(expiry_delta) ? Number.MAX_SAFE_INTEGER : (expiry_delta) >>> 0);
     if (ret[2]) {
         throw takeFromExternrefTable0(ret[1]);
     }
@@ -1161,10 +1321,9 @@ export function build_unsigned_pczt(ufvk_str, notes_json, recipient, amount, fee
 /**
  * Build an unsigned shielding transaction (transparent → orchard) for cold-wallet signing.
  *
- * Same as `build_shielding_transaction` but does NOT sign the transparent inputs.
- * Instead, returns the per-input sighashes so an external signer (e.g. Zigner) can sign them.
+ * Does NOT sign the transparent inputs. Returns the per-input sighashes so an external signer (e.g. Zigner) can sign them.
  *
- * PRE-NU6.3 ONLY - same fail-closed gate as `build_shielding_transaction`.
+ * PRE-NU6.3 ONLY - [`guard_orchard_shielding_allowed`] refuses at or after activation.
  *
  * Returns JSON: `{ sighashes: [hex], unsigned_tx_hex: hex, summary: string }`
  * @param {string} utxos_json
@@ -1198,6 +1357,74 @@ export function build_unsigned_shielding_transaction(utxos_json, recipient, amou
         return getStringFromWasm0(ptr4, len4);
     } finally {
         wasm.__wbindgen_free(deferred5_0, deferred5_1, 1);
+    }
+}
+
+/**
+ * Build an UNSIGNED transparent→IRONWOOD shielding transaction (NU6.3 / V6) for
+ * cold-wallet / watch-only / zigner signing.
+ *
+ * The post-NU6.3 replacement for [`build_unsigned_shielding_transaction`] (which
+ * builds a now-consensus-disabled orchard V5 bundle). It runs the full guarded
+ * ironwood pipeline through the proof but stops BEFORE signing, and returns the
+ * SAME JSON contract the orchard unsigned builder returns:
+ *   `{ sighashes: [hex_32b...], unsigned_tx_hex: hex, summary: string }`
+ * so the existing zigner sighash encoder needs no change.
+ *
+ * IMPORTANT: `unsigned_tx_hex` here is the serialized PCZT (magic `b"PCZT"`), NOT
+ * a raw transaction - the canonical librustzcash cold-signing carrier. The
+ * air-gapped signer only ever handles the 32-byte `sighashes`; completion must
+ * route to [`complete_shielding_pczt`]. [`complete_shielding_transaction`]
+ * sniffs the PCZT magic and delegates, so an unchanged completion call site also
+ * works.
+ *
+ * # Arguments
+ * * `utxos_json` - JSON array of `{txid, vout, value, script}` (same shape as the
+ *   signed builder)
+ * * `pubkey_hex` - 33-byte compressed secp256k1 pubkey owning every UTXO (from
+ *   e.g. [`transparent_pubkey_from_ufvk`])
+ * * `recipient` - unified address whose orchard-format receiver is the ironwood
+ *   recipient
+ * * `amount`, `fee`, `target_height`, `expected_branch_id`, `mainnet`, `memo_hex`
+ *   - identical semantics to [`build_shielding_transaction_ironwood_core`]
+ * @param {string} utxos_json
+ * @param {string} pubkey_hex
+ * @param {string} recipient
+ * @param {bigint} amount
+ * @param {bigint} fee
+ * @param {number} target_height
+ * @param {number} expected_branch_id
+ * @param {boolean} mainnet
+ * @param {string | null} [memo_hex]
+ * @param {string | null} [ovk_from_ufvk]
+ * @returns {string}
+ */
+export function build_unsigned_shielding_transaction_ironwood(utxos_json, pubkey_hex, recipient, amount, fee, target_height, expected_branch_id, mainnet, memo_hex, ovk_from_ufvk) {
+    let deferred7_0;
+    let deferred7_1;
+    try {
+        const ptr0 = passStringToWasm0(utxos_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(pubkey_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passStringToWasm0(recipient, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len2 = WASM_VECTOR_LEN;
+        var ptr3 = isLikeNone(memo_hex) ? 0 : passStringToWasm0(memo_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        var len3 = WASM_VECTOR_LEN;
+        var ptr4 = isLikeNone(ovk_from_ufvk) ? 0 : passStringToWasm0(ovk_from_ufvk, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        var len4 = WASM_VECTOR_LEN;
+        const ret = wasm.build_unsigned_shielding_transaction_ironwood(ptr0, len0, ptr1, len1, ptr2, len2, amount, fee, target_height, expected_branch_id, mainnet, ptr3, len3, ptr4, len4);
+        var ptr6 = ret[0];
+        var len6 = ret[1];
+        if (ret[3]) {
+            ptr6 = 0; len6 = 0;
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        deferred7_0 = ptr6;
+        deferred7_1 = len6;
+        return getStringFromWasm0(ptr6, len6);
+    } finally {
+        wasm.__wbindgen_free(deferred7_0, deferred7_1, 1);
     }
 }
 
@@ -1241,6 +1468,50 @@ export function build_unsigned_transaction(ufvk_str, notes_json, recipient, amou
         throw takeFromExternrefTable0(ret[1]);
     }
     return takeFromExternrefTable0(ret[0]);
+}
+
+/**
+ * Build an UNSIGNED t->t transaction from public data only: the UTXOs of one
+ * address and its 33-byte compressed `pubkey_hex`. Outputs are
+ * [recipient, OP_RETURN(`null_data_hex`, at most 80 bytes), change to the same
+ * address]. Returns JSON
+ * `{sighashes, unsigned_tx_hex, inputs, total_in, fee, change, short}`, where
+ * `unsigned_tx_hex` is a PCZT for `SpendKeys.sign_shielding`.
+ * @param {string} utxos_json
+ * @param {string} pubkey_hex
+ * @param {string} recipient
+ * @param {bigint} amount
+ * @param {number} target_height
+ * @param {number} expected_branch_id
+ * @param {boolean} mainnet
+ * @param {string | null} [null_data_hex]
+ * @returns {string}
+ */
+export function build_unsigned_transparent_transaction(utxos_json, pubkey_hex, recipient, amount, target_height, expected_branch_id, mainnet, null_data_hex) {
+    let deferred6_0;
+    let deferred6_1;
+    try {
+        const ptr0 = passStringToWasm0(utxos_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(pubkey_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passStringToWasm0(recipient, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len2 = WASM_VECTOR_LEN;
+        var ptr3 = isLikeNone(null_data_hex) ? 0 : passStringToWasm0(null_data_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        var len3 = WASM_VECTOR_LEN;
+        const ret = wasm.build_unsigned_transparent_transaction(ptr0, len0, ptr1, len1, ptr2, len2, amount, target_height, expected_branch_id, mainnet, ptr3, len3);
+        var ptr5 = ret[0];
+        var len5 = ret[1];
+        if (ret[3]) {
+            ptr5 = 0; len5 = 0;
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        deferred6_0 = ptr5;
+        deferred6_1 = len5;
+        return getStringFromWasm0(ptr5, len5);
+    } finally {
+        wasm.__wbindgen_free(deferred6_0, deferred6_1, 1);
+    }
 }
 
 /**
@@ -1288,47 +1559,37 @@ export function build_vote_commitment_wire(hotkey_secret_hex, round_params_json,
 }
 
 /**
- * Build the helper-server share payloads (`[VoteShareWire]`) for one HOT vote.
+ * Build the helper-share payloads (`[VoteShareWire]`, `POST {helper}/shielded-vote/v1/shares`)
+ * for a vote that is already on chain.
  *
- * `submit_at` is the unix-seconds submission time stamped into each share.
- * Runs the ZKP #2 proof.
- * @param {string} hotkey_secret_hex
- * @param {string} round_params_json
- * @param {string} delegation_state_json
- * @param {string} van_witness_json
- * @param {string} vote_json
- * @param {string} network
+ * `commitment_bundle_json` is the recovery bundle `cast_vote_hot_wire`
+ * returned for this vote; `vc_tree_position` is the vote commitment's leaf
+ * index in the round's commitment tree, known once the cast-vote transaction
+ * is included. No proof runs here, so the shares match the submitted
+ * commitment.
+ * @param {string} commitment_bundle_json
+ * @param {bigint} vc_tree_position
  * @param {bigint} submit_at
  * @returns {string}
  */
-export function build_vote_shares_wire(hotkey_secret_hex, round_params_json, delegation_state_json, van_witness_json, vote_json, network, submit_at) {
-    let deferred8_0;
-    let deferred8_1;
+export function build_vote_shares_from_recovery(commitment_bundle_json, vc_tree_position, submit_at) {
+    let deferred3_0;
+    let deferred3_1;
     try {
-        const ptr0 = passStringToWasm0(hotkey_secret_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const ptr0 = passStringToWasm0(commitment_bundle_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len0 = WASM_VECTOR_LEN;
-        const ptr1 = passStringToWasm0(round_params_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len1 = WASM_VECTOR_LEN;
-        const ptr2 = passStringToWasm0(delegation_state_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len2 = WASM_VECTOR_LEN;
-        const ptr3 = passStringToWasm0(van_witness_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len3 = WASM_VECTOR_LEN;
-        const ptr4 = passStringToWasm0(vote_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len4 = WASM_VECTOR_LEN;
-        const ptr5 = passStringToWasm0(network, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len5 = WASM_VECTOR_LEN;
-        const ret = wasm.build_vote_shares_wire(ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3, ptr4, len4, ptr5, len5, submit_at);
-        var ptr7 = ret[0];
-        var len7 = ret[1];
+        const ret = wasm.build_vote_shares_from_recovery(ptr0, len0, vc_tree_position, submit_at);
+        var ptr2 = ret[0];
+        var len2 = ret[1];
         if (ret[3]) {
-            ptr7 = 0; len7 = 0;
+            ptr2 = 0; len2 = 0;
             throw takeFromExternrefTable0(ret[2]);
         }
-        deferred8_0 = ptr7;
-        deferred8_1 = len7;
-        return getStringFromWasm0(ptr7, len7);
+        deferred3_0 = ptr2;
+        deferred3_1 = len2;
+        return getStringFromWasm0(ptr2, len2);
     } finally {
-        wasm.__wbindgen_free(deferred8_0, deferred8_1, 1);
+        wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
     }
 }
 
@@ -1359,22 +1620,35 @@ export function build_witnesses_and_paths(tree_state_hex, compact_blocks_json, n
 }
 
 /**
- * Build BOTH the commitment wire and share wires from a SINGLE proof run.
+ * Build the `POST /cast-vote` body plus what the host keeps for after it lands.
  *
- * Prefer this over calling the two builders separately: ZKP #2 is expensive and
- * each of `build_vote_commitment_wire` / `build_vote_shares_wire` runs it once.
- * Returns `SignedVoteCommitmentView`-shaped JSON
- * `{ proposal_id, wire, shares, commitment_bundle_json }`.
+ * Runs ZKP #2 once. Returns
+ * `{ proposal_id, wire, commitment_bundle_json, next_delegation_state_json }`.
+ *
+ * No helper shares come back from here: a share commits to the vote's leaf
+ * index in the round's commitment tree (`vc_tree_position`), which only
+ * exists once the cast-vote transaction is included. Shares built before
+ * that carry a guessed position, and the helper's reveal for them never
+ * matches the tree, so the vote silently drops out of the tally. Build them
+ * with [`build_vote_shares_from_recovery`] from `commitment_bundle_json` and
+ * the included position.
+ *
+ * `commitment_bundle_json` holds the share secrets (it can rebuild shares,
+ * which carry `vote_decision`): store it encrypted.
+ *
+ * `next_delegation_state_json` is this bundle's state for its next cast
+ * (this proposal's authority bit cleared). Store it only after the cast is
+ * on chain: if the cast never lands, the old state is still the valid one,
+ * and a cleared bit would lock the proposal out of a retry.
  * @param {string} hotkey_secret_hex
  * @param {string} round_params_json
  * @param {string} delegation_state_json
  * @param {string} van_witness_json
  * @param {string} vote_json
  * @param {string} network
- * @param {bigint} submit_at
  * @returns {string}
  */
-export function cast_vote_hot_wire(hotkey_secret_hex, round_params_json, delegation_state_json, van_witness_json, vote_json, network, submit_at) {
+export function cast_vote_hot_wire(hotkey_secret_hex, round_params_json, delegation_state_json, van_witness_json, vote_json, network) {
     let deferred8_0;
     let deferred8_1;
     try {
@@ -1390,7 +1664,7 @@ export function cast_vote_hot_wire(hotkey_secret_hex, round_params_json, delegat
         const len4 = WASM_VECTOR_LEN;
         const ptr5 = passStringToWasm0(network, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len5 = WASM_VECTOR_LEN;
-        const ret = wasm.cast_vote_hot_wire(ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3, ptr4, len4, ptr5, len5, submit_at);
+        const ret = wasm.cast_vote_hot_wire(ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3, ptr4, len4, ptr5, len5);
         var ptr7 = ret[0];
         var len7 = ret[1];
         if (ret[3]) {
@@ -1475,6 +1749,42 @@ export function complete_orchard_pczt(pczt_hex, orchard_sigs_json, spend_indices
         return getStringFromWasm0(ptr2, len2);
     } finally {
         wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+    }
+}
+
+/**
+ * Complete an unsigned ironwood shielding PCZT (from
+ * [`build_unsigned_shielding_transaction_ironwood`]) into a broadcast-ready V6
+ * transaction hex. See [`complete_shielding_pczt_inner`] for the semantics.
+ *
+ * `signatures_json` is `[{sig_hex, pubkey_hex}, ...]`, one per transparent input
+ * in index order - the exact shape [`complete_shielding_transaction`] accepts,
+ * so a caller that always routes ironwood completions here (or one that reuses
+ * `complete_shielding_transaction`, which sniffs the PCZT magic) is unchanged.
+ * @param {string} pczt_hex
+ * @param {string} signatures_json
+ * @returns {string}
+ */
+export function complete_shielding_pczt(pczt_hex, signatures_json) {
+    let deferred4_0;
+    let deferred4_1;
+    try {
+        const ptr0 = passStringToWasm0(pczt_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(signatures_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.complete_shielding_pczt(ptr0, len0, ptr1, len1);
+        var ptr3 = ret[0];
+        var len3 = ret[1];
+        if (ret[3]) {
+            ptr3 = 0; len3 = 0;
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        deferred4_0 = ptr3;
+        deferred4_1 = len3;
+        return getStringFromWasm0(ptr3, len3);
+    } finally {
+        wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
     }
 }
 
@@ -1613,37 +1923,6 @@ export function create_sign_request(account_index, sighash_hex, alphas_json, sum
         return getStringFromWasm0(ptr3, len3);
     } finally {
         wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
-    }
-}
-
-/**
- * Derive transparent private key from mnemonic using BIP44 path m/44'/133'/account'/0/index
- *
- * Returns hex-encoded 32-byte secp256k1 private key for signing transparent inputs.
- * Path components: purpose=44' (BIP44), coin_type=133' (ZEC), account', change=0, index
- * @param {string} seed_phrase
- * @param {number} account
- * @param {number} index
- * @returns {string}
- */
-export function derive_transparent_privkey(seed_phrase, account, index) {
-    let deferred3_0;
-    let deferred3_1;
-    try {
-        const ptr0 = passStringToWasm0(seed_phrase, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-        const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.derive_transparent_privkey(ptr0, len0, account, index);
-        var ptr2 = ret[0];
-        var len2 = ret[1];
-        if (ret[3]) {
-            ptr2 = 0; len2 = 0;
-            throw takeFromExternrefTable0(ret[2]);
-        }
-        deferred3_0 = ptr2;
-        deferred3_1 = len2;
-        return getStringFromWasm0(ptr2, len2);
-    } finally {
-        wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
     }
 }
 
@@ -2201,6 +2480,36 @@ export function frost_generate_randomizer(ephemeral_seed_hex, message_hex, commi
  * So the value the joiner checks is the canonical message its signature will
  * commit to — never a host-supplied claim. The host publishes the (proven,
  * io-finalized, redacted) PCZT; `into_effects` needs neither proof nor sigs.
+ *
+ * ADDITIVE fields for intent verification (older consumers ignore them):
+ *
+ * per action:
+ *   - `committed_value_zat` / `committed_recipient_raw_hex`: the output note's
+ *     value and recipient as carried in the PCZT, reported ONLY when
+ *     `cmx_verified` is true, i.e. when `(recipient, value, rho, rseed)`
+ *     recompute the action's `cmx`. `cmx` is sighash-bound, so these are the
+ *     values the chain will actually record, independent of whether the
+ *     output is OVK-decryptable. (`null` when the PCZT lacks the fields or they
+ *     do not match.)
+ *   - `cmx_verified`: bool, as above.
+ *   - `recipient_scope`: `"external" | "internal" | null` - which scope of the
+ *     inspecting UFVK's orchard key the committed recipient belongs to
+ *     (`FullViewingKey::scope_for_address`), `null` for a foreign address.
+ *     This is a key-derivation fact, unlike `is_change`, which only says which
+ *     OVK decrypted the output.
+ *
+ * transaction level:
+ *   - `expiry_height`, `tx_version`, `consensus_branch_id` (from the global).
+ *   - `value_balance_zat`: `{ orchard, ironwood, sapling }` (i64 each, the
+ *     value the sighash binds; 0 when the bundle is absent).
+ *   - `sapling_present`: bool.
+ *   - `transparent_input_count`, `transparent_input_total_zat`.
+ *   - `transparent_outputs`: `[{ value_zat, script_pubkey_hex, address }]`,
+ *     `address` = encoded P2PKH/P2SH t-address or `null` for any other script.
+ *   - `fee_zat`: `orchard + ironwood + sapling value balances + transparent
+ *     inputs - transparent outputs`; `null` when negative or out of range.
+ *   - `committed_outputs_error`: `null`, or why the per-action committed view
+ *     could not be produced (the committed fields are then all null/false).
  * @param {string} pczt_hex
  * @param {string} orchard_fvk_uview
  * @returns {string}
@@ -2644,6 +2953,131 @@ export function init() {
 }
 
 /**
+ * Validates one response per plan command (status words stripped), verifies
+ * every signature, and returns the signed PCZT bytes.
+ * @param {Uint8Array} pczt
+ * @param {Array<any>} responses
+ * @returns {Uint8Array}
+ */
+export function ledger_finalize_pczt_signing(pczt, responses) {
+    const ptr0 = passArray8ToWasm0(pczt, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.ledger_finalize_pczt_signing(ptr0, len0, responses);
+    if (ret[3]) {
+        throw takeFromExternrefTable0(ret[2]);
+    }
+    var v2 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+    wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+    return v2;
+}
+
+/**
+ * Reassembles and validates the UFVK export. Returns
+ * `{ ufvk: string, seedFingerprint: Uint8Array(32), accountIndex: number }`.
+ * @param {Array<any>} responses
+ * @param {string} network
+ * @param {number} account_index
+ * @returns {any}
+ */
+export function ledger_parse_ufvk(responses, network, account_index) {
+    const ptr0 = passStringToWasm0(network, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.ledger_parse_ufvk(responses, ptr0, len0, account_index);
+    if (ret[2]) {
+        throw takeFromExternrefTable0(ret[1]);
+    }
+    return takeFromExternrefTable0(ret[0]);
+}
+
+/**
+ * The full ordered APDU exchange that has the device review the PCZT once
+ * and sign every transparent input and real Orchard / Ironwood spend.
+ * `memo_hash_supported` comes from the app version (3.9.4+).
+ * @param {Uint8Array} pczt
+ * @param {boolean} memo_hash_supported
+ * @returns {any}
+ */
+export function ledger_pczt_signing_plan(pczt, memo_hash_supported) {
+    const ptr0 = passArray8ToWasm0(pczt, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.ledger_pczt_signing_plan(ptr0, len0, memo_hash_supported);
+    if (ret[2]) {
+        throw takeFromExternrefTable0(ret[1]);
+    }
+    return takeFromExternrefTable0(ret[0]);
+}
+
+/**
+ * Stamps the Ledger account's derivations onto a zafu-built PCZT so the
+ * signing plan can serialize it. `transparent_paths` is an array of
+ * `{ input_index, scope, address_index, pubkey: Uint8Array(33) }`, one per
+ * transparent input. Idempotent; refuses to overwrite a different derivation.
+ * @param {Uint8Array} pczt
+ * @param {Uint8Array} seed_fingerprint
+ * @param {number} account_index
+ * @param {any} transparent_paths
+ * @returns {Uint8Array}
+ */
+export function ledger_stamp_derivations(pczt, seed_fingerprint, account_index, transparent_paths) {
+    const ptr0 = passArray8ToWasm0(pczt, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passArray8ToWasm0(seed_fingerprint, wasm.__wbindgen_malloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ret = wasm.ledger_stamp_derivations(ptr0, len0, ptr1, len1, account_index, transparent_paths);
+    if (ret[3]) {
+        throw takeFromExternrefTable0(ret[2]);
+    }
+    var v3 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+    wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+    return v3;
+}
+
+/**
+ * APDUs that export the UFVK for `account_index`: `[first, continuation]`.
+ * Send `first`, then repeat `continuation` while
+ * [`ledger_ufvk_remaining_bytes`] reports bytes still owed.
+ * @param {number} account_index
+ * @returns {any}
+ */
+export function ledger_ufvk_plan(account_index) {
+    const ret = wasm.ledger_ufvk_plan(account_index);
+    if (ret[2]) {
+        throw takeFromExternrefTable0(ret[1]);
+    }
+    return takeFromExternrefTable0(ret[0]);
+}
+
+/**
+ * UFVK bytes the device still owes after `responses` (status words
+ * stripped). `0` means stop sending continuations and call
+ * [`ledger_parse_ufvk`].
+ * @param {Array<any>} responses
+ * @returns {number}
+ */
+export function ledger_ufvk_remaining_bytes(responses) {
+    const ret = wasm.ledger_ufvk_remaining_bytes(responses);
+    if (ret[2]) {
+        throw takeFromExternrefTable0(ret[1]);
+    }
+    return ret[0] >>> 0;
+}
+
+/**
+ * Throws `unsupported_transaction: ...` when the Ledger Zcash app cannot sign
+ * this PCZT (limits: 32 transparent inputs, 10 transparent outputs, 32 actions
+ * per shielded pool; legacy Orchard into Ironwood; unsupported shapes).
+ * @param {Uint8Array} pczt
+ */
+export function ledger_validate_pczt(pczt) {
+    const ptr0 = passArray8ToWasm0(pczt, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.ledger_validate_pczt(ptr0, len0);
+    if (ret[1]) {
+        throw takeFromExternrefTable0(ret[0]);
+    }
+}
+
+/**
  * Get number of threads available (0 if single-threaded)
  * @returns {number}
  */
@@ -2712,6 +3146,39 @@ export function pir_fetch_imt_proofs(pir_base_url, nullifiers_json, js_fetch) {
 }
 
 /**
+ * Plan a t->t spend from an address's UTXOs (`[{txid, vout, value, script}]`)
+ * without any key: what the review shows. Returns JSON
+ * `{inputs, total_in, fee, change, short}`; `short > 0` means the address
+ * needs that much more first.
+ * @param {string} utxos_json
+ * @param {bigint} amount
+ * @param {string | null} [null_data_hex]
+ * @returns {string}
+ */
+export function plan_transparent_transaction(utxos_json, amount, null_data_hex) {
+    let deferred4_0;
+    let deferred4_1;
+    try {
+        const ptr0 = passStringToWasm0(utxos_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        var ptr1 = isLikeNone(null_data_hex) ? 0 : passStringToWasm0(null_data_hex, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        var len1 = WASM_VECTOR_LEN;
+        const ret = wasm.plan_transparent_transaction(ptr0, len0, amount, ptr1, len1);
+        var ptr3 = ret[0];
+        var len3 = ret[1];
+        if (ret[3]) {
+            ptr3 = 0; len3 = 0;
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        deferred4_0 = ptr3;
+        deferred4_1 = len3;
+        return getStringFromWasm0(ptr3, len3);
+    } finally {
+        wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
+    }
+}
+
+/**
  * Compact a PCZT for transmission to a signer by redacting per-action cv_net,
  * v6 bundle anchors, output cmx, and replacing enc_ciphertext with memo plaintext
  * (trimmed to last nonzero byte). Builds on the existing signer redaction.
@@ -2753,8 +3220,7 @@ export function redact_pczt_compact(pczt_hex) {
  * `target_height`: `"ironwood"` at/after NU6.3 activation, `"orchard"` before.
  *
  * Callers that do not pick a pool explicitly MUST resolve it through this
- * function (or through [`build_shielding_transaction_auto`], which calls it)
- * rather than defaulting to orchard: from NU6.3 onwards an orchard output is
+ * function rather than defaulting to orchard: from NU6.3 onwards an orchard output is
  * a stranded note (orchard sends are consensus-disabled, so the funds can only
  * be moved again by a turnstile migration that costs a second fee).
  * @param {number} target_height
@@ -3217,6 +3683,10 @@ function __wbg_get_imports(memory) {
             const ret = typeof(arg0) === 'function';
             return ret;
         },
+        __wbg___wbindgen_is_null_ea9085d691f535d3: function(arg0) {
+            const ret = arg0 === null;
+            return ret;
+        },
         __wbg___wbindgen_is_object_a27215656b807791: function(arg0) {
             const val = arg0;
             const ret = typeof(val) === 'object' && val !== null;
@@ -3312,6 +3782,9 @@ function __wbg_get_imports(memory) {
                 wasm.__wbindgen_free(deferred0_0, deferred0_1, 1);
             }
         },
+        __wbg_getRandomValues_127d43fea0fcc894: function() { return handleError(function (arg0) {
+            globalThis.crypto.getRandomValues(arg0);
+        }, arguments); },
         __wbg_getRandomValues_c44a50d8cfdaebeb: function() { return handleError(function (arg0, arg1) {
             arg0.getRandomValues(arg1);
         }, arguments); },
@@ -3319,6 +3792,10 @@ function __wbg_get_imports(memory) {
             const ret = arg0[arg1 >>> 0];
             return ret;
         },
+        __wbg_get_78f252d074a84d0b: function() { return handleError(function (arg0, arg1) {
+            const ret = Reflect.get(arg0, arg1);
+            return ret;
+        }, arguments); },
         __wbg_get_c7eb1f358a7654df: function() { return handleError(function (arg0, arg1) {
             const ret = Reflect.get(arg0, arg1);
             return ret;
@@ -3482,6 +3959,10 @@ function __wbg_get_imports(memory) {
         __wbg_prototypesetcall_4770620bbe4688a0: function(arg0, arg1, arg2) {
             Uint8Array.prototype.set.call(getArrayU8FromWasm0(arg0, arg1), arg2);
         },
+        __wbg_push_d2ae3af0c1217ae6: function(arg0, arg1) {
+            const ret = arg0.push(arg1);
+            return ret;
+        },
         __wbg_queueMicrotask_0ab5b2d2393e99b9: function(arg0) {
             const ret = arg0.queueMicrotask;
             return ret;
@@ -3503,6 +3984,10 @@ function __wbg_get_imports(memory) {
         __wbg_set_6be42768c690e380: function(arg0, arg1, arg2) {
             arg0[arg1] = arg2;
         },
+        __wbg_set_8535240470bf2500: function() { return handleError(function (arg0, arg1, arg2) {
+            const ret = Reflect.set(arg0, arg1, arg2);
+            return ret;
+        }, arguments); },
         __wbg_set_8a16b38e4805b298: function(arg0, arg1, arg2) {
             arg0[arg1 >>> 0] = arg2;
         },
@@ -3569,18 +4054,18 @@ function __wbg_get_imports(memory) {
             return ret;
         },
         __wbindgen_cast_0000000000000001: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 3321, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen_aeea2c632802c019___convert__closures_____invoke___wasm_bindgen_aeea2c632802c019___JsValue__core_8266185441cb29e1___result__Result_____wasm_bindgen_aeea2c632802c019___JsError___true_);
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 313, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen_aeea2c632802c019___convert__closures_____invoke___wasm_bindgen_aeea2c632802c019___JsValue______true_);
             return ret;
         },
         __wbindgen_cast_0000000000000002: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 3323, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen_aeea2c632802c019___convert__closures_____invoke___js_sys_74738dcabc251f8d___futures__task__wait_async_polyfill__MessageEvent______true_);
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 4770, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen_aeea2c632802c019___convert__closures_____invoke___wasm_bindgen_aeea2c632802c019___JsValue__core_8266185441cb29e1___result__Result_____wasm_bindgen_aeea2c632802c019___JsError___true_);
             return ret;
         },
         __wbindgen_cast_0000000000000003: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 68, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen_aeea2c632802c019___convert__closures_____invoke___wasm_bindgen_aeea2c632802c019___JsValue______true_);
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 4772, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen_aeea2c632802c019___convert__closures_____invoke___js_sys_74738dcabc251f8d___futures__task__wait_async_polyfill__MessageEvent______true_);
             return ret;
         },
         __wbindgen_cast_0000000000000004: function(arg0) {
@@ -3626,7 +4111,7 @@ function __wbg_get_imports(memory) {
             getDataViewMemory0().setInt32(arg0 + 4 * 1, len1, true);
             getDataViewMemory0().setInt32(arg0 + 4 * 0, ptr1, true);
         },
-        memory: memory || new WebAssembly.Memory({initial:50,maximum:32768,shared:true}),
+        memory: memory || new WebAssembly.Memory({initial:58,maximum:32768,shared:true}),
     };
     return {
         __proto__: null,
@@ -3634,12 +4119,12 @@ function __wbg_get_imports(memory) {
     };
 }
 
-function wasm_bindgen_aeea2c632802c019___convert__closures_____invoke___js_sys_74738dcabc251f8d___futures__task__wait_async_polyfill__MessageEvent______true_(arg0, arg1, arg2) {
-    wasm.wasm_bindgen_aeea2c632802c019___convert__closures_____invoke___js_sys_74738dcabc251f8d___futures__task__wait_async_polyfill__MessageEvent______true_(arg0, arg1, arg2);
-}
-
 function wasm_bindgen_aeea2c632802c019___convert__closures_____invoke___wasm_bindgen_aeea2c632802c019___JsValue______true_(arg0, arg1, arg2) {
     wasm.wasm_bindgen_aeea2c632802c019___convert__closures_____invoke___wasm_bindgen_aeea2c632802c019___JsValue______true_(arg0, arg1, arg2);
+}
+
+function wasm_bindgen_aeea2c632802c019___convert__closures_____invoke___js_sys_74738dcabc251f8d___futures__task__wait_async_polyfill__MessageEvent______true_(arg0, arg1, arg2) {
+    wasm.wasm_bindgen_aeea2c632802c019___convert__closures_____invoke___js_sys_74738dcabc251f8d___futures__task__wait_async_polyfill__MessageEvent______true_(arg0, arg1, arg2);
 }
 
 function wasm_bindgen_aeea2c632802c019___convert__closures_____invoke___wasm_bindgen_aeea2c632802c019___JsValue__core_8266185441cb29e1___result__Result_____wasm_bindgen_aeea2c632802c019___JsError___true_(arg0, arg1, arg2) {
@@ -3656,6 +4141,12 @@ function wasm_bindgen_aeea2c632802c019___convert__closures_____invoke___js_sys_7
 const FrostRelayCipherFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_frostrelaycipher_free(ptr, 1));
+const NoteTreeFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_notetree_free(ptr, 1));
+const SpendKeysFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_spendkeys_free(ptr, 1));
 const WalletKeysFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_walletkeys_free(ptr, 1));
@@ -3755,6 +4246,14 @@ function getStringFromWasm0(ptr, len) {
     return decodeText(ptr >>> 0, len);
 }
 
+let cachedUint32ArrayMemory0 = null;
+function getUint32ArrayMemory0() {
+    if (cachedUint32ArrayMemory0 === null || cachedUint32ArrayMemory0.buffer !== wasm.memory.buffer) {
+        cachedUint32ArrayMemory0 = new Uint32Array(wasm.memory.buffer);
+    }
+    return cachedUint32ArrayMemory0;
+}
+
 let cachedUint8ArrayMemory0 = null;
 function getUint8ArrayMemory0() {
     if (cachedUint8ArrayMemory0 === null || cachedUint8ArrayMemory0.buffer !== wasm.memory.buffer) {
@@ -3802,6 +4301,13 @@ function makeMutClosure(arg0, arg1, f) {
     };
     CLOSURE_DTORS.register(real, state, state);
     return real;
+}
+
+function passArray32ToWasm0(arg, malloc) {
+    const ptr = malloc(arg.length * 4, 4) >>> 0;
+    getUint32ArrayMemory0().set(arg, ptr / 4);
+    WASM_VECTOR_LEN = arg.length;
+    return ptr;
 }
 
 function passArray8ToWasm0(arg, malloc) {
@@ -3890,6 +4396,7 @@ function __wbg_finalize_init(instance, module, thread_stack_size) {
     wasm = instance.exports;
     wasmModule = module;
     cachedDataViewMemory0 = null;
+    cachedUint32ArrayMemory0 = null;
     cachedUint8ArrayMemory0 = null;
     if (typeof thread_stack_size !== 'undefined' && (typeof thread_stack_size !== 'number' || thread_stack_size === 0 || thread_stack_size % 65536 !== 0)) {
         throw new Error('invalid stack size');

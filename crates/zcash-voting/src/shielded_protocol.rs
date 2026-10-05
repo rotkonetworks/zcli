@@ -1,8 +1,8 @@
 use orchard::bundle::BundleVersion;
 use orchard::note::NoteVersion;
-use zcash_protocol::consensus::BranchId;
 #[cfg(feature = "native")]
 use zcash_protocol::consensus::{BlockHeight, Parameters};
+use zcash_protocol::consensus::{BranchId, OrchardProtocolRevision};
 
 use crate::types::VotingError;
 
@@ -12,14 +12,21 @@ pub(crate) enum VotingShieldedProtocol {
 }
 
 impl VotingShieldedProtocol {
+    /// The voting protocol for notes created under `branch_id`.
+    ///
+    /// Gated on the Orchard protocol revision the branch selects, not on the
+    /// exact branch: every upgrade from NU6.3 on (NU7 included) keeps the
+    /// Ironwood pool and its V3 notes. Branches without one fail closed.
     pub(crate) fn for_branch_id(branch_id: BranchId) -> Result<Self, VotingError> {
-        if matches!(branch_id, BranchId::Nu6_3) {
+        if branch_id.orchard_protocol_revision() == Some(OrchardProtocolRevision::V3) {
             return Ok(Self::Ironwood);
         }
 
         Err(VotingError::InvalidInput {
-            message: "zcash voting only supports Ironwood / NU6.3 shielded voting notes"
-                .to_string(),
+            message: format!(
+                "zcash voting needs Ironwood (V3) notes, which exist from NU6.3 on; \
+                 consensus branch {branch_id:?} has no Ironwood pool"
+            ),
         })
     }
 

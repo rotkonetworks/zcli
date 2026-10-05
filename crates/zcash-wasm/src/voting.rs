@@ -1,8 +1,9 @@
 //! HOT vote-casting wasm bindings (shielded voting, casting slice only).
 //!
 //! These wrap `zcash_voting`'s wasm-slim casting seam: the app-owned voting
-//! **hotkey** builds the ZKP #2 vote commitment, signs the cast-vote, and builds
-//! the helper-share payloads. No cold key, no network, no PIR, no DB.
+//! **hotkey** builds the ZKP #2 vote commitment and signs the cast-vote; once
+//! the cast is on chain, `build_vote_shares_from_recovery` builds the
+//! helper-share payloads. No cold key, no network, no PIR, no DB.
 //!
 //! Provenance of the delegation-phase inputs (host must supply — this layer
 //! never synthesizes them): `ea_pk` + `vote_round_id` come from the round params
@@ -110,7 +111,7 @@ pub fn generate_voting_hotkey(network: &str) -> Result<String, JsError> {
     Ok(out.to_string())
 }
 
-/// Shared driver: run ZKP #2 + sign + build share payloads for one vote.
+/// Shared driver: run ZKP #2 + sign one vote.
 #[allow(clippy::too_many_arguments)]
 fn run_cast(
     hotkey_secret_hex: &str,
@@ -185,38 +186,26 @@ pub fn build_vote_commitment_wire(
     serde_json::to_string(&wire).map_err(|e| JsError::new(&format!("serialize wire: {e}")))
 }
 
-/// Build the helper-server share payloads (`[VoteShareWire]`) for one HOT vote.
+/// Build the `POST /cast-vote` body plus what the host keeps for after it lands.
 ///
-/// `submit_at` is the unix-seconds submission time stamped into each share.
-/// Runs the ZKP #2 proof.
-#[wasm_bindgen]
-pub fn build_vote_shares_wire(
-    hotkey_secret_hex: &str,
-    round_params_json: &str,
-    delegation_state_json: &str,
-    van_witness_json: &str,
-    vote_json: &str,
-    network: &str,
-    submit_at: u64,
-) -> Result<String, JsError> {
-    let (result, _, _) = run_cast(
-        hotkey_secret_hex,
-        round_params_json,
-        delegation_state_json,
-        van_witness_json,
-        vote_json,
-        network,
-    )?;
-    let shares = share_wires(&result.share_payloads, submit_at)?;
-    serde_json::to_string(&shares).map_err(|e| JsError::new(&format!("serialize shares: {e}")))
-}
-
-/// Build BOTH the commitment wire and share wires from a SINGLE proof run.
+/// Runs ZKP #2 once. Returns
+/// `{ proposal_id, wire, commitment_bundle_json, next_delegation_state_json }`.
 ///
-/// Prefer this over calling the two builders separately: ZKP #2 is expensive and
-/// each of `build_vote_commitment_wire` / `build_vote_shares_wire` runs it once.
-/// Returns `SignedVoteCommitmentView`-shaped JSON
-/// `{ proposal_id, wire, shares, commitment_bundle_json }`.
+/// No helper shares come back from here: a share commits to the vote's leaf
+/// index in the round's commitment tree (`vc_tree_position`), which only
+/// exists once the cast-vote transaction is included. Shares built before
+/// that carry a guessed position, and the helper's reveal for them never
+/// matches the tree, so the vote silently drops out of the tally. Build them
+/// with [`build_vote_shares_from_recovery`] from `commitment_bundle_json` and
+/// the included position.
+///
+/// `commitment_bundle_json` holds the share secrets (it can rebuild shares,
+/// which carry `vote_decision`): store it encrypted.
+///
+/// `next_delegation_state_json` is this bundle's state for its next cast
+/// (this proposal's authority bit cleared). Store it only after the cast is
+/// on chain: if the cast never lands, the old state is still the valid one,
+/// and a cleared bit would lock the proposal out of a retry.
 #[wasm_bindgen]
 pub fn cast_vote_hot_wire(
     hotkey_secret_hex: &str,
@@ -225,7 +214,6 @@ pub fn cast_vote_hot_wire(
     van_witness_json: &str,
     vote_json: &str,
     network: &str,
-    submit_at: u64,
 ) -> Result<String, JsError> {
     let (result, _, next_state) = run_cast(
         hotkey_secret_hex,
@@ -236,13 +224,11 @@ pub fn cast_vote_hot_wire(
         network,
     )?;
     let wire = commitment_wire(&result)?;
-    let shares = share_wires(&result.share_payloads, submit_at)?;
     let next_state = serde_json::to_string(&next_state)
         .map_err(|e| JsError::new(&format!("serialize delegation state: {e}")))?;
     let out = serde_json::json!({
         "proposal_id": result.signed_commitment.proposal_id,
         "wire": wire,
-        "shares": shares,
         "commitment_bundle_json": result.signed_commitment.commitment_bundle_json,
         "next_delegation_state_json": next_state,
     });

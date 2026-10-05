@@ -221,8 +221,11 @@ struct DelegationContext {
 ///   `generate_voting_hotkey`); the governance output target.
 /// * `notes_json` — `[NoteInfoDto]` (the delegated notes).
 /// * `round_params_json` — `RoundParamsDto`.
-/// * `consensus_branch_id` — branch id at the snapshot height (host resolves via
-///   lightwalletd).
+/// * `consensus_branch_id` — branch id the host's node reports (lightwalletd).
+///   It must have the Ironwood pool (NU6.3 or later, NU7 included), and so
+///   must the snapshot height. It only selects the note protocol: the PCZT is
+///   always built under TX1 v1's V6 / NU6.3 profile, the one the vote chain
+///   rebuilds the signed digest under.
 /// * `round_name` — display memo text.
 /// * `network` — "mainnet" | "testnet" | "regtest".
 /// * `bundle_index` — delegation bundle index (echoed into `delegation_state`).

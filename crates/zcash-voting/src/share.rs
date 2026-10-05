@@ -206,7 +206,7 @@ pub fn recover_wire_json(
         });
     }
     let payload = recover_payload(&bundle, share_index)?;
-    payload.to_wire_json(Some(vc_tree_position), submit_at)
+    payload.to_wire_json(vc_tree_position, submit_at)
 }
 
 fn array32(label: &str, value: Vec<u8>) -> Result<[u8; 32], VotingError> {
