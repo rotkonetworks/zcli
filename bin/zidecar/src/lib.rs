@@ -18,6 +18,7 @@ pub mod rendezvous;
 pub mod ring_vrf;
 pub mod storage;
 pub mod witness;
+pub mod zakura_indexer;
 pub mod zebrad;
 
 // proto modules (same names as main.rs uses)
@@ -29,4 +30,10 @@ pub mod zidecar {
 #[allow(clippy::result_large_err, clippy::double_must_use)]
 pub mod lightwalletd {
     tonic::include_proto!("cash.z.wallet.sdk.rpc");
+}
+
+// Zakura node `Indexer` gRPC client (zebra.indexer.rpc). Optional; only used
+// when --zakura-indexer-url is set.
+pub mod zakura_indexer_proto {
+    tonic::include_proto!("zebra.indexer.rpc");
 }

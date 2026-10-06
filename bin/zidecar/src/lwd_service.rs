@@ -44,11 +44,23 @@ use tracing::{debug, warn};
 pub struct LwdService {
     zebrad: ZebradClient,
     testnet: bool,
+    /// Optional Zakura indexer: when live, tip reads (GetLatestBlock /
+    /// GetLightdInfo height) come from its warm push-stream cell instead of
+    /// polling `get_blockchain_info`.
+    indexer: Option<crate::zakura_indexer::IndexerWatcher>,
 }
 
 impl LwdService {
-    pub fn new(zebrad: ZebradClient, testnet: bool) -> Self {
-        Self { zebrad, testnet }
+    pub fn new(
+        zebrad: ZebradClient,
+        testnet: bool,
+        indexer: Option<crate::zakura_indexer::IndexerWatcher>,
+    ) -> Self {
+        Self {
+            zebrad,
+            testnet,
+            indexer,
+        }
     }
 
     /// Network identifier used in LightdInfo + TreeState. Must match the
@@ -326,6 +338,18 @@ impl CompactTxStreamer for LwdService {
     type GetBlockRangeNullifiersStream = ReceiverStream<Result<CompactBlock, Status>>;
 
     async fn get_latest_block(&self, _: Request<ChainSpec>) -> Result<Response<BlockId>, Status> {
+        // Fallback-first: a live indexer serves tip (height, display-order hash
+        // hex) from its warm cell, avoiding the RPC entirely. `rev_into` matches
+        // the little-endian wire order lwd clients expect, exactly as the
+        // JSON-RPC path does with `bestblockhash`. Stale/dead stream -> None.
+        if let Some(idx) = &self.indexer {
+            if let Some((height, hash_hex)) = idx.tip().await {
+                return Ok(Response::new(BlockId {
+                    height: height as u64,
+                    hash: rev_into(hex::decode(&hash_hex).unwrap_or_default()),
+                }));
+            }
+        }
         let info = self.zebrad.get_blockchain_info().await?;
         Ok(Response::new(BlockId {
             height: info.blocks as u64,
@@ -571,6 +595,15 @@ impl CompactTxStreamer for LwdService {
         // breaks the info endpoint wallets and probes depend on
         let node = self.zebrad.get_node_info().await.ok();
 
+        // `info` is still needed for the consensus branch id and node build
+        // fields, but the height can come from the warm indexer cell when live
+        // (fresher than the getblockchaininfo snapshot). Fallback: info.blocks.
+        let block_height = match &self.indexer {
+            Some(idx) => idx.tip().await.map(|(h, _)| h as u64),
+            None => None,
+        }
+        .unwrap_or(info.blocks as u64);
+
         let sapling_height: u64 = if self.testnet { 280000 } else { 419200 };
 
         Ok(Response::new(LightdInfo {
@@ -584,12 +617,12 @@ impl CompactTxStreamer for LwdService {
                 .as_ref()
                 .map(|c| c.chaintip.clone())
                 .unwrap_or_default(),
-            block_height: info.blocks as u64,
+            block_height,
             git_commit: format!("v{}-{}", env!("CARGO_PKG_VERSION"), env!("GIT_HASH")),
             branch: "main".to_string(),
             build_date: String::new(),
             build_user: "zidecar".to_string(),
-            estimated_height: info.blocks as u64,
+            estimated_height: block_height,
             zcashd_build: node.as_ref().map(|n| n.build.clone()).unwrap_or_default(),
             zcashd_subversion: node.map(|n| n.subversion).unwrap_or_default(),
         }))
@@ -1485,7 +1518,7 @@ mod tests {
     #[tokio::test]
     async fn get_subtree_roots_serves_ironwood() {
         use crate::lightwalletd::{GetSubtreeRootsArg, ShieldedProtocol};
-        let svc = LwdService::new(ZebradClient::new("http://127.0.0.1:1"), false);
+        let svc = LwdService::new(ZebradClient::new("http://127.0.0.1:1"), false, None);
         let err = svc
             .get_subtree_roots(Request::new(GetSubtreeRootsArg {
                 start_index: 0,
@@ -1502,7 +1535,7 @@ mod tests {
     /// later at the unreachable zebrad (mirrors the default-pools case).
     #[tokio::test]
     async fn get_mempool_tx_serves_ironwood_pool_type() {
-        let svc = LwdService::new(ZebradClient::new("http://127.0.0.1:1"), false);
+        let svc = LwdService::new(ZebradClient::new("http://127.0.0.1:1"), false, None);
         let resp = svc
             .get_mempool_tx(Request::new(GetMempoolTxRequest {
                 exclude_txid_suffixes: vec![],
@@ -1517,7 +1550,7 @@ mod tests {
     /// validation and only fails later at the unreachable zebrad.
     #[tokio::test]
     async fn get_mempool_tx_default_pools_still_accepted() {
-        let svc = LwdService::new(ZebradClient::new("http://127.0.0.1:1"), false);
+        let svc = LwdService::new(ZebradClient::new("http://127.0.0.1:1"), false, None);
         let resp = svc
             .get_mempool_tx(Request::new(GetMempoolTxRequest {
                 exclude_txid_suffixes: vec![],
@@ -1546,6 +1579,7 @@ mod tests {
         let svc = tonic_web::enable(CompactTxStreamerServer::new(LwdService::new(
             ZebradClient::new("http://127.0.0.1:1"),
             false,
+            None,
         )));
 
         let mut req = http::Request::builder()

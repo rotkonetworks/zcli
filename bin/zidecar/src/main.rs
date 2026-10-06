@@ -22,6 +22,7 @@ mod rendezvous;
 mod ring_vrf;
 mod storage;
 mod witness;
+mod zakura_indexer;
 mod zebrad;
 
 use crate::{grpc_service::ZidecarService, lwd_service::LwdService};
@@ -52,6 +53,15 @@ struct Args {
     /// upstream load.
     #[arg(long, default_value_t = 0)]
     mempool_cache_ttl: u64,
+
+    /// OPT-IN: URL of a Zakura node `Indexer` gRPC (zebra.indexer.rpc). When
+    /// set, zidecar subscribes to the node's tip + mempool push streams and
+    /// serves tip / mempool reads from a warm cache instead of polling
+    /// JSON-RPC. Unset (default) = today's exact behavior, plain-zebrad safe.
+    /// Every read falls back to JSON-RPC if the stream dies, so this never
+    /// changes correctness - only freshness and upstream load.
+    #[arg(long)]
+    zakura_indexer_url: Option<String>,
 
     /// OPT-IN: enable the rotko-specific ZidecarService (FlyClient proofs
     /// with --flyclient, whole-block reads, mempool stream, FROST sign
@@ -199,6 +209,28 @@ async fn main() -> Result<()> {
         }
     }
 
+    // OPT-IN: subscribe to a Zakura node `Indexer` for warm tip + mempool.
+    // Spawned here, before any service is built, so the same watcher can be
+    // threaded into the lwd, epoch, and zidecar surfaces. Log-and-continue on
+    // failure: an unreachable indexer must never keep zidecar from starting -
+    // every read site falls back to JSON-RPC.
+    let indexer = match &args.zakura_indexer_url {
+        Some(u) => match zakura_indexer::IndexerWatcher::spawn(u.clone(), zebrad.clone()).await {
+            Ok(w) => {
+                info!("zakura indexer: subscribed at {u}");
+                Some(w)
+            }
+            Err(e) => {
+                warn!("zakura indexer off ({u}): {e} - falling back to JSON-RPC");
+                None
+            }
+        },
+        None => {
+            info!("zakura indexer: disabled (use --zakura-indexer-url URL to enable)");
+            None
+        }
+    };
+
     // Build the base server stack with Tower hygiene that applies to every
     // surface (lwd + any opt-in extras): tracing, timeout, concurrency limit.
     // Populated when the zidecar-rpc surface opens storage; the shutdown drain
@@ -234,7 +266,7 @@ async fn main() -> Result<()> {
     // no background work; just the Zebra RPC client.
     let lwd_server =
         lightwalletd::compact_tx_streamer_server::CompactTxStreamerServer::with_interceptor(
-            LwdService::new(zebrad.clone(), args.testnet),
+            LwdService::new(zebrad.clone(), args.testnet, indexer.clone()),
             auth.clone(),
         );
     let mut router = builder.add_service(tonic_web::enable(lwd_server));
@@ -286,6 +318,7 @@ async fn main() -> Result<()> {
             storage_arc,
             mempool_cache_ttl,
             history,
+            indexer.clone(),
         );
         let zidecar_server =
             zidecar::zidecar_server::ZidecarServer::with_interceptor(service, auth.clone());
@@ -354,5 +387,11 @@ pub mod zidecar {
 #[allow(clippy::result_large_err, clippy::double_must_use)]
 pub mod lightwalletd {
     tonic::include_proto!("cash.z.wallet.sdk.rpc");
+}
+
+// Zakura node `Indexer` gRPC client (zebra.indexer.rpc). Optional; only used
+// when --zakura-indexer-url is set.
+pub mod zakura_indexer_proto {
+    tonic::include_proto!("zebra.indexer.rpc");
 }
 
