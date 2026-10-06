@@ -17,6 +17,7 @@ pub use frost::inspect_pczt_outputs_core;
 mod hot_sign;
 /// Ledger Zcash app protocol: APDU plans + response validation (pure, no I/O).
 pub mod ledger;
+pub mod node_params;
 /// HOT shielded-voting vote-casting bindings (casting slice only).
 #[cfg(feature = "voting")]
 mod voting;
@@ -175,7 +176,7 @@ pub fn ironwood_active(branch_id: u32) -> bool {
 fn guard_orchard_spend_allowed(branch_id: u32) -> Result<(), String> {
     if ironwood_active(branch_id) {
         return Err(format!(
-            "orchard spends are disabled at NU6.3 (live consensus branch id \
+            "orchard spends are disabled from NU6.3 on (NU6.3 and NU7) (live consensus branch id \
              {:#010x}): an orchard bundle built now is rejected by the network. \
              Spend from the ironwood pool instead (build_ironwood_send_pczt); \
              orchard funds must first cross the one-way turnstile \
@@ -2419,6 +2420,8 @@ abandon abandon abandon art";
     fn test_guard_orchard_spend_allowed() {
         assert!(guard_orchard_spend_allowed(0x5437_F330).is_ok());
         assert!(guard_orchard_spend_allowed(NU6_3_BRANCH_ID).is_err());
+        // NU7 keeps orchard outputs disabled: the guard must hold there too.
+        assert!(guard_orchard_spend_allowed(crate::node_params::NU7_BRANCH_ID).is_err());
     }
 
     #[test]
@@ -4296,6 +4299,8 @@ pub fn build_turnstile_migration_pczt_proven<P>(
 where
     P: zcash_protocol::consensus::Parameters,
 {
+    // NU7 is active exactly when the node says so (see node_params).
+    let params = crate::node_params::NodeParams::new(params, expected_branch_id, target_height);
     use orchard::circuit::OrchardCircuitVersion;
     use zcash_primitives::transaction::builder::{BuildConfig, Builder, BundlePadding};
     use zcash_primitives::transaction::fees::fixed::FeeRule as FixedFeeRule;
@@ -4378,6 +4383,10 @@ where
             ironwood_padding: BundlePadding::DEFAULT,
         },
     );
+    builder = builder.with_expiry_height(crate::node_params::expiry_height(
+        expected_branch_id,
+        target_height,
+    ));
     builder
         .propose_version::<FeError>(TxVersion::V6)
         .map_err(|e| format!("propose_version(V6): {:?}", e))?;
@@ -4922,6 +4931,8 @@ pub fn build_ironwood_send_pczt_proven<P>(
 where
     P: zcash_protocol::consensus::Parameters,
 {
+    // NU7 is active exactly when the node says so (see node_params).
+    let params = crate::node_params::NodeParams::new(params, expected_branch_id, target_height);
     use orchard::circuit::OrchardCircuitVersion;
     use zcash_primitives::transaction::builder::{BuildConfig, Builder, BundlePadding};
     use zcash_primitives::transaction::fees::fixed::FeeRule as FixedFeeRule;
@@ -5163,8 +5174,8 @@ where
         target_height,
         expected_branch_id,
         memo,
-        // The hot send keeps the expiry it always had (target + 40), now stated.
-        LEGACY_PCZT_EXPIRY_DELTA,
+        // The hot send keeps the branch default: target + 40, or + 120 on NU7.
+        crate::node_params::default_expiry_delta(expected_branch_id),
     )?;
 
     sign_pczt_spends(
@@ -5202,10 +5213,11 @@ where
 /// placeholder is refused. No value or recipient appears in any error.
 ///
 /// `expiry_delta` (optional, last argument): blocks after `target_height` at
-/// which the transaction expires. Omitted means [`LEGACY_PCZT_EXPIRY_DELTA`]
-/// (40), exactly what this builder produced before the argument existed.
-/// Validated by [`resolve_pczt_expiry_height`]. The resolved height is returned
-/// as `expiry_height`.
+/// which the transaction expires. Omitted means the branch default: 40 blocks
+/// ([`LEGACY_PCZT_EXPIRY_DELTA`], what this builder always produced) before
+/// NU7, 120 on NU7 (see [`node_params::default_expiry_delta`]). Validated by
+/// [`resolve_pczt_expiry_height`]. The resolved height is returned as
+/// `expiry_height`.
 #[wasm_bindgen]
 #[allow(clippy::too_many_arguments)]
 pub fn build_ironwood_send_pczt(
@@ -5230,10 +5242,11 @@ pub fn build_ironwood_send_pczt(
 
     let _ = account_index; // UFVK is already account-scoped; kept for parity.
 
-    // Omitted = the legacy target + 40 this builder always used. Resolved (and
-    // validated) up front so a bad value is refused before any proving; the
-    // core re-validates the same delta.
-    let expiry_delta = expiry_delta.unwrap_or(LEGACY_PCZT_EXPIRY_DELTA);
+    // Omitted = the branch default (target + 40, or + 120 on NU7). Resolved
+    // (and validated) up front so a bad value is refused before any proving;
+    // the core re-validates the same delta.
+    let expiry_delta = expiry_delta
+        .unwrap_or_else(|| crate::node_params::default_expiry_delta(expected_branch_id));
     let expiry_height = resolve_pczt_expiry_height(target_height, Some(expiry_delta))
         .map_err(|e| JsError::new(&e))?;
 
@@ -7114,6 +7127,8 @@ pub fn build_shielding_pczt_proven<P>(
 where
     P: zcash_protocol::consensus::Parameters,
 {
+    // NU7 is active exactly when the node says so (see node_params).
+    let params = crate::node_params::NodeParams::new(params, expected_branch_id, target_height);
     use orchard::circuit::OrchardCircuitVersion;
     use zcash_primitives::transaction::builder::{BuildConfig, Builder, BundlePadding};
     use zcash_primitives::transaction::fees::fixed::FeeRule as FixedFeeRule;
@@ -7231,6 +7246,10 @@ where
             ironwood_padding: BundlePadding::DEFAULT,
         },
     );
+    builder = builder.with_expiry_height(crate::node_params::expiry_height(
+        expected_branch_id,
+        target_height,
+    ));
     builder
         .propose_version::<FeError>(TxVersion::V6)
         .map_err(|e| format!("propose_version(V6): {:?}", e))?;
