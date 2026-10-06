@@ -360,3 +360,46 @@ fn spend_keys_pubkey_builds_a_deposit_the_worker_can_sign() {
     let tx = Transaction::read(&hex::decode(signed).unwrap()[..], BranchId::Nu6_3).unwrap();
     verify_transparent(&tx, &[coin(&pk, 900_000, 3).1]);
 }
+
+/// Mainnet NU7: no crate table has its height, so the deposit binds the branch
+/// the node reports. A V5 deposit stays valid under NU7 (ZIP 2003: version 5
+/// or 6), and its sighash commits to the NU7 branch id.
+#[test]
+fn mainnet_deposit_builds_on_the_nu7_branch_the_node_reports() {
+    use zafu_wasm::node_params::{NodeParams, NU7_BRANCH_ID};
+    let (sk, pk) = key();
+    let target = 3_500_000;
+    let params = NodeParams::new(MainNetwork, NU7_BRANCH_ID, target);
+    let u = build_unsigned_transparent_core(
+        params,
+        &pk,
+        &[coin(&pk, 500_000, 1)],
+        vault(),
+        100_000,
+        MEMO,
+        target,
+        NU7_BRANCH_ID,
+    )
+    .expect("builds on NU7");
+    let tx = sign(&u, &sk).expect("signs");
+    assert_eq!(tx.version(), TxVersion::V5);
+    assert_eq!(tx.consensus_branch_id(), BranchId::Nu7);
+
+    // and a node still on NU6.3 keeps the NU6.3 binding
+    let nu63 = NodeParams::new(MainNetwork, NU6_3_BRANCH_ID, target);
+    let u = build_unsigned_transparent_core(
+        nu63,
+        &pk,
+        &[coin(&pk, 500_000, 1)],
+        vault(),
+        100_000,
+        MEMO,
+        target,
+        NU6_3_BRANCH_ID,
+    )
+    .expect("builds on NU6.3");
+    assert_eq!(
+        sign(&u, &sk).unwrap().consensus_branch_id(),
+        BranchId::Nu6_3
+    );
+}

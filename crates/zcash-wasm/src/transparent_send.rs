@@ -345,9 +345,9 @@ pub fn build_unsigned_transparent_transaction(
     mainnet: bool,
     null_data_hex: Option<String>,
 ) -> Result<String, JsError> {
+    use crate::consensus::TestNetwork;
     use zcash_keys::encoding::AddressCodec;
     use zcash_protocol::consensus::{BlockHeight, MainNetwork};
-    use crate::consensus::TestNetwork;
     use zcash_protocol::value::Zatoshis;
     use zcash_transparent::address::TransparentAddress;
     use zcash_transparent::bundle::{OutPoint, TxOut};
@@ -384,10 +384,17 @@ pub fn build_unsigned_transparent_transaction(
 
     macro_rules! build {
         ($net:expr) => {{
-            let params = Nu63Activated {
-                inner: $net,
-                nu6_3_from: BlockHeight::from(target_height),
-            };
+            // NU7 follows the branch the node reports, as the shielded
+            // builders do: no crate table carries mainnet's NU7 height, and a
+            // V5 deposit stays valid under NU7 (ZIP 2003: version 5 or 6).
+            let params = crate::node_params::NodeParams::new(
+                Nu63Activated {
+                    inner: $net,
+                    nu6_3_from: BlockHeight::from(target_height),
+                },
+                expected_branch_id,
+                target_height,
+            );
             let to = TransparentAddress::decode(&params, recipient)
                 .map_err(|e| JsError::new(&format!("invalid transparent recipient: {e:?}")))?;
             build_unsigned_transparent_core(
