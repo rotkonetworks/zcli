@@ -1648,6 +1648,14 @@ fn collect_full_actions<A: orchard::bundle::Authorization, V>(
     }
 }
 
+/// How many shielded actions (orchard and ironwood bundles together) the memo
+/// decryptors walk for `tx_bytes`. Native-only test hook: it lets the V6 send
+/// tests check that ironwood actions reach the memo path.
+#[doc(hidden)]
+pub fn memo_scan_action_count(tx_bytes: &[u8]) -> Result<usize, String> {
+    parse_orchard_actions_from_tx(tx_bytes).map(|a| a.len())
+}
+
 #[wasm_bindgen]
 impl WalletKeys {
     /// Decrypt full notes with memos from a raw transaction

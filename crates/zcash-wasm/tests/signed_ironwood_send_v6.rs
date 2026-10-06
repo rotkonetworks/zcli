@@ -285,6 +285,14 @@ fn signed_ironwood_send_spends_real_v3_note_verifies() {
         !ironwood_bundle.actions().is_empty(),
         "ironwood bundle must have at least one action"
     );
+    // Memo decryption walks the ironwood bundle too: every ironwood action of
+    // the V6 tx reaches the memo path (it used to see only the orchard bundle,
+    // so post-NU6.3 notes came back without memos).
+    assert_eq!(
+        zafu_wasm::memo_scan_action_count(&tx_bytes).expect("memo scan parses the V6 tx"),
+        ironwood_bundle.actions().len(),
+        "memo scan must cover every ironwood action"
+    );
     // A general ironwood send has NO orchard spend bundle (orchard spends are
     // consensus-disabled post-NU6.3).
     assert!(
