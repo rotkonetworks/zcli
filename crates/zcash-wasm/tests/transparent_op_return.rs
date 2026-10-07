@@ -74,6 +74,7 @@ fn build(
         memo,
         TARGET,
         NU6_3_BRANCH_ID,
+        None,
     )
 }
 
@@ -316,6 +317,7 @@ fn refuses_foreign_coins_wrong_branch_and_foreign_signatures() {
         MEMO,
         TARGET,
         0xc8e7_1055,
+        None,
     );
     assert!(wrong_branch.unwrap_err().contains("branch id"));
 
@@ -346,6 +348,7 @@ fn spend_keys_pubkey_builds_a_deposit_the_worker_can_sign() {
         MEMO,
         TARGET,
         NU6_3_BRANCH_ID,
+        None,
     )
     .unwrap();
     assert_eq!(u.plan.change, 900_000 - 500_000 - 25_000);
@@ -379,11 +382,15 @@ fn mainnet_deposit_builds_on_the_nu7_branch_the_node_reports() {
         MEMO,
         target,
         NU7_BRANCH_ID,
+        None,
     )
     .expect("builds on NU7");
     let tx = sign(&u, &sk).expect("signs");
     assert_eq!(tx.version(), TxVersion::V5);
     assert_eq!(tx.consensus_branch_id(), BranchId::Nu7);
+    // NU7's expiry window, the same one the move gets
+    assert_eq!(u.expiry_height, target + 120);
+    assert_eq!(u32::from(tx.expiry_height()), target + 120);
 
     // and a node still on NU6.3 keeps the NU6.3 binding
     let nu63 = NodeParams::new(MainNetwork, NU6_3_BRANCH_ID, target);
@@ -396,10 +403,71 @@ fn mainnet_deposit_builds_on_the_nu7_branch_the_node_reports() {
         MEMO,
         target,
         NU6_3_BRANCH_ID,
+        None,
     )
     .expect("builds on NU6.3");
+    let tx = sign(&u, &sk).unwrap();
+    assert_eq!(tx.consensus_branch_id(), BranchId::Nu6_3);
+    assert_eq!(u32::from(tx.expiry_height()), target + 40);
+}
+
+#[test]
+fn nu6_3_deposit_expires_with_the_branch_default() {
+    let (sk, pk) = key();
+    let u = build(&[coin(&pk, 500_000, 1)], 100_000, MEMO).unwrap();
+    assert_eq!(u.expiry_height, TARGET + 40);
     assert_eq!(
-        sign(&u, &sk).unwrap().consensus_branch_id(),
-        BranchId::Nu6_3
+        u32::from(sign(&u, &sk).unwrap().expiry_height()),
+        TARGET + 40
     );
+}
+
+/// A deposit held for its move asks for a longer window, so it can still be
+/// mined after a move that lands in its own last block.
+#[test]
+fn an_explicit_expiry_delta_is_what_the_deposit_signs() {
+    use zafu_wasm::node_params::{NodeParams, NU7_BRANCH_ID};
+    let (sk, pk) = key();
+    let at = |delta: Option<u32>| {
+        build_unsigned_transparent_core(
+            Nu63TestNet,
+            &pk,
+            &[coin(&pk, 500_000, 1)],
+            vault(),
+            100_000,
+            MEMO,
+            TARGET,
+            NU6_3_BRANCH_ID,
+            delta,
+        )
+    };
+    let u = at(Some(50)).unwrap();
+    assert_eq!(u.expiry_height, TARGET + 50);
+    let tx = sign(&u, &sk).unwrap();
+    assert_eq!(u32::from(tx.expiry_height()), TARGET + 50);
+    verify_transparent(&tx, &[coin(&pk, 500_000, 1).1]);
+
+    // NU7 takes an explicit delta past its own default as well
+    let target = 3_500_000;
+    let u = build_unsigned_transparent_core(
+        NodeParams::new(MainNetwork, NU7_BRANCH_ID, target),
+        &pk,
+        &[coin(&pk, 500_000, 1)],
+        vault(),
+        100_000,
+        MEMO,
+        target,
+        NU7_BRANCH_ID,
+        Some(130),
+    )
+    .unwrap();
+    assert_eq!(
+        u32::from(sign(&u, &sk).unwrap().expiry_height()),
+        target + 130
+    );
+
+    // 0 would never expire; under 4 no node relays it; past the cap is refused
+    for bad in [0, 3, zafu_wasm::MAX_PCZT_EXPIRY_DELTA + 1] {
+        assert!(at(Some(bad)).unwrap_err().contains("expiry delta"), "{bad}");
+    }
 }
