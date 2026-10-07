@@ -22,7 +22,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // embed the full git commit at build time: GetLightdInfo reports it and
     // wallets link it to the exact source on github. ZIDECAR_GIT_HASH wins, for
     // builds without a .git (docker, tarballs), which otherwise say "unknown".
+    // Once a build script prints any rerun-if line, cargo reruns it ONLY on
+    // those, so a new commit must be one of them or the old hash stays baked in:
+    // HEAD (moves on checkout, holds the hash when detached), the branch ref it
+    // points at, and packed-refs.
     println!("cargo:rerun-if-env-changed=ZIDECAR_GIT_HASH");
+    let git_path = |p: &str| {
+        std::process::Command::new("git")
+            .args(["rev-parse", "--git-path", p])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .map(|s| s.trim().to_string())
+    };
+    if let Some(head) = git_path("HEAD") {
+        println!("cargo:rerun-if-changed={head}");
+        if let Some(r) = std::fs::read_to_string(&head)
+            .ok()
+            .and_then(|h| h.strip_prefix("ref: ").map(|r| r.trim().to_string()))
+        {
+            if let Some(ref_path) = git_path(&r) {
+                println!("cargo:rerun-if-changed={ref_path}");
+            }
+        }
+    }
+    if let Some(packed) = git_path("packed-refs") {
+        println!("cargo:rerun-if-changed={packed}");
+    }
     let git_hash = std::env::var("ZIDECAR_GIT_HASH")
         .ok()
         .filter(|h| !h.trim().is_empty())
