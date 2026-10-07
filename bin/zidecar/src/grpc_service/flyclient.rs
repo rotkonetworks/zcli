@@ -1,7 +1,7 @@
 //! GetFlyClientProof: FlyClient proofs over the ZIP-221 history tree.
 
 use super::ZidecarService;
-use crate::zidecar::{FlyClientProofRequest, FlyClientProofResponse, FlyEpoch, FlyLeaf};
+use crate::zidecar::{FlyBurial, FlyClientProofRequest, FlyClientProofResponse, FlyEpoch, FlyLeaf};
 use tonic::{Request, Response, Status};
 use tracing::warn;
 use zync_core::flyclient::sampling::FlyParams;
@@ -11,18 +11,25 @@ impl ZidecarService {
         &self,
         request: Request<FlyClientProofRequest>,
     ) -> std::result::Result<Response<FlyClientProofResponse>, Status> {
-        let history = self
-            .history
-            .as_ref()
-            .ok_or_else(|| Status::unimplemented("FlyClient proofs are not enabled on this server"))?;
+        let history = self.history.as_ref().ok_or_else(|| {
+            Status::unimplemented("FlyClient proofs are not enabled on this server")
+        })?;
         let req = request.into_inner();
         let defaults = FlyParams::default();
         let params = FlyParams {
-            lambda: if req.lambda == 0 { defaults.lambda } else { req.lambda },
-            tail: if req.tail == 0 { defaults.tail } else { req.tail },
+            lambda: if req.lambda == 0 {
+                defaults.lambda
+            } else {
+                req.lambda
+            },
+            tail: if req.tail == 0 {
+                defaults.tail
+            } else {
+                req.tail
+            },
         };
-        let proof = history
-            .proof(&self.zebrad, &self.storage, params)
+        let (proof, burial) = history
+            .proof(&self.zebrad, &self.storage, params, req.burial)
             .await
             .map_err(|e| {
                 warn!("flyclient proof: {e}");
@@ -41,13 +48,23 @@ impl ZidecarService {
                 leaves: e
                     .leaves
                     .into_iter()
-                    .map(|l| FlyLeaf { index: l.index, header: l.header, leaf: l.leaf, path: l.path })
+                    .map(|l| FlyLeaf {
+                        index: l.index,
+                        header: l.header,
+                        leaf: l.leaf,
+                        path: l.path,
+                    })
                     .collect(),
             })
             .collect();
         Ok(Response::new(FlyClientProofResponse {
             epochs,
             anchor_height: history.anchor().height,
+            burial: burial.map(|b| FlyBurial {
+                index: b.index,
+                auth_data_root: b.auth_data_root.map(|a| a.to_vec()).unwrap_or_default(),
+                peaks: b.peaks,
+            }),
         }))
     }
 }

@@ -601,6 +601,7 @@ impl ZidecarClient {
                 &zidecar_proto::FlyClientProofRequest {
                     lambda: params.lambda,
                     tail: params.tail,
+                    burial: 0,
                 },
             )
             .await

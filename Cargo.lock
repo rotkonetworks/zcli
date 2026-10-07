@@ -1727,7 +1727,9 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "306286e8dcc39ab3dfceb74c792ce8baffdab90591321d3ffaae64829734c37f"
 dependencies = [
  "blake2b_simd",
+ "cc",
  "corez",
+ "document-features",
 ]
 
 [[package]]
@@ -7617,6 +7619,7 @@ dependencies = [
  "zeroize",
  "zip32",
  "zoda-vss",
+ "zync-flyclient",
 ]
 
 [[package]]
@@ -8647,13 +8650,10 @@ dependencies = [
  "anyhow",
  "bincode",
  "blake2",
- "blake2b_simd",
  "console_error_panic_hook",
- "equihash",
  "getrandom 0.2.17",
  "hex",
  "js-sys",
- "primitive-types",
  "prost 0.12.6",
  "rand 0.8.7",
  "rayon",
@@ -8670,7 +8670,24 @@ dependencies = [
  "wasm-bindgen-rayon",
  "zakura-orchard",
  "zakura-pasta-curves 2.0.0",
+ "zcash_note_encryption",
+ "zync-flyclient",
+]
+
+[[package]]
+name = "zync-flyclient"
+version = "0.1.0"
+dependencies = [
+ "bincode",
+ "blake2b_simd",
+ "equihash",
+ "hex",
+ "primitive-types",
+ "prost 0.14.4",
+ "serde",
+ "sha2 0.10.9",
+ "thiserror 1.0.69",
  "zakura-protocol",
  "zcash_history",
- "zcash_note_encryption",
+ "zync-flyclient",
 ]

@@ -9,6 +9,7 @@
 //! ```
 
 pub mod consensus;
+mod flyclient;
 mod frost;
 /// THORChain deposits: unsigned t->t with an OP_RETURN, signed by `SpendKeys`.
 mod transparent_send;

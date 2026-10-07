@@ -31,10 +31,14 @@ use zcash_history::{NodeData, NodeDataV2, NodeDataV3};
 use zync_core::flyclient::epochs::{Epoch, Network, Schedule};
 use zync_core::flyclient::header::{bits_work, BlockHeader};
 use zync_core::flyclient::node::{HistoryNode, NodeVersion};
-use zync_core::flyclient::proof::{assemble_epoch, plan_epoch, EpochProof, FlyClientProof};
+use zync_core::flyclient::proof::{
+    assemble_burial, assemble_epoch, burial_index, plan_epoch, Burial, EpochProof, FlyClientProof,
+};
 use zync_core::flyclient::sampling::FlyParams;
 use zync_core::flyclient::store::HistoryStore;
-use zync_core::flyclient::{auth_data_root, block_commitments, verify_flyclient, Anchor};
+use zync_core::flyclient::{
+    auth_data_root, block_commitments, verify_burial, verify_flyclient, Anchor,
+};
 
 use crate::error::{Result, ZidecarError};
 use crate::orchard_tree::{parse_frontier_tree_root, parse_orchard_tree_root};
@@ -481,13 +485,16 @@ impl HistoryIndex {
         Ok(())
     }
 
-    /// Build a FlyClient proof from the anchor to the latest indexed block.
+    /// Build a FlyClient proof from the anchor to the latest indexed block,
+    /// and, for `burial` >= 2, a [`Burial`] opening the note tree roots
+    /// under that many blocks (see `FlyClientProofRequest.burial`).
     pub async fn proof(
         &self,
         zebrad: &ZebradClient,
         storage: &Storage,
         params: FlyParams,
-    ) -> Result<FlyClientProof> {
+        burial: u32,
+    ) -> Result<(FlyClientProof, Option<Burial>)> {
         let params = FlyParams {
             lambda: params.lambda.clamp(1, MAX_LAMBDA),
             tail: params.tail.clamp(1, MAX_TAIL),
@@ -578,20 +585,68 @@ impl HistoryIndex {
         }
 
         let proof = FlyClientProof { epochs: epochs_out };
+        let burial = match burial {
+            0 | 1 => None,
+            depth => Some(self.burial(storage, &proof, depth, &params).await?),
+        };
         // serve nothing we would not accept ourselves (a reorg mid-build, a
         // stale cache entry, a bug)
         let network = self.network;
         let anchor = self.anchor;
-        let checked = proof.clone();
-        tokio::task::spawn_blocking(move || verify_flyclient(&checked, network, &params, &anchor))
-            .await
-            .map_err(|e| ZidecarError::Validation(format!("proof self-check panicked: {e}")))?
-            .map_err(|e| {
-                ZidecarError::Validation(format!(
-                    "built a FlyClient proof that does not verify: {e}"
-                ))
-            })?;
-        Ok(proof)
+        let checked = (proof.clone(), burial.clone());
+        tokio::task::spawn_blocking(move || {
+            let chain = verify_flyclient(&checked.0, network, &params, &anchor)?;
+            match &checked.1 {
+                Some(b) => verify_burial(&checked.0, &chain, b).map(|_| ()),
+                None => Ok(()),
+            }
+        })
+        .await
+        .map_err(|e| ZidecarError::Validation(format!("proof self-check panicked: {e}")))?
+        .map_err(|e| {
+            ZidecarError::Validation(format!("built a FlyClient proof that does not verify: {e}"))
+        })?;
+        Ok((proof, burial))
+    }
+
+    /// The peaks block `tip - depth + 1` commits to, so its note tree roots
+    /// (after block `tip - depth`) sit under `depth` blocks. That block must
+    /// be one of the proof's opened tail leaves.
+    async fn burial(
+        &self,
+        storage: &Storage,
+        proof: &FlyClientProof,
+        depth: u32,
+        params: &FlyParams,
+    ) -> Result<Burial> {
+        let ep = proof
+            .epochs
+            .first()
+            .ok_or_else(|| ZidecarError::Validation("proof has no epochs".into()))?;
+        let index = burial_index(ep.n_leaves, depth, params.tail).ok_or_else(|| {
+            ZidecarError::Validation(format!(
+                "burial {depth} is deeper than the opened tail ({})",
+                params.tail
+            ))
+        })?;
+        let height = ep.activation + index as u32;
+        let adr = if self
+            .schedule()
+            .at(height)
+            .is_some_and(|e| e.commits_root_directly())
+        {
+            None
+        } else {
+            Some(storage.get_auth_data_root(height)?.ok_or_else(|| {
+                ZidecarError::Validation(format!("no auth data root stored for {height}"))
+            })?)
+        };
+        let st = self.state.read().await;
+        let store = st
+            .stores
+            .get(&ep.activation)
+            .ok_or_else(|| ZidecarError::Validation("epoch not indexed".into()))?;
+        assemble_burial(store, index, adr).map_err(|e| ZidecarError::Validation(e.to_string()))
     }
 
     #[allow(clippy::too_many_arguments)]
