@@ -54,12 +54,17 @@ pub struct VerifiedEpoch {
     /// shielded transaction counts for `activation..commit_height`.
     pub root: HistoryNode,
     pub root_hash: [u8; 32],
+    /// `(height, nBits)` of every header checked for this epoch: the
+    /// committing header and every opened leaf.
+    pub checked_bits: Vec<(u32, u32)>,
 }
 
 #[derive(Clone, Debug)]
 pub struct VerifiedChain {
     pub tip_height: u32,
     pub tip_hash: [u8; 32],
+    /// The tip header's timestamp.
+    pub tip_time: u32,
     /// Work from the anchor through the tip, for comparing servers.
     pub total_work: U256,
     /// Newest first, as in the proof.
@@ -119,6 +124,7 @@ fn verify_inner(
     // (prev_hash of the newer epoch's activation block, newer epoch's activation)
     let mut link: Option<([u8; 32], u32)> = None;
     let mut total_work = U256::zero();
+    let mut tip_time = 0;
 
     for ep in &proof.epochs {
         let (v, first_prev) = verify_epoch(ep, network, params, pow)?;
@@ -136,6 +142,7 @@ fn verify_inner(
         } else {
             // the newest epoch's committing header is the tip; count its own work
             let tip = BlockHeader::parse(&ep.commit_header)?;
+            tip_time = tip.time;
             total_work = bits_work(tip.bits).ok_or(FlyError::Target(v.commit_height))?;
         }
         total_work = total_work
@@ -169,6 +176,7 @@ fn verify_inner(
     Ok(VerifiedChain {
         tip_height: newest.commit_height,
         tip_hash: newest.commit_hash,
+        tip_time,
         total_work,
         epochs: verified,
     })
@@ -234,34 +242,15 @@ fn verify_epoch(
     let commit = header_at(&ep.commit_header, commit_height, network, pow)?;
 
     // 2. the peaks bag into the root that header commits to
+    let (peak_nodes, root, root_hash) = open_tree(
+        &epoch,
+        ep.n_leaves,
+        &ep.peaks,
+        ep.auth_data_root,
+        &commit.commitments,
+    )?;
     let shape = peaks(ep.n_leaves);
-    if shape.len() != ep.peaks.len() {
-        return Err(FlyError::Tree("wrong number of peaks for the tree size"));
-    }
-    let peak_nodes = ep
-        .peaks
-        .iter()
-        .map(|b| HistoryNode::from_bytes(epoch.version, epoch.branch_id, b))
-        .collect::<FlyResult<Vec<_>>>()?;
-    for (p, node) in shape.iter().zip(&peak_nodes) {
-        let start = u64::from(ep.activation) + p.first_leaf;
-        if node.start_height() != start || node.end_height() != start + p.leaves() - 1 {
-            return Err(FlyError::Tree("peak does not cover its leaves"));
-        }
-    }
-    let root = bag(&peak_nodes)?;
-    let root_hash = root.hash();
-    let committed = if epoch.commits_root_directly() {
-        root_hash
-    } else {
-        let adr = ep
-            .auth_data_root
-            .ok_or(FlyError::Tree("auth data root missing for an NU5+ epoch"))?;
-        block_commitments(&root_hash, &adr)
-    };
-    if committed != commit.commitments {
-        return Err(FlyError::Tree("header does not commit to these peaks"));
-    }
+    let mut checked_bits = vec![(commit_height, commit.bits)];
 
     // a hostile server could pad the proof to burn Equihash checks
     let (_, max_samples) = sample_count(params, ep.n_leaves);
@@ -295,6 +284,7 @@ fn verify_epoch(
             return Err(bad("leaf is not this block"));
         }
         let header = header_at(&lp.header, height, network, pow)?;
+        checked_bits.push((height, header.bits));
         if v1.subtree_commitment != header.hash {
             return Err(bad("leaf commits to a different block"));
         }
@@ -380,9 +370,49 @@ fn verify_epoch(
             commit_hash: commit.hash,
             root,
             root_hash,
+            checked_bits,
         },
         first_prev.ok_or(FlyError::Missing(0))?,
     ))
+}
+
+/// Parse the peaks of an `n`-leaf tree of `epoch`, check each covers its
+/// leaves, bag them, and check a header's `commitments` field opens to the
+/// root. Returns the peaks, the root and its hash.
+fn open_tree(
+    epoch: &Epoch,
+    n: u64,
+    peak_bytes: &[Vec<u8>],
+    auth_data_root: Option<[u8; 32]>,
+    commitments: &[u8; 32],
+) -> FlyResult<(Vec<HistoryNode>, HistoryNode, [u8; 32])> {
+    let shape = peaks(n);
+    if shape.len() != peak_bytes.len() {
+        return Err(FlyError::Tree("wrong number of peaks for the tree size"));
+    }
+    let peak_nodes = peak_bytes
+        .iter()
+        .map(|b| HistoryNode::from_bytes(epoch.version, epoch.branch_id, b))
+        .collect::<FlyResult<Vec<_>>>()?;
+    for (p, node) in shape.iter().zip(&peak_nodes) {
+        let start = u64::from(epoch.activation) + p.first_leaf;
+        if node.start_height() != start || node.end_height() != start + p.leaves() - 1 {
+            return Err(FlyError::Tree("peak does not cover its leaves"));
+        }
+    }
+    let root = bag(&peak_nodes)?;
+    let root_hash = root.hash();
+    let committed = if epoch.commits_root_directly() {
+        root_hash
+    } else {
+        let adr =
+            auth_data_root.ok_or(FlyError::Tree("auth data root missing for an NU5+ epoch"))?;
+        block_commitments(&root_hash, &adr)
+    };
+    if committed != *commitments {
+        return Err(FlyError::Tree("header does not commit to these peaks"));
+    }
+    Ok((peak_nodes, root, root_hash))
 }
 
 /// ZIP-244 `hashBlockCommitments`.

@@ -33,6 +33,7 @@
 
 pub mod consensus;
 pub mod epochs;
+pub mod floor;
 pub mod header;
 pub mod node;
 pub mod proof;
@@ -41,6 +42,7 @@ pub mod store;
 pub mod verify;
 
 pub use epochs::{Epoch, Network, Schedule};
+pub use floor::{check_floors, verify_wallet, Checkpoint};
 pub use header::BlockHeader;
 pub use node::{HistoryNode, NodeVersion};
 pub use proof::{EpochProof, FlyClientProof, LeafProof};
@@ -75,6 +77,10 @@ pub enum FlyError {
     Link(&'static str),
     #[error("anchor mismatch: {0}")]
     Anchor(&'static str),
+    #[error("below the floor: {0}")]
+    Floor(&'static str),
+    #[error("stale: {0}")]
+    Stale(&'static str),
 }
 
 pub type FlyResult<T> = core::result::Result<T, FlyError>;

@@ -242,19 +242,31 @@ fn synth_epoch(activation: u32, n: u64, prev: [u8; 32], seed: u64) -> SynthEpoch
 }
 
 fn synth_epoch_in(epoch: Epoch, n: u64, prev: [u8; 32], seed: u64) -> SynthEpoch {
+    // vary the target so blocks carry different work
+    synth_epoch_bits(epoch, n, prev, seed, |i| {
+        0x1c00_8000 + ((i * 2_654_435_761 + seed) % 0x7000) as u32
+    })
+}
+
+/// A synthetic epoch whose block `i` has nBits `bits(i)`.
+fn synth_epoch_bits(
+    epoch: Epoch,
+    n: u64,
+    prev: [u8; 32],
+    seed: u64,
+    bits: impl Fn(u64) -> u32,
+) -> SynthEpoch {
     let activation = epoch.activation;
     let mut store = HistoryStore::new();
     let mut headers = Vec::new();
     let mut prev = prev;
     for i in 0..n {
         let height = activation + i as u32;
-        // vary the target so blocks carry different work
-        let bits = 0x1c00_8000 + ((i * 2_654_435_761 + seed) % 0x7000) as u32;
         let b = make_header(
             prev,
             [0u8; 32],
             1_700_000_000 + i as u32 * 75,
-            bits,
+            bits(i),
             i ^ seed,
         );
         let parsed = BlockHeader::parse(&b.header).unwrap();
@@ -629,4 +641,214 @@ fn an_unknown_upgrade_cannot_hide_inside_a_known_epoch_or_reuse_a_known_id() {
         verify_flyclient_without_pow(&proof, Network::Mainnet, &params, &anchor_of(&fake)),
         Err(FlyError::Epoch(_))
     ));
+}
+
+// ---------------------------------------------------------------- wallet floors
+
+use super::floor::{check_floors, Checkpoint};
+use super::header::{compact_to_target, pow_limit};
+use super::verify::verify_flyclient;
+
+/// mainnet `powLimit` (0007ffff...) as nBits; the genesis block's nBits.
+const POW_LIMIT_BITS: u32 = 0x1f07_ffff;
+/// The orchard and ironwood roots a forger wants a wallet to believe.
+const FORGED_ROOT: [u8; 32] = [0x66; 32];
+const FORGED_TIME: u32 = 1_800_000_000;
+
+/// The real NU6.3 activation block as the only leaf of a forged tree whose
+/// note commitment roots are [`FORGED_ROOT`].
+fn forged_tree() -> (Epoch, HistoryStore, Vec<u8>, BlockHeader) {
+    let epoch = epoch_activated_at(Network::Mainnet, 3_428_143).unwrap();
+    let raw = fixture(3_428_143);
+    let anchor = BlockHeader::parse(&raw).unwrap();
+    let HistoryNode::V3(mut leaf) = leaf_for(&epoch, 3_428_143, &anchor, 0) else {
+        panic!("NU6.3 leaves are V3");
+    };
+    leaf.v2.start_orchard_root = FORGED_ROOT;
+    leaf.v2.end_orchard_root = FORGED_ROOT;
+    leaf.start_ironwood_root = FORGED_ROOT;
+    leaf.end_ironwood_root = FORGED_ROOT;
+    let mut store = HistoryStore::new();
+    store.push(HistoryNode::V3(leaf)).unwrap();
+    (epoch, store, raw, anchor)
+}
+
+/// Height 3,428,144 forged on top of the real NU6.3 activation block: a real
+/// Equihash solution at the pow limit, committing to [`forged_tree`].
+/// Regenerate with `cargo test -p zync-flyclient --release -- --ignored
+/// forge_pow_limit_block --nocapture` (~4,400 solver runs; minutes on 32
+/// cores).
+const FORGED_FIXTURE: &str = "forged_pow_limit_3428144";
+
+fn forged_header_template() -> Vec<u8> {
+    let (_, store, _, anchor) = forged_tree();
+    let commitments = block_commitments(&store.root().unwrap().hash(), &[0xad; 32]);
+    make_header(anchor.hash, commitments, FORGED_TIME, POW_LIMIT_BITS, 0).header
+}
+
+#[test]
+#[ignore]
+fn forge_pow_limit_block() {
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    let template = forged_header_template();
+    let target = compact_to_target(POW_LIMIT_BITS).unwrap();
+    let found = AtomicBool::new(false);
+    let runs = AtomicU64::new(0);
+    let start = std::time::Instant::now();
+    let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
+    let header = std::thread::scope(|s| {
+        let workers: Vec<_> = (0..threads as u64)
+            .map(|t| {
+                let (template, found, runs) = (&template, &found, &runs);
+                s.spawn(move || {
+                    for k in 0u64.. {
+                        if found.load(Ordering::Relaxed) {
+                            return None;
+                        }
+                        let mut nonce = [0u8; 32];
+                        nonce[..8].copy_from_slice(&t.to_le_bytes());
+                        nonce[8..16].copy_from_slice(&k.to_le_bytes());
+                        let mut once = Some(nonce);
+                        let sols = equihash::tromp::solve_200_9(&template[..108], || once.take());
+                        runs.fetch_add(1, Ordering::Relaxed);
+                        for sol in sols {
+                            let mut h = template.clone();
+                            h[108..140].copy_from_slice(&nonce);
+                            h[143..].copy_from_slice(&sol);
+                            if U256::from_little_endian(&sha256d(&h)) <= target {
+                                found.store(true, Ordering::Relaxed);
+                                return Some(h);
+                            }
+                        }
+                    }
+                    None
+                })
+            })
+            .collect();
+        workers.into_iter().find_map(|w| w.join().unwrap())
+    })
+    .unwrap();
+    BlockHeader::parse_and_verify(&header, 3_428_144, Network::Mainnet).unwrap();
+    let path = format!(
+        "{}/tests/fixtures/{FORGED_FIXTURE}.hex",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    std::fs::write(&path, hex::encode(&header)).unwrap();
+    eprintln!(
+        "forged in {:?} after {} solver runs on {threads} threads: {path}",
+        start.elapsed(),
+        runs.load(Ordering::Relaxed)
+    );
+}
+
+fn forged_fixture() -> Vec<u8> {
+    let path = format!(
+        "{}/tests/fixtures/{FORGED_FIXTURE}.hex",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    hex::decode(std::fs::read_to_string(path).unwrap().trim()).unwrap()
+}
+
+#[test]
+fn a_real_pow_limit_fork_passes_verify_flyclient_but_not_the_wallet_floors() {
+    let (epoch, store, anchor_raw, anchor) = forged_tree();
+    let forged = forged_fixture();
+    // the fixture is this forged tree's block, with a real Equihash solution
+    // at the pow limit: the full proof-of-work check accepts it
+    assert_eq!(forged[..108], forged_header_template()[..108]);
+    let tip = BlockHeader::parse_and_verify(&forged, 3_428_144, Network::Mainnet).unwrap();
+    assert_eq!(tip.bits, POW_LIMIT_BITS);
+    assert!(compact_to_target(tip.bits).unwrap() <= pow_limit(Network::Mainnet));
+
+    let params = FlyParams::default();
+    let plan = plan_epoch(&store, 1, &epoch, &tip.hash, &params).unwrap();
+    let ep = assemble_epoch(&store, 1, &epoch, forged, Some([0xad; 32]), &plan, |i| {
+        (i == 0).then(|| anchor_raw.clone())
+    })
+    .unwrap();
+    let proof = FlyClientProof { epochs: vec![ep] };
+
+    // the old single-server check: full PoW, real anchor, and it believes
+    // the forged note commitment roots
+    let chain =
+        verify_flyclient(&proof, Network::Mainnet, &params, &Anchor::nu6_3_mainnet()).unwrap();
+    assert_eq!(chain.tip_height, 3_428_144);
+    assert_eq!(chain.tip_root().end_orchard_root(), Some(FORGED_ROOT));
+    assert_eq!(chain.tip_root().end_ironwood_root(), Some(FORGED_ROOT));
+
+    let now = u64::from(FORGED_TIME) + 60;
+    assert_eq!(
+        check_floors(&chain, &Checkpoint::mainnet(), now, 0),
+        Err(FlyError::Floor("tip is below the checkpoint"))
+    );
+    // even against a checkpoint at the anchor itself, the pow-limit tip is
+    // far below a quarter of a real block's work
+    let at_anchor = Checkpoint {
+        anchor: Anchor::nu6_3_mainnet(),
+        height: 3_428_143,
+        work: bits_work(anchor.bits).unwrap(),
+        block_work: bits_work(anchor.bits).unwrap(),
+    };
+    assert_eq!(
+        check_floors(&chain, &at_anchor, now, 0),
+        Err(FlyError::Floor(
+            "a block past the checkpoint is far easier than it"
+        ))
+    );
+}
+
+/// A synthetic chain from the NU6.3 activation height to 500 blocks past the
+/// mainnet checkpoint, block `i` with nBits `bits(i)`, checked without
+/// Equihash (synthetic headers have no solutions), against a checkpoint with
+/// mainnet's numbers anchored at the synthetic first block.
+fn floors_on_synthetic(bits: impl Fn(u64) -> u32) -> Result<(), FlyError> {
+    let mainnet = Checkpoint::mainnet();
+    let n = u64::from(mainnet.height - mainnet.anchor.height) + 500;
+    let epoch = epoch_activated_at(Network::Mainnet, 3_428_143).unwrap();
+    let e = synth_epoch_bits(epoch, n, [4u8; 32], 3, bits);
+    let params = FlyParams::default();
+    let proof = FlyClientProof {
+        epochs: vec![prove(&e, &params)],
+    };
+    // structurally sound: the verifier without floors accepts every variant
+    let chain =
+        verify_flyclient_without_pow(&proof, Network::Mainnet, &params, &anchor_of(&e)).unwrap();
+    let checkpoint = Checkpoint {
+        anchor: anchor_of(&e),
+        ..mainnet
+    };
+    let now = BlockHeader::parse(&e.commit.header).unwrap().time;
+    check_floors(&chain, &checkpoint, u64::from(now), 0)
+}
+
+#[test]
+fn a_pow_limit_chain_past_the_checkpoint_fails_the_difficulty_floor() {
+    assert_eq!(
+        floors_on_synthetic(|_| POW_LIMIT_BITS),
+        Err(FlyError::Floor(
+            "a block past the checkpoint is far easier than it"
+        ))
+    );
+}
+
+#[test]
+fn skipping_the_work_before_the_checkpoint_fails_the_work_floor() {
+    // pow-limit blocks up to the checkpoint, mainnet difficulty after it
+    let cp = u64::from(Checkpoint::mainnet().height - 3_428_143);
+    assert_eq!(
+        floors_on_synthetic(|i| if i <= cp {
+            POW_LIMIT_BITS
+        } else {
+            MAINNET_BITS
+        }),
+        Err(FlyError::Floor("chain work is below the floor"))
+    );
+}
+
+/// nBits of the checkpoint block itself.
+const MAINNET_BITS: u32 = 0x1b5f_0169;
+
+#[test]
+fn a_chain_with_mainnet_difficulty_passes_the_floors() {
+    assert_eq!(floors_on_synthetic(|_| MAINNET_BITS), Ok(()));
 }

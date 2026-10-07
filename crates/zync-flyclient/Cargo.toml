@@ -23,4 +23,6 @@ zcash_protocol = { package = "zakura-protocol", version = "=2.0.0", default-feat
 
 [dev-dependencies]
 bincode = "1.3"
+# tromp's solver, to forge a pow-limit block in a test
+equihash = { version = "0.3", features = ["solver"] }
 hex = "0.4"

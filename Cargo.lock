@@ -1727,7 +1727,9 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "306286e8dcc39ab3dfceb74c792ce8baffdab90591321d3ffaae64829734c37f"
 dependencies = [
  "blake2b_simd",
+ "cc",
  "corez",
+ "document-features",
 ]
 
 [[package]]
