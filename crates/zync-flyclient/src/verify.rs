@@ -5,7 +5,7 @@ use primitive_types::U256;
 use super::epochs::{Epoch, Network, Schedule};
 use super::header::{bits_work, BlockHeader};
 use super::node::HistoryNode;
-use super::proof::{EpochProof, FlyClientProof};
+use super::proof::{Burial, EpochProof, FlyClientProof};
 use super::sampling::{required_leaves, sample_count, sample_points, seed, FlyParams};
 use super::store::{bag, fold_path, peaks};
 use super::{FlyError, FlyResult};
@@ -413,6 +413,51 @@ fn open_tree(
         return Err(FlyError::Tree("header does not commit to these peaks"));
     }
     Ok((peak_nodes, root, root_hash))
+}
+
+/// Tree roots that a buried block commits to.
+#[derive(Clone, Debug)]
+pub struct BuriedRoots {
+    /// The roots hold as of this height (the buried block's parent).
+    pub height: u32,
+    /// The bagged `activation..height` node: its end Orchard and Ironwood
+    /// roots are the note commitment tree roots after block `height`.
+    pub root: HistoryNode,
+}
+
+/// Open a [`Burial`] against a proof that [`verify_flyclient`] (or
+/// [`crate::verify_wallet`]) already accepted. The buried block must be an
+/// opened leaf of the newest epoch, so its header is already bound to the
+/// tip; this checks that header commits to the burial's peaks.
+pub fn verify_burial(
+    proof: &FlyClientProof,
+    chain: &VerifiedChain,
+    burial: &Burial,
+) -> FlyResult<BuriedRoots> {
+    let (ep, epoch) = match (proof.epochs.first(), chain.epochs.first()) {
+        (Some(ep), Some(v)) => (ep, &v.epoch),
+        _ => return Err(FlyError::Epoch("proof has no epochs")),
+    };
+    if burial.index == 0 || burial.index >= ep.n_leaves {
+        return Err(FlyError::Tree("buried block is outside the tip epoch"));
+    }
+    let leaf = ep
+        .leaves
+        .iter()
+        .find(|l| l.index == burial.index)
+        .ok_or(FlyError::Missing(burial.index as u32))?;
+    let header = BlockHeader::parse(&leaf.header)?;
+    let (_, root, _) = open_tree(
+        epoch,
+        burial.index,
+        &burial.peaks,
+        burial.auth_data_root,
+        &header.commitments,
+    )?;
+    Ok(BuriedRoots {
+        height: epoch.activation + burial.index as u32 - 1,
+        root,
+    })
 }
 
 /// ZIP-244 `hashBlockCommitments`.

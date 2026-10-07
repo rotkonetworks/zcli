@@ -231,6 +231,10 @@ message ProRing {
 message FlyClientProofRequest {
     uint32 lambda = 1;
     uint32 tail = 2;
+    // Ask for note tree roots under this many blocks (see FlyBurial):
+    // 2..=tail+1, so the buried block is one of the opened tail blocks.
+    // 0 or 1 means none; the tip root is under one block.
+    uint32 burial = 3;
 }
 
 // One opened block: its header, its history-tree leaf, and the siblings from
@@ -254,7 +258,18 @@ message FlyEpoch {
 }
 
 // Epochs newest first; the last one starts at the server's anchor.
+// The peaks of the tree block (activation + index) of the newest epoch
+// commits to, and that block's auth data root. The block is an opened tail
+// leaf, so the client checks its header commits to these peaks and reads
+// the note tree roots after block (activation + index - 1) from them.
+message FlyBurial {
+    uint64 index = 1;
+    bytes auth_data_root = 2;   // empty for Heartwood/Canopy epochs
+    repeated bytes peaks = 3;
+}
+
 message FlyClientProofResponse {
     repeated FlyEpoch epochs = 1;
     uint32 anchor_height = 2;
+    FlyBurial burial = 3;       // set when the request asked for one
 }

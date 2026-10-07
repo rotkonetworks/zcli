@@ -2,7 +2,7 @@
 //! declared by hand so a wasm build needs no protoc. Field tags must match
 //! the .proto.
 
-use super::proof::{EpochProof, FlyClientProof, LeafProof};
+use super::proof::{Burial, EpochProof, FlyClientProof, LeafProof};
 use super::{FlyError, FlyResult};
 
 #[derive(Clone, PartialEq, prost::Message)]
@@ -36,17 +36,30 @@ pub struct FlyEpoch {
 }
 
 #[derive(Clone, PartialEq, prost::Message)]
+pub struct FlyBurial {
+    #[prost(uint64, tag = "1")]
+    pub index: u64,
+    #[prost(bytes = "vec", tag = "2")]
+    pub auth_data_root: Vec<u8>,
+    #[prost(bytes = "vec", repeated, tag = "3")]
+    pub peaks: Vec<Vec<u8>>,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
 pub struct FlyClientProofResponse {
     #[prost(message, repeated, tag = "1")]
     pub epochs: Vec<FlyEpoch>,
     #[prost(uint32, tag = "2")]
     pub anchor_height: u32,
+    #[prost(message, optional, tag = "3")]
+    pub burial: Option<FlyBurial>,
 }
 
 /// A decoded `FlyClientProofResponse`.
 pub struct Response {
     pub proof: FlyClientProof,
     pub anchor_height: u32,
+    pub burial: Option<Burial>,
 }
 
 /// An empty field means "absent" (Heartwood/Canopy epochs).
@@ -86,8 +99,19 @@ pub fn decode_response(bytes: &[u8]) -> FlyResult<Response> {
             })
         })
         .collect::<FlyResult<Vec<_>>>()?;
+    let burial = r
+        .burial
+        .map(|b| {
+            Ok(Burial {
+                index: b.index,
+                auth_data_root: auth_data_root(&b.auth_data_root)?,
+                peaks: b.peaks,
+            })
+        })
+        .transpose()?;
     Ok(Response {
         proof: FlyClientProof { epochs },
         anchor_height: r.anchor_height,
+        burial,
     })
 }

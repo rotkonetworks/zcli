@@ -11,10 +11,10 @@ use zcash_history::{Entry, NodeData, NodeDataV2, NodeDataV3, Tree, Version, V2, 
 use super::epochs::{epoch_activated_at, Epoch, Network};
 use super::header::{bits_work, sha256d, BlockHeader, HEADER_LEN};
 use super::node::{HistoryNode, NodeVersion};
-use super::proof::{assemble_epoch, plan_epoch, EpochProof, FlyClientProof};
+use super::proof::{assemble_epoch, plan_epoch, Burial, EpochProof, FlyClientProof};
 use super::sampling::FlyParams;
 use super::store::HistoryStore;
-use super::verify::{block_commitments, verify_flyclient_without_pow, Anchor};
+use super::verify::{block_commitments, verify_flyclient_without_pow, Anchor, VerifiedChain};
 use super::FlyError;
 
 fn fixture(height: u32) -> Vec<u8> {
@@ -257,6 +257,21 @@ fn synth_epoch_bits(
     bits: impl Fn(u64) -> u32,
 ) -> SynthEpoch {
     let activation = epoch.activation;
+    let adr = [0xadu8; 32];
+    // what a block commits to: the tree of every earlier block in its epoch.
+    // Only the last 64 bother (burial opens tail blocks): bagging the root
+    // per block would slow the 80k-block tests several times over.
+    let commitments = |store: &HistoryStore| {
+        if store.is_empty() || store.len() + 64 < n {
+            return [0u8; 32];
+        }
+        let root_hash = store.root().unwrap().hash();
+        if epoch.commits_root_directly() {
+            root_hash
+        } else {
+            block_commitments(&root_hash, &adr)
+        }
+    };
     let mut store = HistoryStore::new();
     let mut headers = Vec::new();
     let mut prev = prev;
@@ -264,7 +279,7 @@ fn synth_epoch_bits(
         let height = activation + i as u32;
         let b = make_header(
             prev,
-            [0u8; 32],
+            commitments(&store),
             1_700_000_000 + i as u32 * 75,
             bits(i),
             i ^ seed,
@@ -274,14 +289,7 @@ fn synth_epoch_bits(
         prev = b.hash;
         headers.push(b.header);
     }
-    let root_hash = store.root().unwrap().hash();
-    let adr = [0xadu8; 32];
-    let commitments = if epoch.commits_root_directly() {
-        root_hash
-    } else {
-        block_commitments(&root_hash, &adr)
-    };
-    let commit = make_header(prev, commitments, 1_800_000_000, 0x1c00_9000, seed);
+    let commit = make_header(prev, commitments(&store), 1_800_000_000, 0x1c00_9000, seed);
     SynthEpoch {
         epoch,
         store,
@@ -851,4 +859,98 @@ const MAINNET_BITS: u32 = 0x1b5f_0169;
 #[test]
 fn a_chain_with_mainnet_difficulty_passes_the_floors() {
     assert_eq!(floors_on_synthetic(|_| MAINNET_BITS), Ok(()));
+}
+
+// ---------------------------------------------------------------- burial
+
+use super::proof::{assemble_burial, burial_index};
+use super::verify::verify_burial;
+
+fn buried(n: u64, depth: u64) -> (SynthEpoch, FlyClientProof, VerifiedChain, Burial) {
+    let params = FlyParams {
+        lambda: 30,
+        tail: 16,
+    };
+    let e = synth_epoch(3_428_143, n, [6u8; 32], 11);
+    let proof = FlyClientProof {
+        epochs: vec![prove(&e, &params)],
+    };
+    let chain =
+        verify_flyclient_without_pow(&proof, Network::Mainnet, &params, &anchor_of(&e)).unwrap();
+    let index = burial_index(n, depth as u32, params.tail).unwrap();
+    let burial = assemble_burial(&e.store, index, Some(e.adr)).unwrap();
+    (e, proof, chain, burial)
+}
+
+#[test]
+fn a_buried_block_opens_the_roots_it_commits_to() {
+    for (n, depth) in [(500u64, 2u64), (500, 10), (500, 17), (64, 17), (17, 17)] {
+        let (e, proof, chain, burial) = buried(n, depth);
+        let roots = verify_burial(&proof, &chain, &burial)
+            .unwrap_or_else(|err| panic!("n={n} depth={depth}: {err}"));
+        let m = n + 1 - depth;
+        assert_eq!(roots.height, 3_428_143 + m as u32 - 1);
+        assert_eq!(chain.tip_height - roots.height, depth as u32);
+        let expected = e.store.root_at(m).unwrap();
+        assert_eq!(roots.root.end_orchard_root(), expected.end_orchard_root());
+        assert_eq!(roots.root.end_ironwood_root(), expected.end_ironwood_root());
+        assert_eq!(roots.root.hash(), expected.hash());
+    }
+}
+
+#[test]
+fn burial_depth_counts_the_blocks_over_the_roots() {
+    let (e, proof, chain, _) = buried(300, 2);
+    for depth in 2..=17u32 {
+        let index = burial_index(300, depth, 16).unwrap();
+        let b = assemble_burial(&e.store, index, Some(e.adr)).unwrap();
+        let roots = verify_burial(&proof, &chain, &b).unwrap();
+        assert_eq!(chain.tip_height - roots.height, depth, "depth {depth}");
+    }
+    for depth in [0u32, 1, 18, 400] {
+        assert_eq!(burial_index(300, depth, 16), None, "depth {depth}");
+    }
+    assert_eq!(burial_index(5, 5, 16), Some(1));
+    assert_eq!(burial_index(5, 6, 16), None);
+}
+
+#[test]
+fn a_forged_burial_is_caught() {
+    let (e, proof, chain, burial) = buried(500, 10);
+
+    // peaks of a different tree
+    let mut b = burial.clone();
+    b.peaks = assemble_burial(&e.store, 489, Some(e.adr)).unwrap().peaks;
+    assert!(verify_burial(&proof, &chain, &b).is_err());
+
+    // a tampered peak (its roots, say)
+    let mut b = burial.clone();
+    let last = b.peaks.len() - 1;
+    let k = b.peaks[last].len() - 40;
+    b.peaks[last][k] ^= 1;
+    assert_eq!(
+        verify_burial(&proof, &chain, &b).unwrap_err(),
+        FlyError::Tree("header does not commit to these peaks")
+    );
+
+    // the wrong auth data root
+    let mut b = burial.clone();
+    b.auth_data_root = Some([0xae; 32]);
+    assert!(verify_burial(&proof, &chain, &b).is_err());
+    b.auth_data_root = None;
+    assert!(verify_burial(&proof, &chain, &b).is_err());
+
+    // a block the proof did not open, or outside the tip epoch
+    let opened: BTreeSet<u64> = proof.epochs[0].leaves.iter().map(|l| l.index).collect();
+    let hidden = (1..500).find(|i| !opened.contains(i)).unwrap();
+    let b = assemble_burial(&e.store, hidden, Some(e.adr)).unwrap();
+    assert_eq!(
+        verify_burial(&proof, &chain, &b).unwrap_err(),
+        FlyError::Missing(hidden as u32)
+    );
+    for index in [0u64, 500, 501] {
+        let mut b = burial.clone();
+        b.index = index;
+        assert!(verify_burial(&proof, &chain, &b).is_err(), "index {index}");
+    }
 }
