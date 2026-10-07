@@ -727,11 +727,12 @@ async fn verify_flyclient_step(
     // to a made-up tree, and every sample would still pass. So the committing
     // tip must be a block other nodes have: either the tip step 2 already
     // cross-verified, or one the --verify-endpoints agree on.
+    //
+    // A tip AHEAD of the one read in step 2 is a block mined between the two
+    // calls (one every ~25s), not tampering: it gets the same independent-node
+    // check as a trailing tip, which a block the network does not have fails.
     let mut fly_tip_display = chain.tip_hash;
     fly_tip_display.reverse();
-    if chain.tip_height > tip {
-        return Err(Error::Other("flyclient tip is ahead of the server's tip".into()));
-    }
     if chain.tip_height == tip {
         if fly_tip_display.as_slice() != tip_hash {
             return Err(Error::Other(
@@ -740,14 +741,16 @@ async fn verify_flyclient_step(
         }
     } else if endpoints.is_empty() {
         return Err(Error::Other(format!(
-            "flyclient tip {} trails the server tip {} and no --verify-endpoints are \
+            "flyclient tip {} differs from the server tip {} and no --verify-endpoints are \
              configured to cross-check it; retry, or configure endpoints",
             chain.tip_height, tip
         )));
     } else {
         let (mut agree, mut disagree) = (0u32, 0u32);
         for &ep in endpoints {
-            let Ok(lwd) = client::LightwalletdClient::connect(ep).await else { continue };
+            let Ok(lwd) = client::LightwalletdClient::connect(ep).await else {
+                continue;
+            };
             if let Ok((_, hash, _)) = lwd.get_block(chain.tip_height as u64).await {
                 let mut rev = hash.clone();
                 rev.reverse();
@@ -782,13 +785,21 @@ async fn verify_flyclient_step(
             "   tip {} ({}), {} blocks behind the server tip",
             chain.tip_height,
             hex::encode(&fly_tip_display[..8]),
-            tip - chain.tip_height
+            tip.saturating_sub(chain.tip_height)
         );
         if let Some(r) = root.end_orchard_root() {
-            eprintln!("   orchard root after {}: {}", chain.tip_height - 1, hex::encode(r));
+            eprintln!(
+                "   orchard root after {}: {}",
+                chain.tip_height - 1,
+                hex::encode(r)
+            );
         }
         if let Some(r) = root.end_ironwood_root() {
-            eprintln!("   ironwood root after {}: {}", chain.tip_height - 1, hex::encode(r));
+            eprintln!(
+                "   ironwood root after {}: {}",
+                chain.tip_height - 1,
+                hex::encode(r)
+            );
         }
         eprintln!("   PASS");
     }
@@ -1328,15 +1339,28 @@ async fn cmd_merchant(cli: &Cli, mainnet: bool, action: &MerchantAction) -> Resu
             memo,
             deposit,
         } => {
-            let seed = load_seed(cli)?;
             let amount_zat = ops::merchant::parse_amount(amount)?;
-            let req = ops::merchant::create_request(
-                &seed,
-                amount_zat,
-                memo.as_deref(),
-                *deposit,
-                mainnet,
-            )?;
+            // Watch-only (-w): addresses come from the imported FVK; the
+            // spending key never has to be on the merchant host.
+            let req = if cli.watch {
+                let fvk = load_fvk(cli, mainnet)?;
+                ops::merchant::create_request_fvk(
+                    &fvk,
+                    amount_zat,
+                    memo.as_deref(),
+                    *deposit,
+                    mainnet,
+                )?
+            } else {
+                let seed = load_seed(cli)?;
+                ops::merchant::create_request(
+                    &seed,
+                    amount_zat,
+                    memo.as_deref(),
+                    *deposit,
+                    mainnet,
+                )?
+            };
 
             if cli.json {
                 println!(
@@ -1544,12 +1568,29 @@ async fn cmd_merchant(cli: &Cli, mainnet: bool, action: &MerchantAction) -> Resu
             quic,
             peer_key,
         } => {
-            let seed = load_seed(cli)?;
+            // Watch-only (-w): sync and match with the FVK; withdrawals and
+            // forwarding need the spending key and are skipped.
+            let seed = if cli.watch {
+                None
+            } else {
+                Some(load_seed(cli)?)
+            };
+            let fvk = if cli.watch {
+                Some(load_fvk(cli, mainnet)?)
+            } else {
+                None
+            };
+            if cli.watch && forward.is_some() {
+                eprintln!("watch-only: --forward ignored (needs the spending key)");
+            }
             let interval = *interval;
             let confirmations = *confirmations;
 
             // QUIC link to exchange API
             let mut quic_link = if let Some(ref addr) = quic {
+                let seed = seed
+                    .as_ref()
+                    .ok_or_else(|| Error::Other("--quic needs the spending key (not -w)".into()))?;
                 let peer_hex = peer_key
                     .as_deref()
                     .ok_or_else(|| Error::Other("--peer-key required when using --quic".into()))?;
@@ -1579,35 +1620,62 @@ async fn cmd_merchant(cli: &Cli, mainnet: bool, action: &MerchantAction) -> Resu
                 if !cli.json {
                     eprintln!("syncing...");
                 }
-                let _ = ops::sync::sync(
-                    &seed,
-                    &cli.endpoint,
-                    &cli.verify_endpoints,
-                    mainnet,
-                    cli.json,
-                    None,
-                    None,
-                )
-                .await;
+                match (&seed, &fvk) {
+                    (Some(seed), _) => {
+                        let _ = ops::sync::sync(
+                            seed,
+                            &cli.endpoint,
+                            &cli.verify_endpoints,
+                            mainnet,
+                            cli.json,
+                            None,
+                            None,
+                        )
+                        .await;
+                    }
+                    (None, Some(fvk)) => {
+                        let _ = ops::sync::sync_with_fvk(
+                            fvk,
+                            &cli.endpoint,
+                            &cli.verify_endpoints,
+                            mainnet,
+                            cli.json,
+                            None,
+                            None,
+                        )
+                        .await;
+                    }
+                    (None, None) => unreachable!("watch mode loads the FVK"),
+                }
 
                 // match (with confirmation depth)
                 let tip = wallet::Wallet::open(&wallet::Wallet::default_path())?.sync_height()?;
                 let matched = ops::merchant::match_payments(tip, confirmations)?;
 
-                // withdraw
-                let (w_ok, w_fail, w_insuf) =
-                    ops::merchant::process_withdrawals(&seed, &cli.endpoint, mainnet, cli.json)
-                        .await
-                        .unwrap_or((0, 0, 0));
-
-                // forward
-                let fwd_addr = ops::merchant::resolve_forward_address(forward.as_deref())?;
-                let (forwarded, fwd_failed) = if let Some(ref addr) = fwd_addr {
-                    ops::merchant::forward_payments(&seed, addr, &cli.endpoint, mainnet, cli.json)
-                        .await
-                        .unwrap_or((0, 0))
-                } else {
-                    (0, 0)
+                // withdraw / forward: spending key only
+                let (w_ok, w_fail, w_insuf) = match &seed {
+                    Some(seed) => {
+                        ops::merchant::process_withdrawals(seed, &cli.endpoint, mainnet, cli.json)
+                            .await
+                            .unwrap_or((0, 0, 0))
+                    }
+                    None => (0, 0, 0),
+                };
+                let fwd_addr = match &seed {
+                    Some(_) => ops::merchant::resolve_forward_address(forward.as_deref())?,
+                    None => None,
+                };
+                let (forwarded, fwd_failed) = match (&seed, &fwd_addr) {
+                    (Some(seed), Some(addr)) => ops::merchant::forward_payments(
+                        seed,
+                        addr,
+                        &cli.endpoint,
+                        mainnet,
+                        cli.json,
+                    )
+                    .await
+                    .unwrap_or((0, 0)),
+                    _ => (0, 0),
                 };
 
                 let state_json = ops::merchant::requests_json();
@@ -2488,8 +2556,8 @@ async fn cmd_export_notes(
 async fn cmd_multisig(cli: &Cli, action: &MultisigAction) -> Result<(), Error> {
     match action {
         MultisigAction::RelayKeygen => {
-            let (private, public) = frost_spend::relay_cipher::generate_keypair()
-                .map_err(Error::Other)?;
+            let (private, public) =
+                frost_spend::relay_cipher::generate_keypair().map_err(Error::Other)?;
             if cli.json {
                 println!(
                     "{}",
@@ -2558,18 +2626,20 @@ async fn cmd_multisig(cli: &Cli, action: &MultisigAction) -> Result<(), Error> {
             room,
             min_signers,
             max_signers,
-        } => cmd_relay_dkg(
-            cli,
-            server,
-            key,
-            pubkey,
-            peer,
-            session.as_deref(),
-            room.as_deref(),
-            *min_signers,
-            *max_signers,
-        )
-        .await,
+        } => {
+            cmd_relay_dkg(
+                cli,
+                server,
+                key,
+                pubkey,
+                peer,
+                session.as_deref(),
+                room.as_deref(),
+                *min_signers,
+                *max_signers,
+            )
+            .await
+        }
 
         MultisigAction::Dealer {
             min_signers,
@@ -2868,7 +2938,9 @@ async fn cmd_relay_dkg(
     // relay's rendezvous instead of couriering hex keys and a uuid around.
     // The uuid remains the ground truth - this only front-loads discovery.
     let (peers, discovered_session) = match room {
-        Some(code) => relay_dkg_rendezvous(server, pubkey_hex, code, min_signers, max_signers).await?,
+        Some(code) => {
+            relay_dkg_rendezvous(server, pubkey_hex, code, min_signers, max_signers).await?
+        }
         None => {
             if peer_hex.is_empty() {
                 return Err(Error::Other(
@@ -2897,9 +2969,10 @@ async fn cmd_relay_dkg(
         .map(|p| Ok(frost_client::cipher::PublicKey(decode(p, "--peer")?)))
         .collect::<Result<Vec<_>, Error>>()?;
 
-    let mut t = FrostdTransport::connect(server.to_string(), private, public.clone(), peers.clone())
-        .await
-        .map_err(|e| Error::Other(e.to_string()))?;
+    let mut t =
+        FrostdTransport::connect(server.to_string(), private, public.clone(), peers.clone())
+            .await
+            .map_err(|e| Error::Other(e.to_string()))?;
 
     match (&discovered_session, session) {
         // room-code host: create the session and hand the uuid to the room
@@ -2911,7 +2984,11 @@ async fn cmd_relay_dkg(
                 .await
                 .map_err(|e| Error::Other(e.to_string()))?;
             rdv.rendezvous
-                .announce(&rdv.room_id, rdv.creator_token.as_deref().unwrap_or(""), &id.to_string())
+                .announce(
+                    &rdv.room_id,
+                    rdv.creator_token.as_deref().unwrap_or(""),
+                    &id.to_string(),
+                )
                 .await
                 .map_err(|e| Error::Other(e.to_string()))?;
             eprintln!("session {id} announced to the room - waiting for the others");
@@ -3032,14 +3109,22 @@ async fn relay_dkg_rendezvous(
 
         let mut seen = 0usize;
         let peers = loop {
-            let view = rdv.poll(&room_id).await.map_err(|e| Error::Other(e.to_string()))?;
+            let view = rdv
+                .poll(&room_id)
+                .await
+                .map_err(|e| Error::Other(e.to_string()))?;
             let peers: Vec<String> = view
                 .entries
                 .iter()
                 .filter(|e| e.pubkey != my_pubkey)
                 .map(|e| e.pubkey.clone())
                 .collect();
-            for e in view.entries.iter().filter(|e| e.pubkey != my_pubkey).skip(seen) {
+            for e in view
+                .entries
+                .iter()
+                .filter(|e| e.pubkey != my_pubkey)
+                .skip(seen)
+            {
                 eprintln!("  joined: {}… ({})", &e.pubkey[..8], e.note);
             }
             seen = peers.len();
@@ -3098,7 +3183,10 @@ async fn relay_dkg_rendezvous(
         }
         eprintln!("in the room - waiting for the coordinator to start…");
         loop {
-            let view = rdv.poll(&room_id).await.map_err(|e| Error::Other(e.to_string()))?;
+            let view = rdv
+                .poll(&room_id)
+                .await
+                .map_err(|e| Error::Other(e.to_string()))?;
             if let Some(session_id) = view.session_id {
                 let peers = view
                     .entries

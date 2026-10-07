@@ -23,11 +23,37 @@ pub fn create_request(
     deposit: bool,
     mainnet: bool,
 ) -> Result<PaymentRequest, Error> {
+    create_request_with(amount_zat, label, deposit, |i| {
+        address::orchard_address_at(seed, i, mainnet)
+    })
+}
+
+/// Same as [`create_request`] from a full viewing key: a merchant host can
+/// hand out payment addresses and watch for payments without ever holding the
+/// spending key (sweeping happens elsewhere, from the seed).
+pub fn create_request_fvk(
+    fvk: &orchard::keys::FullViewingKey,
+    amount_zat: u64,
+    label: Option<&str>,
+    deposit: bool,
+    mainnet: bool,
+) -> Result<PaymentRequest, Error> {
+    create_request_with(amount_zat, label, deposit, |i| {
+        address::orchard_address_at_from_fvk(fvk, i, mainnet)
+    })
+}
+
+fn create_request_with(
+    amount_zat: u64,
+    label: Option<&str>,
+    deposit: bool,
+    derive: impl Fn(u64) -> Result<(orchard::Address, String), Error>,
+) -> Result<PaymentRequest, Error> {
     let wallet = Wallet::open(&Wallet::default_path())?;
     let id = wallet.next_request_id()?;
     let div_index = MERCHANT_INDEX_BASE + id;
 
-    let (addr, ua_str) = address::orchard_address_at(seed, div_index, mainnet)?;
+    let (addr, ua_str) = derive(div_index)?;
     let recipient = addr.to_raw_address_bytes().to_vec();
 
     let now = std::time::SystemTime::now()

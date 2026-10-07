@@ -47,7 +47,7 @@ pub struct Cli {
     #[arg(long, global = true, default_value_t = true, hide = true)]
     pub mainnet: bool,
 
-    /// use testnet: endpoint defaults to testzcash.rotko.net, wallet lives
+    /// use testnet: endpoint defaults to tzcash.rotko.net, wallet lives
     /// in ~/.zcli/testnet, no cross-verification against mainnet nodes
     #[arg(long, global = true, env = "ZCLI_TESTNET")]
     pub testnet: bool,
@@ -58,7 +58,9 @@ pub struct Cli {
 }
 
 pub const MAINNET_ENDPOINT: &str = "https://zcash.rotko.net";
-pub const TESTNET_ENDPOINT: &str = "https://testzcash.rotko.net";
+// testzcash.rotko.net (the default up to v0.9.0) still resolves to the same
+// backend; it is deprecated and goes away once those releases have aged out.
+pub const TESTNET_ENDPOINT: &str = "https://tzcash.rotko.net";
 pub const MAINNET_VERIFY_ENDPOINTS: &str = "https://na.zec.rocks,https://eu.zec.rocks,https://ap.zec.rocks,https://us.zec.stardust.rest,https://eu.zec.stardust.rest,https://jp.zec.stardust.rest";
 
 impl Cli {
