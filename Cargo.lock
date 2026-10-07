@@ -8682,9 +8682,11 @@ dependencies = [
  "equihash",
  "hex",
  "primitive-types",
+ "prost 0.14.4",
  "serde",
  "sha2 0.10.9",
  "thiserror 1.0.69",
  "zakura-protocol",
  "zcash_history",
+ "zync-flyclient",
 ]

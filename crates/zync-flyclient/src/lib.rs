@@ -36,6 +36,8 @@ pub mod epochs;
 pub mod floor;
 pub mod header;
 pub mod node;
+#[cfg(feature = "proto")]
+pub mod proto;
 pub mod proof;
 pub mod sampling;
 pub mod store;
