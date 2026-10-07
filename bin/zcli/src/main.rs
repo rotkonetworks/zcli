@@ -727,13 +727,12 @@ async fn verify_flyclient_step(
     // to a made-up tree, and every sample would still pass. So the committing
     // tip must be a block other nodes have: either the tip step 2 already
     // cross-verified, or one the --verify-endpoints agree on.
+    //
+    // A tip AHEAD of the one read in step 2 is a block mined between the two
+    // calls (one every ~25s), not tampering: it gets the same independent-node
+    // check as a trailing tip, which a block the network does not have fails.
     let mut fly_tip_display = chain.tip_hash;
     fly_tip_display.reverse();
-    if chain.tip_height > tip {
-        return Err(Error::Other(
-            "flyclient tip is ahead of the server's tip".into(),
-        ));
-    }
     if chain.tip_height == tip {
         if fly_tip_display.as_slice() != tip_hash {
             return Err(Error::Other(
@@ -742,7 +741,7 @@ async fn verify_flyclient_step(
         }
     } else if endpoints.is_empty() {
         return Err(Error::Other(format!(
-            "flyclient tip {} trails the server tip {} and no --verify-endpoints are \
+            "flyclient tip {} differs from the server tip {} and no --verify-endpoints are \
              configured to cross-check it; retry, or configure endpoints",
             chain.tip_height, tip
         )));
@@ -786,7 +785,7 @@ async fn verify_flyclient_step(
             "   tip {} ({}), {} blocks behind the server tip",
             chain.tip_height,
             hex::encode(&fly_tip_display[..8]),
-            tip - chain.tip_height
+            tip.saturating_sub(chain.tip_height)
         );
         if let Some(r) = root.end_orchard_root() {
             eprintln!(
