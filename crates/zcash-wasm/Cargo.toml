@@ -146,6 +146,10 @@ zcash-voting = { package = "zcash_voting", path = "../zcash-voting", default-fea
 # UR encoding for QR transport
 ur = "0.4"
 
+# FlyClient proofs from one zidecar, with the single-server floors; decodes
+# the protobuf response itself.
+zync-flyclient = { path = "../zync-flyclient", features = ["proto"] }
+
 # Verified erasure-coded QR transport
 zoda-vss = { path = "../zoda-vss", default-features = false }
 
