@@ -63,15 +63,6 @@ pub use orchard::keys::{FullViewingKey as OrchardFvk, IncomingViewingKey, Scope,
 #[cfg(feature = "client")]
 pub use client::{LightwalletdClient, ZidecarClient};
 
-
-
-
-
-
-
-
-
-
 // Activation heights and anchor hashes live with the FlyClient verifier,
 // which anchors on them; re-exported so existing paths keep working.
 pub use zync_flyclient::{
