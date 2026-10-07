@@ -39,17 +39,15 @@ fn validate_consensus_branch_id_for_round(
     consensus_branch_id: u32,
 ) -> Result<(), VotingError> {
     validate_network_matches_round(stored_network, keys.network, "delegation keys")?;
-
-    let expected = crate::lwd::branch_id_for_height(stored_network, params.snapshot_height)?;
-    if consensus_branch_id != expected {
-        return Err(VotingError::InvalidInput {
-            message: format!(
-                "consensus_branch_id 0x{consensus_branch_id:08X} does not match snapshot height {} branch id 0x{expected:08X}",
-                params.snapshot_height
-            ),
-        });
-    }
-    Ok(())
+    // Not equality with this crate's height table: the node can know an
+    // upgrade the table lags behind (mainnet NU7). The same Ironwood-pool rule
+    // the wasm path applies, so the two paths cannot disagree.
+    crate::action::validate_consensus_branch_id(
+        stored_network,
+        params.snapshot_height,
+        consensus_branch_id,
+    )
+    .map(|_| ())
 }
 
 fn validate_network_matches_round(

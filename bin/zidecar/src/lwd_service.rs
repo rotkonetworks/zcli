@@ -612,10 +612,11 @@ impl CompactTxStreamer for LwdService {
             taddr_support: true,
             chain_name: self.chain_name().to_string(),
             sapling_activation_height: sapling_height,
+            // wallets bind the branch they read here into the tx they build next
             consensus_branch_id: info
                 .consensus
                 .as_ref()
-                .map(|c| c.chaintip.clone())
+                .map(|c| c.branch_for_new_tx().to_string())
                 .unwrap_or_default(),
             block_height,
             git_commit: format!("v{}-{}", env!("CARGO_PKG_VERSION"), env!("GIT_HASH")),

@@ -412,6 +412,19 @@ pub struct ConsensusInfo {
     pub nextblock: Option<String>,
 }
 
+impl ConsensusInfo {
+    /// The branch id a transaction built now must bind: the NEXT block's, which
+    /// is where it gets mined. At an upgrade boundary the tip's branch is one
+    /// upgrade behind, and a transaction bound to it is rejected. Nodes that do
+    /// not report `nextblock` fall back to the tip's.
+    pub fn branch_for_new_tx(&self) -> &str {
+        self.nextblock
+            .as_deref()
+            .filter(|b| !b.is_empty())
+            .unwrap_or(&self.chaintip)
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct Block {
     pub hash: String,
@@ -624,6 +637,26 @@ pub struct Subtree {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn consensus(json: &str) -> ConsensusInfo {
+        serde_json::from_str(json).unwrap()
+    }
+
+    #[test]
+    fn new_tx_binds_the_next_blocks_branch_across_an_upgrade() {
+        // tip on NU6.3, next block activates NU7
+        let c = consensus(r#"{"chaintip":"37a5165b","nextblock":"77190ad9"}"#);
+        assert_eq!(c.branch_for_new_tx(), "77190ad9");
+    }
+
+    #[test]
+    fn new_tx_falls_back_to_the_tips_branch() {
+        assert_eq!(consensus(r#"{"chaintip":"37a5165b"}"#).branch_for_new_tx(), "37a5165b");
+        assert_eq!(
+            consensus(r#"{"chaintip":"37a5165b","nextblock":""}"#).branch_for_new_tx(),
+            "37a5165b"
+        );
+    }
 
     #[tokio::test]
     #[ignore] // requires zebrad running

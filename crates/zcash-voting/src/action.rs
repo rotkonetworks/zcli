@@ -249,7 +249,7 @@ fn consensus_network_for_voting_network(network: VotingNetwork) -> ConsensusNetw
 /// as long as each has the Ironwood pool, so this requires that of both
 /// rather than equality. The branch only selects the note protocol: the
 /// governance PCZT itself is always built under [`crate::tx1::TX1_BRANCH_ID`].
-fn validate_consensus_branch_id(
+pub(crate) fn validate_consensus_branch_id(
     network: VotingNetwork,
     snapshot_height: u64,
     consensus_branch_id: u32,
