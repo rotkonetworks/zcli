@@ -19,14 +19,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build_client(true)
         .compile_protos(&["proto/indexer.proto"], &["proto"])?;
 
-    // embed git commit hash at build time
-    let output = std::process::Command::new("git")
-        .args(["rev-parse", "--short", "HEAD"])
-        .output();
-    let git_hash = output
+    // embed the full git commit at build time: GetLightdInfo reports it and
+    // wallets link it to the exact source on github. ZIDECAR_GIT_HASH wins, for
+    // builds without a .git (docker, tarballs), which otherwise say "unknown".
+    println!("cargo:rerun-if-env-changed=ZIDECAR_GIT_HASH");
+    let git_hash = std::env::var("ZIDECAR_GIT_HASH")
         .ok()
-        .filter(|o| o.status.success())
-        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .filter(|h| !h.trim().is_empty())
+        .or_else(|| {
+            std::process::Command::new("git")
+                .args(["rev-parse", "HEAD"])
+                .output()
+                .ok()
+                .filter(|o| o.status.success())
+                .and_then(|o| String::from_utf8(o.stdout).ok())
+        })
         .unwrap_or_else(|| "unknown".into());
     println!("cargo:rustc-env=GIT_HASH={}", git_hash.trim());
 
