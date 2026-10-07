@@ -8647,13 +8647,10 @@ dependencies = [
  "anyhow",
  "bincode",
  "blake2",
- "blake2b_simd",
  "console_error_panic_hook",
- "equihash",
  "getrandom 0.2.17",
  "hex",
  "js-sys",
- "primitive-types",
  "prost 0.12.6",
  "rand 0.8.7",
  "rayon",
@@ -8670,7 +8667,22 @@ dependencies = [
  "wasm-bindgen-rayon",
  "zakura-orchard",
  "zakura-pasta-curves 2.0.0",
+ "zcash_note_encryption",
+ "zync-flyclient",
+]
+
+[[package]]
+name = "zync-flyclient"
+version = "0.1.0"
+dependencies = [
+ "bincode",
+ "blake2b_simd",
+ "equihash",
+ "hex",
+ "primitive-types",
+ "serde",
+ "sha2 0.10.9",
+ "thiserror 1.0.69",
  "zakura-protocol",
  "zcash_history",
- "zcash_note_encryption",
 ]

@@ -6,6 +6,7 @@ members = [
     "bin/zidecar",
     "bin/integration-v09",
     "crates/zync-core",
+    "crates/zync-flyclient",
     "crates/zcash-wasm",
     "crates/zcash-voting",
     "crates/pir-client",
@@ -27,6 +28,7 @@ repository = "https://github.com/rotkonetworks/zcli"
 
 [workspace.dependencies]
 zync-core = { path = "crates/zync-core" }
+zync-flyclient = { path = "crates/zync-flyclient" }
 
 # frostito: canonical upstream at github.com/penumbrafi/frostito. Upstream
 # deleted `osst` in 0.6.0 (`4ededc3`, "drop OSST, rename to frostito"): the
