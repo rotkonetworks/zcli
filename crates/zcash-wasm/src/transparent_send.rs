@@ -134,6 +134,8 @@ pub struct UnsignedTransparent {
     pub pczt_bytes: Vec<u8>,
     pub sighashes: Vec<[u8; 32]>,
     pub plan: TransparentPlan,
+    /// the last height the deposit can be mined at
+    pub expiry_height: u32,
 }
 
 type Coin = (
@@ -148,6 +150,12 @@ type Coin = (
 ///
 /// V5, not the NU6.3 default V6: nothing here needs V6, and V5 is what every
 /// transparent parser (THORChain's observer included) reads.
+///
+/// `expiry_delta`: blocks after `target_height` at which it expires. `None` is
+/// the branch default every other builder uses (40, or 120 on NU7), so a move
+/// and the deposit that spends it get the same window; a deposit held for a
+/// move passes a longer one so it outlives the move. Validated by
+/// [`crate::resolve_pczt_expiry_height`].
 #[allow(clippy::too_many_arguments)]
 pub fn build_unsigned_transparent_core<P>(
     params: P,
@@ -158,6 +166,7 @@ pub fn build_unsigned_transparent_core<P>(
     null_data: &[u8],
     target_height: u32,
     expected_branch_id: u32,
+    expiry_delta: Option<u32>,
 ) -> Result<UnsignedTransparent, String>
 where
     P: zcash_protocol::consensus::Parameters,
@@ -178,6 +187,13 @@ where
              the wallet expected {expected_branch_id:#010x}"
         ));
     }
+    let expiry_height = crate::resolve_pczt_expiry_height(
+        target_height,
+        Some(
+            expiry_delta
+                .unwrap_or_else(|| crate::node_params::default_expiry_delta(expected_branch_id)),
+        ),
+    )?;
 
     let own = TransparentAddress::from_pubkey(pubkey);
     let own_script: zcash_transparent::address::Script = own.script().into();
@@ -217,7 +233,8 @@ where
             orchard_padding: BundlePadding::DEFAULT,
             ironwood_padding: BundlePadding::DEFAULT,
         },
-    );
+    )
+    .with_expiry_height(BlockHeight::from(expiry_height));
     builder
         .propose_version::<FeError>(TxVersion::V5)
         .map_err(|e| format!("propose_version(V5): {e:?}"))?;
@@ -286,6 +303,7 @@ where
         pczt_bytes,
         sighashes,
         plan,
+        expiry_height,
     })
 }
 
@@ -331,8 +349,12 @@ pub fn plan_transparent_transaction(
 /// address and its 33-byte compressed `pubkey_hex`. Outputs are
 /// [recipient, OP_RETURN(`null_data_hex`, at most 80 bytes), change to the same
 /// address]. Returns JSON
-/// `{sighashes, unsigned_tx_hex, inputs, total_in, fee, change, short}`, where
-/// `unsigned_tx_hex` is a PCZT for `SpendKeys.sign_shielding`.
+/// `{sighashes, unsigned_tx_hex, expiry_height, inputs, total_in, fee, change, short}`,
+/// where `unsigned_tx_hex` is a PCZT for `SpendKeys.sign_shielding`.
+///
+/// `expiry_delta` (optional, last): blocks after `target_height` at which the
+/// deposit expires. Omitted is the branch default (40, or 120 on NU7), the
+/// same rule as `build_ironwood_send_pczt`.
 #[wasm_bindgen]
 #[allow(clippy::too_many_arguments)]
 pub fn build_unsigned_transparent_transaction(
@@ -344,6 +366,7 @@ pub fn build_unsigned_transparent_transaction(
     expected_branch_id: u32,
     mainnet: bool,
     null_data_hex: Option<String>,
+    expiry_delta: Option<u32>,
 ) -> Result<String, JsError> {
     use crate::consensus::TestNetwork;
     use zcash_keys::encoding::AddressCodec;
@@ -406,6 +429,7 @@ pub fn build_unsigned_transparent_transaction(
                 &null_data,
                 target_height,
                 expected_branch_id,
+                expiry_delta,
             )
         }};
     }
@@ -419,5 +443,6 @@ pub fn build_unsigned_transparent_transaction(
     let mut out = plan_json(&built.plan);
     out["sighashes"] = built.sighashes.iter().map(|s| hex_encode(s)).collect();
     out["unsigned_tx_hex"] = hex_encode(&built.pczt_bytes).into();
+    out["expiry_height"] = built.expiry_height.into();
     Ok(out.to_string())
 }

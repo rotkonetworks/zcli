@@ -179,6 +179,7 @@ fn regtest_thorchain_deposit_with_op_return() {
         MEMO,
         tip_height() + 1,
         NU6_3_BRANCH_ID,
+        None,
     )
     .expect("deposit builds");
     let sigs: Vec<Vec<u8>> = unsigned
