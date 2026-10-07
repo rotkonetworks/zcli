@@ -5781,6 +5781,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "spake2"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c5482afe85a0b6ce956c945401598dbc527593c77ba51d0a87a586938b1b893a"
+dependencies = [
+ "curve25519-dalek",
+ "hkdf",
+ "rand_core 0.6.4",
+ "sha2 0.10.9",
+]
+
+[[package]]
 name = "spin"
 version = "0.9.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7580,6 +7592,7 @@ dependencies = [
  "getrandom 0.4.3",
  "group 0.14.0",
  "hex",
+ "hkdf",
  "hmac 0.12.1",
  "imt-tree 0.5.4",
  "incrementalmerkletree",
@@ -7588,6 +7601,7 @@ dependencies = [
  "k256",
  "pir-client 0.7.2",
  "rand 0.8.7",
+ "rand_chacha 0.3.1",
  "rand_core 0.10.1",
  "rand_core 0.6.4",
  "rayon",
@@ -7598,6 +7612,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "shardtree",
+ "spake2",
  "subtle",
  "ur",
  "wasm-bindgen",

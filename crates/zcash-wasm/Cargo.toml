@@ -102,6 +102,11 @@ chacha20poly1305 = "0.10"
 secp256k1 = { version = "0.29", default-features = false, features = ["alloc"] }
 k256 = { version = "0.13", features = ["ecdsa-core", "ecdsa", "sha256"] }
 hmac = "0.12"
+# wormhole-style door codes: SPAKE2 (RustCrypto, the PAKE magic wormhole uses)
+# over the code's words; dalek 4 is already in the graph via frost-spend.
+spake2 = { version = "0.4", default-features = false }
+hkdf = "0.12"
+rand_chacha = "0.3"
 sha2 = "0.10"
 ripemd = "0.1"
 # Ledger PCZT serializer reads transparent script bytes via `Evaluable`; same
