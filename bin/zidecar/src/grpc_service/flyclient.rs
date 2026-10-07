@@ -28,11 +28,6 @@ impl ZidecarService {
                 req.tail
             },
         };
-        if req.burial > params.tail + 1 {
-            return Err(Status::invalid_argument(
-                "burial must be at most tail + 1, so the buried block is opened",
-            ));
-        }
         let (proof, burial) = history
             .proof(&self.zebrad, &self.storage, params, req.burial)
             .await
