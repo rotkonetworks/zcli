@@ -4873,6 +4873,16 @@ pub fn parse_ironwood_recipient(
         .map_err(|e| format!("invalid recipient: {}", e))
 }
 
+/// One payment of an ironwood send: where it goes, how much, and the memo it
+/// carries (`MemoBytes::empty()` for none; a transparent recipient must have
+/// none, see [`build_ironwood_send_pczt_proven_multi`]).
+#[derive(Clone, Debug)]
+pub struct IronwoodSendOutput {
+    pub recipient: IronwoodRecipient,
+    pub amount: u64,
+    pub memo: zcash_protocol::memo::MemoBytes,
+}
+
 /// Build AND prove the general ironwood send PCZT, returning the *unredacted*
 /// proven `pczt::Pczt`. Mirrors `build_turnstile_migration_pczt_proven` but:
 ///  - `orchard_anchor: None` (there are NO orchard spends), and
@@ -4932,6 +4942,48 @@ pub fn build_ironwood_send_pczt_proven<P>(
     target_height: u32,
     expected_branch_id: u32,
     memo: zcash_protocol::memo::MemoBytes,
+    expiry_delta: u32,
+) -> Result<IronwoodPcztWithFrost, String>
+where
+    P: zcash_protocol::consensus::Parameters,
+{
+    build_ironwood_send_pczt_proven_multi(
+        params,
+        fvk,
+        prepared,
+        vec![IronwoodSendOutput {
+            recipient,
+            amount,
+            memo,
+        }],
+        fee,
+        ironwood_anchor,
+        target_height,
+        expected_branch_id,
+        expiry_delta,
+    )
+}
+
+/// [`build_ironwood_send_pczt_proven`] for several payments in ONE V6
+/// transaction: every output in `outputs` is paid (shielded ones with their
+/// own memo), and whatever the inputs hold beyond the sum of the amounts plus
+/// `fee` returns as one change output. The single-recipient builder is this
+/// with one output.
+///
+/// `fee` is the caller's, as in the single path: ZIP-317 over the ironwood
+/// actions this produces (`max(spends, shielded outputs + change, 2)`) plus
+/// the transparent outputs. A transparent output with a memo is refused, by
+/// index; errors name the output's index, never its address or value.
+#[allow(clippy::too_many_arguments)]
+pub fn build_ironwood_send_pczt_proven_multi<P>(
+    params: P,
+    fvk: &orchard::keys::FullViewingKey,
+    prepared: Vec<(orchard::Note, orchard::tree::MerklePath)>,
+    outputs: Vec<IronwoodSendOutput>,
+    fee: u64,
+    ironwood_anchor: orchard::tree::Anchor,
+    target_height: u32,
+    expected_branch_id: u32,
     expiry_delta: u32,
 ) -> Result<IronwoodPcztWithFrost, String>
 where
@@ -5001,10 +5053,33 @@ where
     if prepared.is_empty() {
         return Err("ironwood send requires at least one ironwood note".into());
     }
+    if outputs.is_empty() {
+        return Err("ironwood send requires at least one output".into());
+    }
+    // A memo is meaningless on a transparent output (there is nowhere to put
+    // it). Checked for every output before anything is built.
+    for (i, out) in outputs.iter().enumerate() {
+        if matches!(out.recipient, IronwoodRecipient::Transparent(_))
+            && out.memo != MemoBytes::empty()
+        {
+            return Err(if outputs.len() == 1 {
+                "a memo cannot be delivered to a transparent address: transparent \
+                 outputs have no memo field. Send the memo to a shielded (unified) \
+                 address, or send to the transparent address without one."
+                    .to_string()
+            } else {
+                format!(
+                    "output {i}: a memo cannot be delivered to a transparent address: \
+                     transparent outputs have no memo field"
+                )
+            });
+        }
+    }
     let total_input: u64 = prepared.iter().map(|(n, _)| n.value().inner()).sum();
     // Value-free insufficient-funds check (no amounts leaked into the error).
-    let needed = amount
-        .checked_add(fee)
+    let needed = outputs
+        .iter()
+        .try_fold(fee, |acc, o| acc.checked_add(o.amount))
         .ok_or_else(|| "amount + fee overflows u64".to_string())?;
     if total_input < needed {
         return Err("insufficient funds: inputs do not cover amount + fee".into());
@@ -5042,27 +5117,35 @@ where
             .add_ironwood_spend::<FeError>(fvk.clone(), *note, mp.clone())
             .map_err(|e| format!("add_ironwood_spend: {:?}", e))?;
     }
-    let amount_zat = Zatoshis::from_u64(amount).map_err(|_| "invalid amount".to_string())?;
-    match recipient {
-        IronwoodRecipient::Shielded(addr) => {
-            builder
-                .add_ironwood_output::<FeError>(external_ovk, addr, amount_zat, memo)
-                .map_err(|e| format!("add_ironwood_output: {:?}", e))?;
+    // Outputs go in the caller's order. A transparent output's memo was
+    // refused above, so `memo` here is only ever delivered.
+    let many = outputs.len() > 1;
+    let at = |i: usize| {
+        if many {
+            format!(" (output {i})")
+        } else {
+            String::new()
         }
-        IronwoodRecipient::Transparent(taddr) => {
-            // A transparent output carries no memo field. Refuse rather than
-            // drop one silently - see the doc comment.
-            if memo != MemoBytes::empty() {
-                return Err(
-                    "a memo cannot be delivered to a transparent address: transparent \
-                     outputs have no memo field. Send the memo to a shielded (unified) \
-                     address, or send to the transparent address without one."
-                        .to_string(),
-                );
+    };
+    for (i, out) in outputs.into_iter().enumerate() {
+        let amount_zat =
+            Zatoshis::from_u64(out.amount).map_err(|_| format!("invalid amount{}", at(i)))?;
+        match out.recipient {
+            IronwoodRecipient::Shielded(addr) => {
+                builder
+                    .add_ironwood_output::<FeError>(
+                        external_ovk.clone(),
+                        addr,
+                        amount_zat,
+                        out.memo,
+                    )
+                    .map_err(|e| format!("add_ironwood_output{}: {:?}", at(i), e))?;
             }
-            builder
-                .add_transparent_output(&taddr, amount_zat)
-                .map_err(|e| format!("add_transparent_output: {:?}", e))?;
+            IronwoodRecipient::Transparent(taddr) => {
+                builder
+                    .add_transparent_output(&taddr, amount_zat)
+                    .map_err(|e| format!("add_transparent_output{}: {:?}", at(i), e))?;
+            }
         }
     }
     if change_value > 0 {
@@ -5169,17 +5252,49 @@ pub fn build_signed_ironwood_send_core<P>(
 where
     P: zcash_protocol::consensus::Parameters,
 {
-    let IronwoodPcztWithFrost { pczt, .. } = build_ironwood_send_pczt_proven(
+    build_signed_ironwood_send_multi_core(
         params,
         fvk,
+        ask,
         prepared,
-        recipient,
-        amount,
+        vec![IronwoodSendOutput {
+            recipient,
+            amount,
+            memo,
+        }],
         fee,
         ironwood_anchor,
         target_height,
         expected_branch_id,
-        memo,
+    )
+}
+
+/// [`build_signed_ironwood_send_core`] for several payments in one V6
+/// transaction (see [`build_ironwood_send_pczt_proven_multi`]).
+#[allow(clippy::too_many_arguments)]
+pub fn build_signed_ironwood_send_multi_core<P>(
+    params: P,
+    fvk: &orchard::keys::FullViewingKey,
+    ask: &orchard::keys::SpendAuthorizingKey,
+    prepared: Vec<(orchard::Note, orchard::tree::MerklePath)>,
+    outputs: Vec<IronwoodSendOutput>,
+    fee: u64,
+    ironwood_anchor: orchard::tree::Anchor,
+    target_height: u32,
+    expected_branch_id: u32,
+) -> Result<Vec<u8>, String>
+where
+    P: zcash_protocol::consensus::Parameters,
+{
+    let IronwoodPcztWithFrost { pczt, .. } = build_ironwood_send_pczt_proven_multi(
+        params,
+        fvk,
+        prepared,
+        outputs,
+        fee,
+        ironwood_anchor,
+        target_height,
+        expected_branch_id,
         // The hot send keeps the branch default: target + 40, or + 120 on NU7.
         crate::node_params::default_expiry_delta(expected_branch_id),
     )?;
@@ -5241,12 +5356,126 @@ pub fn build_ironwood_send_pczt(
     memo_hex: Option<String>,
     expiry_delta: Option<u32>,
 ) -> Result<JsValue, JsError> {
+    let _ = account_index; // UFVK is already account-scoped; kept for parity.
+
+    // Recipient: a unified/orchard address (value stays in the ironwood pool)
+    // OR a transparent address (z->t withdrawal, e.g. to an exchange), decided
+    // by the address encoding. Error is address-free.
+    let recipient = parse_ironwood_recipient(recipient, mainnet).map_err(|e| JsError::new(&e))?;
+    let memo = memo_bytes_from_hex(memo_hex.as_deref())?;
+    ironwood_send_pczt_js(
+        ufvk_str,
+        ironwood_notes_json,
+        vec![IronwoodSendOutput {
+            recipient,
+            amount,
+            memo,
+        }],
+        fee,
+        ironwood_anchor_hex,
+        ironwood_merkle_paths_json,
+        target_height,
+        expected_branch_id,
+        mainnet,
+        expiry_delta,
+    )
+}
+
+/// One payment of [`build_ironwood_send_pczt_multi`]'s `outputs_json`.
+#[derive(Deserialize)]
+struct IronwoodSendOutputJson {
+    /// unified/orchard or transparent address, as for the single send
+    address: String,
+    /// zatoshis
+    amount: u64,
+    /// optional memo (hex, up to 512 bytes); none for a transparent address
+    #[serde(default)]
+    memo_hex: Option<String>,
+}
+
+fn memo_bytes_from_hex(memo_hex: Option<&str>) -> Result<zcash_protocol::memo::MemoBytes, JsError> {
+    let memo_arr = decode_memo_hex(memo_hex)?;
+    zcash_protocol::memo::MemoBytes::from_bytes(&memo_arr)
+        .map_err(|e| JsError::new(&format!("memo: {:?}", e)))
+}
+
+/// [`build_ironwood_send_pczt`] paying SEVERAL recipients in one V6
+/// transaction. `outputs_json` is a JSON array of
+/// `{ "address": string, "amount": number (zat), "memo_hex"?: string }`, paid
+/// in that order; change returns to the wallet as for the single send, and
+/// the result has the same shape. `fee` is ZIP-317 for the transaction this
+/// builds (see [`build_ironwood_send_pczt_proven_multi`]). Same fail-closed
+/// NU6.3 branch-id guard; errors name an output by index only.
+#[wasm_bindgen]
+#[allow(clippy::too_many_arguments)]
+pub fn build_ironwood_send_pczt_multi(
+    ufvk_str: &str,
+    ironwood_notes_json: &str,
+    outputs_json: &str,
+    fee: u64,
+    ironwood_anchor_hex: &str,
+    ironwood_merkle_paths_json: &str,
+    account_index: u32,
+    target_height: u32,
+    expected_branch_id: u32,
+    mainnet: bool,
+    expiry_delta: Option<u32>,
+) -> Result<JsValue, JsError> {
+    let _ = account_index; // UFVK is already account-scoped; kept for parity.
+
+    let parsed: Vec<IronwoodSendOutputJson> = serde_json::from_str(outputs_json).map_err(|_| {
+        JsError::new("invalid outputs_json: expected [{address, amount, memo_hex?}]")
+    })?;
+    if parsed.is_empty() {
+        return Err(JsError::new("outputs_json: at least one output required"));
+    }
+    let outputs = parsed
+        .iter()
+        .enumerate()
+        .map(|(i, o)| {
+            let recipient = parse_ironwood_recipient(&o.address, mainnet)
+                .map_err(|e| JsError::new(&format!("output {i}: {e}")))?;
+            let memo = memo_bytes_from_hex(o.memo_hex.as_deref())
+                .map_err(|_| JsError::new(&format!("output {i}: invalid memo_hex")))?;
+            Ok(IronwoodSendOutput {
+                recipient,
+                amount: o.amount,
+                memo,
+            })
+        })
+        .collect::<Result<Vec<_>, JsError>>()?;
+    ironwood_send_pczt_js(
+        ufvk_str,
+        ironwood_notes_json,
+        outputs,
+        fee,
+        ironwood_anchor_hex,
+        ironwood_merkle_paths_json,
+        target_height,
+        expected_branch_id,
+        mainnet,
+        expiry_delta,
+    )
+}
+
+/// Shared body of the ironwood send exports: build, prove, redact for the
+/// signer and summarize. See [`build_ironwood_send_pczt`] for the result.
+#[allow(clippy::too_many_arguments)]
+fn ironwood_send_pczt_js(
+    ufvk_str: &str,
+    ironwood_notes_json: &str,
+    outputs: Vec<IronwoodSendOutput>,
+    fee: u64,
+    ironwood_anchor_hex: &str,
+    ironwood_merkle_paths_json: &str,
+    target_height: u32,
+    expected_branch_id: u32,
+    mainnet: bool,
+    expiry_delta: Option<u32>,
+) -> Result<JsValue, JsError> {
     use zcash_keys::keys::UnifiedFullViewingKey;
     use zcash_protocol::consensus::{BlockHeight, MainNetwork};
     use crate::consensus::TestNetwork;
-    use zcash_protocol::memo::MemoBytes;
-
-    let _ = account_index; // UFVK is already account-scoped; kept for parity.
 
     // Omitted = the branch default (target + 40, or + 120 on NU7). Resolved
     // (and validated) up front so a bad value is refused before any proving;
@@ -5270,12 +5499,6 @@ pub fn build_ironwood_send_pczt(
             .clone()
     };
 
-    // Recipient: a unified/orchard address (value stays in the ironwood pool)
-    // OR a transparent address (z->t withdrawal, e.g. to an exchange), decided
-    // by the address encoding. Error is address-free.
-    let recipient_addr =
-        parse_ironwood_recipient(recipient, mainnet).map_err(|e| JsError::new(&e))?;
-
     let notes: Vec<SpendableNote> = serde_json::from_str(ironwood_notes_json)
         .map_err(|e| JsError::new(&format!("invalid ironwood_notes_json: {}", e)))?;
     let merkle_paths: Vec<MerklePathInfo> = serde_json::from_str(ironwood_merkle_paths_json)
@@ -5290,10 +5513,6 @@ pub fn build_ironwood_send_pczt(
     let ironwood_anchor = Option::from(orchard::tree::Anchor::from_bytes(anchor_arr))
         .ok_or_else(|| JsError::new("invalid anchor"))?;
 
-    let memo_arr = decode_memo_hex(memo_hex.as_deref())?;
-    let memo =
-        MemoBytes::from_bytes(&memo_arr).map_err(|e| JsError::new(&format!("memo: {:?}", e)))?;
-
     // Build+prove the UNREDACTED ironwood-send PCZT (Creator -> IoFinalizer ->
     // Prover, ironwood proof only). The fail-closed branch-id guard fires inside.
     let IronwoodPcztWithFrost {
@@ -5301,37 +5520,33 @@ pub fn build_ironwood_send_pczt(
         alphas,
         spend_indices,
     } = if mainnet {
-        build_ironwood_send_pczt_proven(
+        build_ironwood_send_pczt_proven_multi(
             Nu63Activated {
                 inner: MainNetwork,
                 nu6_3_from: BlockHeight::from(target_height),
             },
             &fvk,
             prepared,
-            recipient_addr,
-            amount,
+            outputs,
             fee,
             ironwood_anchor,
             target_height,
             expected_branch_id,
-            memo,
             expiry_delta,
         )
     } else {
-        build_ironwood_send_pczt_proven(
+        build_ironwood_send_pczt_proven_multi(
             Nu63Activated {
                 inner: TestNetwork,
                 nu6_3_from: BlockHeight::from(target_height),
             },
             &fvk,
             prepared,
-            recipient_addr,
-            amount,
+            outputs,
             fee,
             ironwood_anchor,
             target_height,
             expected_branch_id,
-            memo,
             expiry_delta,
         )
     }
