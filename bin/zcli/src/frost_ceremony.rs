@@ -62,6 +62,14 @@ impl Mailbox {
         }
     }
 
+    /// Bodies of the messages waiting under `tag`, without taking them.
+    pub fn peek<'a>(&'a self, tag: &'a str) -> impl Iterator<Item = &'a str> + 'a {
+        self.pending
+            .iter()
+            .filter(move |(t, _)| t == tag)
+            .map(|(_, body)| body.as_str())
+    }
+
     pub fn push(&mut self, raw: Vec<u8>) -> Result<()> {
         let text = String::from_utf8(raw).map_err(|_| {
             TransportError::Server("a peer sent a message that is not valid UTF-8".into())

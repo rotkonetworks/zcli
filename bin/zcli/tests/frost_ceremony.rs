@@ -466,14 +466,17 @@ async fn a_joiner_detects_and_joins_the_tagged_wire() {
         }
         (ua, r3.public_key_package_hex)
     };
-    let joiner = |mut t: FrostdTransport, peers| async move {
+    // (t, n) as the room said it; 0/0 = the room did not, learn it from the host
+    let joiner = |mut t: FrostdTransport, peers, (min, max)| async move {
         let (dialect, mailbox) = detect_dialect(&mut t).await.expect("detect");
         assert_eq!(dialect, Dialect::Tagged);
-        frost_tagged::run_dkg(&mut t, mailbox, peers, 2, 3, NetworkType::Test)
+        frost_tagged::run_dkg(&mut t, mailbox, peers, min, max, NetworkType::Test)
             .await
             .expect("tagged joiner")
     };
-    let ((ua, pkg), jb, jc) = tokio::join!(tagged_host, joiner(b, pb), joiner(c, pc));
+    let ((ua, pkg), jb, jc) =
+        tokio::join!(tagged_host, joiner(b, pb, (2, 3)), joiner(c, pc, (0, 0)));
+    assert_eq!((jc.min_signers, jc.max_signers), (2, 3), "learned from the host's R1");
     assert_eq!(jb.address, ua, "joiner b lands on the host's vault");
     assert_eq!(jc.address, ua, "joiner c lands on the host's vault");
     assert_eq!(jb.public_key_package_hex, pkg);

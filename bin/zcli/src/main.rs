@@ -3011,16 +3011,18 @@ async fn cmd_relay_dkg(
         }
     };
     // `multisig join` passes 0/0 and learns t-of-n from the coordinator's
-    // room entry; explicit flags are respected as given.
+    // room entry; explicit flags are respected as given. A room joiner whose
+    // coordinator left it out may still learn it from a tagged host's R1, so
+    // that one is only an error once we know the wire (below).
+    let no_shape = "the coordinator's room entry carries no t-of-n - pass -t/-n explicitly";
+    let room_joiner_early = matches!(&discovered_session, Some(r) if r.session_id.is_some())
+        && session.is_none();
     let (min_signers, max_signers) = if min_signers == 0 {
-        discovered_session
-            .as_ref()
-            .and_then(|r| r.signers)
-            .ok_or_else(|| {
-                Error::Other(
-                    "the coordinator's room entry carries no t-of-n - pass -t/-n explicitly".into(),
-                )
-            })?
+        match discovered_session.as_ref().and_then(|r| r.signers) {
+            Some(shape) => shape,
+            None if room_joiner_early => (0, 0),
+            None => return Err(Error::Other(no_shape.into())),
+        }
     } else {
         (min_signers, max_signers)
     };
@@ -3036,8 +3038,7 @@ async fn cmd_relay_dkg(
 
     // A room-code joiner listens before it speaks: the first message tells
     // zcli's own wire from zafu's tagged one (zafu, the zk.poker escrow).
-    let room_joiner = matches!(&discovered_session, Some(r) if r.session_id.is_some())
-        && session.is_none();
+    let room_joiner = room_joiner_early;
     match (&discovered_session, session) {
         // room-code host: create the session and hand the uuid to the room
         (Some(rdv), None) if rdv.session_id.is_none() => {
@@ -3130,6 +3131,9 @@ async fn cmd_relay_dkg(
                 println!("Keep it: without it you cannot co-sign a payout.");
             }
             return Ok(());
+        }
+        if min_signers == 0 {
+            return Err(Error::Other(no_shape.into()));
         }
         mailbox
     } else {

@@ -116,6 +116,13 @@ pub async fn run_dkg(
     network: NetworkType,
 ) -> Result<TaggedDkg> {
     let n_peers = peers.len();
+    // 0/0: the room did not say; the host's R1 does. It is sent unprompted,
+    // so waiting for it before our own R1 cannot stall the ceremony.
+    let (min_signers, max_signers) = if min_signers == 0 {
+        host_shape(t, &mut mailbox).await?
+    } else {
+        (min_signers, max_signers)
+    };
     if n_peers + 1 != usize::from(max_signers) {
         return Err(err(format!(
             "{} participants in the session, but the vault is {min_signers}-of-{max_signers}",
@@ -188,6 +195,26 @@ pub async fn run_dkg(
         min_signers,
         max_signers,
     })
+}
+
+/// Wait for the host's R1 and read t-of-n off it, leaving it in the mailbox.
+async fn host_shape(t: &mut FrostdTransport, mailbox: &mut Mailbox) -> Result<(u16, u16)> {
+    let deadline = Instant::now() + Duration::from_secs(300);
+    loop {
+        if let Some((t, n, _, _)) = mailbox.peek("R1").find_map(parse_host_r1) {
+            return Ok((t, n));
+        }
+        if Instant::now() >= deadline {
+            return Err(err("the host never sent its round 1"));
+        }
+        let batch = t.receive(false).await?;
+        if batch.is_empty() {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        for (_, msg) in batch {
+            mailbox.push(msg)?;
+        }
+    }
 }
 
 /// Our share, as the signing rounds need it.
