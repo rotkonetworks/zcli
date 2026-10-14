@@ -5,6 +5,7 @@ pub mod export;
 pub mod license;
 pub mod merchant;
 pub mod migrate;
+pub mod custody;
 pub mod multisig;
 pub mod send;
 pub mod send_ironwood;

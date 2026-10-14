@@ -39,6 +39,7 @@ cli = [
     "dep:zync-core",
     "dep:anyhow",
     "dep:zafu-wasm",
+    "dep:pczt",
     # Native-only: put zakura-halo2-proofs on its rayon backend, so proving an
     # ironwood bundle uses every core instead of one. Historically this was
     # also load-bearing — a second, upstream halo2_proofs 0.3.5 in the native
@@ -182,6 +183,10 @@ urlencoding = { version = "2", optional = true }
 # upstream; no cfg or RUSTFLAGS is required for `zcli tx migrate`.
 zafu-wasm = { version = "0.2.0", path = "../../crates/zcash-wasm", default-features = false, optional = true }
 
+# A co-signer checks the PCZT it is asked to sign (payout_verify.rs). Same
+# package and version zafu-wasm locks, so this adds no second copy.
+pczt = { package = "zakura-pczt", version = "=0.1.0-rc4", default-features = false, features = ["orchard", "signer"], optional = true }
+
 [build-dependencies]
 tonic-build = "0.11"
 
@@ -192,3 +197,6 @@ frostd = { git = "https://github.com/ZcashFoundation/frost-tools", rev = "06c0db
 axum = "0.8"
 tokio = { version = "1", features = ["full", "test-util"] }
 tempfile = "3"
+# payout_verify's tests build real payout PCZTs with the standard builder
+zcash_primitives = { package = "zakura-primitives", version = "=2.0.0", default-features = false, features = ["non-standard-fees"] }
+pczt = { package = "zakura-pczt", version = "=0.1.0-rc4", default-features = false, features = ["orchard", "signer", "io-finalizer", "zcp-builder"] }

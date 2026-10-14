@@ -11,8 +11,8 @@ use zecli::cam;
 use zecli::{address, client, frost_qr, key, notes_export, ops, quic, wallet, witness};
 
 use cli::{
-    Cli, Command, InitAction, MerchantAction, MultisigAction, ServiceAction, SignerAction,
-    TxAction, ViewAction,
+    Cli, Command, InitAction, MerchantAction, MultisigAction, PokerAction, ServiceAction,
+    SignerAction, TxAction, ViewAction,
 };
 use zecli::error::Error;
 
@@ -243,6 +243,7 @@ async fn run(cli: &Cli) -> Result<(), Error> {
             ServiceAction::TreeInfo { height } => cmd_tree_info(cli, *height).await,
         },
         Command::Multisig { action } => cmd_multisig(cli, action).await,
+        Command::Poker { action } => cmd_poker(cli, action).await,
     }
 }
 
@@ -2596,10 +2597,18 @@ async fn cmd_multisig(cli: &Cli, action: &MultisigAction) -> Result<(), Error> {
                 Some(""),
                 *min_signers,
                 *max_signers,
+                None,
             )
             .await
         }
-        MultisigAction::Join { code, server } => {
+        MultisigAction::Join {
+            code,
+            server,
+            label,
+        } => {
+            // a tagged (zafu / escrow) vault is kept under this name; refuse
+            // a taken one now rather than after the ceremony
+            ops::custody::ensure_free(label.as_deref().unwrap_or(code))?;
             let (private, public) =
                 frost_spend::relay_cipher::generate_keypair().map_err(Error::Other)?;
             // 0/0 = learn t and n from the coordinator's room entry
@@ -2613,8 +2622,56 @@ async fn cmd_multisig(cli: &Cli, action: &MultisigAction) -> Result<(), Error> {
                 Some(code),
                 0,
                 0,
+                Some(label.as_deref().unwrap_or(code)),
             )
             .await
+        }
+        MultisigAction::Cosign {
+            vault,
+            server,
+            session,
+            peer,
+            plan,
+            escrow,
+            room,
+            max_fee,
+        } => {
+            let vault = ops::custody::Vault::load(vault)?;
+            let plan = match (plan, escrow, room) {
+                (Some(file), _, _) => ops::custody::read_plan(file)?,
+                (None, Some(url), Some(room)) => ops::custody::parse_plan(
+                    &ops::custody::Escrow::new(url).get(room, "/payout").await?,
+                )?,
+                _ => return Err(Error::Other("give --plan, or --escrow with --room".into())),
+            };
+            let server = server.as_deref().unwrap_or(&vault.server);
+            let spends = ops::custody::cosign(
+                &vault,
+                server,
+                session,
+                peer,
+                &plan,
+                *max_fee,
+                cli.is_mainnet(),
+            )
+            .await?;
+            if cli.json {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "cosigned": true,
+                        "vault": vault.label,
+                        "spends": spends,
+                        "relay_pubkey": vault.relay_public,
+                    })
+                );
+            } else {
+                eprintln!(
+                    "co-signed {spends} spend(s) from vault {} - the PCZT pays exactly the plan",
+                    vault.label
+                );
+            }
+            Ok(())
         }
 
         MultisigAction::RelayDkg {
@@ -2637,6 +2694,7 @@ async fn cmd_multisig(cli: &Cli, action: &MultisigAction) -> Result<(), Error> {
                 room.as_deref(),
                 *min_signers,
                 *max_signers,
+                None,
             )
             .await
         }
@@ -2924,7 +2982,9 @@ async fn cmd_relay_dkg(
     room: Option<&str>,
     min_signers: u16,
     max_signers: u16,
+    label: Option<&str>,
 ) -> Result<(), Error> {
+    use zecli::frost_ceremony::{detect_dialect, run_dkg_with, Dialect, Mailbox};
     use zecli::frostd_transport::FrostdTransport;
 
     let decode = |h: &str, what: &str| -> Result<Vec<u8>, Error> {
@@ -2974,6 +3034,10 @@ async fn cmd_relay_dkg(
             .await
             .map_err(|e| Error::Other(e.to_string()))?;
 
+    // A room-code joiner listens before it speaks: the first message tells
+    // zcli's own wire from zafu's tagged one (zafu, the zk.poker escrow).
+    let room_joiner = matches!(&discovered_session, Some(r) if r.session_id.is_some())
+        && session.is_none();
     match (&discovered_session, session) {
         // room-code host: create the session and hand the uuid to the room
         (Some(rdv), None) if rdv.session_id.is_none() => {
@@ -3021,7 +3085,57 @@ async fn cmd_relay_dkg(
         }
     }
 
-    let result = zecli::frost_ceremony::run_dkg(&mut t, peers, min_signers, max_signers)
+    let mailbox = if room_joiner {
+        let (dialect, mailbox) = detect_dialect(&mut t)
+            .await
+            .map_err(|e| Error::Other(e.to_string()))?;
+        if dialect == Dialect::Tagged {
+            let dkg = zecli::frost_tagged::run_dkg(
+                &mut t,
+                mailbox,
+                peers,
+                min_signers,
+                max_signers,
+                if cli.is_mainnet() {
+                    zcash_protocol::consensus::NetworkType::Main
+                } else {
+                    zcash_protocol::consensus::NetworkType::Test
+                },
+            )
+            .await
+            .map_err(|e| Error::Other(e.to_string()))?;
+            let code = room.unwrap_or_default();
+            let (vault, path) = ops::custody::store_tagged(
+                dkg,
+                label.unwrap_or(code),
+                code,
+                server,
+                cli.is_mainnet(),
+                key_hex,
+                pubkey_hex,
+            )?;
+            if cli.json {
+                println!("{}", vault.public_json(&path));
+            } else {
+                println!("vault:        {}", vault.address);
+                println!("viewing key:  {}", vault.ufvk);
+                println!("relay pubkey: {}", vault.relay_public);
+                println!();
+                println!(
+                    "Your share of this {}-of-{} vault is in {}.",
+                    vault.min_signers,
+                    vault.max_signers,
+                    path.display()
+                );
+                println!("Keep it: without it you cannot co-sign a payout.");
+            }
+            return Ok(());
+        }
+        mailbox
+    } else {
+        Mailbox::default()
+    };
+    let result = run_dkg_with(&mut t, mailbox, peers, min_signers, max_signers)
         .await
         .map_err(|e| Error::Other(e.to_string()))?;
 
@@ -3218,4 +3332,85 @@ async fn relay_dkg_rendezvous(
             tokio::time::sleep(POLL).await;
         }
     }
+}
+
+async fn cmd_poker(cli: &Cli, action: &PokerAction) -> Result<(), Error> {
+    use ops::custody;
+    let (done, what) = match action {
+        PokerAction::Collect {
+            escrow,
+            room,
+            token,
+            vault,
+            plan,
+            to,
+            server,
+            max_fee,
+        } => {
+            let vault = custody::Vault::load(vault.as_deref().unwrap_or(room))?;
+            let plan = plan.as_deref().map(custody::read_plan).transpose()?;
+            let server = server.as_deref().unwrap_or(&vault.server);
+            let done = custody::collect(
+                &vault,
+                server,
+                escrow,
+                room,
+                token,
+                plan,
+                to.as_deref(),
+                *max_fee,
+                cli.is_mainnet(),
+            )
+            .await?;
+            (done, "payout")
+        }
+        PokerAction::Refund {
+            escrow,
+            room,
+            token,
+            vault,
+            to,
+            server,
+            max_fee,
+        } => {
+            let vault = custody::Vault::load(vault.as_deref().unwrap_or(room))?;
+            let server = server.as_deref().unwrap_or(&vault.server);
+            let done = custody::refund(
+                &vault,
+                server,
+                escrow,
+                room,
+                token,
+                to.as_deref(),
+                *max_fee,
+                cli.is_mainnet(),
+            )
+            .await?;
+            (done, "refund")
+        }
+    };
+    if cli.json {
+        let plan: Vec<_> = done
+            .plan
+            .iter()
+            .map(|(a, v)| serde_json::json!({"address": a, "amount": v}))
+            .collect();
+        println!(
+            "{}",
+            serde_json::json!({
+                "kind": what,
+                "txid": done.txid,
+                "plan": plan,
+                "ours": done.ours,
+                "spends": done.spends,
+            })
+        );
+    } else {
+        for (a, v) in &done.plan {
+            eprintln!("  {v:>12} zat -> {a}");
+        }
+        eprintln!("co-signed {} spend(s); {what} broadcast", done.spends);
+        println!("txid: {}", done.txid);
+    }
+    Ok(())
 }
