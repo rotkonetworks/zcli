@@ -327,6 +327,12 @@ impl Wallet {
         format!("{}/seed_derivation", zcli_dir())
     }
 
+    /// where multisig shares live, one JSON file per vault:
+    /// ~/.zcli/multisig (under ~/.zcli/testnet on testnet)
+    pub fn multisig_dir() -> String {
+        format!("{}/multisig", zcli_dir())
+    }
+
     /// wallet db path ignoring watch mode — the spending wallet's location
     pub fn spending_path() -> String {
         format!("{}/wallet", zcli_dir())

@@ -160,6 +160,12 @@ pub enum Command {
         action: MultisigAction,
     },
 
+    /// zk.poker escrow custody: collect a pot or a refund by co-signing it
+    Poker {
+        #[command(subcommand)]
+        action: PokerAction,
+    },
+
     /// Initialize wallet: import FVK, sync chain
     Init {
         #[command(subcommand)]
@@ -420,6 +426,64 @@ pub enum ServiceAction {
 }
 
 #[derive(Subcommand)]
+pub enum PokerAction {
+    /// collect a settled pot: ask the escrow to pay out, co-sign if the PCZT
+    /// pays exactly the plan, wait for the broadcast
+    Collect {
+        /// escrow base URL
+        #[arg(long)]
+        escrow: String,
+        /// escrow room
+        #[arg(long)]
+        room: String,
+        /// the room's payout token (from creating the room)
+        #[arg(long)]
+        token: String,
+        /// the vault (label or DKG room code; default: --room)
+        #[arg(long)]
+        vault: Option<String>,
+        /// the plan you agreed to, a JSON file (default: the escrow's settled plan)
+        #[arg(long)]
+        plan: Option<String>,
+        /// refuse unless the plan pays this address
+        #[arg(long)]
+        to: Option<String>,
+        /// frostd relay (default: the one the vault was made on)
+        #[arg(long)]
+        server: Option<String>,
+        /// the most network fee the payout may pay, zatoshi
+        #[arg(long, default_value_t = 10_000)]
+        max_fee: u64,
+    },
+
+    /// cancel an unplayed table and co-sign the refund of each seat's
+    /// confirmed deposit
+    Refund {
+        /// escrow base URL
+        #[arg(long)]
+        escrow: String,
+        /// escrow room
+        #[arg(long)]
+        room: String,
+        /// the room's payout token (from creating the room)
+        #[arg(long)]
+        token: String,
+        /// the vault (label or DKG room code; default: --room)
+        #[arg(long)]
+        vault: Option<String>,
+        /// refuse unless the refund pays this address
+        #[arg(long)]
+        to: Option<String>,
+        /// frostd relay (default: the one the vault was made on)
+        #[arg(long)]
+        server: Option<String>,
+        /// the most network fee the refund may pay, zatoshi
+        #[arg(long, default_value_t = 10_000)]
+        max_fee: u64,
+    },
+}
+
+#[derive(Subcommand)]
 pub enum MultisigAction {
     /// generate a relay identity keypair (frostd addresses you by its pubkey)
     RelayKeygen,
@@ -440,12 +504,53 @@ pub enum MultisigAction {
     },
 
     /// join a multisig DKG with the room code the host gave you
+    ///
+    /// Speaks whichever wire the host does: zcli's own, or zafu's tagged
+    /// one (zafu, the zk.poker escrow). A tagged vault is kept under
+    /// ~/.zcli/multisig/<label>.json for `multisig cosign` / `poker collect`.
     Join {
         /// the four-word room code
         code: String,
         /// frostd relay with a rendezvous
         #[arg(long, default_value = "https://relay.zafu.pro")]
         server: String,
+        /// name to keep the vault under (default: the room code)
+        #[arg(long)]
+        label: Option<String>,
+    },
+
+    /// co-sign a payout from a vault you hold a share of - only if it pays
+    /// exactly the expected plan
+    ///
+    /// Joins the signing session the coordinator (e.g. the zk.poker escrow)
+    /// opened, checks its PCZT - spends are vault notes, outputs are the plan
+    /// plus change to the vault, fee within the cap, sighash and randomizers
+    /// its own - and only then contributes a share. Signs with the relay key
+    /// the vault was made with (`multisig join --json` prints it).
+    Cosign {
+        /// the vault: its label, or the room code it was joined from
+        vault: String,
+        /// frostd relay (default: the one the vault was made on)
+        #[arg(long)]
+        server: Option<String>,
+        /// the signing session's uuid
+        #[arg(long)]
+        session: String,
+        /// the coordinator's relay public key, hex
+        #[arg(long)]
+        peer: String,
+        /// the expected plan, a JSON file: [{address, amount}] or {outputs: [...]}
+        #[arg(long, required_unless_present = "escrow", conflicts_with = "escrow")]
+        plan: Option<String>,
+        /// fetch the plan from this escrow's GET /room/<room>/payout
+        #[arg(long, requires = "room")]
+        escrow: Option<String>,
+        /// escrow room (with --escrow)
+        #[arg(long, requires = "escrow")]
+        room: Option<String>,
+        /// the most network fee the payout may pay, zatoshi
+        #[arg(long, default_value_t = 10_000)]
+        max_fee: u64,
     },
 
     /// run a full DKG over a standard frostd relay

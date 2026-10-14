@@ -8466,6 +8466,8 @@ dependencies = [
  "zakura-keys",
  "zakura-orchard",
  "zakura-pasta-curves 2.0.0",
+ "zakura-pczt",
+ "zakura-primitives",
  "zakura-protocol",
  "zakura-reddsa",
  "zakura-transparent",

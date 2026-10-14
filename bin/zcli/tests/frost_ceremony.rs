@@ -379,3 +379,107 @@ async fn our_wasm_signature_is_accepted_by_a_real_frostd() {
     let out: api::LoginOutput = res.json().await.expect("login json");
     assert!(!out.access_token.is_nil(), "no access token issued");
 }
+
+/// Three connected participants in one session, A the coordinator.
+async fn three_in_a_session(
+    host: &str,
+) -> [(FrostdTransport, Vec<frost_client::cipher::PublicKey>); 3] {
+    let keys: Vec<_> = (0..3)
+        .map(|_| FrostdTransport::generate_keypair().expect("keypair"))
+        .collect();
+    let pks: Vec<_> = keys.iter().map(|(_, pk)| pk.clone()).collect();
+    let mut out = Vec::new();
+    for (i, (sk, pk)) in keys.into_iter().enumerate() {
+        let peers: Vec<_> = pks
+            .iter()
+            .enumerate()
+            .filter(|(j, _)| *j != i)
+            .map(|(_, p)| p.clone())
+            .collect();
+        let t = FrostdTransport::connect(host.to_string(), sk, pk, peers.clone())
+            .await
+            .expect("connect");
+        out.push((t, peers));
+    }
+    let session = out[0]
+        .0
+        .create_session(pks.clone(), 3)
+        .await
+        .expect("create session");
+    out[1].0.join_session(session);
+    out[2].0.join_session(session);
+    out.try_into().ok().expect("three")
+}
+
+/// A joiner that listens first still completes zcli's own ceremony: the
+/// detection must not cost the wire it replaced anything.
+#[tokio::test]
+async fn a_joiner_detects_zcli_s_own_wire() {
+    use zecli::frost_ceremony::{detect_dialect, run_dkg, run_dkg_with, Dialect};
+    let host = format!("http://{}", spawn_frostd().await);
+    let [(mut a, pa), (b, pb), (c, pc)] = three_in_a_session(&host).await;
+    let joiner = |mut t: FrostdTransport, peers| async move {
+        let (dialect, mailbox) = detect_dialect(&mut t).await.expect("detect");
+        assert_eq!(dialect, Dialect::Zcli);
+        run_dkg_with(&mut t, mailbox, peers, 2, 3).await.expect("joiner dkg")
+    };
+    let (ha, hb, hc) = tokio::join!(
+        async { run_dkg(&mut a, pa, 2, 3).await.expect("host dkg") },
+        joiner(b, pb),
+        joiner(c, pc),
+    );
+    assert_eq!(ha.public_key_package_hex, hb.public_key_package_hex);
+    assert_eq!(ha.public_key_package_hex, hc.public_key_package_hex);
+}
+
+/// zafu's tagged wire, as the zk.poker escrow hosts it: zcli joiners detect
+/// it from the host's R1, finish the ceremony, and land on the host's vault.
+#[tokio::test]
+async fn a_joiner_detects_and_joins_the_tagged_wire() {
+    use zcash_protocol::consensus::NetworkType;
+    use zecli::frost_ceremony::{collect, detect_dialect, Dialect, Mailbox};
+    use zecli::frost_tagged;
+
+    let host = format!("http://{}", spawn_frostd().await);
+    let [(mut a, pa), (b, pb), (c, pc)] = three_in_a_session(&host).await;
+
+    // the host, as poker-escrow's frost_dkg::run_dkg runs it
+    let tagged_host = async move {
+        let sk = "07".repeat(32);
+        let r1 = dkg_part1(3, 2).unwrap();
+        a.send(pa.clone(), format!("R1:2:3:SK:{sk}:{}", r1.broadcast_hex).into_bytes())
+            .await
+            .unwrap();
+        let mut m = Mailbox::default();
+        let bcs = collect(&mut a, &mut m, "R1", 2, "r1").await.unwrap();
+        let r2 = dkg_part2(&r1.secret_hex, &bcs).unwrap();
+        for p in &r2.peer_packages {
+            a.send(pa.clone(), format!("R2:{p}").into_bytes()).await.unwrap();
+        }
+        let pkgs = collect(&mut a, &mut m, "R2", 4, "r2").await.unwrap();
+        let r3 = dkg_part3(&r2.secret_hex, &bcs, &pkgs).unwrap();
+        let (ua, ufvk, _) =
+            frost_tagged::vault_keys(&r3.public_key_package_hex, &sk, NetworkType::Test).unwrap();
+        a.send(pa.clone(), format!("FVK:{ufvk}").into_bytes()).await.unwrap();
+        for theirs in collect(&mut a, &mut m, "FVK", 2, "fvk").await.unwrap() {
+            assert_eq!(theirs, ufvk);
+        }
+        (ua, r3.public_key_package_hex)
+    };
+    // (t, n) as the room said it; 0/0 = the room did not, learn it from the host
+    let joiner = |mut t: FrostdTransport, peers, (min, max)| async move {
+        let (dialect, mailbox) = detect_dialect(&mut t).await.expect("detect");
+        assert_eq!(dialect, Dialect::Tagged);
+        frost_tagged::run_dkg(&mut t, mailbox, peers, min, max, NetworkType::Test)
+            .await
+            .expect("tagged joiner")
+    };
+    let ((ua, pkg), jb, jc) =
+        tokio::join!(tagged_host, joiner(b, pb, (2, 3)), joiner(c, pc, (0, 0)));
+    assert_eq!((jc.min_signers, jc.max_signers), (2, 3), "learned from the host's R1");
+    assert_eq!(jb.address, ua, "joiner b lands on the host's vault");
+    assert_eq!(jc.address, ua, "joiner c lands on the host's vault");
+    assert_eq!(jb.public_key_package_hex, pkg);
+    assert_eq!(jb.sk_hex, "07".repeat(32));
+    assert_ne!(jb.key_package_hex, jc.key_package_hex, "distinct shares");
+}

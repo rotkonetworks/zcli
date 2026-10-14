@@ -42,12 +42,12 @@ const TAG_ROUND2: &str = "dkg2";
 /// may arrive while we are still collecting round 1. Dropping it would
 /// deadlock the ceremony, so it waits here until asked for.
 #[derive(Default)]
-struct Mailbox {
+pub struct Mailbox {
     pending: Vec<(String, String)>,
 }
 
 impl Mailbox {
-    fn take(&mut self, tag: &str, want: usize) -> Option<Vec<String>> {
+    pub fn take(&mut self, tag: &str, want: usize) -> Option<Vec<String>> {
         let matching: Vec<String> = self
             .pending
             .iter()
@@ -62,7 +62,15 @@ impl Mailbox {
         }
     }
 
-    fn push(&mut self, raw: Vec<u8>) -> Result<()> {
+    /// Bodies of the messages waiting under `tag`, without taking them.
+    pub fn peek<'a>(&'a self, tag: &'a str) -> impl Iterator<Item = &'a str> + 'a {
+        self.pending
+            .iter()
+            .filter(move |(t, _)| t == tag)
+            .map(|(_, body)| body.as_str())
+    }
+
+    pub fn push(&mut self, raw: Vec<u8>) -> Result<()> {
         let text = String::from_utf8(raw).map_err(|_| {
             TransportError::Server("a peer sent a message that is not valid UTF-8".into())
         })?;
@@ -77,7 +85,7 @@ impl Mailbox {
 }
 
 /// Collect `want` messages carrying `tag`, or fail with something actionable.
-async fn collect(
+pub async fn collect(
     t: &mut FrostdTransport,
     mailbox: &mut Mailbox,
     tag: &str,
@@ -121,8 +129,62 @@ pub async fn run_dkg(
     min_signers: u16,
     max_signers: u16,
 ) -> Result<Dkg3Result> {
-    let n_peers = peers.len();
+    run_dkg_with(t, Mailbox::default(), peers, min_signers, max_signers).await
+}
+
+/// Which DKG wire a coordinator speaks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Dialect {
+    /// zcli's own: `dkg1:` / `dkg2:`, everyone sends round 1 at once
+    Zcli,
+    /// zafu's tagged wire (also the zk.poker escrow's): `R1:` / `R2:` / `FVK:`,
+    /// the host's round 1 carrying t, n and the viewing-key seed
+    Tagged,
+}
+
+/// A joiner's first move: listen before speaking, and tell the two wires
+/// apart by the first message that arrives.
+///
+/// Both coordinators send round 1 as soon as the session exists, so waiting
+/// costs nothing; sending first would commit us to one wire before we know
+/// which one the room speaks. Whatever arrived is kept in the returned
+/// mailbox for the ceremony proper.
+pub async fn detect_dialect(t: &mut FrostdTransport) -> Result<(Dialect, Mailbox)> {
+    let deadline = std::time::Instant::now() + ROUND_TIMEOUT;
     let mut mailbox = Mailbox::default();
+    loop {
+        let batch = t.receive(false).await?;
+        if let Some((_, first)) = batch.first() {
+            let dialect = if first.starts_with(b"R1:") {
+                Dialect::Tagged
+            } else {
+                Dialect::Zcli
+            };
+            for (_, msg) in batch {
+                mailbox.push(msg)?;
+            }
+            return Ok((dialect, mailbox));
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(TransportError::Server(format!(
+                "waited {}s and the coordinator never started the ceremony",
+                ROUND_TIMEOUT.as_secs()
+            )));
+        }
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+}
+
+/// [`run_dkg`], starting from messages that already arrived (see
+/// [`detect_dialect`]).
+pub async fn run_dkg_with(
+    t: &mut FrostdTransport,
+    mut mailbox: Mailbox,
+    peers: Vec<PublicKey>,
+    min_signers: u16,
+    max_signers: u16,
+) -> Result<Dkg3Result> {
+    let n_peers = peers.len();
 
     // ── round 1: broadcast our commitment ──
     let r1 = dkg_part1(max_signers, min_signers).map_err(|e| TransportError::Server(e.to_string()))?;
