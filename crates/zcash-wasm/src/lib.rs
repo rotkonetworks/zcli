@@ -1862,20 +1862,13 @@ fn parse_memo_bytes(memo: &[u8; 512]) -> (String, bool) {
         }
     }
 
-    // Try to parse as raw UTF-8 (some wallets don't use the 0xF5 prefix)
+    // ZIP 302: a first byte of 0xF4 or below means UTF-8 text, padded with zeros.
+    // Valid UTF-8 is text whatever its script: a printable-ASCII ratio here read
+    // accented and CJK memos as binary, and wallets dropped them.
     let text_bytes: Vec<u8> = memo.iter().take_while(|&&b| b != 0).copied().collect();
 
-    if let Ok(text) = String::from_utf8(text_bytes.clone()) {
-        // Check if it looks like text (mostly printable ASCII + common UTF-8)
-        let printable_ratio = text_bytes
-            .iter()
-            .filter(|&&b| (32..=126).contains(&b) || b >= 0xC0)
-            .count() as f32
-            / text_bytes.len().max(1) as f32;
-
-        if printable_ratio > 0.8 {
-            return (text, true);
-        }
+    if let Ok(text) = String::from_utf8(text_bytes) {
+        return (text, true);
     }
 
     // Return as hex if it's binary data
@@ -1885,6 +1878,29 @@ fn parse_memo_bytes(memo: &[u8; 512]) -> (String, bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── memo text (ZIP 302) ────────────────────────────────────────────────
+
+    fn memo_of(bytes: &[u8]) -> [u8; 512] {
+        let mut m = [0u8; 512];
+        m[..bytes.len()].copy_from_slice(bytes);
+        m
+    }
+
+    #[test]
+    fn memo_text_in_any_script_is_text() {
+        for text in ["qa 匿 名 mv8cq34n · ünï", "匿名の手紙", "plain ascii"] {
+            assert_eq!(parse_memo_bytes(&memo_of(text.as_bytes())), (text.to_string(), true));
+        }
+    }
+
+    #[test]
+    fn memo_binary_and_empty_are_not_text() {
+        assert_eq!(parse_memo_bytes(&memo_of(&[0xF6])), (String::new(), true));
+        assert!(!parse_memo_bytes(&memo_of(&[0xFF, 0x5A, 1])).1);
+        // invalid UTF-8 below 0xF5 stays binary
+        assert!(!parse_memo_bytes(&memo_of(&[0x61, 0xC3, 0x28])).1);
+    }
 
     // ── explicit PCZT expiry ───────────────────────────────────────────────
 
