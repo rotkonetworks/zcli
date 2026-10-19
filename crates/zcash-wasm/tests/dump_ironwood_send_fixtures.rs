@@ -16,7 +16,17 @@
 //!   zt           - z->t withdrawal (transparent recipient, no orchard bundle)
 //!   multinote    - two ironwood notes spent against one shared 2-leaf anchor
 //!
-//! Run:  cargo test --release --test dump_ironwood_send_fixtures -- --nocapture
+//! Run:  ZIGNER_FIXTURES_DIR=/path/to/zigner/rust/pczt_signing/tests/fixtures \
+//!        cargo test --release --test dump_ironwood_send_fixtures -- --nocapture
+//!
+//! Without ZIGNER_FIXTURES_DIR the test builds every shape (so a builder
+//! regression still fails here) but writes nothing. It used to write to a
+//! hard-coded zigner checkout on every `cargo test`, silently regenerating that
+//! repo's committed fixtures with fresh randomness.
+//!
+//! Each shape is dumped twice: on NU6.3 (`ironwood_<shape>_*`) and on NU7
+//! (`ironwood_nu7_<shape>_*`, branch 0x77190ad9, NU7 default expiry), so zigner
+//! can prove its shipped module signs what this wallet builds on both.
 
 mod common;
 
@@ -30,8 +40,8 @@ use zcash_protocol::consensus::{
 use zcash_protocol::memo::MemoBytes;
 
 const NU6_3_BRANCH_ID: u32 = 0x37a5_165b;
+const NU7_BRANCH_ID: u32 = 0x7719_0ad9;
 const COIN_TYPE_TEST: u32 = 1;
-const OUT_DIR: &str = "/steam/rotko/zigner/rust/pczt_signing/tests/fixtures";
 
 #[derive(Clone, Copy, Debug)]
 struct Nu63TestNet;
@@ -47,19 +57,40 @@ impl Parameters for Nu63TestNet {
     }
 }
 
+/// The same test network with NU7 also active (after NU6.3), so the builder
+/// binds branch 0x77190ad9 at the dump's target height.
+#[derive(Clone, Copy, Debug)]
+struct Nu7TestNet;
+impl Parameters for Nu7TestNet {
+    fn network_type(&self) -> NetworkType {
+        NetworkType::Test
+    }
+    fn activation_height(&self, nu: NetworkUpgrade) -> Option<BlockHeight> {
+        match nu {
+            NetworkUpgrade::Nu7 => Some(BlockHeight::from_u32(20)),
+            other => Nu63TestNet.activation_height(other),
+        }
+    }
+}
+
+/// Which upgrade a dump targets: params, the branch it must bind, its expiry
+/// delta, and the fixture-name prefix.
+#[derive(Clone, Copy)]
+enum Upgrade {
+    Nu63,
+    Nu7,
+}
+
 fn keys_from_seed(seed_phrase: &str, account: u32) -> orchard::keys::FullViewingKey {
     let mnemonic = bip39::Mnemonic::parse(seed_phrase).expect("valid test mnemonic");
     let seed = mnemonic.to_seed("");
     let account_id = zip32::AccountId::try_from(account).unwrap();
-    let sk = orchard::keys::SpendingKey::from_zip32_seed(&seed, COIN_TYPE_TEST, account_id).unwrap();
+    let sk =
+        orchard::keys::SpendingKey::from_zip32_seed(&seed, COIN_TYPE_TEST, account_id).unwrap();
     orchard::keys::FullViewingKey::from(&sk)
 }
 
-fn note_of(
-    fvk: &orchard::keys::FullViewingKey,
-    value: u64,
-    rho_seed: u8,
-) -> orchard::Note {
+fn note_of(fvk: &orchard::keys::FullViewingKey, value: u64, rho_seed: u8) -> orchard::Note {
     let rho = orchard::note::Rho::from_bytes(&[rho_seed; 32]).unwrap();
     let rseed = (0u8..=255)
         .find_map(|b| Option::from(orchard::note::RandomSeed::from_bytes([b; 32], &rho)))
@@ -120,6 +151,7 @@ fn to_hex(bytes: &[u8]) -> String {
 }
 
 fn dump(
+    upgrade: Upgrade,
     name: &str,
     recipient: IronwoodRecipient,
     prepared: Vec<(orchard::Note, orchard::tree::MerklePath)>,
@@ -130,21 +162,37 @@ fn dump(
 ) {
     let fvk = keys_from_seed(SEED, 0);
     let target_height = 10_000_000u32;
-    let IronwoodPcztWithFrost { pczt, .. } = build_ironwood_send_pczt_proven(
-        Nu63TestNet,
-        &fvk,
-        prepared,
-        recipient,
-        amount,
-        fee,
-        anchor,
-        target_height,
-        NU6_3_BRANCH_ID,
-        memo,
-        // Legacy expiry, so the dumped fixtures keep the shape zigner replays.
-        LEGACY_PCZT_EXPIRY_DELTA,
-    )
-    .unwrap_or_else(|e| panic!("[{name}] build+prove: {e}"));
+    let built = match upgrade {
+        Upgrade::Nu63 => build_ironwood_send_pczt_proven(
+            Nu63TestNet,
+            &fvk,
+            prepared,
+            recipient,
+            amount,
+            fee,
+            anchor,
+            target_height,
+            NU6_3_BRANCH_ID,
+            memo,
+            // Legacy expiry, so the dumped fixtures keep the shape zigner replays.
+            LEGACY_PCZT_EXPIRY_DELTA,
+        ),
+        Upgrade::Nu7 => build_ironwood_send_pczt_proven(
+            Nu7TestNet,
+            &fvk,
+            prepared,
+            recipient,
+            amount,
+            fee,
+            anchor,
+            target_height,
+            NU7_BRANCH_ID,
+            memo,
+            zafu_wasm::node_params::EXPIRY_DELTA_NU7,
+        ),
+    };
+    let IronwoodPcztWithFrost { pczt, .. } =
+        built.unwrap_or_else(|e| panic!("[{name}] build+prove: {e}"));
 
     let retained_hex = to_hex(&pczt.clone().serialize().expect("serialize retained"));
     let full_hex = to_hex(
@@ -154,10 +202,29 @@ fn dump(
     );
     let compact_hex = redact_pczt_compact(&full_hex).expect("compact-redact");
 
-    std::fs::create_dir_all(OUT_DIR).expect("mk fixtures dir");
-    std::fs::write(format!("{OUT_DIR}/ironwood_{name}_retained.hex"), &retained_hex).unwrap();
-    std::fs::write(format!("{OUT_DIR}/ironwood_{name}_full.hex"), &full_hex).unwrap();
-    std::fs::write(format!("{OUT_DIR}/ironwood_{name}_compact.hex"), &compact_hex).unwrap();
+    let parsed = pczt::Pczt::parse(&hex::decode(&full_hex).unwrap()).expect("reparse");
+    let want = match upgrade {
+        Upgrade::Nu63 => NU6_3_BRANCH_ID,
+        Upgrade::Nu7 => NU7_BRANCH_ID,
+    };
+    assert_eq!(
+        *parsed.global().consensus_branch_id(),
+        want,
+        "[{name}] branch"
+    );
+
+    let Ok(out_dir) = std::env::var("ZIGNER_FIXTURES_DIR") else {
+        eprintln!("[{name}] built; not written (set ZIGNER_FIXTURES_DIR to export)");
+        return;
+    };
+    let file = match upgrade {
+        Upgrade::Nu63 => format!("ironwood_{name}"),
+        Upgrade::Nu7 => format!("ironwood_nu7_{name}"),
+    };
+    std::fs::create_dir_all(&out_dir).expect("mk fixtures dir");
+    std::fs::write(format!("{out_dir}/{file}_retained.hex"), &retained_hex).unwrap();
+    std::fs::write(format!("{out_dir}/{file}_full.hex"), &full_hex).unwrap();
+    std::fs::write(format!("{out_dir}/{file}_compact.hex"), &compact_hex).unwrap();
     eprintln!(
         "[{name}] retained={}B full={}B compact={}B",
         retained_hex.len() / 2,
@@ -180,32 +247,60 @@ fn dump_ironwood_send_fixtures() {
         )),
         NU6_3_BRANCH_ID,
     );
+    assert_eq!(
+        u32::from(BranchId::for_height(
+            &Nu7TestNet,
+            BlockHeight::from_u32(10_000_000)
+        )),
+        NU7_BRANCH_ID,
+    );
     let recip = keys_from_seed(RECIP_SEED, 0).address_at(0u32, orchard::keys::Scope::External);
     let shielded = IronwoodRecipient::Shielded(recip);
 
-    // single: one note, empty memo (the tested-easy shape)
-    let (p, a) = single_note(&keys_from_seed(SEED, 0), 1_000_000);
-    dump("single", shielded, p, a, 600_000, 10_000, MemoBytes::empty());
+    for upgrade in [Upgrade::Nu63, Upgrade::Nu7] {
+        // single: one note, empty memo (the tested-easy shape)
+        let (p, a) = single_note(&keys_from_seed(SEED, 0), 1_000_000);
+        dump(
+            upgrade,
+            "single",
+            shielded,
+            p,
+            a,
+            600_000,
+            10_000,
+            MemoBytes::empty(),
+        );
 
-    // memo: NON-EMPTY memo - the compact empty-memo hardcode should mis-sign
-    let (p, a) = single_note(&keys_from_seed(SEED, 0), 1_000_000);
-    let memo = MemoBytes::from_bytes(b"break the compact path - isislovecruft").expect("memo");
-    dump("memo", shielded, p, a, 600_000, 10_000, memo);
+        // memo: NON-EMPTY memo - the compact empty-memo hardcode should mis-sign
+        let (p, a) = single_note(&keys_from_seed(SEED, 0), 1_000_000);
+        let memo = MemoBytes::from_bytes(b"break the compact path - isislovecruft").expect("memo");
+        dump(upgrade, "memo", shielded, p, a, 600_000, 10_000, memo);
 
-    // zt: transparent recipient (z->t withdrawal, no orchard bundle)
-    let taddr = zcash_transparent::address::TransparentAddress::PublicKeyHash([0x42u8; 20]);
-    let (p, a) = single_note(&keys_from_seed(SEED, 0), 1_000_000);
-    dump(
-        "zt",
-        IronwoodRecipient::Transparent(taddr),
-        p,
-        a,
-        600_000,
-        10_000,
-        MemoBytes::empty(),
-    );
+        // zt: transparent recipient (z->t withdrawal, no orchard bundle)
+        let taddr = zcash_transparent::address::TransparentAddress::PublicKeyHash([0x42u8; 20]);
+        let (p, a) = single_note(&keys_from_seed(SEED, 0), 1_000_000);
+        dump(
+            upgrade,
+            "zt",
+            IronwoodRecipient::Transparent(taddr),
+            p,
+            a,
+            600_000,
+            10_000,
+            MemoBytes::empty(),
+        );
 
-    // multinote: two notes, shared anchor
-    let (p, a) = two_notes(&keys_from_seed(SEED, 0), 700_000, 700_000);
-    dump("multinote", shielded, p, a, 1_000_000, 10_000, MemoBytes::empty());
+        // multinote: two notes, shared anchor
+        let (p, a) = two_notes(&keys_from_seed(SEED, 0), 700_000, 700_000);
+        dump(
+            upgrade,
+            "multinote",
+            shielded,
+            p,
+            a,
+            1_000_000,
+            10_000,
+            MemoBytes::empty(),
+        );
+    }
 }
