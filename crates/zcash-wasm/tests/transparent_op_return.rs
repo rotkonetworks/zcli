@@ -32,6 +32,8 @@ impl Parameters for Nu63TestNet {
     fn activation_height(&self, nu: NetworkUpgrade) -> Option<BlockHeight> {
         match nu {
             NetworkUpgrade::Nu6_3 => Some(BlockHeight::from_u32(10)),
+            // stays NU6.3: mainnet schedules NU7 at 3,543,405 since Common 4.0
+            NetworkUpgrade::Nu7 => None,
             _ => MainNetwork.activation_height(nu),
         }
     }
@@ -42,8 +44,8 @@ const TARGET: u32 = 100;
 const MEMO: &[u8] = b"=:ETH.USDC:0xf3e03d4905725065Cc2E342Fc56BD1769A29E322:0/1/0:zafu:50";
 
 fn key() -> (secp256k1::SecretKey, secp256k1::PublicKey) {
-    let sk = secp256k1::SecretKey::from_slice(&[7u8; 32]).unwrap();
-    (sk, sk.public_key(&secp256k1::Secp256k1::signing_only()))
+    let sk = secp256k1::SecretKey::from_secret_bytes([7u8; 32]).unwrap();
+    (sk, sk.public_key())
 }
 
 fn coin(pk: &secp256k1::PublicKey, value: u64, txid_byte: u8) -> (OutPoint, TxOut) {
@@ -139,7 +141,6 @@ fn verify_transparent(tx: &Transaction, prevouts: &[TxOut]) {
     );
     let txid_parts = data.digest(TxIdDigester);
     let tb = data.transparent_bundle().unwrap();
-    let secp = secp256k1::Secp256k1::verification_only();
     for (i, (sig_script, prev)) in script_sigs.iter().zip(prevouts).enumerate() {
         // <len> <DER || 0x01> <33> <pubkey>
         let sig_len = sig_script[0] as usize;
@@ -162,9 +163,9 @@ fn verify_transparent(tx: &Transaction, prevouts: &[TxOut]) {
         )
         .unwrap();
         let sighash = signature_hash(&data, &SignableInput::Transparent(input), &txid_parts);
-        secp.verify_ecdsa(
-            &secp256k1::Message::from_digest(*sighash.as_ref()),
+        secp256k1::ecdsa::verify(
             &secp256k1::ecdsa::Signature::from_der(der).unwrap(),
+            secp256k1::Message::from_digest(*sighash.as_ref()),
             &pubkey,
         )
         .unwrap_or_else(|e| panic!("input {i}: signature does not verify: {e}"));
@@ -298,8 +299,8 @@ fn short_says_how_much_to_bring_and_then_it_builds() {
 #[test]
 fn refuses_foreign_coins_wrong_branch_and_foreign_signatures() {
     let (_, pk) = key();
-    let other_sk = secp256k1::SecretKey::from_slice(&[9u8; 32]).unwrap();
-    let other_pk = other_sk.public_key(&secp256k1::Secp256k1::signing_only());
+    let other_sk = secp256k1::SecretKey::from_secret_bytes([9u8; 32]).unwrap();
+    let other_pk = other_sk.public_key();
     let err = build(
         &[coin(&pk, 500_000, 1), coin(&other_pk, 500_000, 2)],
         1_000,

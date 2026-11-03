@@ -69,7 +69,7 @@
 // frostito's point-generic helpers instantiate `CurvePoint` for
 // `pasta_curves::pallas::Point`, whose `generator()` is pasta's DEFAULT
 // generator — not the Orchard spend-auth basepoint the ciphersuite
-// `crate::frost` (`reddsa::frost::redpallas`) signs in. Every key this crate
+// `crate::frost` (`reddsa_frost::redpallas`) signs in. Every key this crate
 // handles lives in the spend-auth group, so the weighted path states the
 // basepoint explicitly (`spend_auth_generator`, and `verify_inner_share`
 // instantiated at `SpendAuthPoint`) rather than relying on
@@ -95,7 +95,7 @@ use pasta_curves::pallas::{Point, Scalar};
 
 /// The ZF `frost-core` ciphersuite this crate's FROST types are built on.
 ///
-/// `crate::frost` is `reddsa::frost::redpallas`, whose `PallasBlake2b512`
+/// `crate::frost` is `reddsa_frost::redpallas`, whose `PallasBlake2b512`
 /// ciphersuite has `Element = pallas::Point` and `Scalar = pallas::Scalar`
 /// under the `zakura-pasta-curves` backend that frostito 0.8 shares, so the
 /// suite-generic frostito helpers and the point-generic weighted math below
@@ -577,7 +577,7 @@ impl Drop for WeightedNonce {
 /// The Orchard spend-auth basepoint, as the bare `Point` the frostito nonce
 /// and commitment types are parameterized by.
 ///
-/// This is the generator of the FROST group `reddsa::frost::redpallas` signs
+/// This is the generator of the FROST group `reddsa_frost::redpallas` signs
 /// in (`orchard::SpendAuth::basepoint()`), **not** `pasta_curves`'
 /// `Point::generator()`. frostito's point-generic helpers default to the
 /// latter, so every group operation this module performs over a scalar on the

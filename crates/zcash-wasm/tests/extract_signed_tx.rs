@@ -37,21 +37,18 @@ use zcash_primitives::transaction::{
 use zcash_protocol::{consensus::MainNetwork, memo::MemoBytes, value::Zatoshis};
 use zcash_transparent::{address::TransparentAddress, bundle as transparent};
 
-// Build height for this plain orchard+transparent send. Must be post-NU6.2
-// (3_364_600) so the builder selects the FixedPostNu6_2 circuit, but BELOW the
-// real NU6.3 activation (3_428_143) - at NU6.3 orchard cross-address outputs
-// are DISABLED (the one-way turnstile), which would reject this test's orchard
-// output with OrchardRecipient(CrossAddressDisabled). Since FIX-A wired the
-// real NU6.3 activation height into the fork, this test can no longer build at
-// 10_000_000 (now post-NU6.3); 3_400_000 keeps it a valid pre-NU6.3 orchard tx.
-const ORCHARD_SEND_HEIGHT: u32 = 3_400_000;
+// Build height for this transparent -> ironwood send: post-NU6.3 (3_428_143)
+// and below mainnet NU7 (3_543_405), so a V6 tx under the NU6.3 branch.
+// Zakura Common 3.0 dropped building orchard bundles before NU6.3, so the V5
+// orchard shape this test used to build no longer exists; at NU6.3 new value
+// lands in the ironwood pool.
+const SEND_HEIGHT: u32 = 3_500_000;
 
-static ORCHARD_PROVING_KEY: OnceLock<orchard::circuit::ProvingKey> = OnceLock::new();
-fn orchard_proving_key() -> &'static orchard::circuit::ProvingKey {
-    // Post-NU6.2 / pre-NU6.3 selects BundleProtocol::OrchardPreNu6_3 = the
-    // fixed circuit.
-    ORCHARD_PROVING_KEY.get_or_init(|| {
-        orchard::circuit::ProvingKey::build(orchard::circuit::OrchardCircuitVersion::FixedPostNu6_2)
+static PROVING_KEY: OnceLock<orchard::circuit::ProvingKey> = OnceLock::new();
+fn proving_key() -> &'static orchard::circuit::ProvingKey {
+    PROVING_KEY.get_or_init(|| {
+        orchard::circuit::ProvingKey::build(orchard::circuit::OrchardCircuitVersion::PostNu6_3)
+            .expect("post-NU6.3 proving key")
     })
 }
 
@@ -60,9 +57,8 @@ fn extract_signed_tx_round_trip() {
     let params = MainNetwork;
 
     // Transparent input: throwaway secp key.
-    let secp = secp256k1::Secp256k1::signing_only();
-    let transparent_sk = secp256k1::SecretKey::from_slice(&[1u8; 32]).unwrap();
-    let transparent_pk = transparent_sk.public_key(&secp);
+    let transparent_sk = secp256k1::SecretKey::from_secret_bytes([1u8; 32]).unwrap();
+    let transparent_pk = transparent_sk.public_key();
     let p2pkh_addr = TransparentAddress::from_pubkey(&transparent_pk);
     let utxo = transparent::OutPoint::new([0u8; 32], 0);
     let coin = transparent::TxOut::new(
@@ -70,19 +66,19 @@ fn extract_signed_tx_round_trip() {
         p2pkh_addr.script().into(),
     );
 
-    // Orchard recipient.
+    // Shielded recipient (an orchard-shaped address receives into ironwood).
     let orchard_sk = orchard::keys::SpendingKey::from_bytes([0u8; 32]).unwrap();
     let orchard_fvk = orchard::keys::FullViewingKey::from(&orchard_sk);
     let recipient = orchard_fvk.address_at(0u32, Scope::External);
 
-    // Build PCZT with a transparent input + two orchard outputs that balance.
+    // Build PCZT with a transparent input + two ironwood outputs that balance.
     let mut builder = Builder::new(
         params,
-        ORCHARD_SEND_HEIGHT.into(),
+        SEND_HEIGHT.into(),
         BuildConfig::Standard {
             sapling_anchor: None,
-            orchard_anchor: Some(orchard::Anchor::empty_tree()),
-            ironwood_anchor: None,
+            orchard_anchor: None,
+            ironwood_anchor: Some(orchard::Anchor::empty_tree()),
             orchard_padding: BundlePadding::DEFAULT,
             ironwood_padding: BundlePadding::DEFAULT,
         },
@@ -91,21 +87,21 @@ fn extract_signed_tx_round_trip() {
         .add_transparent_p2pkh_input(transparent_pk, utxo, coin)
         .expect("add transparent input");
     builder
-        .add_orchard_output::<zip317::FeeRule>(
+        .add_ironwood_output::<zip317::FeeRule>(
             None,
             recipient,
             Zatoshis::const_from_u64(100_000),
             MemoBytes::empty(),
         )
-        .expect("add orchard output (recipient)");
+        .expect("add ironwood output (recipient)");
     builder
-        .add_orchard_output::<zip317::FeeRule>(
+        .add_ironwood_output::<zip317::FeeRule>(
             None,
             recipient,
             Zatoshis::const_from_u64(885_000),
             MemoBytes::empty(),
         )
-        .expect("add orchard output (change)");
+        .expect("add ironwood output (change)");
 
     let parts = builder
         .build_for_pczt(OsRng, &zip317::FeeRule::standard())
@@ -116,8 +112,8 @@ fn extract_signed_tx_round_trip() {
     let pczt = Creator::build_from_parts(parts).expect("Creator");
     let pczt = IoFinalizer::new(pczt).finalize_io().expect("IoFinalizer");
     let pczt = Prover::new(pczt)
-        .create_orchard_proof(orchard_proving_key())
-        .expect("orchard prove")
+        .create_ironwood_proof(proving_key())
+        .expect("ironwood prove")
         .finish();
 
     // Sign the transparent input.
@@ -142,23 +138,23 @@ fn extract_signed_tx_round_trip() {
     let tx_bytes = zafu_wasm::extract_signed_tx_from_pczt_bytes(&serialized)
         .expect("extract_signed_tx_from_pczt_bytes on signed PCZT");
 
-    // Structural checks: tx is a v5 transaction with the expected shape.
-    // v5 header is 20 bytes (version + version_group_id + branch_id +
+    // Structural checks: tx is a v6 transaction with the expected shape.
+    // The v5/v6 header is 20 bytes (version + version_group_id + branch_id +
     // lock_time + expiry_height). Anything shorter means the extractor
     // emitted garbage.
     assert!(
         tx_bytes.len() > 20,
-        "extracted tx must be at least a v5 header ({}B); got {} bytes",
+        "extracted tx must be at least a v6 header ({}B); got {} bytes",
         20,
         tx_bytes.len()
     );
 
-    // First 4 bytes: version with high bit set (overwintered) = 5.
+    // First 4 bytes: version with high bit set (overwintered) = 6.
     let version_word = u32::from_le_bytes([tx_bytes[0], tx_bytes[1], tx_bytes[2], tx_bytes[3]]);
     assert_eq!(
         version_word & 0x7FFF_FFFF,
-        5,
-        "expected v5 transaction; version word: 0x{version_word:08x}"
+        6,
+        "expected v6 transaction; version word: 0x{version_word:08x}"
     );
     assert_eq!(
         version_word & 0x8000_0000,
@@ -166,11 +162,11 @@ fn extract_signed_tx_round_trip() {
         "overwintered bit must be set"
     );
 
-    // Bytes 4..8: version_group_id (must be V5_VERSION_GROUP_ID = 0x26A7270A).
+    // Bytes 4..8: version_group_id (must be V6_VERSION_GROUP_ID = 0xD884B698).
     let vg = u32::from_le_bytes([tx_bytes[4], tx_bytes[5], tx_bytes[6], tx_bytes[7]]);
     assert_eq!(
-        vg, 0x26A7270A,
-        "expected V5_VERSION_GROUP_ID; got 0x{vg:08x}"
+        vg, 0xD884B698,
+        "expected V6_VERSION_GROUP_ID; got 0x{vg:08x}"
     );
 
     // The tx must be re-parseable. Round-trip through zcash_primitives'
@@ -179,21 +175,23 @@ fn extract_signed_tx_round_trip() {
     use zcash_primitives::transaction::Transaction;
     use zcash_protocol::consensus::BranchId;
     let mut cursor = Cursor::new(&tx_bytes[..]);
-    let tx = Transaction::read(&mut cursor, BranchId::Nu6_1)
+    let tx = Transaction::read(&mut cursor, BranchId::Nu6_3)
         .expect("extracted tx must re-parse via Transaction::read");
     let trailing = tx_bytes.len() - cursor.position() as usize;
     assert_eq!(trailing, 0, "tx had {trailing} unparsed trailing bytes");
 
     // Shape: 1 transparent input, 0 transparent outputs, 0 sapling
-    // spends/outputs, 2+ orchard actions (2 real + dummy padding).
+    // spends/outputs, no orchard bundle, 2+ ironwood actions (2 real + dummy
+    // padding).
     let transparent = tx.transparent_bundle().expect("transparent bundle");
     assert_eq!(transparent.vin.len(), 1, "expected 1 transparent input");
     assert_eq!(transparent.vout.len(), 0, "expected 0 transparent outputs");
 
-    let orchard = tx.orchard_bundle().expect("orchard bundle");
+    assert!(tx.orchard_bundle().is_none(), "no orchard bundle at NU6.3");
+    let ironwood = tx.ironwood_bundle().expect("ironwood bundle");
     assert!(
-        orchard.actions().len() >= 2,
-        "expected ≥2 orchard actions; got {}",
-        orchard.actions().len()
+        ironwood.actions().len() >= 2,
+        "expected >=2 ironwood actions; got {}",
+        ironwood.actions().len()
     );
 }

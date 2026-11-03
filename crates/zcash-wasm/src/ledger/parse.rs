@@ -6,7 +6,6 @@
 
 use std::collections::BTreeMap;
 
-use ff::PrimeField;
 use orchard::{
     note::{NoteVersion, Rho},
     note_encryption::{IronwoodDomain, OrchardDomain},
@@ -527,7 +526,7 @@ fn convert_shielded_action(
             .ok_or("Shielded spend is missing rseed")?,
         alpha: spend
             .alpha()
-            .map(|alpha| alpha.to_repr())
+            .map(|alpha| alpha.to_bytes())
             .ok_or("Shielded spend is missing alpha")?,
         signing_path: derivation.signing_path,
         seed_fingerprint: derivation.seed_fingerprint,
@@ -575,7 +574,10 @@ fn output_memo_reaches_hash_path(action: &orchard::pczt::Action) -> Result<bool,
         output
             .value()
             .ok_or("Shielded output is missing its value")?,
-        Rho::from_nf_old(*action.spend().nullifier()),
+        // rho of an output is its action's spend nullifier (ZIP 225), same bytes
+        Rho::from_bytes(&action.spend().nullifier().to_bytes())
+            .into_option()
+            .ok_or("Shielded output rho is invalid")?,
         output.rseed().ok_or("Shielded output is missing rseed")?,
         *output.note_version(),
     )
@@ -761,7 +763,6 @@ mod tests {
     #[test]
     fn memos_the_device_would_hash_are_refused_for_apps_without_memo_hash() {
         for version in [
-            BundleVersion::orchard_v2(),
             BundleVersion::orchard_v3(),
             BundleVersion::ironwood_v3(),
         ] {
@@ -809,7 +810,6 @@ mod tests {
     #[test]
     fn printable_ascii_memos_still_build_signing_plans() {
         for version in [
-            BundleVersion::orchard_v2(),
             BundleVersion::orchard_v3(),
             BundleVersion::ironwood_v3(),
         ] {
@@ -854,7 +854,6 @@ mod tests {
     #[test]
     fn flags_and_note_version_follow_the_pczt_bundle_version() {
         for version in [
-            BundleVersion::orchard_v2(),
             BundleVersion::orchard_v3(),
             BundleVersion::ironwood_v3(),
         ] {

@@ -207,9 +207,12 @@ mod tests {
         assert_eq!(last.branch_id, future);
         assert_eq!(last.version, NodeVersion::V3);
         assert!(!last.commits_root_directly());
+        // mainnet NU7 (3,543,405 since Common 4.0) sits between NU6.3 and it
         let nu63 = s.activated_at(crate::IRONWOOD_ACTIVATION_HEIGHT).unwrap();
-        assert_eq!(nu63.end, Some(4_000_000));
-        assert_eq!(s.before(&last), Some(nu63));
+        assert_eq!(nu63.end, Some(3_543_405));
+        let nu7 = s.activated_at(3_543_405).unwrap();
+        assert_eq!(nu7.end, Some(4_000_000));
+        assert_eq!(s.before(&last), Some(nu7));
         assert_eq!(s.epochs().first().unwrap().branch_id, HEARTWOOD);
     }
 }

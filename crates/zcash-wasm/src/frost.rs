@@ -1132,7 +1132,6 @@ fn parse_32(hex_str: &str, name: &str) -> Result<[u8; 32], JsError> {
 // `PcztIronwoodBundle` mapping in pczt-translate.ts. See `ironwood_todo` below.
 #[wasm_bindgen]
 pub fn describe_pczt_for_ledger(pczt_hex: &str, mainnet: bool) -> Result<String, JsError> {
-    use ff::PrimeField;
     use pczt::roles::verifier::{OrchardError, Verifier};
 
     let bytes = hex::decode(pczt_hex).map_err(|e| JsError::new(&format!("bad pczt hex: {}", e)))?;
@@ -1205,7 +1204,7 @@ pub fn describe_pczt_for_ledger(pczt_hex: &str, mainnet: bool) -> Result<String,
                 let alpha = spend
                     .alpha()
                     .as_ref()
-                    .map(|a| hex::encode(a.to_repr()))
+                    .map(|a| hex::encode(a.to_bytes()))
                     .unwrap_or_default();
 
                 actions_json.push(serde_json::json!({

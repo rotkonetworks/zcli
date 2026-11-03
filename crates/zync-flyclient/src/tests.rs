@@ -595,10 +595,12 @@ fn padded_proofs_are_rejected_before_checking_leaves() {
 
 // ---------------------------------------------------------------- upgrades
 
-/// NU6.3 with `n` blocks, then an upgrade this build has never heard of.
-fn nu63_then_unknown(n: u64, unknown_branch: u32, tip_leaves: u64) -> (SynthEpoch, SynthEpoch) {
-    let old = synth_epoch(3_428_143, n, [4u8; 32], 11);
-    let activation = 3_428_143 + n as u32 + 1;
+/// The newest known mainnet epoch (NU7 at 3,543,405 since Common 4.0) with `n`
+/// blocks, then an upgrade this build has never heard of.
+fn newest_then_unknown(n: u64, unknown_branch: u32, tip_leaves: u64) -> (SynthEpoch, SynthEpoch) {
+    const NU7: u32 = 3_543_405;
+    let old = synth_epoch(NU7, n, [4u8; 32], 11);
+    let activation = NU7 + n as u32 + 1;
     let new = synth_epoch_in(
         Epoch::new(activation, unknown_branch, None),
         tip_leaves,
@@ -614,7 +616,7 @@ fn an_upgrade_this_build_does_not_know_verifies_from_the_proof() {
         lambda: 20,
         tail: 4,
     };
-    let (old, new) = nu63_then_unknown(400, 0xdead_beef, 150);
+    let (old, new) = newest_then_unknown(400, 0xdead_beef, 150);
     assert_eq!(new.epoch.version, NodeVersion::V3);
     let proof = FlyClientProof {
         epochs: vec![prove(&new, &params), prove(&old, &params)],
@@ -632,7 +634,7 @@ fn an_unknown_upgrade_cannot_hide_inside_a_known_epoch_or_reuse_a_known_id() {
         tail: 4,
     };
     // a known branch id at a new height
-    let (old, new) = nu63_then_unknown(400, 0x37a5_165b, 150);
+    let (old, new) = newest_then_unknown(400, 0x37a5_165b, 150);
     let proof = FlyClientProof {
         epochs: vec![prove(&new, &params), prove(&old, &params)],
     };

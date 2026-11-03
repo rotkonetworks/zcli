@@ -207,7 +207,7 @@ mod tests {
         let rand_raw = hex::decode(&rand_hex_str).unwrap();
 
         // extract raw bytes: signature
-        let sig: reddsa::frost::redpallas::Signature = from_hex(&sig_hex).unwrap();
+        let sig: reddsa_frost::redpallas::Signature = from_hex(&sig_hex).unwrap();
         let sig_raw = sig.serialize().unwrap();
 
         // build attestation: sig(64) || randomizer(32)

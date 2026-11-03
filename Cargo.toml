@@ -49,8 +49,8 @@ zync-flyclient = { path = "crates/zync-flyclient" }
 # generic over a ZF `frost-core` ciphersuite (see crates/frost-spend/src/nested.rs).
 # `bin/poker` (its own workspace now) still names the deleted crate: it pins
 # the last `osst` rev in its own manifest, not here.
-# Common 2 (pasta 2.x) needs frostito 0.9.0 (branch common-2) until it is tagged.
-frostito = { git = "https://github.com/penumbrafi/frostito", rev = "fda70759bad68f04f2dbe62a5c7f458113f027db", default-features = false }
+# Common 4 (pasta 4.x) needs frostito 0.9.0 (branch common-4) until it is tagged.
+frostito = { git = "https://github.com/penumbrafi/frostito", rev = "e1ffc7ea16909789bb281061bee471fb69a7f667", default-features = false }
 
 
 [profile.release]
@@ -62,7 +62,7 @@ codegen-units = 1
 [patch.crates-io]
 maybe-rayon = { path = "crates/maybe-rayon" }
 
-# Zakura Common 2.0 (pinned =2.0.0 to match voting-crypto-deps) is consumed directly as the
+# Zakura Common 4.0 (pinned =4.0.0) is consumed directly as the
 # crates.io `zakura-*` packages (see per-crate Cargo.toml package renames), so
 # the old git-fork [patch] block that redirected orchard/pasta/halo2/reddsa/
 # sinsemilla at the 0.15.x `zakura-core/libraries` rev is gone.

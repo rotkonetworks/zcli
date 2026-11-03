@@ -222,24 +222,33 @@ fn proving_key_cell(
     }
 }
 
-fn with_proving_key_for<R>(
+fn with_proving_key_for<T, E: std::fmt::Debug>(
     cv: orchard::circuit::OrchardCircuitVersion,
-    f: impl FnOnce(&orchard::circuit::ProvingKey) -> R,
-) -> R {
-    let pk = proving_key_cell(cv).get_or_init(|| {
-        log(&format!(
-            "[zafu-wasm] building Halo 2 proving key for {:?} (one-time)",
-            cv
-        ));
-        orchard::circuit::ProvingKey::build(cv)
-    });
-    f(pk)
+    f: impl FnOnce(&orchard::circuit::ProvingKey) -> Result<T, E>,
+) -> Result<T, String> {
+    let cell = proving_key_cell(cv);
+    let pk = match cell.get() {
+        Some(pk) => pk,
+        None => {
+            log(&format!(
+                "[zafu-wasm] building Halo 2 proving key for {:?} (one-time)",
+                cv
+            ));
+            // Common 3.0 dropped proving under the pre-NU6.3 circuits.
+            let built = orchard::circuit::ProvingKey::build(cv)
+                .map_err(|e| format!("no proving key for {cv:?}: {e:?}"))?;
+            cell.get_or_init(|| built)
+        }
+    };
+    f(pk).map_err(|e| format!("{e:?}"))
 }
 
 /// Legacy helper for the hand-rolled V5 paths, which hardcode the NU6.1
 /// consensus branch (0x4DEC4DF0) and therefore MUST prove with the
 /// historical circuit to match the verifying key deployed on those branches.
-fn with_proving_key<R>(f: impl FnOnce(&orchard::circuit::ProvingKey) -> R) -> R {
+fn with_proving_key<T, E: std::fmt::Debug>(
+    f: impl FnOnce(&orchard::circuit::ProvingKey) -> Result<T, E>,
+) -> Result<T, String> {
     with_proving_key_for(orchard::circuit::OrchardCircuitVersion::InsecurePreNu6_2, f)
 }
 
@@ -1897,9 +1906,11 @@ mod tests {
     fn legacy_expiry_delta_matches_the_upstream_builder_default() {
         // If a library bump ever changes Builder::new's implicit default, this
         // fails instead of our "unchanged" callers silently changing expiry.
+        // Common 4.0 made the builder default height-aware (120 at NU7); the
+        // pre-NU7 constant is the one our explicit legacy default mirrors.
         assert_eq!(
             LEGACY_PCZT_EXPIRY_DELTA,
-            zcash_primitives::transaction::builder::DEFAULT_TX_EXPIRY_DELTA
+            zcash_primitives::transaction::builder::PRE_NU7_DEFAULT_TX_EXPIRY_DELTA
         );
     }
 
@@ -2587,9 +2598,14 @@ abandon abandon abandon art";
         assert!(taddr.starts_with("t1"));
     }
 
+    // Was an orchard insecure-v1 (pre-NU6.2) output-only build + prove +
+    // V5 serialize. Common 3.0 builds and proves only post-NU6.3 bundles, so
+    // this now pins both halves of that: the legacy shape is refused, and the
+    // same output-only bundle builds, proves and signs as ironwood v3.
     #[test]
     fn test_orchard_builder_shielding() {
         use orchard::builder::{Builder, BundleType};
+        use orchard::bundle::BundleVersion;
         use orchard::keys::{FullViewingKey, Scope, SpendingKey};
         use orchard::tree::Anchor;
         use orchard::value::NoteValue;
@@ -2609,15 +2625,31 @@ abandon abandon abandon art";
         let fvk = FullViewingKey::from(&sk);
         let recipient = fvk.address_at(0u64, Scope::External);
 
-        // build an output-only bundle
         let bundle_type = BundleType::Transactional {
             bundle_required: true,
             pad_to_minimum: None,
         };
+        assert!(
+            Builder::new(
+                bundle_type,
+                BundleVersion::orchard_insecure_v1(),
+                orchard::bundle::Flags::SPENDS_DISABLED,
+                Anchor::empty_tree(),
+            )
+            .is_err(),
+            "Common refuses the pre-NU6.3 orchard bundle"
+        );
+        assert!(
+            with_proving_key(|_| Ok::<(), ()>(())).is_err(),
+            "and the pre-NU6.2 proving key"
+        );
+
+        // build an output-only bundle
+        let version = BundleVersion::ironwood_v3();
         let mut builder = Builder::new(
             bundle_type,
-            orchard::bundle::BundleVersion::orchard_insecure_v1(),
-            orchard::bundle::Flags::SPENDS_DISABLED,
+            version,
+            version.default_flags(),
             Anchor::empty_tree(),
         )
         .expect("flags are representable under this bundle version");
@@ -2632,32 +2664,25 @@ abandon abandon abandon art";
             .expect("build should succeed")
             .expect("should produce a bundle");
 
-        println!("bundle built: {} actions", unauthorized.actions().len());
-        // orchard pads to minimum 2 actions
+        // pads to minimum 2 actions
         assert!(
             unauthorized.actions().len() >= 2,
             "expected >=2 actions (padding)"
         );
 
         // prove (expensive but should work natively)
-        let proven = with_proving_key(|pk| unauthorized.create_proof(pk, rng))
-            .expect("proving should succeed");
-
-        println!("proof generated");
+        let proven = with_proving_key_for(
+            orchard::circuit::OrchardCircuitVersion::PostNu6_3,
+            |pk| unauthorized.create_proof(pk, rng),
+        )
+        .expect("proving should succeed");
 
         // apply signatures (no spend auth keys for output-only)
         let sighash = [0u8; 32]; // dummy sighash for test
         let authorized = proven
             .apply_signatures(rng, sighash, &[])
             .expect("signatures should succeed");
-
-        println!("authorized bundle: {} actions", authorized.actions().len());
-
-        // serialize
-        let mut out = Vec::new();
-        serialize_orchard_bundle(&authorized, &mut out).expect("serialization");
-        println!("serialized orchard bundle: {} bytes", out.len());
-        assert!(out.len() > 100);
+        assert!(authorized.actions().len() >= 2);
     }
 }
 
@@ -2693,7 +2718,6 @@ pub fn build_unsigned_transaction(
     // missing/unparseable value is a hard error, never a silent default.
     branch_id_hex: Option<String>,
 ) -> Result<JsValue, JsError> {
-    use group::ff::PrimeField;
     use orchard::builder::{Builder, BundleType};
     use orchard::note::{RandomSeed, Rho};
     use orchard::tree::{Anchor, MerkleHashOrchard, MerklePath as OrchardMerklePath};
@@ -2997,7 +3021,7 @@ pub fn build_unsigned_transaction(
 
     // --- create proof (Halo 2 — expensive) ---
     with_proving_key(|pk| pczt_bundle.create_proof(pk, rng))
-        .map_err(|e| JsError::new(&format!("create_proof: {}", e)))?;
+        .map_err(|e| JsError::new(&format!("create_proof: {e}")))?;
 
     // --- extract effects bundle for sighash computation ---
     let effects_bundle: orchard::Bundle<orchard::bundle::EffectsOnly, ZatBalance> = pczt_bundle
@@ -3072,7 +3096,7 @@ pub fn build_unsigned_transaction(
                 .spend()
                 .alpha()
                 .ok_or_else(|| JsError::new(&format!("missing alpha for action {}", i)))?;
-            alphas.push(hex_encode(&alpha.to_repr()));
+            alphas.push(hex_encode(&alpha.to_bytes()));
             spend_indices.push(i as u32);
         }
     }
@@ -3977,7 +4001,6 @@ pub fn build_unsigned_pczt(
     // spends (dummy_sk == None) carry their rerandomizer here. The pczt::Pczt that
     // Creator produces keeps these pub(crate), so this is the only public read.
     // Order = action order = the order host + joiner run the FROST rounds in.
-    use group::ff::PrimeField;
     let extract_frost =
         |orchard: &Option<orchard::pczt::Bundle>| -> Result<(Vec<String>, Vec<u32>), JsError> {
             let mut alphas = Vec::new();
@@ -3988,7 +4011,7 @@ pub fn build_unsigned_pczt(
                         let alpha = action.spend().alpha().ok_or_else(|| {
                             JsError::new(&format!("missing alpha for real spend action {}", i))
                         })?;
-                        alphas.push(hex_encode(&alpha.to_repr()));
+                        alphas.push(hex_encode(&alpha.to_bytes()));
                         spend_indices.push(i as u32);
                     }
                 }
@@ -4016,7 +4039,7 @@ pub fn build_unsigned_pczt(
             .create_orchard_proof(pk)
             .map(|p| p.finish())
     })
-    .map_err(|e| JsError::new(&format!("create_orchard_proof: {:?}", e)))?;
+    .map_err(|e| JsError::new(&format!("create_orchard_proof: {e}")))?;
 
     // ── finalize IO (canonical sighash → bsk + dummy spend auth sigs) ──────
     // After this step the orchard bundle is bound to a sighash that zigner
@@ -4439,7 +4462,7 @@ where
             })
             .map(|p| p.finish())
     })
-    .map_err(|e| format!("create proofs: {:?}", e))?;
+    .map_err(|e| format!("create proofs: {e}"))?;
 
     Ok((pczt, migrated))
 }
@@ -5184,7 +5207,6 @@ where
     // Same capture the orchard FROST path does; see `extract_frost` above.
     // Order = action order = the order host + joiner run the FROST rounds in.
     let (frost_alphas, frost_spend_indices) = {
-        use group::ff::PrimeField;
         let mut alphas: Vec<String> = Vec::new();
         let mut spend_indices: Vec<u32> = Vec::new();
         if let Some(b) = parts.ironwood.as_ref() {
@@ -5194,7 +5216,7 @@ where
                         .spend()
                         .alpha()
                         .ok_or_else(|| format!("missing alpha for real ironwood spend {i}"))?;
-                    alphas.push(hex_encode(&alpha.to_repr()));
+                    alphas.push(hex_encode(&alpha.to_bytes()));
                     spend_indices.push(i as u32);
                 }
             }
@@ -5219,7 +5241,7 @@ where
             .create_ironwood_proof(pk)
             .map(|p| p.finish())
     })
-    .map_err(|e| format!("create ironwood proof: {:?}", e))?;
+    .map_err(|e| format!("create ironwood proof: {e}"))?;
 
     Ok(IronwoodPcztWithFrost {
         pczt,
@@ -7009,7 +7031,7 @@ pub(crate) fn transparent_secret_key(
     ] {
         key = bip32_derive_child(&key, i, hardened)?;
     }
-    secp256k1::SecretKey::from_slice(&key.key).map_err(|e| format!("invalid transparent key: {e}"))
+    secp256k1::SecretKey::from_secret_bytes(key.key).map_err(|e| format!("invalid transparent key: {e}"))
 }
 
 /// Deserialize a u64 from either a JSON number or a string (for BigInt safety)
@@ -7270,8 +7292,7 @@ where
     // The pubkey the coins are locked to is DERIVED from the signing key, never
     // trusted from the caller; the shared helper cross-checks every input's
     // script against it.
-    let secp = secp256k1::Secp256k1::signing_only();
-    let pubkey = sk.public_key(&secp);
+    let pubkey = sk.public_key();
 
     // Guarded, proven, IO-finalized PCZT (branch-id guards + ZIP-317 recheck +
     // ironwood proof). This is the exact PCZT the cold path serializes and hands
@@ -7542,7 +7563,7 @@ where
             .create_ironwood_proof(pk)
             .map(|p| p.finish())
     })
-    .map_err(|e| format!("create ironwood proof: {:?}", e))?;
+    .map_err(|e| format!("create ironwood proof: {e}"))?;
 
     // The transparent inputs are unsigned: the hot caller signs with its key, the
     // cold caller serializes this and hands the per-input sighashes out.
@@ -7990,7 +8011,7 @@ pub fn build_unsigned_shielding_transaction(
         .ok_or_else(|| JsError::new("builder produced no bundle"))?;
 
     let proven_bundle = with_proving_key(|pk| unauthorized_bundle.create_proof(pk, &mut rng))
-        .map_err(|e| JsError::new(&format!("create_proof: {:?}", e)))?;
+        .map_err(|e| JsError::new(&format!("create_proof: {e}")))?;
 
     // --- compute transparent digests for ZIP-244 sighash ---
     let n_inputs = selected.len();

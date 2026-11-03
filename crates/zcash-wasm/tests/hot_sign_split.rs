@@ -55,6 +55,8 @@ impl Parameters for Nu63TestNet {
     fn activation_height(&self, nu: NetworkUpgrade) -> Option<BlockHeight> {
         match nu {
             NetworkUpgrade::Nu6_3 => Some(BlockHeight::from_u32(10)),
+            // stays NU6.3: mainnet schedules NU7 at 3,543,405 since Common 4.0
+            NetworkUpgrade::Nu7 => None,
             _ => MainNetwork.activation_height(nu),
         }
     }
@@ -222,7 +224,7 @@ fn transparent_keys_match_the_ufvk_and_sign_low_s_sighash_all() {
             transparent_pubkey_from_ufvk(&ufvk, index).unwrap()
         );
     }
-    let sk = secp256k1::SecretKey::from_slice(&[7u8; 32]).unwrap();
+    let sk = secp256k1::SecretKey::from_secret_bytes([7u8; 32]).unwrap();
     let digest = [0x5au8; 32];
     let sig = sign_transparent_sighash(&sk, digest);
     assert_eq!(*sig.last().unwrap(), 0x01, "SIGHASH_ALL");
@@ -230,11 +232,10 @@ fn transparent_keys_match_the_ufvk_and_sign_low_s_sighash_all() {
     let mut normalized = parsed;
     normalized.normalize_s();
     assert_eq!(parsed, normalized, "low-S");
-    let secp = secp256k1::Secp256k1::verification_only();
-    secp.verify_ecdsa(
-        &secp256k1::Message::from_digest(digest),
+    secp256k1::ecdsa::verify(
         &parsed,
-        &sk.public_key(&secp256k1::Secp256k1::signing_only()),
+        secp256k1::Message::from_digest(digest),
+        &sk.public_key(),
     )
     .expect("signature verifies against the sighash");
 }

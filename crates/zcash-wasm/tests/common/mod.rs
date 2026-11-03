@@ -245,9 +245,8 @@ pub fn node_conventional_fee(tx: &Value) -> u64 {
 // ---------------------------------------------------------------------------
 
 pub fn transparent_key(seed_byte: u8) -> (secp256k1::SecretKey, secp256k1::PublicKey) {
-    let secp = secp256k1::Secp256k1::signing_only();
-    let sk = secp256k1::SecretKey::from_slice(&[seed_byte; 32]).expect("valid secret key");
-    let pk = sk.public_key(&secp);
+    let sk = secp256k1::SecretKey::from_secret_bytes([seed_byte; 32]).expect("valid secret key");
+    let pk = sk.public_key();
     (sk, pk)
 }
 

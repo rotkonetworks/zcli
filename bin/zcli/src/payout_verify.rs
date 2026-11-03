@@ -21,7 +21,6 @@
 // - the Orchard bundle is empty: the vault holds Ironwood notes only, so
 //   every spend and output lives in the Ironwood bundle.
 
-use ff::PrimeField;
 use orchard::keys::FullViewingKey;
 use orchard::Address;
 use pczt::roles::signer::Signer;
@@ -113,7 +112,7 @@ pub fn verify_payout(
                 s.verify_rk(Some(vault))
                     .map_err(|e| format!("action {i}: rk does not match the vault key: {e:?}"))?;
                 let alpha = s.alpha().ok_or(format!("action {i}: alpha redacted"))?;
-                alphas.push(alpha.to_repr());
+                alphas.push(alpha.to_bytes());
                 spent = spent.checked_add(value).ok_or("spend overflow")?;
             }
             let o = a.output();
@@ -264,7 +263,7 @@ mod tests {
         b.iter()
             .flat_map(|b| b.actions())
             .filter(|a| a.spend().dummy_sk().is_none())
-            .filter_map(|a| a.spend().alpha().map(|x| x.to_repr()))
+            .filter_map(|a| a.spend().alpha().map(|x| x.to_bytes()))
             .collect()
     }
 

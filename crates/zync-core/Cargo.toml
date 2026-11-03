@@ -54,9 +54,9 @@ zync-flyclient = { path = "../zync-flyclient", version = "0.1" }
 # a frost-gated API (the re-exported FullViewingKey/IncomingViewingKey/Scope/
 # SpendingKey are all ungated). Keep `multicore` for the note-decryption
 # parallelism we do use, and to agree with the rest of the native graph.
-orchard = { package = "zakura-orchard", version = "=2.0.0", default-features = false, features = ["multicore"] }
-zcash_note_encryption = "0.4"
-pasta_curves = { package = "zakura-pasta-curves", version = "=2.0.0" }
+orchard = { package = "zakura-orchard", version = "=4.0.0", default-features = false, features = ["backend-halo2", "multicore"] }
+zcash_note_encryption = { package = "zakura-note-encryption", version = "=4.0.0" }
+pasta_curves = { package = "zakura-pasta-curves", version = "=4.0.0" }
 subtle = "2.5"
 
 # gRPC client (optional)

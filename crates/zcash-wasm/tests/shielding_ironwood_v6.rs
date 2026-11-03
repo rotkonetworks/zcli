@@ -37,6 +37,8 @@ impl Parameters for Nu63TestNet {
     fn activation_height(&self, nu: NetworkUpgrade) -> Option<BlockHeight> {
         match nu {
             NetworkUpgrade::Nu6_3 => Some(BlockHeight::from_u32(10)),
+            // stays NU6.3: mainnet schedules NU7 at 3,543,405 since Common 4.0
+            NetworkUpgrade::Nu7 => None,
             _ => MainNetwork.activation_height(nu),
         }
     }
@@ -45,9 +47,8 @@ impl Parameters for Nu63TestNet {
 const TARGET_HEIGHT: u32 = 100;
 
 fn test_key() -> (secp256k1::SecretKey, secp256k1::PublicKey) {
-    let secp = secp256k1::Secp256k1::signing_only();
-    let sk = secp256k1::SecretKey::from_slice(&[7u8; 32]).expect("valid test secret key");
-    let pk = sk.public_key(&secp);
+    let sk = secp256k1::SecretKey::from_secret_bytes([7u8; 32]).expect("valid test secret key");
+    let pk = sk.public_key();
     (sk, pk)
 }
 
@@ -243,8 +244,8 @@ fn refuses_a_pre_nu6_3_target_height() {
 #[test]
 fn refuses_a_utxo_not_locked_to_the_signing_key() {
     let (sk, _pk) = test_key();
-    let other = secp256k1::SecretKey::from_slice(&[9u8; 32]).unwrap();
-    let other_pk = other.public_key(&secp256k1::Secp256k1::signing_only());
+    let other = secp256k1::SecretKey::from_secret_bytes([9u8; 32]).unwrap();
+    let other_pk = other.public_key();
     let inputs = vec![coin(&other_pk, 200_000, 0xe1, 0)];
     let err = build_shielding_transaction_ironwood_core(
         Nu63TestNet,

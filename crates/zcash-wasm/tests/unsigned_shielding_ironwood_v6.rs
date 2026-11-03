@@ -59,6 +59,8 @@ impl Parameters for Nu63TestNet {
     fn activation_height(&self, nu: NetworkUpgrade) -> Option<BlockHeight> {
         match nu {
             NetworkUpgrade::Nu6_3 => Some(BlockHeight::from_u32(10)),
+            // stays NU6.3: mainnet schedules NU7 at 3,543,405 since Common 4.0
+            NetworkUpgrade::Nu7 => None,
             _ => MainNetwork.activation_height(nu),
         }
     }
@@ -67,9 +69,8 @@ impl Parameters for Nu63TestNet {
 const TARGET_HEIGHT: u32 = 100;
 
 fn test_key() -> (secp256k1::SecretKey, secp256k1::PublicKey) {
-    let secp = secp256k1::Secp256k1::signing_only();
-    let sk = secp256k1::SecretKey::from_slice(&[7u8; 32]).expect("valid test secret key");
-    let pk = sk.public_key(&secp);
+    let sk = secp256k1::SecretKey::from_secret_bytes([7u8; 32]).expect("valid test secret key");
+    let pk = sk.public_key();
     (sk, pk)
 }
 
@@ -91,9 +92,8 @@ fn recipient() -> orchard::Address {
 /// RFC 6979 deterministic ECDSA over the sighash, DER-encoded, with a trailing
 /// SIGHASH_ALL byte appended.
 fn external_sign(sk: &secp256k1::SecretKey, sighash: [u8; 32]) -> Vec<u8> {
-    let secp = secp256k1::Secp256k1::signing_only();
     let msg = secp256k1::Message::from_digest(sighash);
-    let sig = secp.sign_ecdsa(&msg, sk);
+    let sig = secp256k1::ecdsa::sign(msg, sk);
     let mut bytes = sig.serialize_der().to_vec();
     bytes.push(0x01); // SIGHASH_ALL
     bytes
@@ -385,12 +385,11 @@ fn wrong_message_signature_is_rejected() {
     );
 
     // And a non-SIGHASH_ALL type is refused up front.
-    let secp = secp256k1::Secp256k1::signing_only();
     let reparsed = pczt::Pczt::parse(&carrier).unwrap();
     let signer = pczt::roles::signer::Signer::new(reparsed).unwrap();
     let sighash = signer.transparent_sighash(0).unwrap();
     let msg = secp256k1::Message::from_digest(sighash);
-    let mut wrong_type = secp.sign_ecdsa(&msg, &sk).serialize_der().to_vec();
+    let mut wrong_type = secp256k1::ecdsa::sign(msg, &sk).serialize_der().to_vec();
     wrong_type.push(0x81); // SIGHASH_ALL | ANYONECANPAY
     let err = complete_shielding_pczt_bytes(&carrier, &[wrong_type])
         .expect_err("non-SIGHASH_ALL must be refused");

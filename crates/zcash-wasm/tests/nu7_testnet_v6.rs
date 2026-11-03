@@ -193,12 +193,12 @@ fn ironwood_send_with<P: zcash_protocol::consensus::Parameters>(
     )
 }
 
-/// Mainnet has no NU7 height in the crate tables: the node's report decides,
-/// and the NU7 default expiry (target + 120) follows it.
+/// Below the table's mainnet NU7 height (3,543,405 since Common 4.0) the
+/// node's report decides, and the NU7 default expiry (target + 120) follows it.
 #[test]
 fn node_reported_nu7_binds_nu7_on_mainnet_params() {
     use zcash_protocol::consensus::MainNetwork;
-    let target_height = 3_600_000;
+    let target_height = 3_500_000;
 
     let tx_bytes = ironwood_send_with(MainNetwork, target_height, NU7_BRANCH_ID)
         .expect("ironwood send when the node reports NU7");
@@ -224,5 +224,15 @@ fn node_on_nu6_3_past_testnet_nu7_is_refused() {
         0x37a5_165b,
     )
     .expect_err("must refuse");
+    assert!(err.contains("mismatch"), "unexpected error: {err}");
+}
+
+/// Mainnet now has its NU7 height in the table: a node still on NU6.3 past it
+/// is refused there too.
+#[test]
+fn node_on_nu6_3_past_mainnet_nu7_is_refused() {
+    use zcash_protocol::consensus::MainNetwork;
+    let err = ironwood_send_with(MainNetwork, 3_543_405 + 1_000, 0x37a5_165b)
+        .expect_err("must refuse");
     assert!(err.contains("mismatch"), "unexpected error: {err}");
 }

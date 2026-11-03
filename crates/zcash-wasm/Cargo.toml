@@ -25,8 +25,8 @@ parallel = ["rayon", "wasm-bindgen-rayon"]
 multicore = ["orchard/multicore"]
 
 [dependencies]
-# crypto primitives (WASM-compatible) — Zakura Common 2.0 (ff+group 0.14)
-pasta_curves = { package = "zakura-pasta-curves", version = "=2.0.0" }
+# crypto primitives (WASM-compatible) - Zakura Common 4.0 (ff+group 0.14)
+pasta_curves = { package = "zakura-pasta-curves", version = "=4.0.0" }
 subtle = "2.5"
 ff = "0.14"
 group = "0.14"
@@ -39,10 +39,10 @@ group = "0.14"
 #   zcash_protocol 0.10.x ships the real NU6.3 branch id (0x37a5165b,
 #   mainnet activation 3_428_143) and V6 version group id 0xD884B698 —
 #   NU6.3 is fully ungated upstream, so no zcash_unstable cfg is needed.
-orchard = { package = "zakura-orchard", version = "=2.0.0", default-features = false, features = ["circuit"] }
-zcash_keys = { package = "zakura-keys", version = "=2.0.0", default-features = false, features = ["orchard", "transparent-inputs"] }
-zcash_address = { package = "zakura-address", version = "=2.0.0", default-features = false }
-zcash_protocol = { package = "zakura-protocol", version = "=2.0.0", default-features = false }
+orchard = { package = "zakura-orchard", version = "=4.0.0", default-features = false, features = ["backend-halo2", "wallet", "zip32-addresses", "circuit"] }
+zcash_keys = { package = "zakura-keys", version = "=4.0.0", default-features = false, features = ["orchard", "transparent-inputs"] }
+zcash_address = { package = "zakura-address", version = "=4.0.0", default-features = false }
+zcash_protocol = { package = "zakura-protocol", version = "=4.0.0", default-features = false }
 rand_core = "0.6"
 # rand_core 0.10 (pure-trait) for the OsRng10 adapter that feeds Zakura Common
 # 1.0's builders/signers, which now bound their RNG on rand_core 0.10's `Rng`.
@@ -61,26 +61,26 @@ hex = "0.4"
 # and the build fails with "struct takes 3 generic arguments".
 indexmap = { version = "1", features = ["std"] }
 
-# note encryption (no heavy circuit deps)
-zcash_note_encryption = "0.4"
+# note encryption (no heavy circuit deps); Common owns it since 3.0
+zcash_note_encryption = { package = "zakura-note-encryption", version = "=4.0.0" }
 
 # transaction primitives
 # zcash_primitives 0.28 + sapling-crypto 0.7 + orchard 0.14 line up with the
 # Released librustzcash workspace (NU6.3 is upstream as of these versions)
 # coords the zigner valar spike consumes. Required for `pczt` V6 interop.
-zcash_primitives = { package = "zakura-primitives", version = "=2.0.0", default-features = false, features = ["non-standard-fees", "transparent-inputs"] }
-zcash_transparent = { package = "zakura-transparent", version = "=2.0.0", default-features = false, features = ["transparent-inputs"] }
+zcash_primitives = { package = "zakura-primitives", version = "=4.0.0", default-features = false, features = ["non-standard-fees", "transparent-inputs"] }
+zcash_transparent = { package = "zakura-transparent", version = "=4.0.0", default-features = false, features = ["transparent-inputs"] }
 
 # Partially-Created Zcash Transaction (PCZT) construction.
 # Pinned to the same librustzcash fork branch that zigner's valar spike
 # consumes so orchard/sapling/zcash_primitives versions match byte-for-byte.
-pczt = { package = "zakura-pczt", version = "=0.1.0-rc4", default-features = false, features = ["orchard", "transparent", "sapling", "zcp-builder", "prover", "io-finalizer", "tx-extractor", "signer", "spend-finalizer"] }
+pczt = { package = "zakura-pczt", version = "=0.1.0-rc9", default-features = false, features = ["orchard", "transparent", "sapling", "zcp-builder", "prover", "io-finalizer", "tx-extractor", "signer", "spend-finalizer"] }
 # zcash_primitives renames sapling-crypto to `sapling` internally; mirror the
 # alias so BuildConfig's `Option<sapling::Anchor>` field type-checks.
 # `circuit` feature pulls bellman+groth16 proving — bloats the wasm but is
 # required because pczt's prover/io-finalizer code paths reference
 # sapling::pczt::ProverError / Prover even when the tx has no sapling actions.
-sapling = { package = "zakura-sapling-crypto", version = "=2.0.0", default-features = false, features = ["circuit"] }
+sapling = { package = "zakura-sapling-crypto", version = "=4.0.0", default-features = false, features = ["circuit"] }
 
 # key derivation
 bip39 = { version = "2.0", features = ["rand", "zeroize"] }
@@ -93,10 +93,10 @@ chacha20poly1305 = "0.10"
 # shielding builder feeds `secp256k1::PublicKey` to
 # `Builder::add_transparent_p2pkh_input` and `secp256k1::SecretKey` to
 # `pczt::roles::signer::Signer::sign_transparent`. It must stay pinned to the
-# exact version zcash_transparent/pczt use (0.29) or those types would be from a
+# exact version zcash_transparent/pczt use (0.33) or those types would be from a
 # different crate instance and would not type-check. Test targets also see this
 # dep, so the existing integration tests keep compiling.
-secp256k1 = { version = "0.29", default-features = false, features = ["alloc"] }
+secp256k1 = { version = "0.33", default-features = false, features = ["alloc"] }
 k256 = { version = "0.13", features = ["ecdsa-core", "ecdsa", "sha256"] }
 hmac = "0.12"
 # wormhole-style door codes: SPAKE2 (RustCrypto, the PAKE magic wormhole uses)
@@ -107,8 +107,8 @@ rand_chacha = "0.3"
 sha2 = "0.10"
 ripemd = "0.1"
 # Ledger PCZT serializer reads transparent script bytes via `Evaluable`; same
-# 0.4 line zcash_transparent already pulls in (no new crate in the graph).
-zcash_script = { version = "0.4", default-features = false }
+# 0.6 line zcash_transparent already pulls in (no new crate in the graph).
+zcash_script = { version = "0.6", default-features = false }
 blake2b_simd = "1.0"
 
 # wasm bindings
