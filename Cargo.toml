@@ -8,16 +8,24 @@ members = [
     "crates/zync-core",
     "crates/zync-flyclient",
     "crates/zcash-wasm",
-    "crates/zcash-voting",
-    "crates/pir-client",
     "crates/frost-spend",
     "crates/zoda-vss",
     "bin/relay",
+    "crates/ring-vrf-wasm",
+    "bin/license-server",
+]
+# The voting cluster and poker stay on Zakura Common 2.0: the voting circuits
+# must match the live voting chain, and zakura-pczt's 0.1.0 release candidates
+# share one semver class, so rc4 (Common 2.0) and rc9 (Common 4.0) cannot sit in
+# one lockfile. voting-wasm, poker and pokerbot are their own workspace roots
+# with their own Cargo.lock; zcash-voting and pir-client build through
+# voting-wasm. zafu loads voting from the standalone voting-wasm blob.
+exclude = [
+    "crates/zcash-voting",
+    "crates/pir-client",
+    "crates/voting-wasm",
     "bin/poker",
     "bin/pokerbot",
-    "crates/ring-vrf-wasm",
-    "crates/voting-wasm",
-    "bin/license-server",
 ]
 
 [workspace.package]
@@ -39,8 +47,8 @@ zync-flyclient = { path = "crates/zync-flyclient" }
 # consolidated upstream in 0.2.0.
 # The custody path (frost-spend, zcli) is on v0.8.0, whose nested API is
 # generic over a ZF `frost-core` ciphersuite (see crates/frost-spend/src/nested.rs).
-# `bin/poker` is the one member still naming the deleted crate: it pins the
-# last `osst` rev in its own manifest, not here.
+# `bin/poker` (its own workspace now) still names the deleted crate: it pins
+# the last `osst` rev in its own manifest, not here.
 # Common 2 (pasta 2.x) needs frostito 0.9.0 (branch common-2) until it is tagged.
 frostito = { git = "https://github.com/penumbrafi/frostito", rev = "fda70759bad68f04f2dbe62a5c7f458113f027db", default-features = false }
 
@@ -68,3 +76,4 @@ maybe-rayon = { path = "crates/maybe-rayon" }
 # Do NOT commit this uncommented — it breaks CI, which only clones zcli.
 # [patch."https://github.com/rotkonetworks/zeratul.git"]
 # osst = { path = "../zeratul/crates/osst" }
+

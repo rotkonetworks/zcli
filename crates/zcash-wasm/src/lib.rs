@@ -19,17 +19,6 @@ mod hot_sign;
 /// Ledger Zcash app protocol: APDU plans + response validation (pure, no I/O).
 pub mod ledger;
 pub mod node_params;
-/// HOT shielded-voting vote-casting bindings (casting slice only).
-#[cfg(feature = "voting")]
-mod voting;
-/// Shielded-voting delegation bindings (cold-signed PCZT + ZKP #1).
-#[cfg(feature = "voting")]
-mod voting_delegation;
-/// PIR bindings: fetch IMT non-membership proofs via a JS `fetch` callback.
-/// wasm-only: it backs pir-client's async Transport with a `!Send` JS handle,
-/// which only satisfies the (Send-relaxed) wasm Transport contract.
-#[cfg(all(target_arch = "wasm32", feature = "voting"))]
-mod voting_pir;
 /// Commitment-tree replay and witness serialization.
 ///
 /// Public because it is the SINGLE implementation of "walk a commitment tree

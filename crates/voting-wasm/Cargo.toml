@@ -73,3 +73,14 @@ zcash-voting = { package = "zcash_voting", path = "../zcash-voting", default-fea
 reqwest = { version = "0.11", features = ["blocking", "json"] }
 vote-commitment-tree = { version = "=0.6.3", default-features = false, features = ["zakura"] }
 vote-commitment-tree-client = { version = "=0.8.3", features = ["http"] }
+
+# Own workspace root (excluded from the zcli workspace, see its Cargo.toml):
+# this crate stays on Zakura Common 2.0 with its own Cargo.lock.
+[workspace]
+
+[profile.release]
+lto = true
+codegen-units = 1
+
+[patch.crates-io]
+maybe-rayon = { path = "../maybe-rayon" }

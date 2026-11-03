@@ -80,7 +80,7 @@ jobs:
           SVOTE_NODE: tcp://127.0.0.1:27657
           SVOTE_HOME: ${{ runner.temp }}/svhome
           SVOTED: ${{ github.workspace }}/vote-sdk/svoted
-        run: cargo test -p voting-wasm --release --locked -- --ignored --nocapture local_chain
+        run: cargo test --manifest-path crates/voting-wasm/Cargo.toml --target-dir target --release --locked -- --ignored --nocapture local_chain
       - name: svoted log
         if: failure()
         run: tail -200 "${{ runner.temp }}/svhome/svoted.log"

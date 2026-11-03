@@ -90,3 +90,14 @@ rand_core = "0.6"
 # spin up a real in-process frostd to prove the FrostdDkg adapter round-trips
 frostd = { git = "https://github.com/ZcashFoundation/frost-tools", rev = "06c0dbd" }
 axum = "0.8"
+
+# Own workspace root (excluded from the zcli workspace, see its Cargo.toml):
+# this crate stays on Zakura Common 2.0 with its own Cargo.lock.
+[workspace]
+
+[profile.release]
+lto = true
+codegen-units = 1
+
+[patch.crates-io]
+maybe-rayon = { path = "../../crates/maybe-rayon" }
