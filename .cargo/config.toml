@@ -16,6 +16,9 @@ rustflags = [
     "-C", "link-args=--export=__tls_size",
     "-C", "link-args=--export=__tls_align",
     "-C", "link-args=--export=__tls_base",
+    # wasm-bindgen's thread transform reads __heap_base; newer rust-lld
+    # (nightly 2026-08 on) no longer exports it by default.
+    "-C", "link-args=--export=__heap_base",
     # Zakura Common 1.0's crypto stack pulls getrandom 0.4, whose wasm32 backend
     # is selected at compile time via this cfg (paired with the `wasm_js` feature
     # enabled in zafu-wasm's wasm32 dependencies).
