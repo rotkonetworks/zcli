@@ -16,7 +16,7 @@
 
 use zcash_protocol::consensus::{BranchId, MainNetwork, NetworkUpgrade, Parameters};
 
-use crate::consensus::TestNetwork;
+use zcash_protocol::consensus::TestNetwork;
 
 use super::node::NodeVersion;
 
@@ -170,6 +170,17 @@ pub fn epoch_activated_at(network: Network, activation: u32) -> Option<Epoch> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Testnet NU7 (4,465,026) now comes from Common; this pins the value the
+    /// testnet schedule depends on (it was a local shim before Common 2.2).
+    #[test]
+    fn nu7_on_testnet() {
+        use zcash_protocol::consensus::BlockHeight;
+        let h = BlockHeight::from_u32(4_465_026);
+        assert_eq!(BranchId::for_height(&TestNetwork, h - 1), BranchId::Nu6_3);
+        assert_eq!(BranchId::for_height(&TestNetwork, h), BranchId::Nu7);
+        assert_eq!(u32::from(BranchId::Nu7), 0x7719_0ad9);
+    }
 
     #[test]
     fn mainnet_epochs_are_contiguous_and_versioned() {

@@ -368,7 +368,7 @@ pub fn build_unsigned_transparent_transaction(
     null_data_hex: Option<String>,
     expiry_delta: Option<u32>,
 ) -> Result<String, JsError> {
-    use crate::consensus::TestNetwork;
+    use zcash_protocol::consensus::TestNetwork;
     use zcash_keys::encoding::AddressCodec;
     use zcash_protocol::consensus::{BlockHeight, MainNetwork};
     use zcash_protocol::value::Zatoshis;

@@ -8,7 +8,6 @@
 //! RUSTFLAGS='-C target-feature=+simd128' wasm-pack build --target web --out-dir ../bin/zidecar/www/pkg
 //! ```
 
-pub mod consensus;
 mod flyclient;
 mod frost;
 /// THORChain deposits: unsigned t->t with an OP_RETURN, signed by `SpendKeys`.
@@ -1105,7 +1104,7 @@ impl WatchOnlyWallet {
     pub fn from_ufvk(ufvk_str: &str) -> Result<WatchOnlyWallet, JsError> {
         use zcash_keys::keys::UnifiedFullViewingKey;
         use zcash_protocol::consensus::MainNetwork;
-        use crate::consensus::TestNetwork;
+        use zcash_protocol::consensus::TestNetwork;
 
         let mainnet = ufvk_str.starts_with("uview1") && !ufvk_str.starts_with("uviewtest");
 
@@ -2275,7 +2274,7 @@ abandon abandon abandon art";
     #[test]
     fn nu6_3_activation_matches_upstream() {
         use zcash_protocol::consensus::{BranchId, MainNetwork, NetworkUpgrade, Parameters};
-        use crate::consensus::TestNetwork;
+        use zcash_protocol::consensus::TestNetwork;
         assert_eq!(
             MainNetwork
                 .activation_height(NetworkUpgrade::Nu6_3)
@@ -2724,7 +2723,7 @@ pub fn build_unsigned_transaction(
     use orchard::value::NoteValue;
     use zcash_keys::keys::UnifiedFullViewingKey;
     use zcash_protocol::consensus::MainNetwork;
-    use crate::consensus::TestNetwork;
+    use zcash_protocol::consensus::TestNetwork;
     use zcash_protocol::value::ZatBalance;
 
     // FAIL-CLOSED, BEFORE any proving: the ZIP-244 sighash below binds this
@@ -3807,7 +3806,7 @@ pub fn build_unsigned_pczt(
     use zcash_primitives::transaction::builder::{BuildConfig, Builder, BundlePadding};
     use zcash_primitives::transaction::fees::fixed::FeeRule as FixedFeeRule;
     use zcash_protocol::consensus::{BlockHeight, BranchId, MainNetwork};
-    use crate::consensus::TestNetwork;
+    use zcash_protocol::consensus::TestNetwork;
     use zcash_protocol::memo::MemoBytes;
     use zcash_protocol::value::Zatoshis;
 
@@ -4609,7 +4608,7 @@ pub fn build_turnstile_migration_pczt(
 ) -> Result<JsValue, JsError> {
     use zcash_keys::keys::UnifiedFullViewingKey;
     use zcash_protocol::consensus::{BlockHeight, MainNetwork};
-    use crate::consensus::TestNetwork;
+    use zcash_protocol::consensus::TestNetwork;
     use zcash_protocol::memo::MemoBytes;
 
     let _ = account_index; // UFVK is already account-scoped; kept for parity.
@@ -5502,7 +5501,7 @@ fn ironwood_send_pczt_js(
 ) -> Result<JsValue, JsError> {
     use zcash_keys::keys::UnifiedFullViewingKey;
     use zcash_protocol::consensus::{BlockHeight, MainNetwork};
-    use crate::consensus::TestNetwork;
+    use zcash_protocol::consensus::TestNetwork;
 
     // Omitted = the branch default (target + 40, or + 120 on NU7). Resolved
     // (and validated) up front so a bad value is refused before any proving;
@@ -6677,7 +6676,7 @@ fn cbor_array_len(out: &mut Vec<u8>, len: usize) {
 pub fn validate_ufvk(ufvk_str: &str) -> bool {
     use zcash_keys::keys::UnifiedFullViewingKey;
     use zcash_protocol::consensus::MainNetwork;
-    use crate::consensus::TestNetwork;
+    use zcash_protocol::consensus::TestNetwork;
     if ufvk_str.starts_with("uview1") {
         UnifiedFullViewingKey::decode(&MainNetwork, ufvk_str).is_ok()
     } else {
@@ -6703,7 +6702,7 @@ pub fn address_from_ufvk_at_index(ufvk_str: &str, index_hex: &str) -> Result<Str
 fn ufvk_orchard_address(ufvk_str: &str, j: zip32::DiversifierIndex) -> Result<String, String> {
     use zcash_keys::keys::UnifiedFullViewingKey;
     use zcash_protocol::consensus::MainNetwork;
-    use crate::consensus::TestNetwork;
+    use zcash_protocol::consensus::TestNetwork;
 
     let ufvk = if ufvk_str.starts_with("uview1") {
         UnifiedFullViewingKey::decode(&MainNetwork, ufvk_str)
@@ -6739,7 +6738,7 @@ pub fn transparent_address_from_ufvk(
 ) -> Result<String, JsError> {
     use zcash_keys::keys::UnifiedFullViewingKey;
     use zcash_protocol::consensus::MainNetwork;
-    use crate::consensus::TestNetwork;
+    use zcash_protocol::consensus::TestNetwork;
 
     let mainnet = ufvk_str.starts_with("uview1") && !ufvk_str.starts_with("uviewtest");
 
@@ -7743,7 +7742,7 @@ fn external_ovk_from_ufvk(
 ) -> Result<orchard::keys::OutgoingViewingKey, String> {
     use zcash_keys::keys::UnifiedFullViewingKey;
     use zcash_protocol::consensus::MainNetwork;
-    use crate::consensus::TestNetwork;
+    use zcash_protocol::consensus::TestNetwork;
     let ufvk = if mainnet {
         UnifiedFullViewingKey::decode(&MainNetwork, ufvk_str)
     } else {
@@ -7802,7 +7801,7 @@ pub fn build_unsigned_shielding_transaction_ironwood(
     ovk_from_ufvk: Option<String>,
 ) -> Result<String, JsError> {
     use zcash_protocol::consensus::{BlockHeight, MainNetwork};
-    use crate::consensus::TestNetwork;
+    use zcash_protocol::consensus::TestNetwork;
     use zcash_protocol::memo::MemoBytes;
 
     let ovk = match ovk_from_ufvk.as_deref() {
@@ -7890,7 +7889,7 @@ pub fn build_unsigned_shielding_transaction_ironwood(
 pub fn transparent_pubkey_from_ufvk(ufvk_str: &str, address_index: u32) -> Result<String, JsError> {
     use zcash_keys::keys::UnifiedFullViewingKey;
     use zcash_protocol::consensus::MainNetwork;
-    use crate::consensus::TestNetwork;
+    use zcash_protocol::consensus::TestNetwork;
     use zcash_transparent::keys::{NonHardenedChildIndex, TransparentKeyScope};
 
     let mainnet = ufvk_str.starts_with("uview1") && !ufvk_str.starts_with("uviewtest");
@@ -8448,7 +8447,7 @@ fn read_compact_size(data: &[u8], pos: usize) -> Result<(u64, usize), JsError> {
 fn parse_orchard_address(addr_str: &str, mainnet: bool) -> Result<orchard::Address, String> {
     use zcash_keys::address::Address as ZkAddress;
     use zcash_protocol::consensus::MainNetwork;
-    use crate::consensus::TestNetwork;
+    use zcash_protocol::consensus::TestNetwork;
 
     let decoded = if mainnet {
         ZkAddress::decode(&MainNetwork, addr_str)

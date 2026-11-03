@@ -1,22 +1,33 @@
-//! NU7 on the public testnet: build and sign a turnstile migration with the
-//! crate's `TestNetwork` at a post-NU7 height and check the result is a V6
+//! NU7 on the public testnet: build and sign a turnstile migration with
+//! Common's `TestNetwork` at a post-NU7 height and check the result is a V6
 //! transaction bound to the NU7 branch id. This is the path zcli and zafu take
-//! on testnet, so it catches the Common 2.0 params missing the NU7 height.
+//! on testnet, so it catches params missing the NU7 height.
 //!
 //! Run with:
 //!   cargo test --release --test nu7_testnet_v6
 
-use zafu_wasm::consensus::{TestNetwork, TESTNET_NU7_ACTIVATION_HEIGHT};
 use zafu_wasm::{
     build_signed_ironwood_send_core, build_signed_turnstile_migration_core, ironwood_active,
     IronwoodRecipient,
 };
 
 use zcash_primitives::transaction::{Transaction, TxVersion};
-use zcash_protocol::consensus::{BlockHeight, BranchId};
+use zcash_protocol::consensus::{BlockHeight, BranchId, TestNetwork};
 use zcash_protocol::memo::MemoBytes;
 
 const NU7_BRANCH_ID: u32 = 0x7719_0ad9;
+/// NU7 on the public testnet, as Common sets it since 2.2.
+const TESTNET_NU7_ACTIVATION_HEIGHT: u32 = 4_465_026;
+
+/// Moved from the local TestNetwork shim this crate carried while Common
+/// lacked the testnet NU7 height.
+#[test]
+fn nu7_on_testnet() {
+    let h = BlockHeight::from_u32(TESTNET_NU7_ACTIVATION_HEIGHT);
+    assert_eq!(BranchId::for_height(&TestNetwork, h - 1), BranchId::Nu6_3);
+    assert_eq!(BranchId::for_height(&TestNetwork, h), BranchId::Nu7);
+    assert_eq!(u32::from(BranchId::Nu7), NU7_BRANCH_ID);
+}
 
 #[test]
 fn ironwood_is_active_from_nu6_3_on() {

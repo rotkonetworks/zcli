@@ -2,9 +2,9 @@
 //!
 //! zakura's transaction builder picks the consensus branch from
 //! `BranchId::for_height(params, target_height)`. The crate's built-in tables
-//! cannot be the authority for NU7: zakura 2.0.0 has no testnet NU7 height,
-//! mainnet's is not set until 2026-10-20, and Valar's NU7 staging chains use
-//! their own activation tables. The node knows which branch it is on, and the
+//! cannot be the only authority for NU7: Valar's NU7 staging chains use their
+//! own activation tables (Common 4.0 carries the public testnet 4,465,026 and
+//! mainnet 3,543,405 heights). The node knows which branch it is on, and the
 //! wallet already reads it (GetLightdInfo) and passes it as the expected
 //! branch id - so NU7 is treated as active at `target_height` exactly when the
 //! node says so, and everything else comes from the base parameters.
@@ -114,8 +114,8 @@ mod tests {
     fn node_on_nu6_3_past_the_tables_nu7_still_binds_nu7() {
         // The table wins, so the bound branch (NU7) differs from the node's
         // (NU6.3) and the builders' mismatch guard refuses.
-        let h = crate::consensus::TESTNET_NU7_ACTIVATION_HEIGHT;
-        let p = NodeParams::new(crate::consensus::TestNetwork, NU6_3_BRANCH_ID, h + 10);
+        let h = 4_465_026; // testnet NU7
+        let p = NodeParams::new(TestNetwork, NU6_3_BRANCH_ID, h + 10);
         assert_eq!(branch(&p, h + 10), NU7_BRANCH_ID);
     }
 
