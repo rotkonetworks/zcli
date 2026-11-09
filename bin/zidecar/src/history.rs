@@ -198,6 +198,8 @@ struct State {
     /// Set when a header disagrees with our tree. Nothing is served until a
     /// rollback clears it.
     fault: Option<String>,
+    /// Stored leaves are in memory, split by the schedule they were loaded under.
+    loaded: bool,
 }
 
 impl State {
@@ -273,7 +275,8 @@ impl HistoryIndex {
 
     /// Take the node's upgrade list when it reports one. A node that knows
     /// fewer upgrades than this build (an old zebrad) keeps the compiled list.
-    fn refresh_schedule(&self, upgrades: Vec<(u32, u32)>) {
+    /// Returns whether the schedule changed.
+    fn refresh_schedule(&self, upgrades: Vec<(u32, u32)>) -> bool {
         let from_node = Schedule::from_upgrades(upgrades);
         let compiled = Schedule::compiled(self.network);
         let pick = if from_node.epochs().len() >= compiled.epochs().len() {
@@ -292,13 +295,34 @@ impl HistoryIndex {
                 );
             }
             *s = pick;
+            return true;
         }
+        false
     }
 
-    /// Reload stored leaves into memory. Stops at the first gap.
+    /// Follow the node's schedule and hold the stored leaves under it. The
+    /// schedule decides which epoch's tree a leaf joins, so leaves loaded
+    /// under a schedule without an upgrade sit in the previous epoch's tree
+    /// and the new epoch looks empty: the index then stalls at the next block
+    /// and serves no proof. So nothing loads before zebrad has answered, and
+    /// everything reloads when the schedule changes.
+    async fn sync_schedule(&self, upgrades: Vec<(u32, u32)>, storage: &Storage) -> Result<()> {
+        let changed = self.refresh_schedule(upgrades);
+        if changed || !self.state.read().await.loaded {
+            self.load(storage).await?;
+        }
+        Ok(())
+    }
+
+    /// Reload stored leaves into memory under the current schedule, from
+    /// scratch. Stops at the first gap.
     async fn load(&self, storage: &Storage) -> Result<()> {
         let schedule = self.schedule();
+        // cached proofs were cut from the trees being replaced
+        self.closed.lock().await.clear();
+        *self.tip.lock().await = None;
         let mut st = self.state.write().await;
+        *st = State::default();
         let mut height = self.anchor.height;
         while let Some(bytes) = storage.get_history_leaf(height)? {
             let Some(epoch) = schedule.at(height) else {
@@ -317,6 +341,7 @@ impl HistoryIndex {
         if let Some(h) = st.indexed_to {
             info!("history: loaded leaves {}..={}", self.anchor.height, h);
         }
+        st.loaded = true;
         Ok(())
     }
 
@@ -331,9 +356,6 @@ impl HistoryIndex {
             "history: FlyClient index from anchor {}",
             self.anchor.height
         );
-        if let Err(e) = self.load(&storage).await {
-            error!("history: could not load stored leaves: {e}");
-        }
         loop {
             let wait = match self.step(&zebrad, &storage).await {
                 Ok(true) => Duration::from_secs(10),
@@ -356,7 +378,7 @@ impl HistoryIndex {
     /// Index one batch. Returns `true` when caught up with the tip.
     async fn step(&self, zebrad: &ZebradClient, storage: &Storage) -> Result<bool> {
         let info = zebrad.get_blockchain_info().await?;
-        self.refresh_schedule(info.upgrade_schedule());
+        self.sync_schedule(info.upgrade_schedule(), storage).await?;
         let schedule = self.schedule();
         let tip = info.blocks;
         let next = {
@@ -791,6 +813,94 @@ mod tests {
         .unwrap();
         index.refresh_schedule(vec![]);
         assert_eq!(index.schedule(), Schedule::compiled(Network::Mainnet));
+    }
+
+    /// A block's leaf in `epoch`, with only the fields a tree checks filled.
+    fn leaf(epoch: &Epoch, height: u32) -> HistoryNode {
+        assert_eq!(epoch.version, NodeVersion::V3);
+        let bits = 0x1d00_ffff;
+        HistoryNode::V3(NodeDataV3 {
+            v2: NodeDataV2 {
+                v1: NodeData {
+                    consensus_branch_id: epoch.branch_id,
+                    subtree_commitment: [height as u8; 32],
+                    start_time: height,
+                    end_time: height,
+                    start_target: bits,
+                    end_target: bits,
+                    start_sapling_root: [0; 32],
+                    end_sapling_root: [0; 32],
+                    subtree_total_work: bits_work(bits).unwrap(),
+                    start_height: height as u64,
+                    end_height: height as u64,
+                    sapling_tx: 0,
+                },
+                start_orchard_root: [0; 32],
+                end_orchard_root: [0; 32],
+                orchard_tx: 0,
+            },
+            start_ironwood_root: [0; 32],
+            end_ironwood_root: [0; 32],
+            ironwood_tx: 0,
+        })
+    }
+
+    async fn epoch_lens(index: &HistoryIndex) -> Vec<(u32, u64)> {
+        let st = index.state.read().await;
+        st.stores.iter().map(|(a, s)| (*a, s.len())).collect()
+    }
+
+    /// zcash.rotko.net, 2026-11-09: a build that did not know NU7 restarted
+    /// past its activation, loaded every stored leaf into the NU6.3 tree, and
+    /// stalled at the next block with no proof to serve.
+    #[tokio::test]
+    async fn stored_leaves_split_by_the_schedule_zebrad_reports() {
+        let anchor = zync_core::flyclient::Anchor::nu6_3_mainnet();
+        let a = anchor.height;
+        let next = a + 4;
+        let known: Vec<(u32, u32)> = Schedule::compiled(Network::Mainnet)
+            .epochs()
+            .iter()
+            .map(|e| (e.activation, e.branch_id))
+            .filter(|(h, _)| *h <= a)
+            .collect();
+        let mut upgraded = known.clone();
+        upgraded.push((next, 0xdead_beef));
+        let schedule = Schedule::from_upgrades(upgraded.clone());
+
+        let dir = std::env::temp_dir().join(format!("zidecar-history-{}", std::process::id()));
+        let storage = Storage::open(dir.to_str().unwrap()).unwrap();
+        for h in a..a + 8 {
+            let leaf = leaf(&schedule.at(h).unwrap(), h);
+            storage
+                .store_history_leaf(h, &leaf.to_bytes(), &[0; 32])
+                .unwrap();
+        }
+
+        // nothing loads before zebrad has said which upgrades exist
+        let index = HistoryIndex::new(Network::Mainnet, anchor).unwrap();
+        assert!(epoch_lens(&index).await.is_empty());
+
+        // a node without the upgrade: all eight leaves are one epoch
+        index.sync_schedule(known, &storage).await.unwrap();
+        assert_eq!(epoch_lens(&index).await, vec![(a, 8)]);
+
+        // the node learns it: the leaves split, so block a + 8 finds the
+        // four earlier leaves of its epoch
+        index
+            .sync_schedule(upgraded.clone(), &storage)
+            .await
+            .unwrap();
+        assert_eq!(epoch_lens(&index).await, vec![(a, 4), (next, 4)]);
+        assert_eq!(index.state.read().await.indexed_to, Some(a + 7));
+
+        // and a restart loads them under the node's schedule, not the compiled one
+        let restarted = HistoryIndex::new(Network::Mainnet, anchor).unwrap();
+        restarted.sync_schedule(upgraded, &storage).await.unwrap();
+        assert_eq!(epoch_lens(&restarted).await, vec![(a, 4), (next, 4)]);
+
+        drop(storage);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
