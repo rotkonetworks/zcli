@@ -3,6 +3,45 @@
 Release notes for zcli, zclid and zidecar. Earlier releases (v0.9.0 and
 before) keep their notes in the annotated git tags (`git show v0.9.0`).
 
+## v0.11.0 - 2026-11-12
+
+Upgrade order: no required order. zidecar's RPC changes are additive (a
+burial field on `GetFlyClientProof`); no RPC was removed.
+
+### NU7
+
+- Zakura Common 4.0.0: NU7's mainnet activation (3,543,405) is built in.
+  Wallets bind NU7 from that height and refuse an NU6.3 transaction there;
+  they also build on whatever branch the node reports.
+- `zcli --testnet` is back, with NU7 on testnet.
+
+### zidecar
+
+- FlyClient: the history index loads its stored leaves only after zebrad
+  reports its upgrade schedule, and reloads when the schedule changes. A
+  build that did not know NU7 and restarted past its activation stalled and
+  served no proof ("epoch not indexed").
+- `GetFlyClientProof` takes a burial depth and opens the note tree roots that
+  many blocks under the tip, so a one-block reorg cannot move them.
+- Optional Zakura Indexer push streams for the tip and the mempool
+  (`--zakura-indexer-url`).
+- `GetLightdInfo` reports the full git commit (overridable with
+  `ZIDECAR_GIT_HASH` for builds without `.git`).
+
+### zcli
+
+- Multisig: hold a share of a zafu or escrow vault and co-sign its payouts;
+  a joiner tagged into a session learns t-of-n from the host's first round.
+- Merchant watch-only (`-w`): create and watch without the spending key on
+  the merchant host.
+
+### Workspace
+
+- The voting crates (zcash-voting, pir-client, voting-wasm) and poker leave
+  the main workspace and build in their own, so the wallet stack can move to
+  Common 4.0 while voting stays on the stack its live chain runs.
+- The FlyClient verifier is its own crate, `zync-flyclient`.
+
 ## v0.10.0 - 2026-10-05
 
 Upgrade order: **clients first.** zcli and zclid 0.9.0 cannot sync against a
