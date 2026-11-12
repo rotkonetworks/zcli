@@ -53,8 +53,10 @@ jobs:
         with:
           # vote-sdk's go.mod says 1.24.0, but its bytedance/sonic loader only
           # links on a newer toolchain (1.24.0 fails: invalid reference to
-          # runtime.lastmoduledatap). The local e2e builds with current stable.
-          go-version: stable
+          # runtime.lastmoduledatap). 1.27.4 then refuses the circuits' static
+          # library: "disallowed LTO section .llvmbc in #cgo LDFLAGS" (its Rust
+          # build keeps LTO bitcode). Pinned until vote-sdk builds it without.
+          go-version: 1.27.3
           cache-dependency-path: vote-sdk/go.sum
       - run: sudo apt-get update && sudo apt-get install -y protobuf-compiler jq
       - uses: Swatinem/rust-cache@v2
