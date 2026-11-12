@@ -317,7 +317,7 @@ pub fn build_ironwood_shielding_tx(
     mainnet: bool,
 ) -> Result<Vec<u8>, Error> {
     use zcash_protocol::consensus::MainNetwork;
-    use zync_core::consensus::TestNetwork;
+    use zcash_protocol::consensus::TestNetwork;
     use zcash_protocol::memo::MemoBytes;
 
     // FAIL CLOSED before proving: a V6 ironwood tx is only a valid shape once
@@ -331,12 +331,11 @@ pub fn build_ironwood_shielding_tx(
     }
 
     let privkey = crate::address::derive_transparent_key_at(seed, source_index)?;
-    let sk = secp256k1::SecretKey::from_slice(&privkey)
+    let sk = secp256k1::SecretKey::from_secret_bytes(privkey)
         .map_err(|e| Error::Transaction(format!("invalid transparent key: {e}")))?;
 
     // our own p2pkh key hash, used to rebuild each UTXO's script locally
-    let secp = secp256k1::Secp256k1::signing_only();
-    let pubkey = secp256k1::PublicKey::from_secret_key(&secp, &sk);
+    let pubkey = secp256k1::PublicKey::from_secret_key(&sk);
     let pubkey_hash: [u8; 20] = {
         use ripemd::Digest as _;
         let sha = sha2::Sha256::digest(pubkey.serialize());
@@ -507,9 +506,11 @@ pub fn build_orchard_spend_tx(
     // halo 2 proving (rayon parallelism is automatic via halo2's multicore feature)
     // TODO(ironwood correctness): InsecurePreNu6_2 matches the V5 verifying key
     // (branch 0x4DEC4DF0); NU6.3 proving needs PostNu6_3.
+    // Common 3.0 refuses the pre-NU6.3 circuits, so this V5 path errors here.
     let pk = orchard::circuit::ProvingKey::build(
         orchard::circuit::OrchardCircuitVersion::InsecurePreNu6_2,
-    );
+    )
+    .map_err(|e| Error::Transaction(format!("orchard proving key: {e:?}")))?;
     let proven = unauthorized
         .create_proof(&pk, &mut rng)
         .map_err(|e| Error::Transaction(format!("create_proof: {:?}", e)))?;
@@ -678,7 +679,7 @@ fn base58_decode(s: &str) -> Result<Vec<u8>, Error> {
 pub fn parse_orchard_address(addr_str: &str, mainnet: bool) -> Result<orchard::Address, Error> {
     use zcash_keys::address::Address as ZkAddress;
     use zcash_protocol::consensus::MainNetwork;
-    use zync_core::consensus::TestNetwork;
+    use zcash_protocol::consensus::TestNetwork;
 
     let decoded = if mainnet {
         ZkAddress::decode(&MainNetwork, addr_str)
@@ -793,12 +794,11 @@ mod shielding_script_tests {
     #[test]
     fn p2pkh_script_matches_upstream_encoder_per_index() {
         let seed = WalletSeed::from_bytes([3u8; 64]);
-        let secp = secp256k1::Secp256k1::signing_only();
         let mut scripts = Vec::new();
         for index in 0..3u32 {
             let key = crate::address::derive_transparent_key_at(&seed, index).unwrap();
-            let sk = secp256k1::SecretKey::from_slice(&key).unwrap();
-            let pk = secp256k1::PublicKey::from_secret_key(&secp, &sk);
+            let sk = secp256k1::SecretKey::from_secret_bytes(key).unwrap();
+            let pk = secp256k1::PublicKey::from_secret_key(&sk);
             let hash = hash160(&pk.serialize());
             let addr = zcash_transparent::address::TransparentAddress::PublicKeyHash(hash);
             let upstream: Vec<u8> = zcash_transparent::address::Script::from(addr.script()).0 .0;

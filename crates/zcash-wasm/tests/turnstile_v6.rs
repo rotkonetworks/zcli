@@ -33,6 +33,8 @@ impl Parameters for Nu63TestNet {
     fn activation_height(&self, nu: NetworkUpgrade) -> Option<BlockHeight> {
         match nu {
             NetworkUpgrade::Nu6_3 => Some(BlockHeight::from_u32(10)),
+            // stays NU6.3: mainnet schedules NU7 at 3,543,405 since Common 4.0
+            NetworkUpgrade::Nu7 => None,
             _ => MainNetwork.activation_height(nu),
         }
     }

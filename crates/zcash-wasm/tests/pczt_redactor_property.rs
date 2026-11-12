@@ -5,14 +5,15 @@
 //! This test pins the kept-fields invariant so a future "let's also clear X"
 //! refactor can't silently strip something the cold signer needs.
 //!
-//! Fixture strategy: build a minimal transparent → orchard PCZT via the
-//! canonical `zcash_primitives::Builder::build_for_pczt` → `Creator::build_from_parts`
-//! pipeline, skipping `Prover::create_orchard_proof` because the Halo 2
-//! proof isn't load-bearing for redaction or serialization. The orchard
-//! bundle's actions are populated with dummy spends (privacy padding the
-//! builder injects) — those still have all the fields we care about.
+//! Fixture strategy: build a minimal transparent -> ironwood PCZT via the
+//! canonical `zcash_primitives::Builder::build_for_pczt` -> `Creator::build_from_parts`
+//! pipeline, skipping the Halo 2 proof because it isn't load-bearing for
+//! redaction or serialization. The ironwood bundle's actions are populated
+//! with dummy spends (privacy padding the builder injects) - those still have
+//! all the fields we care about. (Before Common 3.0 this was a pre-NU6.3
+//! transparent -> orchard V5 PCZT, which Common no longer builds.)
 //!
-//! A real spend (orchard → orchard) would also exercise the spend path but
+//! A real spend (ironwood -> ironwood) would also exercise the spend path but
 //! requires a synthetic merkle anchor + path that hash-balances. The dummy
 //! spends are sufficient to assert the property; richer fixtures are a
 //! follow-up if signing-path bugs slip past this guard.
@@ -29,16 +30,15 @@ use zcash_primitives::transaction::{
 };
 use zcash_protocol::{consensus::MainNetwork, memo::MemoBytes, value::Zatoshis};
 
-/// Build a minimal unproven PCZT: 1 transparent input → 1 orchard output.
+/// Build a minimal unproven PCZT: 1 transparent input -> 2 ironwood outputs.
 /// Skips proof/sighash steps — sufficient for testing the redactor + the
 /// serialize/parse round-trip but not for actual broadcast.
 fn build_test_pczt() -> Pczt {
     let params = MainNetwork;
 
     // Transparent input — fake outpoint, throwaway key.
-    let secp = secp256k1::Secp256k1::signing_only();
-    let sk = secp256k1::SecretKey::from_slice(&[1u8; 32]).unwrap();
-    let pk = sk.public_key(&secp);
+    let sk = secp256k1::SecretKey::from_secret_bytes([1u8; 32]).unwrap();
+    let pk = sk.public_key();
     // OutPoint::fake is test-dependencies-only; use OutPoint::new directly.
     let utxo = transparent::OutPoint::new([0u8; 32], 0);
     let coin = transparent::TxOut::new(
@@ -46,21 +46,20 @@ fn build_test_pczt() -> Pczt {
         TransparentAddress::from_pubkey(&pk).script().into(),
     );
 
-    // Orchard recipient.
+    // Shielded recipient (an orchard-shaped address receives into ironwood).
     let orchard_sk = orchard::keys::SpendingKey::from_bytes([0u8; 32]).unwrap();
     let orchard_fvk = orchard::keys::FullViewingKey::from(&orchard_sk);
     let recipient = orchard_fvk.address_at(0u32, Scope::External);
 
-    // Post-NU6.2, below the real NU6.3 activation (3_428_143). At NU6.3 the
-    // orchard cross-address outputs this fixture adds are DISABLED, so we must
-    // build a pre-NU6.3 orchard tx now that FIX-A wired the real activation.
+    // Post-NU6.3 (3_428_143), below mainnet NU7 (3_543_405): a V6 tx whose new
+    // value lands in the ironwood pool.
     let mut builder = Builder::new(
         params,
-        3_400_000.into(),
+        3_500_000.into(),
         BuildConfig::Standard {
             sapling_anchor: None,
-            orchard_anchor: Some(orchard::Anchor::empty_tree()),
-            ironwood_anchor: None,
+            orchard_anchor: None,
+            ironwood_anchor: Some(orchard::Anchor::empty_tree()),
             orchard_padding: BundlePadding::DEFAULT,
             ironwood_padding: BundlePadding::DEFAULT,
         },
@@ -72,21 +71,21 @@ fn build_test_pczt() -> Pczt {
     // 1M zat input minus the zip317 fee. The exact split doesn't matter
     // for redaction testing — we just need the builder to accept it.
     builder
-        .add_orchard_output::<zip317::FeeRule>(
+        .add_ironwood_output::<zip317::FeeRule>(
             None,
             recipient,
             Zatoshis::const_from_u64(100_000),
             MemoBytes::empty(),
         )
-        .expect("add orchard output (recipient)");
+        .expect("add ironwood output (recipient)");
     builder
-        .add_orchard_output::<zip317::FeeRule>(
+        .add_ironwood_output::<zip317::FeeRule>(
             None,
             recipient,
             Zatoshis::const_from_u64(885_000),
             MemoBytes::empty(),
         )
-        .expect("add orchard output (change-equivalent)");
+        .expect("add ironwood output (change-equivalent)");
 
     let parts = builder
         .build_for_pczt(OsRng, &zip317::FeeRule::standard())

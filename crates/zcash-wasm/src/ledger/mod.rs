@@ -107,7 +107,7 @@ pub(crate) fn parse_ufvk(
             &ufvk,
         ),
         "test" => zcash_keys::keys::UnifiedFullViewingKey::decode(
-            &crate::consensus::TestNetwork,
+            &zcash_protocol::consensus::TestNetwork,
             &ufvk,
         ),
         other => return Err(protocol(format!("unknown network {other:?}"))),

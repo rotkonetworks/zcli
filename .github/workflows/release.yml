@@ -105,8 +105,10 @@ jobs:
             -p zclid \
             -p zidecar \
             -p license-server \
-            -p poker \
             -p relay
+          # poker is its own workspace (Zakura Common 2.0); same target dir
+          cargo build --release --locked --target ${{ matrix.target }} \
+            --manifest-path bin/poker/Cargo.toml --target-dir target
 
       - name: strip + package binaries
         shell: bash

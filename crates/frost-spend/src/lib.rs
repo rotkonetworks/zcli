@@ -4,12 +4,12 @@
 // wraps the ZF's FROST libraries + conradoplg's orchard fork.
 //
 // crypto provenance:
-//   - zakura-reddsa 1.0.0 (Zakura Common 1.0): FROST(Pallas, BLAKE2b-512)
+//   - zakura-reddsa-frost 4.0.0 (Zakura Common 4.0): FROST(Pallas, BLAKE2b-512)
 //     ciphersuite
 //   - frost-core 3.0.0 (ZF): DKG, signing rounds, aggregation
 //   - frost-rerandomized 3.0.0 (ZF): rerandomized signatures
 //   - ed25519-consensus 2 (Zebra): message authentication
-//   - zakura-orchard 1.0.0 (crates.io): FVK derivation (see keys::frost_fvk)
+//   - zakura-orchard 4.0.0 (crates.io): FVK derivation (see keys::frost_fvk)
 //   - frostito 0.8.0: nested FROST, hardened DKG, resharing
 //
 // zero custom crypto. this crate is glue.
@@ -27,13 +27,13 @@ pub mod sign;
 pub mod transport;
 
 // re-export core types
-pub use reddsa::frost::redpallas::{
+pub use reddsa_frost::redpallas::{
     self as frost, keys as frost_keys, keys::dkg, round1, round2, Identifier, SigningPackage,
 };
 // frost-rerandomized 3.0: rerandomized aggregate + the Randomizer/
 // RandomizedParams types now live in redpallas::rerandomized (reddsa's
 // top-level `aggregate` is plain FROST). Per-share rerandomized signing uses
 // `frost_rerandomized::sign` directly (see sign.rs / orchestrate.rs).
-pub use reddsa::frost::redpallas::rerandomized::{aggregate, RandomizedParams, Randomizer};
+pub use reddsa_frost::redpallas::rerandomized::{aggregate, RandomizedParams, Randomizer};
 
 pub use ed25519_consensus;

@@ -61,8 +61,8 @@ impl Parameters for PreNu6_3TestNetwork {
 }
 
 fn secp_key() -> (secp256k1::SecretKey, secp256k1::PublicKey) {
-    let sk = secp256k1::SecretKey::from_slice(&[7; 32]).unwrap();
-    let pk = sk.public_key(&secp256k1::Secp256k1::new());
+    let sk = secp256k1::SecretKey::from_secret_bytes([7; 32]).unwrap();
+    let pk = sk.public_key();
     (sk, pk)
 }
 
@@ -264,12 +264,14 @@ fn shielded_pczt(
         .unwrap()
 }
 
+// Common 3.0 builds no orchard bundle before NU6.3, so the orchard-pool
+// fixtures are orchard v3 under the NU6.3 branch.
 fn orchard_send_pczt(outputs: &[u64]) -> Vec<u8> {
     let sk = spending_key(0x43);
     shielded_pczt(
-        BranchId::Nu6_2,
+        BranchId::Nu6_3,
         Some(shielded_bundle(
-            BundleVersion::orchard_v2(),
+            BundleVersion::orchard_v3(),
             &sk,
             true,
             outputs,
@@ -318,10 +320,9 @@ fn device_responses(pczt_bytes: &[u8], plan: &[ApduCommand], sk: &SpendingKey) -
         .map(|command| match command.ins {
             0x55 => {
                 let (sk, _) = secp_key();
-                let secp = secp256k1::Secp256k1::new();
                 let message =
                     secp256k1::Message::from_digest(transparent_sighash(command.p2 as usize));
-                let mut der = secp.sign_ecdsa(&message, &sk).serialize_der().to_vec();
+                let mut der = secp256k1::ecdsa::sign(message, &sk).serialize_der().to_vec();
                 der[0] |= 1; // Ledger's Y-parity metadata bit
                 der.push(0x01);
                 der
@@ -396,16 +397,20 @@ fn orchard_round_trip_applies_every_spend_authorization() {
     let pczt_bytes = orchard_send_pczt(&[90_000]);
     let plan = pczt_signing_plan(&pczt_bytes, false).unwrap();
     let requests: Vec<_> = plan.iter().filter(|c| c.ins == 0x57).collect();
-    assert_eq!(requests.len(), 1);
+    // orchard v3 pairs the change output with a zero-value wallet spend, so
+    // the real spend and that pair spend both need the device
+    assert_eq!(requests.len(), 2);
+    // v6 still streams the (empty) Ironwood bundle (0x58) but asks for no
+    // Ironwood signature
     assert!(
-        plan.iter().all(|c| c.ins != 0x58),
-        "v5 has no Ironwood command"
+        plan.iter().all(|c| c.ins != 0x59),
+        "an orchard-only bundle has no Ironwood signature request"
     );
 
     let before = shielded_sig_count(&pczt_bytes);
     let signed =
         finalize_pczt_signing(&pczt_bytes, &device_responses(&pczt_bytes, &plan, &sk)).unwrap();
-    assert_eq!(shielded_sig_count(&signed), before + 1);
+    assert_eq!(shielded_sig_count(&signed), before + 2);
 }
 
 #[test]
@@ -642,8 +647,22 @@ fn transparent_output_limit_is_enforced_before_the_device() {
 
 #[test]
 fn shielded_action_limit_is_enforced_per_pool() {
-    assert!(validate_pczt(&orchard_send_pczt(&[1_000; MAX_SHIELDED_ACTIONS])).is_ok());
-    let error = validate_pczt(&orchard_send_pczt(&[1_000; MAX_SHIELDED_ACTIONS + 1])).unwrap_err();
+    // one spend and n outputs is n actions (orchard v3 would pair each change
+    // output with its own spend, so the limit is counted on ironwood)
+    let send = |n: usize| {
+        shielded_pczt(
+            BranchId::Nu6_3,
+            None,
+            Some(shielded_bundle(
+                BundleVersion::ironwood_v3(),
+                &spending_key(0x43),
+                true,
+                &vec![1_000; n],
+            )),
+        )
+    };
+    assert!(validate_pczt(&send(MAX_SHIELDED_ACTIONS)).is_ok());
+    let error = validate_pczt(&send(MAX_SHIELDED_ACTIONS + 1)).unwrap_err();
     assert!(error.starts_with("unsupported_transaction: "), "{error}");
     assert!(error.contains("at most 32 shielded actions"), "{error}");
 }
@@ -695,19 +714,19 @@ fn a_pczt_that_was_not_io_finalized_is_refused_before_the_device() {
     // Two outputs + one spend -> one dummy spend the IO Finalizer would sign.
     let pczt = Creator::build_from_parts(PcztParts {
         params: MainNetwork,
-        version: TxVersion::suggested_for_branch(BranchId::Nu6_2),
-        consensus_branch_id: BranchId::Nu6_2,
+        version: TxVersion::suggested_for_branch(BranchId::Nu6_3),
+        consensus_branch_id: BranchId::Nu6_3,
         lock_time: 0,
         expiry_height: BlockHeight::from_u32(0),
         transparent: None,
         sapling: None,
-        orchard: Some(shielded_bundle(
-            BundleVersion::orchard_v2(),
+        orchard: None,
+        ironwood: Some(shielded_bundle(
+            BundleVersion::ironwood_v3(),
             &sk,
             true,
             &[40_000, 50_000],
         )),
-        ironwood: None,
     })
     .unwrap()
     .serialize()
@@ -877,9 +896,9 @@ fn transparent_stamping_refuses_bad_host_input() {
     );
     // A pubkey the input's script does not pay.
     let mut stranger = our_path(1);
-    stranger.pubkey = secp256k1::SecretKey::from_slice(&[9; 32])
+    stranger.pubkey = secp256k1::SecretKey::from_secret_bytes([9; 32])
         .unwrap()
-        .public_key(&secp256k1::Secp256k1::new())
+        .public_key()
         .serialize();
     assert!(
         stamp::stamp_derivations(&raw, &FP, 0, &[our_path(0), stranger])
@@ -911,12 +930,8 @@ fn transparent_stamping_refuses_bad_host_input() {
 #[test]
 fn stamping_covers_orchard_spends_and_post_nu6_3_change_pairs() {
     let sk = spending_key(0x43);
+    // (orchard v2 under NU6.2 is gone: Common 3.0 no longer builds it)
     for (branch, version, outputs) in [
-        (
-            BranchId::Nu6_2,
-            BundleVersion::orchard_v2(),
-            &[90_000u64][..],
-        ),
         // Orchard v3 pairs the change with a zero-value wallet spend.
         (
             BranchId::Nu6_3,
@@ -974,7 +989,8 @@ fn stamping_covers_orchard_spends_and_post_nu6_3_change_pairs() {
 #[test]
 fn shielded_stamping_refuses_to_overwrite_a_different_derivation() {
     // The fixture's own derivation is [32', 133', 0'] with FP; ask for account 1.
-    let pczt = orchard_send_pczt(&[90_000]);
+    // No outputs: an orchard v3 change output would add an unstamped pair spend.
+    let pczt = orchard_send_pczt(&[]);
     assert!(stamp::stamp_derivations(&pczt, &FP, 1, &[])
         .unwrap_err()
         .contains("refusing to overwrite the different ZIP-32 derivation on Orchard action"));
@@ -994,6 +1010,8 @@ impl Parameters for Nu63TestNet {
     fn activation_height(&self, nu: NetworkUpgrade) -> Option<BlockHeight> {
         match nu {
             NetworkUpgrade::Nu6_3 => Some(BlockHeight::from_u32(10)),
+            // stays NU6.3: mainnet schedules NU7 at 3,543,405 since Common 4.0
+            NetworkUpgrade::Nu7 => None,
             _ => MainNetwork.activation_height(nu),
         }
     }

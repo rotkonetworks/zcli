@@ -14,10 +14,10 @@ OUT_DIR="${1:-/steam/rotko/zafu/apps/extension/public/voting-wasm}"
 
 cd "$(dirname "$0")"
 unset RUSTFLAGS
-RUSTUP_TOOLCHAIN=nightly cargo build -p voting-wasm --target wasm32-unknown-unknown \
-  --release --features parallel -Zbuild-std=panic_abort,std
-
 TARGET_DIR="${CARGO_TARGET_DIR:-../../target}"
+RUSTUP_TOOLCHAIN=nightly cargo build -p voting-wasm --target wasm32-unknown-unknown \
+  --release --features parallel -Zbuild-std=panic_abort,std --target-dir "$TARGET_DIR"
+
 wasm-bindgen "$TARGET_DIR/wasm32-unknown-unknown/release/voting_wasm.wasm" \
   --out-dir "$OUT_DIR" --target web
 

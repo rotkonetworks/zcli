@@ -41,7 +41,6 @@
 
 #![allow(dead_code)]
 
-pub use zync_flyclient::consensus;
 pub mod endpoints;
 pub mod error;
 pub use zync_flyclient as flyclient;

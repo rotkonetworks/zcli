@@ -1,22 +1,33 @@
-//! NU7 on the public testnet: build and sign a turnstile migration with the
-//! crate's `TestNetwork` at a post-NU7 height and check the result is a V6
+//! NU7 on the public testnet: build and sign a turnstile migration with
+//! Common's `TestNetwork` at a post-NU7 height and check the result is a V6
 //! transaction bound to the NU7 branch id. This is the path zcli and zafu take
-//! on testnet, so it catches the Common 2.0 params missing the NU7 height.
+//! on testnet, so it catches params missing the NU7 height.
 //!
 //! Run with:
 //!   cargo test --release --test nu7_testnet_v6
 
-use zafu_wasm::consensus::{TestNetwork, TESTNET_NU7_ACTIVATION_HEIGHT};
 use zafu_wasm::{
     build_signed_ironwood_send_core, build_signed_turnstile_migration_core, ironwood_active,
     IronwoodRecipient,
 };
 
 use zcash_primitives::transaction::{Transaction, TxVersion};
-use zcash_protocol::consensus::{BlockHeight, BranchId};
+use zcash_protocol::consensus::{BlockHeight, BranchId, TestNetwork};
 use zcash_protocol::memo::MemoBytes;
 
 const NU7_BRANCH_ID: u32 = 0x7719_0ad9;
+/// NU7 on the public testnet, as Common sets it since 2.2.
+const TESTNET_NU7_ACTIVATION_HEIGHT: u32 = 4_465_026;
+
+/// Moved from the local TestNetwork shim this crate carried while Common
+/// lacked the testnet NU7 height.
+#[test]
+fn nu7_on_testnet() {
+    let h = BlockHeight::from_u32(TESTNET_NU7_ACTIVATION_HEIGHT);
+    assert_eq!(BranchId::for_height(&TestNetwork, h - 1), BranchId::Nu6_3);
+    assert_eq!(BranchId::for_height(&TestNetwork, h), BranchId::Nu7);
+    assert_eq!(u32::from(BranchId::Nu7), NU7_BRANCH_ID);
+}
 
 #[test]
 fn ironwood_is_active_from_nu6_3_on() {
@@ -193,12 +204,12 @@ fn ironwood_send_with<P: zcash_protocol::consensus::Parameters>(
     )
 }
 
-/// Mainnet has no NU7 height in the crate tables: the node's report decides,
-/// and the NU7 default expiry (target + 120) follows it.
+/// Below the table's mainnet NU7 height (3,543,405 since Common 4.0) the
+/// node's report decides, and the NU7 default expiry (target + 120) follows it.
 #[test]
 fn node_reported_nu7_binds_nu7_on_mainnet_params() {
     use zcash_protocol::consensus::MainNetwork;
-    let target_height = 3_600_000;
+    let target_height = 3_500_000;
 
     let tx_bytes = ironwood_send_with(MainNetwork, target_height, NU7_BRANCH_ID)
         .expect("ironwood send when the node reports NU7");
@@ -224,5 +235,15 @@ fn node_on_nu6_3_past_testnet_nu7_is_refused() {
         0x37a5_165b,
     )
     .expect_err("must refuse");
+    assert!(err.contains("mismatch"), "unexpected error: {err}");
+}
+
+/// Mainnet now has its NU7 height in the table: a node still on NU6.3 past it
+/// is refused there too.
+#[test]
+fn node_on_nu6_3_past_mainnet_nu7_is_refused() {
+    use zcash_protocol::consensus::MainNetwork;
+    let err = ironwood_send_with(MainNetwork, 3_543_405 + 1_000, 0x37a5_165b)
+        .expect_err("must refuse");
     assert!(err.contains("mismatch"), "unexpected error: {err}");
 }

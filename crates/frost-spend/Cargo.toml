@@ -11,15 +11,16 @@ default = []
 wasm = ["getrandom/js"]
 
 [dependencies]
-# FROST (RedPallas, rerandomized) on Zakura Common 2.0. zakura-reddsa's `frost`
-# feature pulls frost-rerandomized 3.0 with serialization, and enables the
-# rand_core_06 shim so FROST APIs keep taking rand_core 0.6 RNGs.
-reddsa = { package = "zakura-reddsa", version = "=2.0.0", features = ["frost"] }
+# FROST (RedPallas, rerandomized) on Zakura Common 4.0. Since Common 3.0 the
+# FROST ciphersuites live in zakura-reddsa-frost (`reddsa_frost::redpallas`),
+# which pulls frost-rerandomized 3.0 with serialization and keeps the FROST
+# APIs on rand_core 0.6 RNGs.
+reddsa-frost = { package = "zakura-reddsa-frost", version = "=4.0.0" }
 # frost-rerandomized 3.0 moved rerandomized signing out of reddsa's redpallas
 # module: `redpallas::rerandomized` re-exports aggregate/Randomizer/
 # RandomizedParams, but per-share signing with an explicit randomizer (our
 # Orchard alpha) is only available as `frost_rerandomized::sign`. Matches the
-# version reddsa's `frost` feature pulls.
+# version zakura-reddsa-frost pulls.
 frost-rerandomized = { version = "=3.0.0" }
 ed25519-consensus = "2"
 rand_core = "0.6"
@@ -28,14 +29,12 @@ rand_core = "0.6"
 # Released crates.io orchard — NU6.3/Ironwood is upstream as of 0.15.0, so no
 # fork is needed. The FROST FVK shape upstream lacks a constructor for is
 # built from the public raw encoding in keys::frost_fvk (see the note there).
-# NOTE: `unstable-voting-circuits` is enabled only to work around a packaging
-# bug in zakura-orchard 1.0.0/1.0.1: keys.rs gates `visibility::make(pub)` on
-# `unstable-frost`, but the optional `visibility` dep is pulled in by
-# `unstable-voting-circuits` instead - so `unstable-frost` alone fails to build.
-orchard = { package = "zakura-orchard", version = "=2.0.0", default-features = false, features = ["unstable-frost", "unstable-voting-circuits"] }
+# `wallet` + `zip32-addresses` keep the FVK address derivation in keys.rs
+# (both default features since Common 3.0/4.0).
+orchard = { package = "zakura-orchard", version = "=4.0.0", default-features = false, features = ["backend-halo2", "wallet", "zip32-addresses", "unstable-frost"] }
 
 # Pallas curve
-pasta_curves = { package = "zakura-pasta-curves", version = "=2.0.0" }
+pasta_curves = { package = "zakura-pasta-curves", version = "=4.0.0" }
 
 # frostito: nested FROST + hardened DKG + resharing on ZF frost-core
 # (public extract from zeratul, canonical upstream penumbrafi/frostito).

@@ -3,7 +3,6 @@
 //
 // extracted from ops/airgap.rs for reuse in zafu-wasm
 
-use ff::PrimeField;
 use orchard::builder::{Builder, BundleType};
 use orchard::keys::{FullViewingKey, Scope};
 use orchard::tree::Anchor;
@@ -721,9 +720,11 @@ pub fn build_pczt_and_qr(
     // TODO(ironwood correctness): InsecurePreNu6_2 matches the historical V5
     // verifying key this PCZT path targets (branch 0x4DEC4DF0); post-NU6.3
     // proving must use PostNu6_3.
+    // Common 3.0 refuses the pre-NU6.3 circuits, so this V5 path errors here.
     let pk = orchard::circuit::ProvingKey::build(
         orchard::circuit::OrchardCircuitVersion::InsecurePreNu6_2,
-    );
+    )
+    .map_err(|e| Error::Transaction(format!("orchard proving key: {e:?}")))?;
     pczt_bundle
         .create_proof(&pk, rng)
         .map_err(|e| Error::Transaction(format!("create_proof: {}", e)))?;
@@ -736,7 +737,7 @@ pub fn build_pczt_and_qr(
                 action.spend().alpha().as_ref().ok_or_else(|| {
                     Error::Transaction("missing alpha on non-dummy action".into())
                 })?;
-            alphas.push(alpha.to_repr());
+            alphas.push(alpha.to_bytes());
         }
     }
 

@@ -31,7 +31,6 @@
 //! The same crate carries the server-side store ([`store::HistoryStore`]) so
 //! zidecar and the verifier share one MMR shape and one sampling rule.
 
-pub mod consensus;
 pub mod epochs;
 pub mod floor;
 pub mod header;

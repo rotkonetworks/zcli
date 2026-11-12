@@ -16,7 +16,7 @@
 
 use zcash_protocol::consensus::{BranchId, MainNetwork, NetworkUpgrade, Parameters};
 
-use crate::consensus::TestNetwork;
+use zcash_protocol::consensus::TestNetwork;
 
 use super::node::NodeVersion;
 
@@ -171,6 +171,17 @@ pub fn epoch_activated_at(network: Network, activation: u32) -> Option<Epoch> {
 mod tests {
     use super::*;
 
+    /// Testnet NU7 (4,465,026) now comes from Common; this pins the value the
+    /// testnet schedule depends on (it was a local shim before Common 2.2).
+    #[test]
+    fn nu7_on_testnet() {
+        use zcash_protocol::consensus::BlockHeight;
+        let h = BlockHeight::from_u32(4_465_026);
+        assert_eq!(BranchId::for_height(&TestNetwork, h - 1), BranchId::Nu6_3);
+        assert_eq!(BranchId::for_height(&TestNetwork, h), BranchId::Nu7);
+        assert_eq!(u32::from(BranchId::Nu7), 0x7719_0ad9);
+    }
+
     #[test]
     fn mainnet_epochs_are_contiguous_and_versioned() {
         let es = epochs(Network::Mainnet);
@@ -207,9 +218,12 @@ mod tests {
         assert_eq!(last.branch_id, future);
         assert_eq!(last.version, NodeVersion::V3);
         assert!(!last.commits_root_directly());
+        // mainnet NU7 (3,543,405 since Common 4.0) sits between NU6.3 and it
         let nu63 = s.activated_at(crate::IRONWOOD_ACTIVATION_HEIGHT).unwrap();
-        assert_eq!(nu63.end, Some(4_000_000));
-        assert_eq!(s.before(&last), Some(nu63));
+        assert_eq!(nu63.end, Some(3_543_405));
+        let nu7 = s.activated_at(3_543_405).unwrap();
+        assert_eq!(nu7.end, Some(4_000_000));
+        assert_eq!(s.before(&last), Some(nu7));
         assert_eq!(s.epochs().first().unwrap().branch_id, HEARTWOOD);
     }
 }

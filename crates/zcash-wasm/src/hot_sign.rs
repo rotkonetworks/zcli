@@ -86,8 +86,7 @@ pub fn sign_pczt_spends(
 /// ECDSA over a 32-byte transparent sighash: DER with a trailing SIGHASH_ALL
 /// byte, the `sig_hex` shape `complete_shielding_transaction` takes from zigner.
 pub fn sign_transparent_sighash(sk: &secp256k1::SecretKey, sighash: [u8; 32]) -> Vec<u8> {
-    let secp = secp256k1::Secp256k1::signing_only();
-    let mut sig = secp.sign_ecdsa(&secp256k1::Message::from_digest(sighash), sk);
+    let mut sig = secp256k1::ecdsa::sign(secp256k1::Message::from_digest(sighash), sk);
     sig.normalize_s();
     let mut out = sig.serialize_der().to_vec();
     out.push(0x01);
@@ -159,7 +158,7 @@ impl SpendKeys {
     pub fn ufvk(&self) -> Result<String, JsError> {
         use zcash_keys::keys::UnifiedSpendingKey;
         use zcash_protocol::consensus::MainNetwork;
-        use crate::consensus::TestNetwork;
+        use zcash_protocol::consensus::TestNetwork;
         let ufvk = UnifiedSpendingKey::from_seed(&MainNetwork, &*self.seed, self.account)
             .map_err(|e| JsError::new(&format!("account key derivation failed: {e:?}")))?
             .to_unified_full_viewing_key();
@@ -193,8 +192,7 @@ impl SpendKeys {
     /// Compressed pubkey of transparent address `index` (m/44'/133'/account'/0/index).
     pub fn transparent_pubkey(&self, index: u32) -> Result<String, JsError> {
         let sk = self.transparent_key(index)?;
-        let secp = secp256k1::Secp256k1::signing_only();
-        Ok(hex_encode(&sk.public_key(&secp).serialize()))
+        Ok(hex_encode(&sk.public_key().serialize()))
     }
 
     /// Sign an unsigned tx with transparent inputs (a shielding tx as raw V5 or
@@ -210,8 +208,7 @@ impl SpendKeys {
         sighashes_json: &str,
     ) -> Result<String, JsError> {
         let sk = self.transparent_key(index)?;
-        let secp = secp256k1::Secp256k1::signing_only();
-        let pubkey_hex = hex_encode(&sk.public_key(&secp).serialize());
+        let pubkey_hex = hex_encode(&sk.public_key().serialize());
         let sighashes: Vec<String> = serde_json::from_str(sighashes_json)
             .map_err(|e| JsError::new(&format!("invalid sighashes json: {e}")))?;
         let sigs = sighashes
